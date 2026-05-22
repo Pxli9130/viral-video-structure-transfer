@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-video-structure-transfer.local/schemas/generation-request.schema.json",
+  "title": "GenerationRequest",
+  "type": "object",
+  "required": ["schemaVersion", "projectId", "inputMode", "prompt", "target"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.1"
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputMode": {
+      "type": "string",
+      "enum": ["video_plus_prompt", "brief_assets", "prompt_only"]
+    },
+    "selectedTemplateIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "knowledgeBaseScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vertical": {
+          "type": "string",
+          "enum": ["b2b_marketing_mg", "vlog", "talking_head", "cutting_beat", "short_drama", "generic"]
+        },
+        "preferLatest": { "type": "boolean" },
+        "allowedAtomRoles": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "sourceVideo": {
+      "$ref": "#/$defs/assetRef"
+    },
+    "assets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assetRef" }
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "brief": {
+      "$ref": "#/$defs/brief"
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    },
+    "controls": {
+      "$ref": "#/$defs/controls"
+    },
+    "constraints": {
+      "$ref": "#/$defs/constraints"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "inputMode": { "const": "video_plus_prompt" } },
+        "required": ["inputMode"]
+      },
+      "then": {
+        "required": ["sourceVideo"]
+      }
+    }
+  ],
+  "$defs": {
+    "assetRef": {
+      "type": "object",
+      "required": ["assetId", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "assetId": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["source_video", "user_image", "user_text", "generated_background", "example_video"]
+        },
+        "manualTags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topic": { "type": "string" },
+        "productName": { "type": "string" },
+        "targetAudience": { "type": "string" },
+        "sellingPoints": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "tone": { "type": "string" },
+        "cta": { "type": "string" },
+        "forbiddenContent": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["vertical", "targetDurationSec", "aspectRatio", "outputMode"],
+      "additionalProperties": false,
+      "properties": {
+        "vertical": {
+          "type": "string",
+          "enum": ["b2b_marketing_mg", "vlog", "talking_head", "cutting_beat", "short_drama", "generic"]
+        },
+        "targetDurationSec": {
+          "type": "number",
+          "minimum": 3,
+          "maximum": 300
+        },
+        "aspectRatio": {
+          "type": "string",
+          "enum": ["9:16", "16:9", "1:1", "4:5"]
+        },
+        "outputMode": {
+          "type": "string",
+          "enum": ["storyboard_preview", "mp4_render"]
+        }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pace": { "type": "string", "enum": ["slow", "medium", "fast"] },
+        "hookIntensity": { "type": "string", "enum": ["safe", "strong", "aggressive"] },
+        "packagingStyle": { "type": "string", "enum": ["clean", "bold", "mg_motion"] },
+        "ctaStyle": { "type": "string", "enum": ["soft", "direct"] },
+        "allowAigcPlaceholder": { "type": "boolean" },
+        "allowReorder": { "type": "boolean" }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "doNotUseSampleVisuals": { "type": "boolean" },
+        "mustUseSourceVideo": { "type": "boolean" },
+        "maxClips": { "type": "integer", "minimum": 1 },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-video-structure-transfer.local/schemas/timeline.schema.json",
+  "title": "Timeline",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "generationId",
+    "targetDurationSec",
+    "aspectRatio",
+    "rendererTarget",
+    "clips",
+    "mapping",
+    "gapReport",
+    "fillPlan",
+    "storyboard"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": "string"
+    },
+    "generationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetDurationSec": {
+      "type": "number",
+      "minimum": 1
+    },
+    "aspectRatio": {
+      "type": "string",
+      "enum": ["9:16", "16:9", "1:1", "4:5"]
+    },
+    "rendererTarget": {
+      "type": "string",
+      "enum": ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"]
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/clip" }
+    },
+    "mapping": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mapping" }
+    },
+    "gapReport": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/gap" }
+    },
+    "fillPlan": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fillAction" }
+    },
+    "storyboard": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/storyboardItem" }
+    },
+    "renderPlan": {
+      "$ref": "#/$defs/renderPlan"
+    },
+    "migrationExplanation": {
+      "type": "string"
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "createdAt": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "clip": {
+      "type": "object",
+      "required": ["id", "startSec", "durationSec", "role", "visualIntent", "layers"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "sourceSlotId": { "type": "string" },
+        "sourceSegmentId": { "type": "string" },
+        "startSec": { "type": "number", "minimum": 0 },
+        "durationSec": { "type": "number", "exclusiveMinimum": 0 },
+        "role": {
+          "type": "string",
+          "enum": ["hook", "body", "proof", "transition", "cta", "other"]
+        },
+        "visualIntent": { "type": "string" },
+        "transitionIn": { "type": "string" },
+        "transitionOut": { "type": "string" },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/layer" }
+        },
+        "gapFillStrategy": {
+          "type": "string",
+          "enum": [
+            "none",
+            "reuse_with_crop_zoom",
+            "text_card",
+            "packaging_overlay",
+            "reorder_structure",
+            "aigc_placeholder"
+          ]
+        }
+      }
+    },
+    "layer": {
+      "type": "object",
+      "required": ["id", "type", "startOffsetSec", "durationSec"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": [
+            "video",
+            "image",
+            "text_card",
+            "subtitle",
+            "shape",
+            "sticker",
+            "generated_placeholder",
+            "background"
+          ]
+        },
+        "assetId": { "type": "string" },
+        "sourceShotId": { "type": "string" },
+        "startOffsetSec": { "type": "number", "minimum": 0 },
+        "durationSec": { "type": "number", "exclusiveMinimum": 0 },
+        "text": { "type": "string" },
+        "style": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "transform": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "placeholderPrompt": { "type": "string" }
+      }
+    },
+    "mapping": {
+      "type": "object",
+      "required": ["sourceId", "targetClipId", "status", "explanation"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceId": { "type": "string" },
+        "sourceType": { "type": "string", "enum": ["segment", "slot", "atom", "technique"] },
+        "targetClipId": { "type": "string" },
+        "status": { "type": "string", "enum": ["matched", "weak_match", "missing_filled"] },
+        "explanation": { "type": "string" },
+        "usedAssetIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "required": ["id", "slotId", "gapType", "severity", "impact"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "slotId": { "type": "string" },
+        "gapType": {
+          "type": "string",
+          "enum": [
+            "hook_visual",
+            "product_closeup",
+            "usage_scene",
+            "comparison_scene",
+            "proof_visual",
+            "cta_visual",
+            "text_or_subtitle",
+            "background",
+            "other"
+          ]
+        },
+        "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+        "impact": { "type": "string" },
+        "recommendedStrategies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "reuse_with_crop_zoom",
+              "text_card",
+              "packaging_overlay",
+              "reorder_structure",
+              "aigc_placeholder"
+            ]
+          }
+        }
+      }
+    },
+    "fillAction": {
+      "type": "object",
+      "required": ["id", "gapId", "strategy", "description", "resultClipId"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "gapId": { "type": "string" },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "reuse_with_crop_zoom",
+            "text_card",
+            "packaging_overlay",
+            "reorder_structure",
+            "aigc_placeholder"
+          ]
+        },
+        "description": { "type": "string" },
+        "resultClipId": { "type": "string" },
+        "sourceAssetIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "aigcPrompt": { "type": "string" }
+      }
+    },
+    "storyboardItem": {
+      "type": "object",
+      "required": ["clipId", "timeRange", "shotDescription", "subtitle", "assetUsage", "packaging"],
+      "additionalProperties": false,
+      "properties": {
+        "clipId": { "type": "string" },
+        "timeRange": { "type": "string" },
+        "shotDescription": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "assetUsage": { "type": "string" },
+        "packaging": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "renderPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "number", "minimum": 1 },
+        "background": { "type": "string" },
+        "notes": { "type": "string" },
+        "adapterOptions": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}
