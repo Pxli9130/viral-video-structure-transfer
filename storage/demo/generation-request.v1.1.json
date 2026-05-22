@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1.1",
+  "projectId": "demo_v1_1_project",
+  "inputMode": "video_plus_prompt",
+  "selectedTemplateIds": [
+    "template_1a6ktxt"
+  ],
+  "knowledgeBaseScope": {
+    "vertical": "b2b_marketing_mg",
+    "preferLatest": true
+  },
+  "sourceVideo": {
+    "assetId": "demo_source_video",
+    "role": "source_video"
+  },
+  "prompt": "请基于已学习的爆款营销视频结构，把这个素材重构成一个 15 秒竖屏短视频。\n主题：便携式桌面加湿器\n目标用户：办公室久坐人群、学生\n卖点：小巧便携、静音、USB 供电、柔和夜灯、缓解干燥\n风格：快节奏、字幕明显、带 MG 风格卖点卡片\nCTA：点击了解更多",
+  "target": {
+    "vertical": "b2b_marketing_mg",
+    "targetDurationSec": 15,
+    "aspectRatio": "9:16",
+    "outputMode": "storyboard_preview"
+  },
+  "controls": {
+    "pace": "fast",
+    "hookIntensity": "strong",
+    "packagingStyle": "mg_motion",
+    "ctaStyle": "direct",
+    "allowAigcPlaceholder": true,
+    "allowReorder": true
+  },
+  "constraints": {
+    "doNotUseSampleVisuals": true,
+    "mustUseSourceVideo": true,
+    "maxClips": 8
+  }
+}

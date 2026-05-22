@@ -1,0 +1,27 @@
+{
+  "name": "viral-video-structure-transfer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/renderer",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && concurrently -k -n api,web -c cyan,green \"npm run dev --workspace @vvst/api\" \"npm run dev --workspace @vvst/web\"",
+    "dev:api": "npm run dev --workspace @vvst/api",
+    "dev:web": "npm run dev --workspace @vvst/web",
+    "lint": "npm run typecheck --workspaces",
+    "seed:demo": "npm run build --workspace @vvst/shared && node scripts/seed-demo.mjs",
+    "test": "npm run test --workspace @vvst/shared",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

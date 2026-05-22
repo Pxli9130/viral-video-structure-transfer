@@ -1,1 +1,15 @@
 .env
+node_modules/
+dist/
+.vite/
+coverage/
+data/uploads/
+data/outputs/
+data/cache/
+data/*.json
+storage/uploads/
+storage/generated/
+storage/db/
+storage/*.json
+*.log
+npm-debug.log*

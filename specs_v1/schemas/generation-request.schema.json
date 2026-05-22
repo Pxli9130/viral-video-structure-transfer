@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-structure-engine.local/schemas/generation-request.schema.json",
+  "title": "GenerationRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_id", "template_id", "brief", "asset_ids", "controls"],
+  "properties": {
+    "project_id": { "type": "string", "minLength": 1 },
+    "template_id": { "type": "string", "minLength": 1 },
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "selling_points", "target_audience", "cta", "tone"],
+      "properties": {
+        "topic": { "type": "string", "minLength": 1 },
+        "product_name": { "type": "string" },
+        "selling_points": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "target_audience": { "type": "string" },
+        "cta": { "type": "string" },
+        "tone": { "type": "string", "enum": ["high_energy", "premium", "warm", "funny", "clean", "custom"] },
+        "forbidden": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "asset_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hook_style", "pace", "packaging_style", "cta_style"],
+      "properties": {
+        "hook_style": { "type": "string", "enum": ["pain_point", "result_first", "contrast", "question", "auto"] },
+        "pace": { "type": "string", "enum": ["slow", "medium", "fast", "auto"] },
+        "packaging_style": { "type": "string", "enum": ["clean", "high_energy", "premium", "mg", "auto"] },
+        "cta_style": { "type": "string", "enum": ["purchase", "learn_more", "comment", "save", "brand", "auto"] },
+        "target_duration_ms": { "type": "integer", "minimum": 5000, "maximum": 60000 }
+      }
+    }
+  }
+}

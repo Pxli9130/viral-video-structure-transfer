@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-structure-engine.local/schemas/structure-template.schema.json",
+  "title": "StructureTemplate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "template_id",
+    "template_name",
+    "version",
+    "source_video",
+    "creative_intent",
+    "segments",
+    "shots",
+    "packaging",
+    "quality_rules",
+    "explanation"
+  ],
+  "properties": {
+    "template_id": { "type": "string", "minLength": 1 },
+    "template_name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "default": "0.1" },
+    "source_video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "duration_ms", "aspect_ratio", "fps", "category"],
+      "properties": {
+        "asset_id": { "type": "string" },
+        "duration_ms": { "type": "integer", "minimum": 1000 },
+        "aspect_ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "unknown"] },
+        "fps": { "type": "number", "minimum": 1 },
+        "category": { "type": "string", "enum": ["marketing", "vlog", "mg", "edit", "custom"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "creative_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audience", "tone", "goal"],
+      "properties": {
+        "audience": { "type": "string" },
+        "tone": { "type": "string", "enum": ["high_energy", "premium", "warm", "funny", "clean", "unknown"] },
+        "goal": { "type": "string", "enum": ["click", "conversion", "awareness", "engagement", "unknown"] }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/segment" }
+    },
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/shot" }
+    },
+    "packaging": { "$ref": "#/$defs/packaging" },
+    "quality_rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "atoms": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/atom" }
+    },
+    "explanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "why_effective", "migration_notes"],
+      "properties": {
+        "summary": { "type": "string" },
+        "why_effective": { "type": "string" },
+        "migration_notes": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment_id",
+        "role",
+        "start_ms",
+        "end_ms",
+        "narrative_function",
+        "visual_requirement",
+        "copy_pattern",
+        "replacement_policy"
+      ],
+      "properties": {
+        "segment_id": { "type": "string" },
+        "role": { "type": "string", "enum": ["hook", "setup", "body", "proof", "comparison", "climax", "cta", "transition"] },
+        "start_ms": { "type": "integer", "minimum": 0 },
+        "end_ms": { "type": "integer", "minimum": 0 },
+        "narrative_function": { "type": "string" },
+        "visual_requirement": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "copy_pattern": { "type": "string" },
+        "subtitle_style": { "type": "string" },
+        "music_sync": { "type": "string" },
+        "replacement_policy": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["use_best_highlight", "text_card", "zoom_reuse", "reorder", "generated_background", "packaging_overlay"]
+          }
+        }
+      }
+    },
+    "shot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shot_id", "segment_id", "duration_ms", "shot_type", "motion", "asset_slot", "required"],
+      "properties": {
+        "shot_id": { "type": "string" },
+        "segment_id": { "type": "string" },
+        "duration_ms": { "type": "integer", "minimum": 300 },
+        "shot_type": {
+          "type": "string",
+          "enum": [
+            "product_closeup",
+            "usage",
+            "comparison",
+            "scene",
+            "text_card",
+            "cta_card",
+            "background",
+            "transition"
+          ]
+        },
+        "motion": { "type": "string", "enum": ["push_in", "pull_out", "cut", "pan", "static", "zoom", "slide"] },
+        "asset_slot": { "type": "string" },
+        "required": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    },
+    "packaging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subtitle_density", "title_bar", "transitions", "cover_style"],
+      "properties": {
+        "subtitle_density": { "type": "string", "enum": ["high", "medium", "low"] },
+        "title_bar": { "type": "boolean" },
+        "stickers": { "type": "array", "items": { "type": "string" } },
+        "transitions": { "type": "array", "items": { "type": "string" } },
+        "cover_style": { "type": "string" },
+        "safe_margin": { "type": "string" }
+      }
+    },
+    "atom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atom_id", "type", "name", "description"],
+      "properties": {
+        "atom_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["hook", "shot", "packaging", "transition", "cta", "gap_fill"] },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "params": { "type": "object" }
+      }
+    }
+  }
+}
