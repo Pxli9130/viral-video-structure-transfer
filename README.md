@@ -1,107 +1,143 @@
-# Viral Video Structure Transfer Engine
+# Viral Video Structure Transfer Engine — Final Spec v1.2
 
-AI 创作平台，用于从优质短视频样例中学习可复用的创作结构，并将这些结构迁移到新的素材、主题或商品内容中，生成可解释、可预览、可进一步渲染的视频重组方案。
+中文名：**爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
 
-当前版本为 **MVP Spec v1.1**，已根据官方过程 FAQ 调整：第一版重点验证核心闭环，不追求覆盖全部高级功能。
+The system learns reusable creative structures from high-performing short videos, stores them as a knowledge base of `StructureTemplate` + `KnowledgeAtom`, and applies them to a new source video plus a user prompt to produce a reconstructed short-video plan, browser preview, and (when FFmpeg is available) an MP4 demo.
 
-## MVP v1.1 Focus
+## Spec v1.2 documents
 
-核心验证链路：
+- [Requirements](./spec_v2/requirements.md)
+- [System Design](./spec_v2/design.md)
+- [API Specification](./spec_v2/api.md)
+- [Implementation Tasks](./spec_v2/tasks.md)
+- [Test Plan](./spec_v2/test-plan.md)
+- [Demo Playbook](./spec_v2/demo-playbook.md)
+- [Source Alignment](./spec_v2/source-alignment.md)
+- [JSON Schemas](./spec_v2/schemas/)
 
-```text
-样例视频学习
-→ 结构模板 / 结构原子沉淀
-→ 结构知识库
-→ 新视频 + Prompt 输入
-→ 槽位匹配与素材缺口识别
-→ 缺口补全与重构规划
-→ Storyboard / Timeline JSON
-→ 浏览器预览，后续可扩展为 FFmpeg / Remotion / HyperFrames 渲染
-```
+The deprecated `specs_v1/` and `spec_v1_1/` directories are kept for traceability but are superseded by `spec_v2/`.
 
-本项目不是简单复制爆款视频内容，而是迁移其创作方法，例如 hook、节奏、字幕包装、卖点推进、转场和 CTA 结构。
-
-## Why v1.1 changed from v1
-
-官方 FAQ 明确了几件事：
-
-- 评测时可能会使用评委自己的素材，而不是只看提交时绑定的素材。
-- 测试输入更可能是视频，通常是一个较长视频素材，而不是默认给多个切好的分镜素材。
-- 推荐形态可以理解为：输入一段视频和提示词，视频作为素材输入，再结合已沉淀的知识库经验去重构生成新视频。
-- 不提供视频生成模型 token，Doubao-Seed-2.0-lite 不能直接生成视频；Remotion / HyperFrames / FFmpeg 更适合作为工程渲染路径。
-- 生成速度不是核心指标，结构规划与最终产物效果更重要。
-
-## Specs
-
-- [Requirements](./spec_v1_1/requirements.md)
-- [Design](./spec_v1_1/design.md)
-- [Implementation Tasks](./spec_v1_1/tasks.md)
-- [Test Plan](./spec_v1_1/test-plan.md)
-- [Schemas](./spec_v1_1/schemas/)
-
-## Recommended MVP Tech Stack
+## Repo layout
 
 ```text
-Frontend: React + TypeScript + Vite
-Backend: Node.js + TypeScript + Express/Fastify
-Shared: TypeScript types + JSON schemas
-Storage: local JSON under storage/
-Video tools: FFmpeg / FFprobe optional, deterministic mock fallback required
-Renderer v1: HTML / browser timeline preview
-Renderer later: FFmpeg, Remotion, HyperFrames
-AI provider v1: mock/fallback first; OpenAI-compatible / Doubao adapter later
+apps/
+  api/      # Node.js + TypeScript + Express, adapter wiring, spec v1.2 routes
+  web/      # React + Vite + TypeScript, 6-step workspace + dashboard rail
+packages/
+  shared/   # Inline JSON schemas, types, validators, mock pipeline, adapter interfaces
+  renderer/ # HtmlPreviewRenderer + MockRenderer (browser-safe)
+scripts/
+  seed-demo.mjs        # Build a seeded humidifier demo into storage/db + storage/demo/
+  validate-schemas.mjs # AJV-validate every fixture and DB row
+  python/              # Python helpers (ffprobe, keyframes, faster-whisper, easyocr)
+storage/
+  uploads/, generated/, db/, demo/
 ```
 
-## Local Development
-
-The MVP runs locally in deterministic mock mode:
+## Local run (mock + FFmpeg auto-fallback)
 
 ```bash
+# 1. Install JS deps
 npm install
-npm test
-npm run build
+
+# 2. Build shared + renderer, then start API and web together
 npm run dev
 ```
 
 Open:
 
-- Web: `http://localhost:5173`
-- API health: `http://localhost:3000/healthz`
+- Web app: <http://localhost:5173>
+- API health: <http://localhost:3000/healthz>
 
-Demo path:
+Demo flow inside the UI:
 
-1. Open or create the default `b2b_marketing_mg` project.
-2. Click `Analyze Mock Sample` or upload a sample video.
-3. Review the generated Structure Template and Knowledge Base atoms.
-4. Click `Add Mock Source Video` or upload a source video.
-5. Edit the prompt and click `Generate Reconstruction`.
-6. Review slot mapping, gaps, fill plan, storyboard and timeline preview.
-7. Export Template / Knowledge Base / Request / Timeline / Report JSON.
+1. Open or create the default `b2b_marketing_mg` project (dashboard rail).
+2. `Analyze Mock Sample` (or upload an MP4) → sample structure + atoms.
+3. Inspect Step 3 Knowledge Base for stored atoms / techniques.
+4. `Add Mock Source Video` or upload a real source video.
+5. Edit prompt in Step 4, click `Generate Reconstruction`.
+6. Review slot mapping, gap report, fill plan, storyboard, timeline strip.
+7. Pick a renderer target (`HTML preview`, `Mock preview`, `FFmpeg MP4`, `Remotion` placeholder, `HyperFrames` placeholder) and click `Render`.
+8. Export Request / Timeline / Report JSON.
 
-Configuration starts from `.env.example`:
+## Conda environment `viral`
+
+FFmpeg-based analysis and rendering, plus optional Python ASR/OCR/VLM helpers, run inside a dedicated conda env so the Node app can shell out reproducibly.
+
+The env is already provisioned at `~/anaconda3/envs/viral` and contains `python 3.11`, `ffmpeg`, `ffprobe`. To extend it with optional adapters:
 
 ```bash
-APP_PORT=3000
-WEB_PORT=5173
-STORAGE_DIR=./storage
-AI_PROVIDER=mock
-RENDERER=html_preview
+conda activate viral
+pip install faster-whisper        # enables ASR_PROVIDER=faster_whisper
+pip install easyocr               # enables OCR_PROVIDER=easyocr
 ```
 
-The app supports mock/fallback mode so the core demo can run without external API keys or FFmpeg. Real LLM/VLM/ASR/FFmpeg/Remotion/HyperFrames integrations remain adapter-backed extension work.
+Override discovery via env vars if needed:
 
-## MVP Non-goals
+```bash
+CONDA_BASE=/path/to/anaconda3
+VIRAL_CONDA_ENV=viral
+```
 
-- No requirement to generate a perfect MP4 in the first coding version.
-- No dependency on video generation models.
-- No need to support every video category.
-- No real platform traffic validation.
-- No guarantee that output will become viral.
+When `VIDEO_TOOL=ffmpeg`, the API uses `scripts/python/ffprobe_metadata.py` and `scripts/python/extract_keyframes.py` through `apps/api/src/adapters/condaPython.ts`. Failures degrade gracefully back to deterministic mock analysis with warnings on the analysis result.
 
-## Preferred MVP Vertical
+## NPM scripts
 
-Primary demo vertical: **B-end marketing / MG-style promo short videos**.
+```bash
+npm run dev              # build shared/renderer, then run api + web concurrently
+npm run dev:api          # backend only
+npm run dev:web          # frontend only
+npm run build            # build all workspaces
+npm run typecheck        # tsc --noEmit across workspaces
+npm test                 # vitest run in packages/shared
+npm run seed:demo        # produce storage/db/app.json + storage/demo/*.json fixtures
+npm run validate:schemas # AJV-validate fixtures + DB rows
+```
 
-Reason: this direction is easier to render with text cards, product cards, motion graphics, FFmpeg, Remotion, or HyperFrames, and does not depend heavily on expensive video generation models.
+`npm run dev` requires Node 18+ (the project uses `--experimental-vm-modules`-friendly ESM). If you have multiple Node installs, point `npm` at the right one (e.g. `nvm use 22`).
 
-Future extensions can support vlog, 口播, 剪辑卡点, short drama clips, and multi-template fusion.
+## Adapter map (NFR-001)
+
+All providers are isolated behind interfaces in `packages/shared/src/adapters.ts`. Default wiring lives in `apps/api/src/adapters/index.ts`:
+
+| Concern       | Default (mock-friendly)      | Real implementation                                    | Toggle                                |
+|---------------|------------------------------|--------------------------------------------------------|---------------------------------------|
+| Video analysis | `MockVideoToolAdapter`      | `FFmpegVideoToolAdapter` (ffprobe + keyframes)         | `VIDEO_TOOL=mock` or `ffmpeg`         |
+| AI / LLM       | `MockAIAdapter`             | `OpenAICompatibleAIAdapter` (you supply key)           | `AI_PROVIDER=mock` or `openai_compatible` |
+| ASR            | `DisabledASRAdapter`        | `FasterWhisperASRAdapter` via conda viral              | `ASR_PROVIDER=faster_whisper`         |
+| OCR            | `DisabledOCRAdapter`        | `EasyOCRAdapter` via conda viral                       | `OCR_PROVIDER=easyocr`                |
+| VLM            | `DisabledVLMAdapter`        | `KeyframeHeuristicVLMAdapter` (heuristic) **or** `GeminiVLMAdapter` (Google Gemini, real video understanding) | `VLM_PROVIDER=heuristic` or `gemini` |
+| Renderer       | `HtmlPreviewRenderer`       | `FFmpegRenderer`, plus `Remotion`/`HyperFrames` stubs  | per-request `rendererTarget` field    |
+
+`MockRenderer` and the two future renderers (`RemotionRenderer`, `HyperFramesRenderer`) live in `apps/api/src/adapters/renderers.ts` as schema-correct placeholders so the API can already accept their targets.
+
+## Enabling Gemini VLM (optional but powerful)
+
+Set up once:
+
+```bash
+# in your repo-root .env
+VLM_PROVIDER=gemini
+VLM_MODEL=gemini-flash-latest   # or gemini-2.5-flash if your account has video access
+GEMINI_API_KEY=<your_key_from_aistudio.google.com>
+```
+
+When `VLM_PROVIDER=gemini` is set:
+- Every sample/source analysis runs the local FFmpeg pipeline (metadata + keyframes) **and** asks Gemini to describe the whole video with strict-JSON output (video_summary, shots, structure, rhythm, packaging, reusable_patterns, material_gaps_for_new_video).
+- The VLM result is merged back into the shot list: tags are blended (e.g. `["background"]` → `["background","product_like","usage_scene"]`), `notes` is augmented with the VLM's `visual` description per shot, and `analyzerMode` is upgraded to `ffmpeg_vlm_asr`.
+- Slot matching, gap detection and the FFmpeg renderer all benefit from the richer tags; in our 4-video smoke test the source-matched clip count jumped from 2/8 to 7/8 once Gemini was enabled.
+
+Behind the scenes [apps/api/src/adapters/gemini.ts](apps/api/src/adapters/gemini.ts) sends ≤18 MB files inline as base64 (no async file processing required) and falls back to the Files API + state polling for larger uploads. Failures are caught per-step and surfaced on the analysis row's `warnings`; the rest of the pipeline keeps running on FFmpeg-only data.
+
+## What still needs a human
+
+These items are intentionally left for the user (cost or external setup):
+
+- **Real LLM key**: set `AI_PROVIDER=openai_compatible` + `OPENAI_COMPATIBLE_*` to upgrade structure extraction from the deterministic fallback. Without it the mock writer still produces schema-valid templates.
+- **Gemini VLM key**: set `VLM_PROVIDER=gemini` + `GEMINI_API_KEY` to enable real video understanding (see section above). Without it, video analysis works via FFmpeg only.
+- **Real Doubao keys**: not wired by default; placeholders exist in `.env.example`.
+- **faster-whisper / easyocr** Python packages: optional, pip install inside `viral` when desired.
+
+## Primary vertical
+
+**B-end marketing / MG-style short promo videos** — the FFmpegRenderer is tuned for 9:16 720p with title-bar overlays, hard cuts and generated text cards. Other verticals (vlog, talking-head, beat_cut, short_drama, ecommerce) round-trip through the same pipeline but trigger a UI warning that they are best-effort.

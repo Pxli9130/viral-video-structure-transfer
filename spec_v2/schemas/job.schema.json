@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-video-structure-transfer.local/schemas/job.schema.json",
+  "title": "Job",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "status",
+    "progress",
+    "steps",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "analysis",
+        "template_extraction",
+        "generation",
+        "render",
+        "export"
+      ]
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "progress": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "skipped"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "inputSummary": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "outputRefs": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

@@ -13,3 +13,4 @@ storage/db/
 storage/*.json
 *.log
 npm-debug.log*
+test_videos/
