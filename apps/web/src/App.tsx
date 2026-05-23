@@ -4,7 +4,9 @@ import type {
   ExampleAnalysis,
   GenerationRequest,
   GenerationResult,
+  KnowledgeAtom,
   Project,
+  RendererTarget,
   StructureTemplate,
   TemplateRecord,
   Vertical
@@ -15,34 +17,51 @@ type ApiState = "idle" | "loading" | "error";
 type KnowledgeBaseResponse = {
   projectId: string;
   templates: TemplateRecord[];
-  atoms: Array<{ id: string; role: string; name: string; description: string; sourceTemplateId: string }>;
-  editingTechniques: Array<{ id: string; name: string; description: string; sourceTemplateId: string }>;
+  atoms: KnowledgeAtom[];
+  editingTechniques: Array<{ id: string; name: string; category: string; description: string; sourceTemplateId?: string }>;
+  counts: { templates: number; atoms: number; techniques: number };
 };
 
 type AnalyzeResponse = {
   project?: Project;
   asset: Asset;
   jobId: string;
+  analysisId?: string;
+  status: string;
   analysis: ExampleAnalysis;
   template?: StructureTemplate;
 };
 
 type GenerateResponse = {
+  generationId: string;
   jobId: string;
+  status: string;
   generation: GenerationResult;
 };
 
-const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(path, {
+type RenderResponse = {
+  jobId: string;
+  renderId: string;
+  status: string;
+  render: { outputPath?: string; previewHtml?: string; rendererTarget: RendererTarget; status: string };
+};
+
+type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string; details?: unknown } };
+
+async function api<T>(input: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, {
     ...init,
     headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...(init?.headers ?? {}) }
   });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { error?: string; details?: string[] } | null;
-    throw new Error(payload?.details?.join("; ") ?? payload?.error ?? `Request failed: ${response.status}`);
+  const payload = (await response.json().catch(() => null)) as Envelope<T> | null;
+  if (!payload || payload.ok !== true) {
+    const message = payload && payload.ok === false ? payload.error.message : `Request failed: ${response.status}`;
+    const details = payload && payload.ok === false ? payload.error.details : undefined;
+    const detail = Array.isArray(details) ? details.join("; ") : "";
+    throw new Error(detail ? `${message} (${detail})` : message);
   }
-  return response.json() as Promise<T>;
-};
+  return payload.data;
+}
 
 const defaultPrompt = `请基于已学习的爆款营销视频结构，把这个素材重构成一个 15 秒竖屏短视频。
 主题：便携式桌面加湿器
@@ -64,7 +83,7 @@ function downloadJson(filename: string, value: unknown) {
 function StatusLine({ state, error }: { state: ApiState; error: string | null }) {
   if (state === "loading") return <span className="status">Working...</span>;
   if (state === "error") return <span className="status error">{error}</span>;
-  return <span className="status ok">Spec v1.1 mock mode</span>;
+  return <span className="status ok">Spec v1.2 ready</span>;
 }
 
 function JsonPreview({ value }: { value: unknown }) {
@@ -87,6 +106,8 @@ export default function App() {
   const [pace, setPace] = useState<"slow" | "medium" | "fast">("fast");
   const [packagingStyle, setPackagingStyle] = useState<"clean" | "bold" | "mg_motion">("mg_motion");
   const [generation, setGeneration] = useState<GenerationResult | null>(null);
+  const [rendererTarget, setRendererTarget] = useState<RendererTarget>("html_preview");
+  const [renderResult, setRenderResult] = useState<RenderResponse["render"] | null>(null);
 
   const selectedTemplate = useMemo(
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
@@ -118,8 +139,18 @@ export default function App() {
     setTemplates(nextTemplates);
     setKnowledgeBase(nextKb);
     if (!selectedTemplateId && nextTemplates[0]) setSelectedTemplateId(nextTemplates[0].id);
-    const source = nextAssets.find((asset) => asset.role === "source_video");
-    if (source && !sourceAssetId) setSourceAssetId(source.id);
+    const sources = nextAssets.filter((asset) => asset.role === "source_video");
+    const sortedByCreatedDesc = [...sources].sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+    const realSources = sortedByCreatedDesc.filter((asset) => Boolean(asset.path));
+    const latestReal = realSources[0];
+    const fallback = sortedByCreatedDesc[0];
+    const current = sources.find((asset) => asset.id === sourceAssetId);
+    const currentIsMock = current && !current.path;
+    const currentIsStale = current && current.path && latestReal && current.id !== latestReal.id && current.createdAt < latestReal.createdAt;
+    if (!current || currentIsMock || currentIsStale) {
+      const next = latestReal ?? fallback;
+      if (next) setSourceAssetId(next.id);
+    }
   }
 
   async function loadProjects() {
@@ -131,7 +162,7 @@ export default function App() {
         (await api<Project>("/api/projects", {
           method: "POST",
           body: JSON.stringify({
-            name: "Demo v1.1 Structure Knowledge Project",
+            name: "Demo v1.2 Structure Knowledge Project",
             vertical: "b2b_marketing_mg",
             aspectRatio: "9:16",
             targetDurationSec: 15
@@ -162,6 +193,7 @@ export default function App() {
       setProjects((current) => [created, ...current]);
       setSelectedTemplateId("");
       setGeneration(null);
+      setRenderResult(null);
       await refreshProject(created.id);
     });
   }
@@ -192,11 +224,12 @@ export default function App() {
       const body = new FormData();
       body.set("file", file);
       body.set("role", role);
+      body.set("sourcePolicy", role === "source_video" ? "user_authorized" : "demo_only");
       body.set("tags", role === "source_video" ? "product_like,background" : "example");
       const asset = await api<Asset>(`/api/projects/${project.id}/assets`, { method: "POST", body });
       const analysis = await api<AnalyzeResponse>(`/api/assets/${asset.id}/analyze`, {
         method: "POST",
-        body: JSON.stringify({ purpose: role === "example_video" ? "sample" : "source" })
+        body: JSON.stringify({ purpose: role === "example_video" ? "sample" : "source", mode: "auto" })
       });
       if (role === "source_video") {
         setSourceAssetId(asset.id);
@@ -216,12 +249,13 @@ export default function App() {
           role: "source_video",
           type: "video",
           originalName: "judge-source-video.mp4",
-          tags: "product_like,background"
+          tags: "product_like,background",
+          sourcePolicy: "demo_only"
         })
       });
       const analysis = await api<AnalyzeResponse>(`/api/assets/${asset.id}/analyze`, {
         method: "POST",
-        body: JSON.stringify({ purpose: "source", durationSec: 30, width: 720, height: 1280 })
+        body: JSON.stringify({ purpose: "source", mode: "mock", durationSec: 30, width: 720, height: 1280 })
       });
       setSourceAssetId(asset.id);
       setSourceAnalysis(analysis.analysis);
@@ -233,12 +267,10 @@ export default function App() {
     if (!project) return;
     await run(async () => {
       const request: GenerationRequest = {
-        schemaVersion: "1.1",
         projectId: project.id,
         inputMode: sourceAssetId ? "video_plus_prompt" : "prompt_only",
         selectedTemplateIds: selectedTemplateId ? [selectedTemplateId] : undefined,
-        knowledgeBaseScope: { vertical: project.vertical, preferLatest: true },
-        sourceVideo: sourceAssetId ? { assetId: sourceAssetId, role: "source_video" } : undefined,
+        sourceVideo: sourceAssetId ? { assetId: sourceAssetId } : undefined,
         prompt,
         target: {
           vertical: project.vertical,
@@ -251,13 +283,10 @@ export default function App() {
           hookIntensity: "strong",
           packagingStyle,
           ctaStyle: "direct",
-          allowAigcPlaceholder: true,
-          allowReorder: true
+          allowAigcPlaceholder: true
         },
         constraints: {
-          doNotUseSampleVisuals: true,
-          mustUseSourceVideo: Boolean(sourceAssetId),
-          maxClips: 8
+          noSampleVisualCopy: true
         }
       };
       const response = await api<GenerateResponse>("/api/generations", {
@@ -265,6 +294,18 @@ export default function App() {
         body: JSON.stringify(request)
       });
       setGeneration(response.generation);
+      setRenderResult(null);
+    });
+  }
+
+  async function renderTimeline() {
+    if (!generation) return;
+    await run(async () => {
+      const response = await api<RenderResponse>(`/api/generations/${generation.id}/render`, {
+        method: "POST",
+        body: JSON.stringify({ rendererTarget })
+      });
+      setRenderResult(response.render);
     });
   }
 
@@ -272,11 +313,14 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">爆款结构迁移引擎 MVP v1.1</p>
+          <p className="eyebrow">爆款结构迁移引擎 MVP v1.2</p>
           <h1>Video + Prompt Reconstruction</h1>
         </div>
         <StatusLine state={apiState} error={error} />
       </header>
+      <p style={{ background: "#eef2ff", color: "#3730a3", padding: "8px 12px", margin: "0 0 16px", borderRadius: 6, fontSize: 13 }}>
+        Source-policy reminder: this engine learns reusable creative structure only. Sample frames, audio, voiceover and people likenesses from learned videos are never copied into generated output. Commercial reuse of uploaded material remains the uploader's responsibility — confirm rights before downstream use.
+      </p>
 
       <section className="workspace">
         <aside className="rail">
@@ -310,6 +354,7 @@ export default function App() {
                 setProject(next);
                 setSelectedTemplateId("");
                 setGeneration(null);
+                setRenderResult(null);
                 void refreshProject(next.id);
               }}
             >
@@ -352,7 +397,7 @@ export default function App() {
                   <span className="step">Step 2</span>
                   <h2>Structure Review</h2>
                 </div>
-                {selectedTemplate && <button onClick={() => downloadJson("structure-template-v1.1.json", selectedTemplate)}>Export Template</button>}
+                {selectedTemplate && <button onClick={() => downloadJson("structure-template-v1.2.json", selectedTemplate)}>Export Template</button>}
               </div>
               <div className="metrics">
                 <div>
@@ -360,7 +405,7 @@ export default function App() {
                   <span>Templates</span>
                 </div>
                 <div>
-                  <strong>{knowledgeBase?.atoms.length ?? 0}</strong>
+                  <strong>{knowledgeBase?.counts.atoms ?? 0}</strong>
                   <span>Atoms</span>
                 </div>
                 <div>
@@ -379,7 +424,7 @@ export default function App() {
                     <span>{segment.intent}</span>
                   </article>
                 ))}
-                {!selectedTemplate && <p className="empty">Analyze a sample to create a v1.1 structure template.</p>}
+                {!selectedTemplate && <p className="empty">Analyze a sample to create a v1.2 structure template.</p>}
               </div>
             </div>
             <div>
@@ -408,8 +453,8 @@ export default function App() {
             </div>
             <div className="asset-list">
               {knowledgeBase?.atoms.map((atom) => (
-                <article key={`${atom.sourceTemplateId}-${atom.id}`}>
-                  <strong>{atom.role}: {atom.name}</strong>
+                <article key={`${atom.templateId}-${atom.id}`}>
+                  <strong>{atom.role} · {atom.category}: {atom.name}</strong>
                   <span>{atom.description}</span>
                 </article>
               ))}
@@ -433,6 +478,21 @@ export default function App() {
                 </label>
               </div>
             </div>
+            {(() => {
+              const selectedSource = assets.find((asset) => asset.id === sourceAssetId);
+              const isMock = Boolean(selectedSource && !selectedSource.path);
+              const hasNoSelection = !sourceAssetId;
+              if (hasNoSelection || isMock) {
+                return (
+                  <p className="status" style={{ background: "#fef3c7", color: "#92400e", padding: 8, borderRadius: 6 }}>
+                    {hasNoSelection
+                      ? "No source video selected. Generation will fall back to prompt-only (text-card heavy). Upload a real source video via the Upload Source button for richer reconstruction."
+                      : `Currently selected source “${selectedSource?.filename}” is a mock placeholder (no real file). Click Upload Source to pick a real video.`}
+                  </p>
+                );
+              }
+              return null;
+            })()}
             <div className="form-grid">
               <label>
                 Source video
@@ -442,7 +502,7 @@ export default function App() {
                     .filter((asset) => asset.role === "source_video")
                     .map((asset) => (
                       <option key={asset.id} value={asset.id}>
-                        {asset.filename}
+                        {asset.filename}{asset.path ? "" : " (mock)"}
                       </option>
                     ))}
                 </select>
@@ -465,7 +525,7 @@ export default function App() {
               </label>
               <label>
                 Source shots
-                <input readOnly value={sourceAnalysis?.video.shotCandidates.length ? `${sourceAnalysis.video.shotCandidates.length} candidates` : "auto mock on generate"} />
+                <input readOnly value={sourceAnalysis?.video.shots.length ? `${sourceAnalysis.video.shots.length} candidates` : "auto-mock on generate"} />
               </label>
               <label className="wide">
                 Prompt
@@ -493,7 +553,7 @@ export default function App() {
                       <tr>
                         <th>Slot</th>
                         <th>Status</th>
-                        <th>Explanation</th>
+                        <th>Reason</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -501,7 +561,7 @@ export default function App() {
                         <tr key={mapping.slotId}>
                           <td>{mapping.slotType}</td>
                           <td><span className={`pill ${mapping.status}`}>{mapping.status}</span></td>
-                          <td>{mapping.explanation}</td>
+                          <td>{mapping.reason}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -511,9 +571,9 @@ export default function App() {
                   <h3>Gap Fill</h3>
                   <div className="gap-list">
                     {generation.fillPlan.map((action) => (
-                      <article key={action.id}>
+                      <article key={action.targetClipId}>
                         <strong>{action.strategy}</strong>
-                        <span>{action.description}</span>
+                        <span>{action.reason}</span>
                       </article>
                     ))}
                     {!generation.fillPlan.length && <p className="empty">No gaps detected.</p>}
@@ -533,12 +593,34 @@ export default function App() {
               </div>
               {generation && (
                 <div className="button-row">
-                  <button onClick={() => downloadJson("generation-request-v1.1.json", generation.request)}>Export Request</button>
-                  <button onClick={() => downloadJson("timeline-v1.1.json", generation.timeline)}>Export Timeline</button>
-                  <button onClick={() => downloadJson("generation-report-v1.1.json", generation)}>Export Report</button>
+                  <button onClick={() => downloadJson("generation-request-v1.2.json", generation.request)}>Export Request</button>
+                  <button onClick={() => downloadJson("timeline-v1.2.json", generation.timeline)}>Export Timeline</button>
+                  <button onClick={() => downloadJson("generation-report-v1.2.json", generation)}>Export Report</button>
                 </div>
               )}
             </div>
+            {generation && (
+              <div className="form-grid">
+                <label>
+                  Renderer target
+                  <select value={rendererTarget} onChange={(event) => setRendererTarget(event.target.value as RendererTarget)}>
+                    <option value="html_preview">HTML preview</option>
+                    <option value="mock_preview">Mock preview</option>
+                    <option value="ffmpeg">FFmpeg MP4</option>
+                    <option value="remotion">Remotion (placeholder)</option>
+                    <option value="hyperframes">HyperFrames (placeholder)</option>
+                  </select>
+                </label>
+                <button onClick={renderTimeline} disabled={apiState === "loading"}>
+                  Render
+                </button>
+                {renderResult && (
+                  <p className="empty">
+                    {renderResult.status} → {renderResult.outputPath ?? renderResult.rendererTarget}
+                  </p>
+                )}
+              </div>
+            )}
             {generation ? (
               <div className="compare-grid">
                 <div>
@@ -547,9 +629,21 @@ export default function App() {
                     {generation.selectedAtoms.map((atom) => (
                       <article key={atom.id}>
                         <strong>{atom.role}: {atom.name}</strong>
-                        <span>{atom.applicableWhen}</span>
+                        <span>{atom.description}</span>
                       </article>
                     ))}
+                  </div>
+                  <h3 style={{ marginTop: 16 }}>Source Shot Candidates ({generation.sourceUnderstanding.candidates.length})</h3>
+                  <div className="segment-row vertical">
+                    {generation.sourceUnderstanding.candidates.map((shot) => (
+                      <article key={shot.id}>
+                        <strong>{shot.id} · {shot.startSec.toFixed(1)}–{shot.endSec.toFixed(1)}s</strong>
+                        <span>{shot.tags.join(", ") || "no tags"}</span>
+                      </article>
+                    ))}
+                    {generation.sourceUnderstanding.candidates.length === 0 && (
+                      <p className="empty">No source shot candidates (prompt-only fallback).</p>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -567,7 +661,7 @@ export default function App() {
                   <h3>Timeline Preview</h3>
                   <div className="timeline-strip">
                     {generation.timeline.clips.map((clip, index) => {
-                      const subtitle = clip.layers.find((layer) => layer.type === "subtitle")?.text ?? clip.visualIntent;
+                      const subtitle = clip.subtitleText ?? clip.layers.find((layer) => layer.kind === "subtitle")?.text ?? clip.visualIntent ?? `Clip ${index + 1}`;
                       return (
                         <article key={clip.id} className="phone-frame">
                           <span>Clip {index + 1} · {clip.role}</span>

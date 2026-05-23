@@ -1,0 +1,310 @@
+{
+  "id": "template_1a6ktxt",
+  "projectId": "demo_v1_2_project",
+  "name": "B2B MG Promo Structure: Hook Body Proof CTA",
+  "vertical": "b2b_marketing_mg",
+  "sourceSampleIds": [
+    "demo_sample_video"
+  ],
+  "targetDurationSec": 15,
+  "segments": [
+    {
+      "id": "seg_hook",
+      "role": "hook",
+      "startRatio": 0,
+      "endRatio": 0.2,
+      "intent": "Stop scroll with a product-like visual and a clear benefit promise.",
+      "scriptPattern": "Open with the pain point or visible result in one line.",
+      "slots": [
+        "slot_hook_visual",
+        "slot_subtitle_text"
+      ],
+      "recommendedDurationSec": 3
+    },
+    {
+      "id": "seg_body",
+      "role": "body",
+      "startRatio": 0.2,
+      "endRatio": 0.7,
+      "intent": "Explain core value with usage, closeup and MG selling-point cards.",
+      "scriptPattern": "One benefit per shot, alternating closeup, usage and text card.",
+      "slots": [
+        "slot_product_closeup",
+        "slot_usage_scene",
+        "slot_subtitle_text"
+      ],
+      "recommendedDurationSec": 8
+    },
+    {
+      "id": "seg_proof",
+      "role": "proof",
+      "startRatio": 0.7,
+      "endRatio": 0.85,
+      "intent": "Show proof, comparison or social trust before the close.",
+      "scriptPattern": "Before/after or pain/solution; concrete and skimmable.",
+      "slots": [
+        "slot_comparison"
+      ],
+      "recommendedDurationSec": 2
+    },
+    {
+      "id": "seg_cta",
+      "role": "cta",
+      "startRatio": 0.85,
+      "endRatio": 1,
+      "intent": "Close with action and a final remembered benefit.",
+      "scriptPattern": "CTA verb + strongest benefit recap.",
+      "slots": [
+        "slot_cta_visual",
+        "slot_subtitle_text"
+      ],
+      "recommendedDurationSec": 2
+    }
+  ],
+  "requiredSlots": [
+    {
+      "id": "slot_hook_visual",
+      "role": "hook",
+      "slotType": "hook_visual",
+      "required": true,
+      "description": "Opening product/result visual",
+      "preferredTags": [
+        "hook_candidate",
+        "product_like"
+      ],
+      "fallbackStrategies": [
+        "reuse_with_crop_zoom",
+        "text_card",
+        "packaging_overlay"
+      ]
+    },
+    {
+      "id": "slot_product_closeup",
+      "role": "body",
+      "slotType": "product_closeup",
+      "required": true,
+      "description": "Concrete product/feature closeup",
+      "preferredTags": [
+        "product_like"
+      ],
+      "fallbackStrategies": [
+        "reuse_with_crop_zoom",
+        "text_card",
+        "packaging_overlay"
+      ]
+    },
+    {
+      "id": "slot_usage_scene",
+      "role": "body",
+      "slotType": "usage_scene",
+      "required": true,
+      "description": "Usage / context / scenario",
+      "preferredTags": [
+        "usage_scene"
+      ],
+      "fallbackStrategies": [
+        "reuse_with_crop_zoom",
+        "text_card",
+        "packaging_overlay"
+      ]
+    },
+    {
+      "id": "slot_subtitle_text",
+      "role": "body",
+      "slotType": "subtitle_text",
+      "required": true,
+      "description": "Selling point subtitle copy",
+      "preferredTags": [
+        "text_card_candidate"
+      ],
+      "fallbackStrategies": [
+        "reuse_with_crop_zoom",
+        "text_card",
+        "packaging_overlay"
+      ]
+    },
+    {
+      "id": "slot_comparison",
+      "role": "proof",
+      "slotType": "comparison",
+      "required": true,
+      "description": "Proof / contrast / before-after",
+      "preferredTags": [
+        "comparison_candidate"
+      ],
+      "fallbackStrategies": [
+        "reuse_with_crop_zoom",
+        "text_card",
+        "packaging_overlay"
+      ]
+    },
+    {
+      "id": "slot_cta_visual",
+      "role": "cta",
+      "slotType": "cta_visual",
+      "required": true,
+      "description": "Closing CTA visual / card",
+      "preferredTags": [
+        "cta_candidate"
+      ],
+      "fallbackStrategies": [
+        "reuse_with_crop_zoom",
+        "text_card",
+        "packaging_overlay"
+      ]
+    }
+  ],
+  "rhythm": {
+    "pace": "fast",
+    "averageShotDurationSec": 3,
+    "peakTimeRatio": 0.7,
+    "notes": "Fast opening, value pulses through the middle, readable CTA hold."
+  },
+  "packaging": {
+    "subtitleStyle": "lower-third bold sans-serif, single benefit per shot",
+    "titleCardStyle": "MG card with icon/sticker and 1-line headline",
+    "overlayStyle": "highlight box + arrow for key spec",
+    "transitionStyle": "hard cut + occasional slide",
+    "coverStyle": "product name + strongest benefit badge"
+  },
+  "structureAtoms": [
+    {
+      "id": "atom_hook_zaxrxj",
+      "projectId": "demo_v1_2_project",
+      "templateId": "template_1a6ktxt",
+      "role": "hook",
+      "category": "hook_pattern",
+      "name": "Result-first hook",
+      "description": "Open with the clearest product/result frame and a short benefit claim.",
+      "applicableVerticals": [
+        "b2b_marketing_mg",
+        "b2b_marketing_mg"
+      ],
+      "usageRules": "Use when prompt contains a concrete product or pain point.",
+      "exampleMapping": "0–20% segment opens with product crop and top-bar headline.",
+      "confidence": 0.85
+    },
+    {
+      "id": "atom_rhythm_zaxrxj",
+      "projectId": "demo_v1_2_project",
+      "templateId": "template_1a6ktxt",
+      "role": "body",
+      "category": "rhythm_pattern",
+      "name": "Fast cuts with value pulses",
+      "description": "Alternate 1.5–2.5s shots, one benefit per cut.",
+      "applicableVerticals": [
+        "b2b_marketing_mg",
+        "b2b_marketing_mg"
+      ],
+      "usageRules": "Use when target duration is under 20s and pace is fast.",
+      "confidence": 0.8
+    },
+    {
+      "id": "atom_subtitle_zaxrxj",
+      "projectId": "demo_v1_2_project",
+      "templateId": "template_1a6ktxt",
+      "role": "body",
+      "category": "subtitle_style",
+      "name": "Bold MG subtitle",
+      "description": "Lower-third bold subtitle, one benefit per shot.",
+      "applicableVerticals": [
+        "b2b_marketing_mg",
+        "b2b_marketing_mg"
+      ],
+      "usageRules": "Use high subtitle density when source visuals are weak.",
+      "confidence": 0.78
+    },
+    {
+      "id": "atom_proof_zaxrxj",
+      "projectId": "demo_v1_2_project",
+      "templateId": "template_1a6ktxt",
+      "role": "proof",
+      "category": "packaging_pattern",
+      "name": "Proof by contrast card",
+      "description": "Split layout for before/after or pain/solution.",
+      "applicableVerticals": [
+        "b2b_marketing_mg",
+        "b2b_marketing_mg"
+      ],
+      "usageRules": "Use when source has comparison footage or prompt mentions improvement.",
+      "confidence": 0.75
+    },
+    {
+      "id": "atom_cta_zaxrxj",
+      "projectId": "demo_v1_2_project",
+      "templateId": "template_1a6ktxt",
+      "role": "cta",
+      "category": "cta_pattern",
+      "name": "Readable CTA end card",
+      "description": "Hold final CTA with benefit recap and brand mark.",
+      "applicableVerticals": [
+        "b2b_marketing_mg",
+        "b2b_marketing_mg"
+      ],
+      "usageRules": "Use for any marketing/promo output.",
+      "confidence": 0.9
+    },
+    {
+      "id": "atom_gap_fill_zaxrxj",
+      "projectId": "demo_v1_2_project",
+      "templateId": "template_1a6ktxt",
+      "role": "body",
+      "category": "gap_fill_strategy",
+      "name": "Crop-zoom + benefit overlay",
+      "description": "Reuse the strongest source shot with crop/zoom; overlay benefit text.",
+      "applicableVerticals": [
+        "b2b_marketing_mg",
+        "b2b_marketing_mg"
+      ],
+      "usageRules": "Use when product closeup or usage slots have no direct source.",
+      "confidence": 0.82
+    }
+  ],
+  "editingTechniques": [
+    {
+      "id": "tech_crop_zoom_reuse",
+      "name": "Crop/zoom reuse",
+      "category": "shot_transform",
+      "description": "Reuse a source shot with crop, push-in or repeat to satisfy a visual slot.",
+      "usageRules": "Limit reuse to twice; vary motion direction."
+    },
+    {
+      "id": "tech_title_bar_emphasis",
+      "name": "Title bar emphasis",
+      "category": "packaging",
+      "description": "Bold title bar + short subtitle to make weak footage understandable.",
+      "usageRules": "Use high subtitle density for B-end MG."
+    },
+    {
+      "id": "tech_hard_cut",
+      "name": "Hard-cut transitions",
+      "category": "transition",
+      "description": "Hard cuts between segments to keep MG pace.",
+      "usageRules": "Avoid soft dissolves in fast-pace promos."
+    }
+  ],
+  "replacementPolicy": {
+    "doNotCopySampleVisuals": true,
+    "allowedTransfer": [
+      "structure",
+      "rhythm",
+      "packaging",
+      "subtitle_style",
+      "cta_pattern"
+    ],
+    "forbiddenTransfer": [
+      "original_video_frames",
+      "original_audio",
+      "original_voiceover",
+      "person_likeness"
+    ]
+  },
+  "qualityRationale": "Hook + value body + proof + CTA mirrors successful B-end MG promos; replacement policy keeps the system from copying sample frames.",
+  "sourcePolicy": {
+    "sampleSource": "demo_only",
+    "commercialUse": false,
+    "notes": "Mock fallback template transfers structure only; does not reuse sample visuals."
+  },
+  "createdAt": "2026-05-22T19:32:03.987Z",
+  "updatedAt": "2026-05-22T19:32:03.987Z"
+}

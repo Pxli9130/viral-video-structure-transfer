@@ -1,10 +1,63 @@
-export type Vertical = "b2b_marketing_mg" | "vlog" | "talking_head" | "cutting_beat" | "short_drama" | "generic";
-export type AspectRatio = "9:16" | "16:9" | "1:1" | "4:5";
-export type AssetRole = "example_video" | "source_video" | "user_image" | "user_text" | "generated_background" | "render_output";
+export type Vertical = "b2b_marketing_mg" | "vlog" | "talking_head" | "beat_cut" | "short_drama" | "ecommerce";
+export type AspectRatio = "9:16" | "16:9" | "1:1";
+export type AssetRole =
+  | "example_video"
+  | "source_video"
+  | "user_image"
+  | "user_text"
+  | "generated_card"
+  | "generated_background"
+  | "render_output";
 export type AssetType = "video" | "image" | "text" | "audio" | "output";
 export type AssetStatus = "uploaded" | "processing" | "ready" | "failed";
-export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+export type SourcePolicy = "user_authorized" | "open_download_or_user_uploaded" | "demo_only" | "unknown";
 export type AnalysisPurpose = "sample" | "source";
+export type AnalyzerMode = "mock" | "ffmpeg" | "ffmpeg_opencv" | "ffmpeg_vlm_asr";
+export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+
+export type JobType = "analysis" | "template_extraction" | "generation" | "render" | "export";
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type StepStatus = "queued" | "running" | "completed" | "failed" | "skipped";
+
+export type SegmentRole = "hook" | "setup" | "body" | "proof" | "transition" | "cta";
+export type SlotType =
+  | "hook_visual"
+  | "product_closeup"
+  | "usage_scene"
+  | "comparison"
+  | "proof_visual"
+  | "cta_visual"
+  | "subtitle_text"
+  | "title_card"
+  | "transition"
+  | "background";
+
+export type AtomCategory =
+  | "hook_pattern"
+  | "rhythm_pattern"
+  | "subtitle_style"
+  | "packaging_pattern"
+  | "transition_pattern"
+  | "cta_pattern"
+  | "gap_fill_strategy"
+  | "shot_pattern";
+
+export type FillStrategy =
+  | "reuse_with_crop_zoom"
+  | "text_card"
+  | "packaging_overlay"
+  | "reorder_structure"
+  | "aigc_placeholder";
+
+export type SourceTag =
+  | "hook_candidate"
+  | "product_like"
+  | "usage_scene"
+  | "person_scene"
+  | "comparison_candidate"
+  | "background"
+  | "cta_candidate"
+  | "text_card_candidate";
 
 export interface Project {
   id: string;
@@ -22,9 +75,9 @@ export interface Asset {
   role: AssetRole;
   type: AssetType;
   filename: string;
-  originalName: string;
   path?: string;
   mimeType?: string;
+  sourcePolicy: SourcePolicy;
   text?: string;
   metadata?: Record<string, unknown>;
   tags?: string[];
@@ -32,205 +85,161 @@ export interface Asset {
   createdAt: string;
 }
 
-export interface Job {
-  id: string;
-  projectId: string;
-  type: "analysis" | "generation" | "render";
-  status: JobStatus;
-  progress: number;
-  inputRef: string;
-  outputRef?: string;
-  error?: string;
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string;
-  finishedAt?: string;
+export interface JobStep {
+  name: string;
+  status: StepStatus;
+  message?: string;
 }
 
-export interface VideoShotCandidate {
+export interface Job {
+  id: string;
+  projectId?: string;
+  type: JobType;
+  status: JobStatus;
+  progress: number;
+  steps: JobStep[];
+  inputSummary?: Record<string, unknown>;
+  outputRefs?: Record<string, unknown>;
+  error?: { message?: string; details?: unknown };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssetKeyframe {
+  id: string;
+  timeSec: number;
+  path?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface ShotCandidate {
   id: string;
   startSec: number;
   endSec: number;
   durationSec: number;
   thumbnailPath?: string;
-  tags: SourceTag[];
+  tags: string[];
   confidence: number;
+  notes?: string;
+}
+
+export interface TranscriptSegment {
+  startSec: number;
+  endSec: number;
+  text: string;
 }
 
 export interface VideoAnalysisResult {
   id: string;
   assetId: string;
+  projectId: string;
   purpose: AnalysisPurpose;
-  mode: "mock" | "ffprobe";
   metadata: {
     durationSec: number;
-    width: number;
-    height: number;
-    fps: number;
-    aspectRatio: AspectRatio;
-    codec: string;
-    hasAudio: boolean;
+    width?: number;
+    height?: number;
+    fps?: number;
+    hasAudio?: boolean;
+    codec?: string;
   };
-  keyframes: Array<{
-    id: string;
-    timestampSec: number;
-    path?: string;
-    label: string;
-  }>;
-  shotCandidates: VideoShotCandidate[];
-  transcript?: string;
+  keyframes: AssetKeyframe[];
+  shots: ShotCandidate[];
+  transcript?: TranscriptSegment[];
+  ocr?: Array<Record<string, unknown>>;
+  warnings: string[];
+  analyzerMode: AnalyzerMode;
   createdAt: string;
 }
 
-export type SegmentRole = "hook" | "body" | "proof" | "transition" | "cta" | "other";
-export type Pacing = "slow" | "medium" | "fast" | "variable";
-export type SlotType =
-  | "hook_visual"
-  | "product_closeup"
-  | "usage_scene"
-  | "comparison_scene"
-  | "proof_visual"
-  | "cta_visual"
-  | "text_or_subtitle"
-  | "background"
-  | "other";
-export type StructureShotType =
-  | "product_closeup"
-  | "usage_scene"
-  | "comparison"
-  | "lifestyle_scene"
-  | "text_card"
-  | "background"
-  | "cta"
-  | "unknown";
-
-export interface StructureSlot {
+export interface RequiredSlot {
   id: string;
+  role: SegmentRole;
   slotType: SlotType;
   required: boolean;
   description: string;
-  preferredAssetTags?: string[];
-  fallbackAllowed?: boolean;
-}
-
-export interface StructureShot {
-  id: string;
-  startSec: number;
-  endSec: number;
-  shotType: StructureShotType;
-  visualIntent: string;
-  motion?: string;
-  transitionIn?: string;
-  transitionOut?: string;
-  textOverlay?: string;
+  preferredTags?: string[];
+  fallbackStrategies?: FillStrategy[];
 }
 
 export interface StructureSegment {
   id: string;
   role: SegmentRole;
-  startSec: number;
-  endSec: number;
+  startRatio: number;
+  endRatio: number;
   intent: string;
-  pacing?: Pacing;
-  sourceRationale?: string;
-  requiredSlots: StructureSlot[];
-  shots: StructureShot[];
-  packagingRefs?: string[];
+  scriptPattern?: string;
+  slots: string[];
+  recommendedDurationSec?: number;
 }
 
-export interface StructureAtom {
+export interface KnowledgeAtom {
   id: string;
-  role: "hook" | "body" | "proof" | "transition" | "cta" | "packaging";
+  projectId: string;
+  templateId: string;
+  role: SegmentRole;
+  category: AtomCategory;
   name: string;
   description: string;
-  applicableWhen: string;
-  requiresSlots?: string[];
-  replacementPolicy?: string;
-  sourceSegmentIds?: string[];
+  applicableVerticals: string[];
+  usageRules: string;
+  exampleMapping?: string;
+  confidence?: number;
 }
 
 export interface EditingTechnique {
   id: string;
   name: string;
+  category: string;
   description: string;
-  params?: Record<string, unknown>;
+  usageRules?: string;
+}
+
+export interface ReplacementPolicy {
+  doNotCopySampleVisuals?: boolean;
+  allowedTransfer?: string[];
+  forbiddenTransfer?: string[];
+}
+
+export interface SourcePolicyBlock {
+  sampleSource: SourcePolicy;
+  commercialUse: boolean;
+  notes?: string;
+}
+
+export interface RhythmSpec {
+  pace: "slow" | "medium" | "fast" | "mixed";
+  averageShotDurationSec: number;
+  peakTimeRatio?: number;
+  notes?: string;
+}
+
+export interface PackagingSpec {
+  subtitleStyle?: string;
+  titleCardStyle?: string;
+  overlayStyle?: string;
+  transitionStyle?: string;
+  coverStyle?: string;
 }
 
 export interface StructureTemplate {
-  schemaVersion: "1.1";
-  id: string;
-  projectId?: string;
-  name: string;
-  vertical: Vertical;
-  sourceExample: {
-    assetId: string;
-    filename?: string;
-    durationSec: number;
-    width?: number;
-    height?: number;
-    fps?: number;
-    thumbnailPath?: string;
-  };
-  summary: string;
-  targetDurationSec?: number;
-  aspectRatio?: AspectRatio;
-  segments: StructureSegment[];
-  packaging: {
-    style: "clean" | "bold" | "mg_motion" | "cinematic" | "ugc" | "generic";
-    subtitle: {
-      density: "low" | "medium" | "high";
-      position: string;
-      fontHint?: string;
-      safeArea?: string;
-    };
-    cards: Array<{
-      id: string;
-      purpose: string;
-      style: string;
-    }>;
-    stickers?: string[];
-    transitions: string[];
-    coverSuggestion?: string;
-  };
-  rhythm: {
-    averageShotDurationSec: number;
-    pace: Pacing;
-    climaxPosition: string;
-    beatNotes?: string;
-  };
-  qualityRules: Array<{
-    id: string;
-    rule: string;
-    reason: string;
-    severity?: "info" | "warning" | "critical";
-  }>;
-  structureAtoms: StructureAtom[];
-  editingTechniques: EditingTechnique[];
-  qualityRationale?: string;
-  replacementPolicy?: {
-    allowSourceVideoReuse?: boolean;
-    allowTextCardSubstitution?: boolean;
-    allowAigcPlaceholder?: boolean;
-    notes?: string;
-  };
-  sourcePolicy: {
-    sampleSource: "open_download_or_user_uploaded" | "user_authorized" | "demo_only" | "unknown";
-    commercialUse: boolean;
-    doNotCopyOriginalContent: boolean;
-    notes?: string;
-  };
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface ExampleAnalysis {
   id: string;
   projectId: string;
-  assetId: string;
-  purpose: AnalysisPurpose;
-  video: VideoAnalysisResult;
-  template?: StructureTemplate;
+  name: string;
+  vertical: Vertical;
+  sourceSampleIds: string[];
+  targetDurationSec?: number;
+  segments: StructureSegment[];
+  requiredSlots: RequiredSlot[];
+  rhythm: RhythmSpec;
+  packaging: PackagingSpec;
+  structureAtoms: KnowledgeAtom[];
+  editingTechniques: EditingTechnique[];
+  replacementPolicy: ReplacementPolicy;
+  qualityRationale: string;
+  sourcePolicy: SourcePolicyBlock;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface TemplateRecord {
@@ -244,71 +253,66 @@ export interface TemplateRecord {
   updatedAt: string;
 }
 
-export interface AssetRef {
+export interface ExampleAnalysis {
+  id: string;
+  projectId: string;
   assetId: string;
-  role: Exclude<AssetRole, "render_output">;
-  manualTags?: string[];
-  notes?: string;
+  purpose: AnalysisPurpose;
+  video: VideoAnalysisResult;
+  template?: StructureTemplate;
+  vlm?: import("./adapters.js").VLMVideoAnalysis;
+  createdAt: string;
+}
+
+export interface GenerationRequestSourceVideo {
+  assetId: string;
+  analysisId?: string;
+}
+
+export interface GenerationRequestAsset {
+  assetId: string;
+  role?: string;
+}
+
+export interface GenerationTarget {
+  vertical: Vertical;
+  aspectRatio: AspectRatio;
+  targetDurationSec: number;
+  outputMode: "storyboard_preview" | "mp4_render" | "timeline_only";
+}
+
+export interface GenerationControls {
+  pace?: "slow" | "medium" | "fast";
+  hookIntensity?: "safe" | "strong" | "aggressive";
+  packagingStyle?: "clean" | "bold" | "mg_motion";
+  ctaStyle?: "soft" | "direct";
+  allowAigcPlaceholder?: boolean;
+}
+
+export interface GenerationConstraints {
+  forbiddenWords?: string[];
+  mustMention?: string[];
+  noSampleVisualCopy?: boolean;
 }
 
 export interface GenerationRequest {
-  schemaVersion: "1.1";
-  requestId?: string;
   projectId: string;
   inputMode: "video_plus_prompt" | "brief_assets" | "prompt_only";
+  sourceVideo?: GenerationRequestSourceVideo;
   selectedTemplateIds?: string[];
-  knowledgeBaseScope?: {
-    vertical?: Vertical;
-    preferLatest?: boolean;
-    allowedAtomRoles?: string[];
-  };
-  sourceVideo?: AssetRef;
-  assets?: AssetRef[];
+  selectedAtomIds?: string[];
+  assets?: GenerationRequestAsset[];
   prompt: string;
-  brief?: {
-    topic?: string;
-    productName?: string;
-    targetAudience?: string;
-    sellingPoints?: string[];
-    tone?: string;
-    cta?: string;
-    forbiddenContent?: string[];
-  };
-  target: {
-    vertical: Vertical;
-    targetDurationSec: number;
-    aspectRatio: AspectRatio;
-    outputMode: "storyboard_preview" | "mp4_render";
-  };
-  controls?: {
-    pace?: "slow" | "medium" | "fast";
-    hookIntensity?: "safe" | "strong" | "aggressive";
-    packagingStyle?: "clean" | "bold" | "mg_motion";
-    ctaStyle?: "soft" | "direct";
-    allowAigcPlaceholder?: boolean;
-    allowReorder?: boolean;
-  };
-  constraints?: {
-    doNotUseSampleVisuals?: boolean;
-    mustUseSourceVideo?: boolean;
-    maxClips?: number;
-    notes?: string;
-  };
+  target: GenerationTarget;
+  controls?: GenerationControls;
+  constraints?: GenerationConstraints;
 }
-
-export type SourceTag =
-  | "product_like"
-  | "person_scene"
-  | "usage_scene"
-  | "background"
-  | "text_card_candidate"
-  | "comparison"
-  | "cta_candidate";
 
 export interface SourceVideoUnderstanding {
   assetId?: string;
+  analysisId?: string;
   summary: string;
-  candidates: VideoShotCandidate[];
+  candidates: ShotCandidate[];
   warnings: string[];
 }
 
@@ -316,39 +320,31 @@ export type SlotMatchStatus = "matched" | "weak_match" | "missing";
 
 export interface SlotMapping {
   slotId: string;
-  segmentId: string;
+  slotRole: SegmentRole;
   slotType: SlotType;
   status: SlotMatchStatus;
-  sourceShotId?: string;
-  assetId?: string;
+  candidateShotIds: string[];
+  selectedShotId?: string;
+  selectedAssetId?: string;
   confidence: number;
-  explanation: string;
+  reason: string;
+  risks: string[];
 }
 
-export type FillStrategyName =
-  | "reuse_with_crop_zoom"
-  | "text_card"
-  | "packaging_overlay"
-  | "reorder_structure"
-  | "aigc_placeholder";
-
 export interface GapReportItem {
-  id: string;
   slotId: string;
-  gapType: SlotType;
+  status: SlotMatchStatus;
   severity: "low" | "medium" | "high";
+  reason: string;
   impact: string;
-  recommendedStrategies: FillStrategyName[];
 }
 
 export interface FillAction {
-  id: string;
-  gapId: string;
-  strategy: FillStrategyName;
-  description: string;
-  resultClipId: string;
-  sourceAssetIds?: string[];
-  aigcPrompt?: string;
+  slotId: string;
+  strategy: FillStrategy;
+  reason: string;
+  targetClipId: string;
+  rendererInstructions?: Record<string, unknown>;
 }
 
 export interface StoryboardItem {
@@ -361,66 +357,67 @@ export interface StoryboardItem {
   rationale?: string;
 }
 
+export type TimelineClipType = "video" | "image" | "text_card" | "generated_card" | "placeholder";
+export type LayerKind = "base_visual" | "subtitle" | "title_bar" | "sticker" | "arrow" | "highlight" | "background" | "audio";
+
 export interface TimelineLayer {
   id: string;
-  type: "video" | "image" | "text_card" | "subtitle" | "shape" | "sticker" | "generated_placeholder" | "background";
-  assetId?: string;
-  sourceShotId?: string;
-  startOffsetSec: number;
-  durationSec: number;
+  kind: LayerKind;
   text?: string;
   style?: Record<string, unknown>;
-  transform?: Record<string, unknown>;
-  placeholderPrompt?: string;
+  timing?: Record<string, unknown>;
+  assetId?: string;
+  sourceShotId?: string;
 }
 
 export interface TimelineClip {
   id: string;
-  sourceSlotId?: string;
-  sourceSegmentId?: string;
+  role: SegmentRole;
   startSec: number;
   durationSec: number;
-  role: SegmentRole;
-  visualIntent: string;
+  type: TimelineClipType;
+  sourceAssetId?: string;
+  sourceShotId?: string;
+  visualIntent?: string;
+  scriptText?: string;
+  subtitleText?: string;
   transitionIn?: string;
   transitionOut?: string;
   layers: TimelineLayer[];
-  gapFillStrategy?: "none" | FillStrategyName;
+  gapFillStrategy?: "none" | FillStrategy;
 }
 
-export interface TimelineMapping {
-  sourceId: string;
-  sourceType?: "segment" | "slot" | "atom" | "technique";
-  targetClipId: string;
-  status: "matched" | "weak_match" | "missing_filled";
+export interface TimelineMappingItem {
+  templateSegmentId: string;
+  atomIds: string[];
+  targetClipIds: string[];
   explanation: string;
-  usedAssetIds?: string[];
+}
+
+export interface RenderPlan {
+  width?: number;
+  height?: number;
+  fps?: number;
+  background?: string;
+  notes?: string;
+  rendererTarget?: RendererTarget;
+  adapterOptions?: Record<string, unknown>;
 }
 
 export interface Timeline {
-  schemaVersion: "1.1";
   id: string;
-  projectId?: string;
+  projectId: string;
   generationId: string;
-  targetDurationSec: number;
+  durationSec: number;
   aspectRatio: AspectRatio;
-  rendererTarget: "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+  rendererTarget: RendererTarget;
   clips: TimelineClip[];
-  mapping: TimelineMapping[];
+  mapping: TimelineMappingItem[];
   gapReport: GapReportItem[];
   fillPlan: FillAction[];
-  storyboard: StoryboardItem[];
-  renderPlan?: {
-    width?: number;
-    height?: number;
-    fps?: number;
-    background?: string;
-    notes?: string;
-    adapterOptions?: Record<string, unknown>;
-  };
-  migrationExplanation?: string;
+  renderPlan?: RenderPlan;
   warnings?: string[];
-  createdAt?: string;
+  createdAt: string;
 }
 
 export interface GenerationResult {
@@ -428,7 +425,7 @@ export interface GenerationResult {
   projectId: string;
   request: GenerationRequest;
   selectedTemplateIds: string[];
-  selectedAtoms: StructureAtom[];
+  selectedAtoms: KnowledgeAtom[];
   sourceUnderstanding: SourceVideoUnderstanding;
   slotMapping: SlotMapping[];
   gapReport: GapReportItem[];
@@ -439,7 +436,7 @@ export interface GenerationResult {
     generationRequest: ValidationResult;
     timeline: ValidationResult;
   };
-  explanation: string;
+  migrationExplanation: string;
   warnings: string[];
   createdAt: string;
 }
@@ -447,7 +444,7 @@ export interface GenerationResult {
 export interface RenderOutput {
   renderId: string;
   generationId: string;
-  rendererTarget: "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+  rendererTarget: RendererTarget;
   status: JobStatus;
   outputPath?: string;
   previewHtml?: string;

@@ -16,6 +16,8 @@
     "dev:web": "npm run dev --workspace @vvst/web",
     "lint": "npm run typecheck --workspaces",
     "seed:demo": "npm run build --workspace @vvst/shared && node scripts/seed-demo.mjs",
+    "demo:seed": "npm run seed:demo",
+    "validate:schemas": "npm run build --workspace @vvst/shared && node scripts/validate-schemas.mjs",
     "test": "npm run test --workspace @vvst/shared",
     "typecheck": "npm run typecheck --workspaces"
   },

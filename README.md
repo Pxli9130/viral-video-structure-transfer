@@ -14,6 +14,7 @@ The system learns reusable creative structures from high-performing short videos
 - [Demo Playbook](./spec_v2/demo-playbook.md)
 - [Source Alignment](./spec_v2/source-alignment.md)
 - [JSON Schemas](./spec_v2/schemas/)
+- **[Implementation Status](./spec_v2/implementation-status.md)** — what's done, what's partial, what's deferred (phase-by-phase against `tasks.md`)
 
 The deprecated `specs_v1/` and `spec_v1_1/` directories are kept for traceability but are superseded by `spec_v2/`.
 
@@ -51,14 +52,14 @@ Open:
 
 Demo flow inside the UI:
 
-1. Open or create the default `b2b_marketing_mg` project (dashboard rail).
-2. `Analyze Mock Sample` (or upload an MP4) → sample structure + atoms.
-3. Inspect Step 3 Knowledge Base for stored atoms / techniques.
-4. `Add Mock Source Video` or upload a real source video.
-5. Edit prompt in Step 4, click `Generate Reconstruction`.
-6. Review slot mapping, gap report, fill plan, storyboard, timeline strip.
-7. Pick a renderer target (`HTML preview`, `Mock preview`, `FFmpeg MP4`, `Remotion` placeholder, `HyperFrames` placeholder) and click `Render`.
-8. Export Request / Timeline / Report JSON.
+1. Open or create a project on the Dashboard rail (default vertical: `b2b_marketing_mg`).
+2. **Step 1 Sample Learning** → `Upload Sample` (.mov/.mp4). With `VLM_PROVIDER=gemini` set, Gemini analyses the whole video and the StructureTemplate name + segment intents + atoms are derived from the actual video content, not a static template. `Analyze Mock Sample` is also available for offline testing.
+3. **Step 2 Structure Review** → 5 uploaded samples yield 5 distinctly named templates (e.g. *“Learned MG Structure · Cascading cards stacked together, transitioning into rapid splits…”*).
+4. **Step 3 Knowledge Base** → atoms are unique per source video (each template contributes 6 base atoms whose names come from VLM `structure.hook/climax/cta/sellingPoints/rhythm/subtitleDensity`, plus up to 4 extra atoms derived from `reusable_patterns`).
+5. **Step 4 Source Video + Prompt** → `Upload Source` for a real video. The dropdown auto-selects the most recent real upload; a yellow banner warns when no source is selected or when the seeded mock is still selected.
+6. **Step 5 Reconstruction Planner** → click `Generate Reconstruction`. With Gemini-enriched source-side tags every required slot typically matches a real shot (smoke test: 6/6 matched, 8/8 clips use real source footage).
+7. **Step 6 Result & Render** → choose a renderer target (`HTML preview`, `Mock preview`, `FFmpeg MP4`, `Remotion` placeholder, `HyperFrames` placeholder) and `Render`. The FFmpeg path cuts source shots, scales to 9:16 720p, overlays subtitles via `drawtext`, and concatenates a real `.mp4`.
+8. Export Request / Timeline / Report JSON; the report can be Markdown via `?format=markdown`.
 
 ## Conda environment `viral`
 
@@ -125,7 +126,8 @@ GEMINI_API_KEY=<your_key_from_aistudio.google.com>
 When `VLM_PROVIDER=gemini` is set:
 - Every sample/source analysis runs the local FFmpeg pipeline (metadata + keyframes) **and** asks Gemini to describe the whole video with strict-JSON output (video_summary, shots, structure, rhythm, packaging, reusable_patterns, material_gaps_for_new_video).
 - The VLM result is merged back into the shot list: tags are blended (e.g. `["background"]` → `["background","product_like","usage_scene"]`), `notes` is augmented with the VLM's `visual` description per shot, and `analyzerMode` is upgraded to `ffmpeg_vlm_asr`.
-- Slot matching, gap detection and the FFmpeg renderer all benefit from the richer tags; in our 4-video smoke test the source-matched clip count jumped from 2/8 to 7/8 once Gemini was enabled.
+- **The same VLM result is also threaded into `StructureExtractionRequest` so the template itself reflects the real video**: template name from `videoSummary`/`structure.hook`, segment intents from `structure.{hook,setup,sellingPoints,climax,cta}`, rhythm pace and `peakTimeRatio` from `rhythm.avgShotLength`, packaging fields from `packaging.{subtitleDensity,titleCards,stickers,coverStyle}`, plus 6 base atoms with VLM-derived names and 0–4 extra atoms drawn from `reusable_patterns`. Multiple uploads now produce visibly different templates and a non-duplicating knowledge base.
+- Slot matching, gap detection and the FFmpeg renderer all benefit from the richer tags; in our final smoke test the source-matched slot count went from 2/6 (FFmpeg only) to **6/6** once Gemini covered both the sample-learning side and the source-understanding side.
 
 Behind the scenes [apps/api/src/adapters/gemini.ts](apps/api/src/adapters/gemini.ts) sends ≤18 MB files inline as base64 (no async file processing required) and falls back to the Files API + state polling for larger uploads. Failures are caught per-step and surfaced on the analysis row's `warnings`; the rest of the pipeline keeps running on FFmpeg-only data.
 

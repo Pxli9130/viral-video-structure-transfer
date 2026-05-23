@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@google/genai": "^2.6.0",
     "@vvst/renderer": "0.1.0",
     "@vvst/shared": "0.1.0",
     "cors": "^2.8.5",

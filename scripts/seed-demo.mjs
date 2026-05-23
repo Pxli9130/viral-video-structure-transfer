@@ -21,8 +21,8 @@ const prompt = `请基于已学习的爆款营销视频结构，把这个素材�
 CTA：点击了解更多`;
 
 const project = {
-  id: "demo_v1_1_project",
-  name: "Seed Demo v1.1 - Humidifier MG Promo",
+  id: "demo_v1_2_project",
+  name: "Seed Demo v1.2 — Humidifier MG Promo",
   vertical: "b2b_marketing_mg",
   aspectRatio: "9:16",
   targetDurationSec: 15,
@@ -36,8 +36,8 @@ const sampleAsset = {
   role: "example_video",
   type: "video",
   filename: "demo-sample-mg-promo.mp4",
-  originalName: "demo-sample-mg-promo.mp4",
   mimeType: "video/mp4",
+  sourcePolicy: "demo_only",
   metadata: { mock: true },
   tags: ["example", "b2b_marketing_mg"],
   status: "ready",
@@ -50,35 +50,35 @@ const sourceAsset = {
   role: "source_video",
   type: "video",
   filename: "demo-source-humidifier.mp4",
-  originalName: "demo-source-humidifier.mp4",
   mimeType: "video/mp4",
+  sourcePolicy: "user_authorized",
   metadata: { mock: true },
   tags: ["product_like", "background"],
   status: "ready",
   createdAt: nowIso()
 };
 
-const sampleVideo = buildMockVideoAnalysis({
+const sampleAnalysis = buildMockVideoAnalysis({
   assetId: sampleAsset.id,
+  projectId: project.id,
   filename: sampleAsset.filename,
   purpose: "sample",
   durationSec: 15
 });
-const template = buildFallbackTemplate(sampleVideo, "b2b_marketing_mg", project.id);
-const sourceVideo = buildMockVideoAnalysis({
+const template = buildFallbackTemplate(sampleAnalysis, project.vertical, project.id);
+const sourceAnalysis = buildMockVideoAnalysis({
   assetId: sourceAsset.id,
+  projectId: project.id,
   filename: sourceAsset.filename,
   purpose: "source",
   durationSec: 30
 });
 
 const request = {
-  schemaVersion: "1.1",
   projectId: project.id,
   inputMode: "video_plus_prompt",
   selectedTemplateIds: [template.id],
-  knowledgeBaseScope: { vertical: "b2b_marketing_mg", preferLatest: true },
-  sourceVideo: { assetId: sourceAsset.id, role: "source_video" },
+  sourceVideo: { assetId: sourceAsset.id },
   prompt,
   target: {
     vertical: "b2b_marketing_mg",
@@ -91,17 +91,20 @@ const request = {
     hookIntensity: "strong",
     packagingStyle: "mg_motion",
     ctaStyle: "direct",
-    allowAigcPlaceholder: true,
-    allowReorder: true
+    allowAigcPlaceholder: true
   },
   constraints: {
-    doNotUseSampleVisuals: true,
-    mustUseSourceVideo: true,
-    maxClips: 8
+    noSampleVisualCopy: true,
+    mustMention: ["桌面加湿器"]
   }
 };
 
-const generation = generateMigrationResult(template, request, sourceAsset, sourceVideo);
+const generation = generateMigrationResult({
+  template,
+  request,
+  sourceAsset,
+  sourceAnalysis
+});
 
 await fs.mkdir(dbDir, { recursive: true });
 await fs.mkdir(demoDir, { recursive: true });
@@ -116,6 +119,7 @@ try {
     jobs: [],
     analyses: [],
     templates: [],
+    atoms: [],
     generations: [],
     renders: []
   };
@@ -129,20 +133,20 @@ db.assets = [
 ];
 db.analyses = [
   {
-    id: sampleVideo.id,
+    id: sampleAnalysis.id,
     projectId: project.id,
     assetId: sampleAsset.id,
     purpose: "sample",
-    video: sampleVideo,
+    video: sampleAnalysis,
     template,
     createdAt: nowIso()
   },
   {
-    id: sourceVideo.id,
+    id: sourceAnalysis.id,
     projectId: project.id,
     assetId: sourceAsset.id,
     purpose: "source",
-    video: sourceVideo,
+    video: sourceAnalysis,
     createdAt: nowIso()
   },
   ...(db.analyses ?? []).filter((item) => item.assetId !== sampleAsset.id && item.assetId !== sourceAsset.id)
@@ -160,14 +164,20 @@ db.templates = [
   },
   ...(db.templates ?? []).filter((item) => item.id !== template.id)
 ];
+db.atoms = [
+  ...template.structureAtoms,
+  ...((db.atoms ?? []).filter((atom) => atom.templateId !== template.id))
+];
 db.generations = [generation, ...(db.generations ?? []).filter((item) => item.id !== generation.id)];
 db.jobs = db.jobs ?? [];
 db.renders = db.renders ?? [];
 
 await fs.writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
-await fs.writeFile(path.join(demoDir, "generation-request.v1.1.json"), `${JSON.stringify(request, null, 2)}\n`, "utf8");
-await fs.writeFile(path.join(demoDir, "timeline.v1.1.json"), `${JSON.stringify(generation.timeline, null, 2)}\n`, "utf8");
+await fs.writeFile(path.join(demoDir, "generation-request.v1.2.json"), `${JSON.stringify(request, null, 2)}\n`, "utf8");
+await fs.writeFile(path.join(demoDir, "timeline.v1.2.json"), `${JSON.stringify(generation.timeline, null, 2)}\n`, "utf8");
+await fs.writeFile(path.join(demoDir, "structure-template.v1.2.json"), `${JSON.stringify(template, null, 2)}\n`, "utf8");
 
 console.log(`Seeded ${project.name}`);
 console.log(`DB: ${dbPath}`);
 console.log(`Fixtures: ${demoDir}`);
+console.log(`Generation: ${generation.id}`);
