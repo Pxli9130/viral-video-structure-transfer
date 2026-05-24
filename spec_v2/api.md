@@ -162,6 +162,12 @@ Get templates, atoms, editing techniques and counts.
 
 ### GET `/projects/:projectId/knowledge-base/atoms?role=hook&vertical=b2b_marketing_mg`
 
+### GET `/projects/:projectId/knowledge-base/export`
+
+Download the full knowledge base for a project (templates + atoms + editing techniques) as JSON.
+
+### GET `/projects/:projectId/knowledge-base/atoms/export?role=&category=&vertical=`
+
 Search atoms.
 
 ---
@@ -226,16 +232,94 @@ Returns generation detail:
 
 ### POST `/generations/:generationId/revise`
 
-Future natural-language edit.
+Natural-language edit. The AIAdapter (or its heuristic fallback) parses the instruction into a `patchedControls: Partial<GenerationControls>` and an optional `promptAddendum`. By default the API immediately re-runs `generateMigrationResult` with the patched request and returns the new generation; pass `dryRun: true` to only see the planned mutation.
 
 Request:
 
 ```json
 {
-  "instruction": "开头更抓人一些，字幕少一点",
-  "preserveSourceShots": true
+  "instruction": "开头更抓人一些，字幕少一点，CTA 更直接",
+  "dryRun": false
 }
 ```
+
+Response (applied):
+
+```json
+{
+  "ok": true,
+  "data": {
+    "generationId": "generation_<new>",
+    "previousGenerationId": "generation_<old>",
+    "instruction": "...",
+    "summary": "...",
+    "patchedControls": { "hookIntensity": "aggressive", "pace": "fast", "ctaStyle": "direct" },
+    "promptAddendum": null,
+    "applied": true,
+    "generation": { /* full GenerationResult */ }
+  }
+}
+```
+
+Recognised instruction patterns (heuristic): `开头更抓人/aggressive hook → hookIntensity=aggressive+pace=fast`, `减少字幕 → packagingStyle=clean`, `节奏更快 → pace=fast`, `放慢 → pace=slow`, `CTA 更直接 → ctaStyle=direct`, `把商品信息提前 → promptAddendum`. With `AI_PROVIDER=ark_doubao|openai_compatible` the LLM produces the patch directly.
+
+### POST `/generations/:generationId/variants`
+
+Multi-version generation. Produces four named variants (`高点击/高转化/高节奏/高质感`) by mutating `controls` and the prompt with a strategy preset. Pass `labels: ["high_ctr", ...]` to filter.
+
+Request:
+
+```json
+{ "labels": ["high_ctr", "high_conversion"] }
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "baseGenerationId": "generation_<base>",
+    "count": 4,
+    "variants": [
+      {
+        "label": "high_ctr",
+        "displayName": "高点击版",
+        "strategy": "更激进的 hook + 快节奏 + 强 CTA，前 3 秒抓注意力",
+        "generationId": "generation_<variant>",
+        "generation": { /* full GenerationResult */ }
+      }
+    ]
+  }
+}
+```
+
+### POST `/generations/:generationId/scorecard`
+
+Heuristic + optional LLM-judge scorecard with five dimensions (hook, clarity, packaging, rhythm, cta). Pass `skipLlm: true` to force the deterministic heuristic only.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "generationId": "generation_xxx",
+    "overall": 78,
+    "dimensions": [
+      { "name": "hook", "score": 82, "comment": "hook slot matched" },
+      { "name": "clarity", "score": 74, "comment": "5/6 slots matched, 1 weak" },
+      { "name": "packaging", "score": 70, "comment": "3 packaging signals" },
+      { "name": "rhythm", "score": 80, "comment": "avg shot 1.8s vs target 1.8s" },
+      { "name": "cta", "score": 84, "comment": "cta style direct, 8/8 source-backed" }
+    ],
+    "rationale": "Heuristic scorecard: slot fill 83%, source-backed clips 8/8, avg shot 1.88s.",
+    "judge": "heuristic"
+  }
+}
+```
+
+When the configured AI adapter implements `judgeGeneration`, the heuristic and LLM scores are merged 50/50 and `judge` becomes `llm+heuristic`.
 
 ---
 
@@ -253,11 +337,11 @@ Request:
 
 Allowed targets:
 
-- `mock_preview`;
-- `html_preview`;
-- `ffmpeg`;
-- `remotion`;
-- `hyperframes`.
+- `mock_preview` — `MockRenderer`, returns a placeholder RenderOutput; useful for smoke tests.
+- `html_preview` — `HtmlPreviewRenderer`, writes a self-contained HTML preview to `storage/generated/<renderId>.html`.
+- `ffmpeg` — `FFmpegRenderer`, cuts source shots + drawtext overlays + concat into a real 9:16 720p MP4 in `storage/generated/<renderId>.mp4`.
+- `remotion` — `RemotionRenderer`, bundles `apps/api/remotion/index.tsx`, feeds the timeline as `inputProps`, and renders MP4 via `@remotion/renderer`. First call may download a headless Chromium.
+- `hyperframes` — `HyperFramesRenderer`, writes a deterministic JSON manifest at `storage/generated/hyperframes/<renderId>/hyperframes.json` that a future HyperFrames coding-renderer could consume. Status returns `completed`; the manifest path is in `outputPath`.
 
 Response: RenderResult.
 

@@ -265,13 +265,22 @@ Verification:
 
 ## Phase 14 — High-score extensions
 
-- [ ] T14.1 Add keyframe VLM adapter.
-- [ ] T14.2 Add ASR adapter.
-- [ ] T14.3 Add OCR adapter.
-- [ ] T14.4 Add natural-language edit commands.
-- [ ] T14.5 Add multi-version generation.
-- [ ] T14.6 Add quality evaluator.
-- [ ] T14.7 Add Remotion/HyperFrames visual packaging components.
+- [x] T14.1 Add VLM adapters (heuristic keyframe + real Gemini full-video) and a real `OpenAICompatibleAIAdapter` with an `ark_doubao` alias for Volcano Ark Doubao Seed 2.0 lite.
+- [x] T14.2 Add ASR adapter (FasterWhisper, wired into `runAnalysisJob`).
+- [x] T14.3 Add OCR adapter (EasyOCR, wired into `runAnalysisJob`).
+- [x] T14.4 Add natural-language edit commands — `POST /api/generations/:id/revise` now mutates controls / prompt and re-runs generation (heuristic by default, LLM via Ark when configured).
+- [x] T14.5 Add multi-version generation — `POST /api/generations/:id/variants` returns four named versions (`高点击/高转化/高节奏/高质感`) with distinct strategies.
+- [x] T14.6 Add quality evaluator — `POST /api/generations/:id/scorecard` returns five-dimension heuristic scores; optionally merged with LLM judge.
+- [x] T14.7 Add Remotion / HyperFrames renderers — `apps/api/remotion/index.tsx` registers a real composition rendered via `@remotion/renderer`; HyperFrames writes a deterministic JSON manifest as the demo-ready artefact.
+
+---
+
+## Phase 15 — Engineering quality (r3)
+
+- [x] T15.1 Refactor storage behind a `StorageBackend` interface; ship `JsonStorageBackend` + `SqliteStorageBackend` with a `STORAGE_BACKEND` env toggle and round-trip parity tests.
+- [x] T15.2 Lock schema-identity policy: shared schemas stay semantically equivalent to `spec_v2/schemas/*.json` (see `packages/shared/src/schemas.ts` top-of-file comment).
+- [x] T15.3 Add automated E2E test (`apps/api/tests/e2e.test.ts`) covering project create → analyze sample → upload+analyze source → generate → render (html_preview + hyperframes) → export → revise → variants → scorecard → KB export.
+- [x] T15.4 Add Remotion bundle smoke test (gated by `RUN_REMOTION_BUNDLE_TEST=true` to keep normal test runs fast).
 
 ---
 

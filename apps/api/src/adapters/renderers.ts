@@ -26,6 +26,33 @@ function resolveFfmpegBin(): string {
 
 const FFMPEG_BIN = resolveFfmpegBin();
 
+function resolveCjkFontFile(): string | undefined {
+  const explicit = process.env.FFMPEG_FONT_FILE;
+  if (explicit && existsSync(explicit)) return explicit;
+  // Order matters: prefer fonts that ship BOTH CJK + Latin so subtitles like
+  // "便携式加湿器: fits 办公室..." render without tofu boxes for the punctuation/ASCII.
+  // DroidSansFallback is CJK-only and is therefore intentionally NOT used here.
+  const candidates = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/mnt/c/Windows/Fonts/msyh.ttc",
+    "/mnt/c/Windows/Fonts/simhei.ttf",
+    "/mnt/c/Windows/Fonts/NotoSansSC-VF.ttf",
+    "/usr/share/fonts/truetype/arphic/ukai.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
+  ];
+  return candidates.find((path) => existsSync(path));
+}
+
+const CJK_FONT_FILE = resolveCjkFontFile();
+
+function escapeFontFilePath(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
+}
+
+const FONT_FILE_ARG = CJK_FONT_FILE ? `fontfile=${escapeFontFilePath(CJK_FONT_FILE)}:` : "";
+
 export interface AssetPathResolver {
   resolve(assetId: string): string | undefined;
 }
@@ -53,11 +80,13 @@ function runFfmpeg(args: string[]): Promise<{ stdout: string; stderr: string }> 
 }
 
 function escapeDrawText(text: string): string {
+  // FFmpeg filter argument escaping for drawtext text= value, even inside single quotes:
+  // backslash, single quote and the filter-arg-separator colon all need escaping.
   return text
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
     .replace(/'/g, "’")
-    .replace(/\n/g, " ")
+    .replace(/[\r\n]+/g, " ")
     .slice(0, 60);
 }
 
@@ -157,7 +186,7 @@ export class FFmpegRenderer implements RendererAdapter {
           `scale=${options.width}:${options.height}:force_original_aspect_ratio=increase`,
           `crop=${options.width}:${options.height}`,
           options.subtitle
-            ? `drawtext=text='${options.subtitle}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-(text_h*2):box=1:boxcolor=black@0.45:boxborderw=18`
+            ? `drawtext=${FONT_FILE_ARG}text='${options.subtitle}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-(text_h*2):box=1:boxcolor=black@0.45:boxborderw=18`
             : ""
         ]
           .filter(Boolean)
@@ -201,7 +230,7 @@ export class FFmpegRenderer implements RendererAdapter {
     const color = backgroundFor(clip);
     const filter = `color=c=${color}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)},format=yuv420p${
       options.subtitle
-        ? `,drawtext=text='${options.subtitle}':fontcolor=white:fontsize=46:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.45:boxborderw=18`
+        ? `,drawtext=${FONT_FILE_ARG}text='${options.subtitle}':fontcolor=white:fontsize=46:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.45:boxborderw=18`
         : ""
     }`;
     await runFfmpeg([
@@ -228,46 +257,175 @@ export class FFmpegRenderer implements RendererAdapter {
   }
 }
 
+export interface RemotionRendererOptions {
+  generatedDir: string;
+  entryPoint?: string;
+  compositionId?: string;
+}
+
 export class RemotionRenderer implements RendererAdapter {
   readonly target: RendererTarget = "remotion";
+  private bundleLocation: string | null = null;
+  private readonly opts: RemotionRendererOptions;
+
+  constructor(opts: RemotionRendererOptions) {
+    this.opts = opts;
+  }
 
   async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
-    return {
-      renderId: stableId("render_remotion", generationId, timeline.id),
-      generationId,
-      rendererTarget: this.target,
-      status: "failed",
-      error: "RemotionRenderer not yet implemented; placeholder adapter only.",
-      createdAt: nowIso()
-    };
+    const renderId = stableId("render_remotion", generationId, timeline.id);
+    const outputPath = path.join(this.opts.generatedDir, `${renderId}.mp4`);
+    const entryPoint = this.opts.entryPoint ?? path.resolve(process.cwd(), "remotion", "index.tsx");
+
+    if (!existsSync(entryPoint)) {
+      return {
+        renderId,
+        generationId,
+        rendererTarget: this.target,
+        status: "failed",
+        error: `Remotion entry not found at ${entryPoint}; set REMOTION_ENTRY env or place apps/api/remotion/index.tsx.`,
+        createdAt: nowIso()
+      };
+    }
+
+    try {
+      const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
+        import("@remotion/bundler"),
+        import("@remotion/renderer")
+      ]);
+
+      if (!this.bundleLocation) {
+        this.bundleLocation = await bundle({ entryPoint });
+      }
+
+      const inputProps = { timeline };
+      const composition = await selectComposition({
+        serveUrl: this.bundleLocation,
+        id: this.opts.compositionId ?? "ViralReconstruction",
+        inputProps
+      });
+
+      await renderMedia({
+        composition,
+        serveUrl: this.bundleLocation,
+        codec: "h264",
+        outputLocation: outputPath,
+        inputProps,
+        chromiumOptions: { headless: true }
+      });
+
+      return {
+        renderId,
+        generationId,
+        rendererTarget: this.target,
+        status: "completed",
+        outputPath,
+        previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
+        createdAt: nowIso()
+      };
+    } catch (error) {
+      return {
+        renderId,
+        generationId,
+        rendererTarget: this.target,
+        status: "failed",
+        error: `RemotionRenderer failed: ${(error as Error).message}`,
+        createdAt: nowIso()
+      };
+    }
   }
+}
+
+export interface HyperFramesRendererOptions {
+  generatedDir: string;
 }
 
 export class HyperFramesRenderer implements RendererAdapter {
   readonly target: RendererTarget = "hyperframes";
+  private readonly opts: HyperFramesRendererOptions;
+
+  constructor(opts: HyperFramesRendererOptions) {
+    this.opts = opts;
+  }
 
   async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
+    const renderId = stableId("render_hyperframes", generationId, timeline.id);
+    const manifestDir = path.join(this.opts.generatedDir, "hyperframes", renderId);
+    await fs.mkdir(manifestDir, { recursive: true });
+    const manifest = {
+      renderer: "HyperFramesRenderer",
+      version: "stub-v1",
+      generationId,
+      timelineId: timeline.id,
+      aspectRatio: timeline.aspectRatio,
+      durationSec: timeline.durationSec,
+      note:
+        "HyperFrames does not yet have a public SDK; this manifest is what a HyperFrames coding-style renderer would consume.",
+      composition: {
+        fps: timeline.renderPlan?.fps ?? 30,
+        width: timeline.renderPlan?.width ?? (timeline.aspectRatio === "9:16" ? 720 : 1280),
+        height: timeline.renderPlan?.height ?? (timeline.aspectRatio === "9:16" ? 1280 : 720),
+        background: timeline.renderPlan?.background ?? "#0f172a"
+      },
+      sequences: timeline.clips.map((clip) => ({
+        id: clip.id,
+        role: clip.role,
+        from: clip.startSec,
+        duration: clip.durationSec,
+        type: clip.type,
+        subtitle: clip.subtitleText ?? null,
+        visualIntent: clip.visualIntent ?? null,
+        sourceAssetId: clip.sourceAssetId ?? null,
+        sourceShotId: clip.sourceShotId ?? null,
+        layers: clip.layers.map((layer) => ({ kind: layer.kind, text: layer.text ?? null }))
+      })),
+      gapFillStrategies: timeline.fillPlan.map((action) => ({ slotId: action.slotId, strategy: action.strategy }))
+    };
+    const manifestPath = path.join(manifestDir, "hyperframes.json");
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+    const previewHtml = [
+      "<section style=\"font-family:system-ui;padding:16px;background:#0f172a;color:#f8fafc;border-radius:12px;\">",
+      "<h2 style=\"margin-top:0;\">HyperFrames manifest (stub)</h2>",
+      `<p>Render ${renderId} would compile ${manifest.sequences.length} sequences (${timeline.durationSec.toFixed(1)}s) to MP4 via a HyperFrames coding renderer.</p>`,
+      `<pre style=\"background:#1e293b;padding:12px;border-radius:8px;font-size:12px;overflow:auto;\">${JSON.stringify(
+        manifest.composition,
+        null,
+        2
+      )}</pre>`,
+      "</section>"
+    ].join("");
     return {
-      renderId: stableId("render_hyperframes", generationId, timeline.id),
+      renderId,
       generationId,
       rendererTarget: this.target,
-      status: "failed",
-      error: "HyperFramesRenderer not yet implemented; placeholder adapter only.",
+      status: "completed",
+      outputPath: manifestPath,
+      previewHtml,
+      error: undefined,
       createdAt: nowIso()
     };
   }
 }
 
-export function selectRenderer(target: RendererTarget, opts: FFmpegRendererOptions): RendererAdapter {
+export interface RendererSelectOptions extends FFmpegRendererOptions {
+  remotionEntryPoint?: string;
+  remotionCompositionId?: string;
+}
+
+export function selectRenderer(target: RendererTarget, opts: RendererSelectOptions): RendererAdapter {
   switch (target) {
     case "ffmpeg":
       return new FFmpegRenderer(opts);
     case "mock_preview":
       return new MockRenderer();
     case "remotion":
-      return new RemotionRenderer();
+      return new RemotionRenderer({
+        generatedDir: opts.generatedDir,
+        entryPoint: opts.remotionEntryPoint,
+        compositionId: opts.remotionCompositionId
+      });
     case "hyperframes":
-      return new HyperFramesRenderer();
+      return new HyperFramesRenderer({ generatedDir: opts.generatedDir });
     case "html_preview":
     default:
       return new HtmlPreviewRenderer();

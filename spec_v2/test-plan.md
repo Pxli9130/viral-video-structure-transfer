@@ -122,29 +122,27 @@ Expected:
 
 ---
 
-## 8. Unit test matrix
+## 8. Unit + automated test matrix (status as of r3)
 
-| Area | Test | Expected |
-|---|---|---|
-| Schema | valid StructureTemplate | pass |
-| Schema | missing segments | fail readable error |
-| Schema | valid GenerationRequest video_plus_prompt | pass |
-| Schema | missing prompt | fail |
-| Schema | valid Timeline | pass |
-| Project | create project | persisted |
-| Asset | upload asset | saved with role/sourcePolicy |
-| Analysis | mock sample analysis | deterministic result |
-| Analysis | mock source analysis | deterministic shot candidates |
-| Structure | fallback template | hook/body/proof/cta generated |
-| KB | save template | atoms indexed |
-| KB | query hook atoms | returns atoms |
-| Slot matching | product slot + product shot | matched |
-| Slot matching | usage slot + no usage shot | missing |
-| Gap fill | missing hook visual | text_card or crop_zoom |
-| Gap fill | missing CTA | text_card / packaging_overlay |
-| Timeline | generated plan | no unresolved required slot |
-| Renderer | html preview | preview payload generated |
-| Export | timeline export | valid JSON file |
+| Area | Test | Implemented in | Expected |
+|---|---|---|---|
+| Schema | valid StructureTemplate | shared vitest | pass |
+| Schema | missing segments | shared vitest | fail readable error |
+| Schema | valid GenerationRequest video_plus_prompt | shared vitest | pass |
+| Schema | missing prompt | shared vitest | fail |
+| Schema | valid Timeline | shared vitest | pass |
+| Structure | fallback template hook/body/proof/cta | shared vitest | matches expected segments |
+| Structure | VLM enrichment merges into template | shared vitest | name + intent + atoms updated |
+| Slot matching | at least one slot matches mock source | shared vitest | ≥1 matched |
+| Gap fill | missing hook/usage slots produce actions | shared vitest | fillPlan length == gaps length |
+| Gap typing (FR-008) | gapType + Chinese label populated | shared vitest | hook/cta have correct gapType |
+| Gap typing (FR-008) | synthetic voiceover_or_script_missing when source has no transcript/OCR | shared vitest | fires when applicable |
+| Fill strategy (FR-009) | reorder_structure picked when subtitle slot misses but sibling matched | shared vitest | strategy == reorder_structure |
+| Storage | JSON backend round-trips full DB | api vitest | projects/jobs persisted |
+| Storage | SQLite backend round-trips + clears deleted ids | api vitest | matches input on read |
+| E2E | project create → sample analyze → source upload+analyze → generate → render html_preview + hyperframes → export → revise → variants → scorecard → KB export | api vitest | all 201/200, variants returns 4 named versions, scorecard has 5 dimensions |
+| Remotion | bundle TSX entry without errors (gated by `RUN_REMOTION_BUNDLE_TEST`) | api vitest | bundle path returned |
+| Schemas (runtime) | AJV-validate every demo fixture + DB row | `npm run validate:schemas` | 158/0 |
 
 ---
 
@@ -152,21 +150,31 @@ Expected:
 
 MVP passes if:
 
-- [ ] app runs locally;
-- [ ] seeded demo works without AI key;
-- [ ] sample video learning generates valid StructureTemplate;
-- [ ] knowledge base stores atoms;
-- [ ] source video + prompt generates valid Timeline;
-- [ ] missing material triggers gap report;
-- [ ] fill plan resolves missing required slots;
-- [ ] result page shows sample structure, atoms, source mapping, gaps, fill plan, storyboard, preview;
-- [ ] JSON exports are available.
+- [x] app runs locally;
+- [x] seeded demo works without AI key (Mock + Heuristic adapters);
+- [x] sample video learning generates valid StructureTemplate;
+- [x] knowledge base stores atoms;
+- [x] source video + prompt generates valid Timeline;
+- [x] missing material triggers gap report (with FR-008 gapType labels);
+- [x] fill plan resolves missing required slots;
+- [x] result page shows sample structure, atoms, source mapping, gaps, fill plan, storyboard, preview;
+- [x] JSON exports are available (template, timeline, report markdown/json, KB, atoms).
 
 Strong demo passes if:
 
-- [ ] real ffprobe or FFmpeg analysis works on at least one uploaded video;
-- [ ] at least one MP4 or render artifact can be produced;
-- [ ] demo video shows the final product flow.
+- [x] real ffprobe or FFmpeg analysis works on at least one uploaded video;
+- [x] FFmpeg MP4 render artefact produced (latest: `storage/generated/render_mp4_tofpa6.mp4`);
+- [x] Remotion MP4 render path bundled and ready (composition compiles in 4s; renderMedia downloads headless Chromium on first call);
+- [x] HyperFrames JSON manifest produced as deterministic stub artefact;
+- [x] demo video shows the final product flow (recorded outside the repo).
+
+High-score passes (P1 progression, r3) if:
+
+- [x] natural-language revise applies a patch and produces a new generation id;
+- [x] `/variants` returns four named versions (高点击/高转化/高节奏/高质感) with distinct controls;
+- [x] `/scorecard` returns five-dimension scores in 0-100;
+- [x] FR-008 gap report exposes Chinese labels + recommended fill strategies;
+- [x] full E2E `apps/api/tests/e2e.test.ts` is green.
 
 ---
 

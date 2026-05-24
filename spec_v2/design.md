@@ -16,33 +16,45 @@ Project: **Viral Video Structure Transfer Engine / 爆款结构迁移引擎**
 
 ---
 
-## 2. Recommended repo layout
+## 2. Repo layout (as implemented in r3)
 
 ```text
 .
 ├── README.md
-├── specs_v1/
-│   ├── requirements.md
-│   ├── design.md
-│   ├── api.md
-│   ├── tasks.md
-│   ├── test-plan.md
-│   ├── demo-playbook.md
-│   ├── source-alignment.md
-│   └── schemas/
+├── spec_v2/                    # this directory — final spec
+├── spec_v1_1/, specs_v1/       # historical, superseded
 ├── apps/
-│   ├── web/                 # React + Vite + TypeScript
-│   └── api/                 # Node.js + TypeScript + Express/Fastify
+│   ├── web/                    # React + Vite + TypeScript (one-page workspace)
+│   └── api/                    # Node.js + TypeScript + Express
+│       ├── src/
+│       │   ├── server.ts       # Express app + routes + runGeneration helper
+│       │   ├── storage/        # StorageBackend interface + Json + SQLite + DatabaseStore
+│       │   └── adapters/
+│       │       ├── index.ts                # buildAdapterSet, Mock + heuristic wiring
+│       │       ├── openaiCompatible.ts     # real OpenAI-style client (ark_doubao alias)
+│       │       ├── gemini.ts               # real Gemini VLM (inline + Files API)
+│       │       ├── renderers.ts            # FFmpeg + Remotion + HyperFrames + selectRenderer
+│       │       └── condaPython.ts          # conda viral Python subprocess runner
+│       ├── remotion/
+│       │   ├── index.tsx                   # registerRoot + Composition
+│       │   └── ReconstructionRoot.tsx      # the React composition driven by Timeline
+│       └── tests/
+│           ├── e2e.test.ts                 # supertest pipeline E2E
+│           ├── storage.test.ts             # Json/SQLite parity
+│           └── remotion-bundle.test.ts     # gated bundle smoke
 ├── packages/
-│   └── shared/              # shared types, schemas, validation helpers
+│   ├── shared/                 # types, schemas, AJV validators, mock pipeline
+│   └── renderer/               # HtmlPreviewRenderer + MockRenderer (browser-safe)
 ├── storage/
-│   ├── uploads/             # uploaded example/source assets
-│   ├── generated/           # previews, rendered clips, exported JSON
-│   └── db/                  # local JSON or SQLite
+│   ├── uploads/                # uploaded example/source assets
+│   ├── generated/              # previews, rendered MP4s, hyperframes manifests, exported JSON
+│   ├── db/                     # app.json (default) or app.sqlite (when STORAGE_BACKEND=sqlite)
+│   └── demo/                   # seeded fixtures from scripts/seed-demo.mjs
 ├── scripts/
-│   ├── seed-demo.ts
-│   └── validate-schemas.ts
-└── tests/
+│   ├── seed-demo.mjs
+│   ├── validate-schemas.mjs
+│   └── python/                 # ffprobe_metadata, extract_keyframes, asr_faster_whisper, ocr_easyocr
+└── (no separate top-level tests/; api and shared each host vitest tests)
 ```
 
 ---

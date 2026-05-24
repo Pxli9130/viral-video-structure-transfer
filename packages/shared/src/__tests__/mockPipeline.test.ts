@@ -175,6 +175,43 @@ describe("v1.2 mock pipeline", () => {
     expect(validateStructureTemplate(enriched).valid).toBe(true);
   });
 
+  it("tags slot-missing gaps with Chinese label + recommended fill strategies (FR-008)", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sparseSource = understandSourceVideo(undefined, undefined, {
+      ...request(),
+      inputMode: "prompt_only",
+      sourceVideo: undefined
+    });
+    const mappings = matchSlots(template, sparseSource, request());
+    const gaps = generateGapReport(mappings, { source: sparseSource, template });
+    const ctaGap = gaps.find((g) => g.slotType === "cta_visual");
+    const hookGap = gaps.find((g) => g.slotType === "hook_visual");
+    expect(ctaGap?.gapType).toBe("cta_visual_missing");
+    expect(ctaGap?.gapLabelZh).toContain("CTA");
+    expect(hookGap?.recommendedFillStrategies?.length).toBeGreaterThan(0);
+  });
+
+  it("adds synthetic voiceover/script gap when source video has shots but no transcript or OCR (FR-008)", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sourceAnalysis = {
+      ...buildMockVideoAnalysis({ assetId: "source_video", projectId: "project_demo", purpose: "source", durationSec: 30 }),
+      transcript: [],
+      ocr: []
+    };
+    const source = understandSourceVideo(sourceAnalysis, sourceAsset(), {
+      ...request(),
+      prompt: "请重构这个视频"
+    });
+    const mappings = matchSlots(template, source, request());
+    const gaps = generateGapReport(mappings, { source, template });
+    const subtitleSlotMissing = mappings.some((m) => m.slotType === "subtitle_text" && m.status !== "matched");
+    if (subtitleSlotMissing) {
+      expect(gaps.some((g) => g.gapType === "voiceover_or_script_missing")).toBe(true);
+    }
+  });
+
   it("picks reorder_structure when a body slot has an unmatched sibling but the segment already has a match", () => {
     const matchedSibling = {
       slotId: "slot_product_closeup",

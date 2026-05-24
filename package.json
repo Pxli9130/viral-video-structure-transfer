@@ -18,7 +18,9 @@
     "seed:demo": "npm run build --workspace @vvst/shared && node scripts/seed-demo.mjs",
     "demo:seed": "npm run seed:demo",
     "validate:schemas": "npm run build --workspace @vvst/shared && node scripts/validate-schemas.mjs",
-    "test": "npm run test --workspace @vvst/shared",
+    "test": "npm run test --workspace @vvst/shared && npm run test --workspace @vvst/api",
+    "test:unit": "npm run test --workspace @vvst/shared",
+    "test:e2e": "npm run test --workspace @vvst/api",
     "typecheck": "npm run typecheck --workspaces"
   },
   "devDependencies": {

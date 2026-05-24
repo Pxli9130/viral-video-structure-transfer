@@ -40,31 +40,12 @@ import {
 } from "@vvst/shared";
 import { buildAdapterSet, type AdapterSet } from "./adapters/index.js";
 import { selectRenderer, type AssetPathResolver } from "./adapters/renderers.js";
+import { buildDatabaseStore, type Database, emptyDatabase as makeEmptyDatabase } from "./storage/index.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
 
-type Database = {
-  projects: Project[];
-  assets: Asset[];
-  jobs: Job[];
-  analyses: ExampleAnalysis[];
-  templates: TemplateRecord[];
-  atoms: KnowledgeAtom[];
-  generations: GenerationResult[];
-  renders: RenderOutput[];
-};
-
-const emptyDatabase = (): Database => ({
-  projects: [],
-  assets: [],
-  jobs: [],
-  analyses: [],
-  templates: [],
-  atoms: [],
-  generations: [],
-  renders: []
-});
+const emptyDatabase = makeEmptyDatabase;
 
 const VERTICALS: Vertical[] = ["b2b_marketing_mg", "vlog", "talking_head", "beat_cut", "short_drama", "ecommerce"];
 const ASPECT_RATIOS: AspectRatio[] = ["9:16", "16:9", "1:1"];
@@ -88,7 +69,6 @@ const storageRoot = path.resolve(repoRoot, process.env.STORAGE_DIR ?? "storage")
 const uploadDir = path.join(storageRoot, "uploads");
 const generatedDir = path.join(storageRoot, "generated");
 const dbDir = path.join(storageRoot, "db");
-const dbPath = path.join(dbDir, "app.json");
 
 async function ensureStorageDirs(): Promise<void> {
   await fs.mkdir(uploadDir, { recursive: true });
@@ -115,75 +95,8 @@ function parseTags(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function normalizeProject(raw: any): Project {
-  return {
-    id: String(raw.id),
-    name: String(raw.name ?? "Demo Structure Transfer Project"),
-    vertical: pickEnum<Vertical>(raw.vertical, VERTICALS, "b2b_marketing_mg"),
-    aspectRatio: pickEnum<AspectRatio>(raw.aspectRatio, ASPECT_RATIOS, "9:16"),
-    targetDurationSec: toNumber(raw.targetDurationSec ?? (raw.targetDurationMs ? raw.targetDurationMs / 1000 : 15), 15),
-    createdAt: String(raw.createdAt ?? nowIso()),
-    updatedAt: String(raw.updatedAt ?? nowIso())
-  };
-}
-
-function normalizeAsset(raw: any): Asset {
-  return {
-    id: String(raw.id),
-    projectId: String(raw.projectId),
-    role: pickEnum<AssetRole>(raw.role ?? "user_text", ASSET_ROLES, "user_text"),
-    type: (raw.type ?? "text") as AssetType,
-    filename: String(raw.filename ?? raw.originalName ?? "asset"),
-    path: raw.path,
-    mimeType: raw.mimeType ?? raw.metadata?.mimetype,
-    sourcePolicy: pickEnum<SourcePolicy>(raw.sourcePolicy ?? "unknown", SOURCE_POLICIES, "unknown"),
-    text: raw.text,
-    metadata: raw.metadata,
-    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
-    status: raw.status ?? "ready",
-    createdAt: String(raw.createdAt ?? nowIso())
-  };
-}
-
-class JsonStore {
-  async read(): Promise<Database> {
-    await ensureStorageDirs();
-    try {
-      const raw = JSON.parse(await fs.readFile(dbPath, "utf8")) as Partial<Database>;
-      return {
-        projects: (raw.projects ?? []).map(normalizeProject),
-        assets: (raw.assets ?? []).map(normalizeAsset),
-        jobs: raw.jobs ?? [],
-        analyses: raw.analyses ?? [],
-        templates: raw.templates ?? [],
-        atoms: raw.atoms ?? (raw.templates ?? []).flatMap((record) => record.template?.structureAtoms ?? []),
-        generations: raw.generations ?? [],
-        renders: raw.renders ?? []
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        const db = emptyDatabase();
-        await this.write(db);
-        return db;
-      }
-      throw error;
-    }
-  }
-
-  async write(db: Database): Promise<void> {
-    await ensureStorageDirs();
-    await fs.writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
-  }
-
-  async update<T>(updater: (db: Database) => T | Promise<T>): Promise<T> {
-    const db = await this.read();
-    const result = await updater(db);
-    await this.write(db);
-    return result;
-  }
-}
-
-const store = new JsonStore();
+await ensureStorageDirs();
+const store = await buildDatabaseStore({ backend: process.env.STORAGE_BACKEND, storageRoot });
 const adapters: AdapterSet = buildAdapterSet(process.env, generatedDir);
 
 const VIDEO_EXTS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -937,40 +850,52 @@ app.get(
   })
 );
 
-async function handleGeneration(req: Request, res: Response): Promise<void> {
-  const requestValidation = validateGenerationRequest(req.body);
-  if (!requestValidation.valid) {
-    fail(res, 400, "VALIDATION_ERROR", "Invalid generation request", requestValidation.errors);
-    return;
-  }
-  const request = req.body as GenerationRequest;
-  const db = await store.read();
+interface RunGenerationOutcome {
+  generation: GenerationResult;
+  job: Job;
+  analysisRecord?: ExampleAnalysis;
+  templateId: string;
+}
+
+async function runGeneration(
+  db: Database,
+  request: GenerationRequest,
+  options: { variantLabel?: string; analyzerMode?: AnalyzerMode | "auto" } = {}
+): Promise<RunGenerationOutcome> {
   assertFound(db.projects.find((project) => project.id === request.projectId), "Project");
   const templateRecord = selectTemplateForGeneration(db, request);
   const sourceAsset = request.sourceVideo
     ? assertFound(db.assets.find((asset) => asset.id === request.sourceVideo?.assetId), "Source video")
     : undefined;
-  let job = createJob(request.projectId, "generation", { inputMode: request.inputMode, templateId: templateRecord.id, prompt: request.prompt.slice(0, 120) }, [
-    "source_analysis",
-    "slot_matching",
-    "gap_fill",
-    "timeline_generation",
-    "schema_validation"
-  ]);
+  let job = createJob(
+    request.projectId,
+    "generation",
+    {
+      inputMode: request.inputMode,
+      templateId: templateRecord.id,
+      prompt: request.prompt.slice(0, 120),
+      variant: options.variantLabel
+    },
+    ["source_analysis", "slot_matching", "gap_fill", "timeline_generation", "schema_validation"]
+  );
   job = { ...job, status: "running", progress: 5, updatedAt: nowIso() };
 
   let sourceAnalysis: VideoAnalysisResult | undefined;
   let sourceVlm: VLMVideoAnalysis | undefined;
   let analysisRecord: ExampleAnalysis | undefined;
+
   try {
     if (sourceAsset) {
-      const existing = [...db.analyses].reverse().find((analysis) => analysis.assetId === sourceAsset.id && analysis.purpose === "source");
+      const existing = [...db.analyses]
+        .reverse()
+        .find((analysis) => analysis.assetId === sourceAsset.id && analysis.purpose === "source");
       if (existing) {
         sourceAnalysis = existing.video;
         sourceVlm = existing.vlm;
       } else {
-        const purposeMode: AnalyzerMode | "auto" = (req.body.analyzerMode as AnalyzerMode | undefined) ?? "auto";
-        const { analysis, vlm } = await runAnalysisJob(sourceAsset, db.projects.find((project) => project.id === request.projectId)!, "source", purposeMode, {});
+        const purposeMode: AnalyzerMode | "auto" = options.analyzerMode ?? "auto";
+        const project = db.projects.find((item) => item.id === request.projectId)!;
+        const { analysis, vlm } = await runAnalysisJob(sourceAsset, project, "source", purposeMode, {});
         sourceAnalysis = analysis;
         sourceVlm = vlm;
         analysisRecord = {
@@ -986,29 +911,29 @@ async function handleGeneration(req: Request, res: Response): Promise<void> {
     }
     job = advanceJob(job, "source_analysis", "completed");
 
-    const generation = generateMigrationResult({
+    let generation = generateMigrationResult({
       template: templateRecord.template,
       request,
       sourceAsset,
       sourceAnalysis,
       sourceVlm
     });
+    if (options.variantLabel) {
+      const variantId = stableId("generation", request.projectId, request.prompt, options.variantLabel);
+      generation = {
+        ...generation,
+        id: variantId,
+        timeline: { ...generation.timeline, generationId: variantId },
+        migrationExplanation: `[${options.variantLabel}] ${generation.migrationExplanation}`,
+        warnings: [`variant=${options.variantLabel}`, ...generation.warnings]
+      };
+    }
     job = advanceJob(job, "slot_matching", "completed");
     job = advanceJob(job, "gap_fill", "completed");
     job = advanceJob(job, "timeline_generation", "completed");
     job = advanceJob(job, "schema_validation", "completed");
     job = completeJob(job, { generationId: generation.id, timelineId: generation.timeline.id });
-
-    await store.update((draft) => {
-      if (analysisRecord) {
-        draft.analyses = draft.analyses.filter((item) => !(item.assetId === analysisRecord!.assetId && item.purpose === "source"));
-        draft.analyses.push(analysisRecord);
-      }
-      draft.jobs.push(job);
-      draft.generations = draft.generations.filter((item) => item.id !== generation.id);
-      draft.generations.push(generation);
-    });
-    ok(res, { generationId: generation.id, jobId: job.id, status: job.status, generation }, 201);
+    return { generation, job, analysisRecord, templateId: templateRecord.id };
   } catch (error) {
     job = failJob(job, error);
     await store.update((draft) => {
@@ -1016,6 +941,44 @@ async function handleGeneration(req: Request, res: Response): Promise<void> {
     });
     throw error;
   }
+}
+
+async function persistGenerationOutcome(outcome: RunGenerationOutcome): Promise<void> {
+  await store.update((draft) => {
+    if (outcome.analysisRecord) {
+      draft.analyses = draft.analyses.filter(
+        (item) => !(item.assetId === outcome.analysisRecord!.assetId && item.purpose === "source")
+      );
+      draft.analyses.push(outcome.analysisRecord);
+    }
+    draft.jobs.push(outcome.job);
+    draft.generations = draft.generations.filter((item) => item.id !== outcome.generation.id);
+    draft.generations.push(outcome.generation);
+  });
+}
+
+async function handleGeneration(req: Request, res: Response): Promise<void> {
+  const requestValidation = validateGenerationRequest(req.body);
+  if (!requestValidation.valid) {
+    fail(res, 400, "VALIDATION_ERROR", "Invalid generation request", requestValidation.errors);
+    return;
+  }
+  const request = req.body as GenerationRequest;
+  const db = await store.read();
+  const outcome = await runGeneration(db, request, {
+    analyzerMode: req.body.analyzerMode as AnalyzerMode | "auto" | undefined
+  });
+  await persistGenerationOutcome(outcome);
+  ok(
+    res,
+    {
+      generationId: outcome.generation.id,
+      jobId: outcome.job.id,
+      status: outcome.job.status,
+      generation: outcome.generation
+    },
+    201
+  );
 }
 
 app.post("/api/generations", asyncRoute(handleGeneration));
@@ -1033,17 +996,261 @@ app.post(
   "/api/generations/:generationId/revise",
   asyncRoute(async (req, res) => {
     const db = await store.read();
-    const generation = assertFound(db.generations.find((item) => item.id === req.params.generationId), "Generation");
+    const generation = assertFound(
+      db.generations.find((item) => item.id === req.params.generationId),
+      "Generation"
+    );
     const instruction = String(req.body.instruction ?? "");
     if (!instruction) {
       fail(res, 400, "VALIDATION_ERROR", "instruction is required");
       return;
     }
+    const dryRun = req.body.dryRun === true || req.query.dryRun === "true";
     const reviser = adapters.aiAdapter.reviseInstruction;
-    const summary = reviser
+    const llmResult = reviser
       ? await reviser({ generationId: generation.id, instruction })
-      : { summary: `(mock) revision noted: ${instruction}` };
-    ok(res, { generationId: generation.id, instruction, ...summary });
+      : { summary: `(mock) revision noted: ${instruction}`, patchedControls: undefined, promptAddendum: undefined };
+
+    if (dryRun || (!llmResult.patchedControls && !llmResult.promptAddendum)) {
+      ok(res, {
+        generationId: generation.id,
+        instruction,
+        summary: llmResult.summary,
+        patchedControls: llmResult.patchedControls ?? {},
+        promptAddendum: llmResult.promptAddendum ?? null,
+        applied: false
+      });
+      return;
+    }
+
+    const baseRequest = generation.request;
+    const nextRequest: GenerationRequest = {
+      ...baseRequest,
+      controls: {
+        ...(baseRequest.controls ?? {}),
+        ...(llmResult.patchedControls ?? {})
+      },
+      prompt: llmResult.promptAddendum
+        ? `${baseRequest.prompt}\n[revise]: ${llmResult.promptAddendum}`
+        : baseRequest.prompt
+    };
+    const variantLabel = `revise_${Date.now().toString(36)}`;
+    const outcome = await runGeneration(db, nextRequest, { variantLabel });
+    await persistGenerationOutcome(outcome);
+    ok(res, {
+      generationId: outcome.generation.id,
+      previousGenerationId: generation.id,
+      instruction,
+      summary: llmResult.summary,
+      patchedControls: llmResult.patchedControls ?? {},
+      promptAddendum: llmResult.promptAddendum ?? null,
+      applied: true,
+      generation: outcome.generation
+    });
+  })
+);
+
+interface VariantSpec {
+  label: string;
+  displayName: string;
+  strategy: string;
+  controls: Partial<GenerationRequest["controls"]>;
+  promptAddendum?: string;
+}
+
+const VARIANT_PRESETS: VariantSpec[] = [
+  {
+    label: "high_ctr",
+    displayName: "高点击版",
+    strategy: "更激进的 hook + 快节奏 + 强 CTA，前 3 秒抓注意力",
+    controls: { hookIntensity: "aggressive", pace: "fast", ctaStyle: "direct", packagingStyle: "mg_motion" },
+    promptAddendum: "请把最具吸引力的画面/卖点放在前 3 秒，并在结尾给出强 CTA。"
+  },
+  {
+    label: "high_conversion",
+    displayName: "高转化版",
+    strategy: "商品特写多 + 利益点重复 + 直接 CTA",
+    controls: { hookIntensity: "strong", pace: "medium", ctaStyle: "direct", packagingStyle: "bold" },
+    promptAddendum: "请优先展示商品的核心卖点和使用场景，结尾重复利益点和 CTA。"
+  },
+  {
+    label: "high_rhythm",
+    displayName: "高节奏版",
+    strategy: "短镜头 + 硬切转场 + 高密度字幕 + 紧凑结构",
+    controls: { hookIntensity: "strong", pace: "fast", packagingStyle: "mg_motion", ctaStyle: "direct" },
+    promptAddendum: "请保持高节奏：每个镜头 1.5 秒内，硬切转场，字幕密度高。"
+  },
+  {
+    label: "high_quality",
+    displayName: "高质感版",
+    strategy: "节奏更慢 + 包装克制 + 留白构图 + 柔和 CTA",
+    controls: { hookIntensity: "safe", pace: "slow", packagingStyle: "clean", ctaStyle: "soft" },
+    promptAddendum: "请保留留白和呼吸感：节奏放慢、字幕减少、CTA 柔和但清晰。"
+  }
+];
+
+function mutateRequestForVariant(base: GenerationRequest, variant: VariantSpec): GenerationRequest {
+  return {
+    ...base,
+    controls: { ...(base.controls ?? {}), ...variant.controls },
+    prompt: variant.promptAddendum ? `${base.prompt}\n[variant=${variant.label}]: ${variant.promptAddendum}` : base.prompt
+  };
+}
+
+app.post(
+  "/api/generations/:generationId/variants",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const generation = assertFound(
+      db.generations.find((item) => item.id === req.params.generationId),
+      "Generation"
+    );
+    const labels = req.body?.labels;
+    const filter = Array.isArray(labels) ? new Set(labels.map(String)) : null;
+    const presets = filter ? VARIANT_PRESETS.filter((v) => filter.has(v.label)) : VARIANT_PRESETS;
+    if (presets.length === 0) {
+      fail(res, 400, "VALIDATION_ERROR", "No matching variant labels");
+      return;
+    }
+    const variants: Array<{
+      label: string;
+      displayName: string;
+      strategy: string;
+      generationId: string;
+      generation: GenerationResult;
+    }> = [];
+    for (const preset of presets) {
+      const nextRequest = mutateRequestForVariant(generation.request, preset);
+      const outcome = await runGeneration(db, nextRequest, { variantLabel: preset.label });
+      await persistGenerationOutcome(outcome);
+      variants.push({
+        label: preset.label,
+        displayName: preset.displayName,
+        strategy: preset.strategy,
+        generationId: outcome.generation.id,
+        generation: outcome.generation
+      });
+    }
+    ok(res, { baseGenerationId: generation.id, count: variants.length, variants }, 201);
+  })
+);
+
+interface ScorecardDimensionOut {
+  name: string;
+  score: number;
+  comment: string;
+}
+
+interface ScorecardOut {
+  generationId: string;
+  overall: number;
+  dimensions: ScorecardDimensionOut[];
+  rationale: string;
+  judge: "heuristic" | "llm" | "llm+heuristic";
+  warnings?: string[];
+}
+
+function clamp01(value: number): number {
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+function computeHeuristicScorecard(generation: GenerationResult): ScorecardOut {
+  const mapping = generation.slotMapping;
+  const matched = mapping.filter((m) => m.status === "matched").length;
+  const weak = mapping.filter((m) => m.status === "weak_match").length;
+  const missing = mapping.filter((m) => m.status === "missing").length;
+  const total = Math.max(mapping.length, 1);
+
+  const sourceClips = generation.timeline.clips.filter((clip) => clip.type === "video").length;
+  const totalClips = Math.max(generation.timeline.clips.length, 1);
+  const subtitledClips = generation.timeline.clips.filter((clip) => (clip.subtitleText ?? "").trim().length > 0).length;
+  const rhythm = generation.timeline.durationSec / Math.max(totalClips, 1);
+  const targetAvgShot = generation.request.controls?.pace === "slow" ? 3.2 : generation.request.controls?.pace === "medium" ? 2.4 : 1.8;
+  const rhythmDelta = Math.abs(rhythm - targetAvgShot);
+
+  const packagingSpec = generation.timeline.renderPlan?.background ? 1 : 0;
+  const layerKinds = new Set(
+    generation.timeline.clips.flatMap((clip) => clip.layers.map((layer) => layer.kind))
+  );
+  const packagingSignals = ["subtitle", "title_bar", "highlight"].filter((kind) => layerKinds.has(kind as any)).length;
+
+  const hookScore = clamp01(
+    50 +
+      (mapping.find((m) => m.slotRole === "hook")?.status === "matched" ? 30 : 0) +
+      (generation.request.controls?.hookIntensity === "aggressive" ? 15 : 5)
+  );
+  const clarityScore = clamp01(40 + (matched / total) * 50 + (subtitledClips / totalClips) * 10);
+  const packagingScore = clamp01(40 + packagingSignals * 15 + packagingSpec * 10);
+  const rhythmScore = clamp01(100 - rhythmDelta * 25);
+  const ctaScore = clamp01(
+    40 +
+      (mapping.find((m) => m.slotRole === "cta")?.status === "matched" ? 35 : 0) +
+      (generation.request.controls?.ctaStyle === "direct" ? 15 : 5) +
+      (generation.gapReport.some((g) => g.slotId.includes("cta")) ? -20 : 5)
+  );
+  const dimensions: ScorecardDimensionOut[] = [
+    { name: "hook", score: hookScore, comment: `hook slot ${mapping.find((m) => m.slotRole === "hook")?.status ?? "n/a"}` },
+    { name: "clarity", score: clarityScore, comment: `${matched}/${total} slots matched, ${weak} weak, ${missing} missing` },
+    { name: "packaging", score: packagingScore, comment: `${packagingSignals} packaging signals; background=${generation.timeline.renderPlan?.background}` },
+    { name: "rhythm", score: rhythmScore, comment: `avg shot ${rhythm.toFixed(2)}s vs target ${targetAvgShot}s` },
+    { name: "cta", score: ctaScore, comment: `cta style ${generation.request.controls?.ctaStyle ?? "n/a"}, ${sourceClips}/${totalClips} source-backed` }
+  ];
+  const overall = clamp01(
+    dimensions.reduce((sum, dim) => sum + dim.score, 0) / dimensions.length
+  );
+  return {
+    generationId: generation.id,
+    overall,
+    dimensions,
+    rationale: `Heuristic scorecard: slot fill ${Math.round((matched / total) * 100)}%, source-backed clips ${sourceClips}/${totalClips}, avg shot ${rhythm.toFixed(2)}s.`,
+    judge: "heuristic"
+  };
+}
+
+function mergeScorecards(heuristic: ScorecardOut, llm: NonNullable<Awaited<ReturnType<NonNullable<typeof adapters.aiAdapter.judgeGeneration>>>>): ScorecardOut {
+  const byName = new Map(llm.dimensions.map((d) => [d.name, d] as const));
+  const dimensions = heuristic.dimensions.map((dim) => {
+    const judge = byName.get(dim.name);
+    if (!judge) return dim;
+    return {
+      name: dim.name,
+      score: clamp01((dim.score + judge.score) / 2),
+      comment: `H: ${dim.comment} | LLM: ${judge.comment}`
+    };
+  });
+  const overall = clamp01((heuristic.overall + llm.overall) / 2);
+  return {
+    generationId: heuristic.generationId,
+    overall,
+    dimensions,
+    rationale: `${heuristic.rationale} | LLM: ${llm.rationale}`,
+    judge: "llm+heuristic"
+  };
+}
+
+app.post(
+  "/api/generations/:generationId/scorecard",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const generation = assertFound(
+      db.generations.find((item) => item.id === req.params.generationId),
+      "Generation"
+    );
+    const heuristic = computeHeuristicScorecard(generation);
+    const skipLlm = req.body.skipLlm === true || req.query.skipLlm === "true";
+    if (!skipLlm && adapters.aiAdapter.judgeGeneration) {
+      try {
+        const llm = await adapters.aiAdapter.judgeGeneration(generation);
+        if (llm) {
+          ok(res, mergeScorecards(heuristic, llm));
+          return;
+        }
+      } catch (error) {
+        ok(res, { ...heuristic, warnings: [`LLM judge failed: ${(error as Error).message}`] });
+        return;
+      }
+    }
+    ok(res, heuristic);
   })
 );
 
@@ -1107,7 +1314,18 @@ app.post(
     job = { ...job, status: "running", progress: 30, updatedAt: nowIso() };
 
     try {
-      const renderer = selectRenderer(target, { generatedDir, assetResolver: buildAssetResolver(db) });
+      const remotionEntryPoint = process.env.REMOTION_ENTRY?.trim()
+        ? process.env.REMOTION_ENTRY.trim()
+        : path.resolve(repoRoot, "apps", "api", "remotion", "index.tsx");
+      const remotionCompositionId = process.env.REMOTION_COMPOSITION_ID?.trim()
+        ? process.env.REMOTION_COMPOSITION_ID.trim()
+        : "ViralReconstruction";
+      const renderer = selectRenderer(target, {
+        generatedDir,
+        assetResolver: buildAssetResolver(db),
+        remotionEntryPoint,
+        remotionCompositionId
+      });
       let output = await renderer.render({ ...generation.timeline, rendererTarget: target }, generation.id);
       if (target === "html_preview") {
         const renderPath = path.join(generatedDir, `${output.renderId}.html`);
@@ -1154,10 +1372,16 @@ app.use((error: Error & { status?: number; code?: string; details?: unknown }, _
   fail(res, status, code, error.message, (error as HttpError).details ?? error.details);
 });
 
-const port = Number(process.env.APP_PORT ?? 3000);
-await ensureStorageDirs();
-app.listen(port, () => {
-  console.log(`VVST API v1.2 listening on http://localhost:${port}`);
-  console.log(`Storage directory: ${storageRoot}`);
-  console.log(`Adapters → video:${adapters.videoTool.name}, ai:${adapters.aiAdapter.name}, asr:${adapters.asrAdapter.name}, ocr:${adapters.ocrAdapter.name}, vlm:${adapters.vlmAdapter.name}`);
-});
+export { app, store, adapters };
+
+if (process.env.VVST_NO_LISTEN !== "true") {
+  const port = Number(process.env.APP_PORT ?? 3000);
+  await ensureStorageDirs();
+  app.listen(port, () => {
+    console.log(`VVST API v1.2 listening on http://localhost:${port}`);
+    console.log(`Storage directory: ${storageRoot}`);
+    console.log(
+      `Adapters → video:${adapters.videoTool.name}, ai:${adapters.aiAdapter.name}, asr:${adapters.asrAdapter.name}, ocr:${adapters.ocrAdapter.name}, vlm:${adapters.vlmAdapter.name}, storage:${store.backendName}`
+    );
+  });
+}

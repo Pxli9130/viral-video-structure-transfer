@@ -1,3 +1,13 @@
+// Decision (locked 2026-05-23): schemas in this file are kept SEMANTICALLY EQUIVALENT to
+// spec_v2/schemas/*.json rather than byte-identical. Two intentional differences:
+//   1. structure-template uses an inlined knowledgeAtom body here to sidestep AJV's
+//      "duplicate $id" error that fires when both knowledge-atom.schema.json and the
+//      inlined items would carry the same $id at runtime.
+//   2. timeline's rendererInstructions makes additionalProperties: true explicit so that
+//      renderer-specific keys (e.g. drawtext params) round-trip through validation.
+// Both schemas validate identical data; see spec_v2/implementation-status.md §3 for the
+// full rationale and §7 "Known intentional deviations".
+
 export const projectSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "https://viral-video-structure-transfer.local/schemas/project.schema.json",

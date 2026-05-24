@@ -314,6 +314,8 @@ export interface SourceVideoUnderstanding {
   summary: string;
   candidates: ShotCandidate[];
   warnings: string[];
+  transcript?: TranscriptSegment[];
+  ocrText?: string[];
 }
 
 export type SlotMatchStatus = "matched" | "weak_match" | "missing";
@@ -331,12 +333,31 @@ export interface SlotMapping {
   risks: string[];
 }
 
+export type GapCategory =
+  | "hook_visual_missing"
+  | "product_closeup_missing"
+  | "usage_scene_missing"
+  | "comparison_missing"
+  | "cta_visual_missing"
+  | "subtitle_text_missing"
+  | "title_card_missing"
+  | "transition_missing"
+  | "background_missing"
+  | "voiceover_or_script_missing"
+  | "subtitle_density_low";
+
 export interface GapReportItem {
   slotId: string;
   status: SlotMatchStatus;
   severity: "low" | "medium" | "high";
   reason: string;
   impact: string;
+  gapType?: GapCategory;
+  gapLabel?: string;
+  gapLabelZh?: string;
+  recommendedFillStrategies?: FillStrategy[];
+  slotType?: SlotType;
+  slotRole?: SegmentRole;
 }
 
 export interface FillAction {

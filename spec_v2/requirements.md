@@ -197,12 +197,14 @@ The system SHALL detect material gaps and explain their impact.
 
 - Gap report SHALL identify slot type, severity, reason, impact, and recommended remediation.
 - MVP SHALL detect at least:
-  - missing hook visual;
-  - missing product closeup;
-  - missing usage/process visual;
-  - missing comparison/proof visual;
-  - missing CTA visual/text;
-  - insufficient subtitle/script information.
+  - missing hook visual (`hook_visual_missing` / 缺少开头吸引镜头);
+  - missing product closeup (`product_closeup_missing` / 缺少商品特写镜头);
+  - missing usage/process visual (`usage_scene_missing` / 缺少使用过程镜头);
+  - missing comparison/proof visual (`comparison_missing` / 缺少对比镜头);
+  - missing CTA visual/text (`cta_visual_missing` / 缺少结尾 CTA 镜头);
+  - insufficient subtitle/script information (`voiceover_or_script_missing` / 缺少口播或脚本) when source has shots but no ASR/OCR text;
+  - subtitle density low (`subtitle_density_low` / 字幕密度偏低) when transcript exists but no source shot is a strong text-card carrier.
+- Each gap SHALL include `gapType`, `gapLabel`, `gapLabelZh`, and `recommendedFillStrategies` to drive both UI labels and downstream fill selection.
 
 ### FR-009 Gap filling
 
@@ -303,17 +305,17 @@ The project SHALL be locally runnable.
 
 ## 4. P1/P2 requirements
 
-### P1 — high-value additions
+### P1 — high-value additions (status as of r3)
 
-- Real FFmpeg/ffprobe metadata extraction and keyframe extraction.
-- Real FFmpeg clip cutting and concat.
-- ASR with faster-whisper or provider API.
-- VLM on selected keyframes for semantic scene tags.
-- OCR for embedded subtitles/title cards.
-- Remotion renderer for title cards, subtitles, CTA cards, and overlays.
-- Natural-language adjustment commands.
-- Two output variants: high-click and high-conversion.
-- Simple quality evaluator scorecard.
+- ✅ Real FFmpeg/ffprobe metadata extraction and keyframe extraction.
+- ✅ Real FFmpeg clip cutting and concat.
+- ✅ ASR with faster-whisper or provider API (wired into `runAnalysisJob`).
+- ✅ VLM on selected keyframes for semantic scene tags (`KeyframeHeuristicVLMAdapter`) **and** real Gemini full-video understanding (`GeminiVLMAdapter`).
+- ✅ OCR for embedded subtitles/title cards (`EasyOCRAdapter`).
+- ✅ Remotion renderer for title cards, subtitles, CTA cards, and overlays (`apps/api/remotion/` composition bundled via `@remotion/bundler`).
+- ✅ Natural-language adjustment commands (`POST /api/generations/:id/revise` mutates controls + re-runs the pipeline; heuristic by default, LLM via Ark/OpenAI-compatible when wired).
+- ✅ Four output variants instead of two: **高点击版 / 高转化版 / 高节奏版 / 高质感版** via `POST /api/generations/:id/variants`.
+- ✅ Quality evaluator scorecard (`POST /api/generations/:id/scorecard`) with heuristic + optional LLM judge merged 50/50.
 
 ### P2 — advanced additions
 
@@ -333,13 +335,13 @@ The project SHALL be locally runnable.
 
 System SHALL isolate providers through adapters:
 
-- AIAdapter;
-- VLMAdapter;
-- ASRAdapter;
-- OCRAdapter;
-- VideoToolAdapter;
-- RendererAdapter;
-- StorageAdapter.
+- AIAdapter (Mock; OpenAI-compatible; `ark_doubao` alias for Volcano Ark Doubao Seed 2.0 lite — all support `extractStructure`, `reviseInstruction`, `judgeGeneration`).
+- VLMAdapter (Disabled / KeyframeHeuristic / Gemini real video).
+- ASRAdapter (Disabled / FasterWhisper).
+- OCRAdapter (Disabled / EasyOCR).
+- VideoToolAdapter (Mock / FFmpeg).
+- RendererAdapter (HtmlPreview / Mock / FFmpeg / Remotion / HyperFrames).
+- StorageBackend (Json / SQLite) — the API-internal high-level snapshot interface used by `DatabaseStore`. The collection-level `StorageAdapter` interface in `packages/shared/src/adapters.ts` stays as a forward-looking lower-level abstraction.
 
 ### NFR-002 Determinism
 

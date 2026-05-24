@@ -8,6 +8,7 @@ import type {
   EditingTechnique,
   FillAction,
   FillStrategy,
+  GapCategory,
   GapReportItem,
   GenerationRequest,
   GenerationResult,
@@ -29,6 +30,7 @@ import type {
   TimelineClipType,
   TimelineLayer,
   TimelineMappingItem,
+  TranscriptSegment,
   VideoAnalysisResult,
   Vertical
 } from "./types.js";
@@ -567,7 +569,9 @@ export function understandSourceVideo(
     return {
       summary: "No source video was provided; reconstruction will rely on text cards and packaging fill.",
       candidates: [],
-      warnings: ["No source video provided. Preview is storyboard/text-card based."]
+      warnings: ["No source video provided. Preview is storyboard/text-card based."],
+      transcript: [],
+      ocrText: []
     };
   }
   const promptLower = request.prompt.toLowerCase();
@@ -610,7 +614,9 @@ export function understandSourceVideo(
     warnings: [
       ...(analysis.analyzerMode === "mock" ? ["Using deterministic mock source-video analysis."] : []),
       ...(vlm?.materialGapsForNewVideo?.length ? [`VLM flagged gaps: ${vlm.materialGapsForNewVideo.join(", ")}`] : [])
-    ]
+    ],
+    transcript,
+    ocrText
   };
 }
 
@@ -683,20 +689,134 @@ export function matchSlots(
   });
 }
 
-export function generateGapReport(mappings: SlotMapping[]): GapReportItem[] {
-  return mappings
-    .filter((mapping) => mapping.status !== "matched")
-    .map((mapping) => ({
-      slotId: mapping.slotId,
-      status: mapping.status,
-      severity: mapping.status === "missing" ? "high" : "medium",
-      reason: mapping.reason,
-      impact:
-        mapping.status === "missing"
-          ? `${mapping.slotType} has no direct source-video material and must be filled.`
-          : `${mapping.slotType} can be supported by prompt copy but lacks strong source visuals.`
-    }));
+const SLOT_GAP_LABELS: Record<SlotType, { category: GapCategory; en: string; zh: string; strategies: FillStrategy[] }> = {
+  hook_visual: {
+    category: "hook_visual_missing",
+    en: "Opening hook visual is missing",
+    zh: "缺少开头吸引镜头",
+    strategies: ["reuse_with_crop_zoom", "packaging_overlay", "aigc_placeholder"]
+  },
+  product_closeup: {
+    category: "product_closeup_missing",
+    en: "Product closeup visual is missing",
+    zh: "缺少商品特写镜头",
+    strategies: ["reuse_with_crop_zoom", "aigc_placeholder", "text_card"]
+  },
+  usage_scene: {
+    category: "usage_scene_missing",
+    en: "Usage scene visual is missing",
+    zh: "缺少使用过程镜头",
+    strategies: ["reuse_with_crop_zoom", "aigc_placeholder", "text_card"]
+  },
+  comparison: {
+    category: "comparison_missing",
+    en: "Comparison / before-after visual is missing",
+    zh: "缺少对比镜头",
+    strategies: ["text_card", "packaging_overlay", "reorder_structure"]
+  },
+  proof_visual: {
+    category: "comparison_missing",
+    en: "Proof visual is missing",
+    zh: "缺少证据/对比镜头",
+    strategies: ["text_card", "packaging_overlay"]
+  },
+  cta_visual: {
+    category: "cta_visual_missing",
+    en: "Closing CTA visual is missing",
+    zh: "缺少结尾 CTA 镜头",
+    strategies: ["packaging_overlay", "text_card"]
+  },
+  subtitle_text: {
+    category: "subtitle_text_missing",
+    en: "Subtitle / on-screen copy is missing",
+    zh: "缺少字幕文案",
+    strategies: ["text_card", "reorder_structure"]
+  },
+  title_card: {
+    category: "title_card_missing",
+    en: "Title card / 卖点卡片 is missing",
+    zh: "缺少卖点卡片/标题条",
+    strategies: ["text_card", "packaging_overlay"]
+  },
+  transition: {
+    category: "transition_missing",
+    en: "Transition shot is missing",
+    zh: "缺少转场镜头",
+    strategies: ["reorder_structure", "packaging_overlay"]
+  },
+  background: {
+    category: "background_missing",
+    en: "Background / B-roll is missing",
+    zh: "缺少背景/铺垫镜头",
+    strategies: ["reuse_with_crop_zoom", "aigc_placeholder", "reorder_structure"]
+  }
+};
+
+export interface GapReportContext {
+  source?: SourceVideoUnderstanding;
+  template?: StructureTemplate;
 }
+
+export function generateGapReport(mappings: SlotMapping[], context: GapReportContext = {}): GapReportItem[] {
+  const transcript = context.source?.transcript ?? [];
+  const ocrText = context.source?.ocrText ?? [];
+  const hasScript = transcript.some((cue) => (cue.text ?? "").trim().length > 0) || ocrText.length > 0;
+  const subtitleSignals = context.source?.candidates?.filter((c) => c.tags.includes("text_card_candidate")).length ?? 0;
+
+  const slotGaps: GapReportItem[] = mappings
+    .filter((mapping) => mapping.status !== "matched")
+    .map((mapping) => {
+      const meta = SLOT_GAP_LABELS[mapping.slotType] ?? null;
+      const severity: GapReportItem["severity"] = mapping.status === "missing" ? "high" : "medium";
+      return {
+        slotId: mapping.slotId,
+        slotType: mapping.slotType,
+        slotRole: mapping.slotRole,
+        status: mapping.status,
+        severity,
+        reason: mapping.reason,
+        impact:
+          mapping.status === "missing"
+            ? `${meta?.en ?? mapping.slotType + " missing"}; must be filled via 文案/包装/AIGC 补全或结构重排.`
+            : `${meta?.en ?? mapping.slotType} weak; needs packaging or text card support.`,
+        gapType: meta?.category,
+        gapLabel: meta?.en,
+        gapLabelZh: meta?.zh,
+        recommendedFillStrategies: meta?.strategies
+      };
+    });
+
+  const subtitleSlotMissing = slotGaps.some((g) => g.slotType === "subtitle_text" && g.status !== "matched");
+  const hasSourceContext = Boolean(context.source && context.source.assetId);
+  if (hasSourceContext && !hasScript && subtitleSlotMissing) {
+    slotGaps.push({
+      slotId: "synthetic_voiceover_or_script_gap",
+      status: "missing",
+      severity: "high",
+      reason: "Source video has no usable ASR transcript and the template's subtitle slot has no direct material.",
+      impact: "缺少口播或脚本，重构时需依赖 LLM 文案/字幕生成。",
+      gapType: "voiceover_or_script_missing",
+      gapLabel: "Voiceover or script copy is missing",
+      gapLabelZh: "缺少口播或脚本",
+      recommendedFillStrategies: ["text_card", "packaging_overlay"]
+    });
+  } else if (hasSourceContext && hasScript && subtitleSignals === 0) {
+    slotGaps.push({
+      slotId: "synthetic_subtitle_density_gap",
+      status: "weak_match",
+      severity: "low",
+      reason: "Transcript is available but source shots lack subtitle-friendly text card candidates.",
+      impact: "字幕密度偏低，重构时应当主动叠加卖点字幕。",
+      gapType: "subtitle_density_low",
+      gapLabel: "Subtitle density is low",
+      gapLabelZh: "字幕密度偏低",
+      recommendedFillStrategies: ["text_card", "packaging_overlay"]
+    });
+  }
+
+  return slotGaps;
+}
+
 
 interface StrategyContext {
   mapping: SlotMapping;
@@ -933,7 +1053,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
     rendererTarget: "html_preview",
     clips,
     mapping,
-    gapReport: generateGapReport(mappings),
+    gapReport: generateGapReport(mappings, { source, template }),
     fillPlan,
     renderPlan: {
       width: aspectRatio === "9:16" ? 720 : 1280,

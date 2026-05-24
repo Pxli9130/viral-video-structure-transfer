@@ -104,13 +104,34 @@ All providers are isolated behind interfaces in `packages/shared/src/adapters.ts
 | Concern       | Default (mock-friendly)      | Real implementation                                    | Toggle                                |
 |---------------|------------------------------|--------------------------------------------------------|---------------------------------------|
 | Video analysis | `MockVideoToolAdapter`      | `FFmpegVideoToolAdapter` (ffprobe + keyframes)         | `VIDEO_TOOL=mock` or `ffmpeg`         |
-| AI / LLM       | `MockAIAdapter`             | `OpenAICompatibleAIAdapter` (you supply key)           | `AI_PROVIDER=mock` or `openai_compatible` |
+| AI / LLM       | `MockAIAdapter` (heuristic revise) | `OpenAICompatibleAIAdapter` — generic OpenAI-style or Volcano Ark Doubao Seed 2.0 lite (real `extractStructure`, `reviseInstruction`, `judgeGeneration`)         | `AI_PROVIDER=mock` / `openai_compatible` / `ark_doubao` |
 | ASR            | `DisabledASRAdapter`        | `FasterWhisperASRAdapter` via conda viral              | `ASR_PROVIDER=faster_whisper`         |
 | OCR            | `DisabledOCRAdapter`        | `EasyOCRAdapter` via conda viral                       | `OCR_PROVIDER=easyocr`                |
 | VLM            | `DisabledVLMAdapter`        | `KeyframeHeuristicVLMAdapter` (heuristic) **or** `GeminiVLMAdapter` (Google Gemini, real video understanding) | `VLM_PROVIDER=heuristic` or `gemini` |
-| Renderer       | `HtmlPreviewRenderer`       | `FFmpegRenderer`, plus `Remotion`/`HyperFrames` stubs  | per-request `rendererTarget` field    |
+| Renderer       | `HtmlPreviewRenderer`       | `FFmpegRenderer` (real MP4), `RemotionRenderer` (bundles `apps/api/remotion/` + renderMedia), `HyperFramesRenderer` (deterministic JSON manifest stub) | per-request `rendererTarget` field    |
+| Storage        | `JsonStorageBackend` (single JSON file) | `SqliteStorageBackend` (better-sqlite3 with one table per collection) | `STORAGE_BACKEND=json` or `sqlite`    |
 
-`MockRenderer` and the two future renderers (`RemotionRenderer`, `HyperFramesRenderer`) live in `apps/api/src/adapters/renderers.ts` as schema-correct placeholders so the API can already accept their targets.
+`MockRenderer` lives in `apps/api/src/adapters/renderers.ts` alongside the real renderers; both the Remotion entry (`apps/api/remotion/index.tsx`) and the HyperFrames manifest writer are wired so the API returns a usable artefact for every renderer target.
+
+## Enabling the Ark Doubao Seed 2.0 lite LLM (real `extractStructure` + natural-language revise + LLM scoring)
+
+`OpenAICompatibleAIAdapter` speaks the OpenAI-compatible chat-completions protocol. Volcano Engine Ark Doubao Seed 2.0 lite is supported with a dedicated alias:
+
+```bash
+# in your repo-root .env (the assets/ packet ships a contest EP + key — do NOT commit)
+AI_PROVIDER=ark_doubao
+ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3   # default
+ARK_API_KEY=<your_ark_key>
+ARK_MODEL=ep-20260508213828-7ntjl                       # the EP id you were issued
+```
+
+What the LLM does once enabled:
+
+- **`extractStructure`** asks the model for a strict-JSON `TemplateEnrichment` (template name, hook/body/proof/cta intents, 6 atom names, packaging style, rhythm pace, quality rationale) and merges it into the deterministic fallback template. Schema validation is preserved; if the LLM returns bad JSON the fallback runs unchanged.
+- **`reviseInstruction`** turns natural-language edits (e.g. "开头更抓人一些") into `Partial<GenerationControls>` + optional `promptAddendum`. The `/api/generations/:id/revise` endpoint applies the patch and re-runs the pipeline.
+- **`judgeGeneration`** (used by `/api/generations/:id/scorecard`) returns a 0-100 score across hook/clarity/packaging/rhythm/cta which is merged 50/50 with the deterministic heuristic scorecard.
+
+Without a key the heuristic fallbacks still work end-to-end. To use a generic OpenAI-compatible endpoint instead, set `AI_PROVIDER=openai_compatible` and fill the `OPENAI_COMPATIBLE_*` env vars.
 
 ## Enabling Gemini VLM (optional but powerful)
 
@@ -131,14 +152,53 @@ When `VLM_PROVIDER=gemini` is set:
 
 Behind the scenes [apps/api/src/adapters/gemini.ts](apps/api/src/adapters/gemini.ts) sends ≤18 MB files inline as base64 (no async file processing required) and falls back to the Files API + state polling for larger uploads. Failures are caught per-step and surfaced on the analysis row's `warnings`; the rest of the pipeline keeps running on FFmpeg-only data.
 
+## Multi-version, revise, scorecard (P1 进阶能力)
+
+Once you have a generation id (`generation_xxx`) you can drive the post-generation features end-to-end via the API:
+
+```bash
+# 4 named variants in one call (高点击/高转化/高节奏/高质感)
+curl -s -X POST http://localhost:3000/api/generations/$GEN/variants -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
+
+# Natural-language revise (mutates controls + re-runs generation)
+curl -s -X POST http://localhost:3000/api/generations/$GEN/revise -H 'Content-Type: application/json' \
+  -d '{"instruction":"开头更抓人一些，节奏更快，CTA 更直接"}' | python3 -m json.tool
+
+# Scorecard (heuristic + optional LLM judge)
+curl -s -X POST http://localhost:3000/api/generations/$GEN/scorecard -H 'Content-Type: application/json' \
+  -d '{"skipLlm":false}' | python3 -m json.tool
+```
+
+Heuristic revise (without an LLM key) recognises hook intensity, pace, subtitle density, CTA style, and "把商品信息提前" instructions. With `AI_PROVIDER=ark_doubao` the LLM does the parsing instead.
+
+## Running the test suites
+
+```bash
+npm test                # shared 12/12 + api 3/3 (e2e + storage parity)
+npm run test:unit       # shared only
+npm run test:e2e        # full pipeline e2e via supertest (no listen, mock adapters)
+npm run validate:schemas
+# optional: bundle-only smoke for the Remotion entry (no Chromium download)
+cd apps/api && RUN_REMOTION_BUNDLE_TEST=true npx vitest run tests/remotion-bundle.test.ts
+```
+
+## Switching to SQLite storage
+
+```bash
+STORAGE_BACKEND=sqlite npm run dev:api
+```
+
+JSON remains the default. The SQLite backend creates `storage/db/app.sqlite` and stores one table per collection (`projects`, `assets`, `jobs`, `analyses`, `templates`, `atoms`, `generations`, `renders`) with `(id PRIMARY KEY, json TEXT)`. Round-trip is verified by `apps/api/tests/storage.test.ts`.
+
 ## What still needs a human
 
 These items are intentionally left for the user (cost or external setup):
 
-- **Real LLM key**: set `AI_PROVIDER=openai_compatible` + `OPENAI_COMPATIBLE_*` to upgrade structure extraction from the deterministic fallback. Without it the mock writer still produces schema-valid templates.
+- **Volcano Ark Doubao key** (`AI_PROVIDER=ark_doubao` + `ARK_API_KEY` + `ARK_MODEL`): contest assets ship an EP + key — copy them into your local `.env` (kept out of git via `.gitignore`).
+- **Generic OpenAI-compatible key** (`AI_PROVIDER=openai_compatible` + `OPENAI_COMPATIBLE_*`): use this instead if you have a non-Ark endpoint.
 - **Gemini VLM key**: set `VLM_PROVIDER=gemini` + `GEMINI_API_KEY` to enable real video understanding (see section above). Without it, video analysis works via FFmpeg only.
-- **Real Doubao keys**: not wired by default; placeholders exist in `.env.example`.
 - **faster-whisper / easyocr** Python packages: optional, pip install inside `viral` when desired.
+- **Remotion headless Chromium**: the first `rendererTarget=remotion` render auto-downloads a headless Chromium (~150 MB) into `~/.cache/remotion`.
 
 ## Primary vertical
 

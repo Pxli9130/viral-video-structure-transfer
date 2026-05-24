@@ -47,7 +47,17 @@ export interface AIAdapter {
   readonly name: string;
   readonly available: boolean;
   extractStructure(request: StructureExtractionRequest): Promise<StructureTemplate>;
-  reviseInstruction?(input: { generationId: string; instruction: string }): Promise<{ summary: string; patchedControls?: Partial<GenerationRequest["controls"]> }>;
+  reviseInstruction?(input: { generationId: string; instruction: string }): Promise<{
+    summary: string;
+    patchedControls?: Partial<GenerationRequest["controls"]>;
+    promptAddendum?: string;
+  }>;
+  judgeGeneration?(generation: import("./types.js").GenerationResult): Promise<{
+    overall: number;
+    dimensions: Array<{ name: string; score: number; comment: string }>;
+    rationale: string;
+    judge: "heuristic" | "llm" | "llm+heuristic";
+  } | null>;
 }
 
 export interface ASRAdapter {

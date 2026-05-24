@@ -8,17 +8,24 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "test": "echo \"api: covered by shared unit tests for MVP\"",
+    "test": "vitest run",
+    "test:e2e": "vitest run tests/e2e.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@google/genai": "^2.6.0",
+    "@remotion/bundler": "^4.0.341",
+    "@remotion/renderer": "^4.0.341",
     "@vvst/renderer": "0.1.0",
     "@vvst/shared": "0.1.0",
+    "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.341"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

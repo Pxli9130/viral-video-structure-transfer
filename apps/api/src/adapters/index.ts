@@ -21,6 +21,7 @@ import {
 } from "@vvst/shared";
 import { runPython, hasCondaEnv } from "./condaPython.js";
 import { GeminiVLMAdapter } from "./gemini.js";
+import { OpenAICompatibleAIAdapter, heuristicRevise } from "./openaiCompatible.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
@@ -186,35 +187,13 @@ export class MockAIAdapter implements AIAdapter {
   }
 
   async reviseInstruction(input: { generationId: string; instruction: string }) {
-    return {
-      summary: `Mock revise: planned to apply '${input.instruction}' to generation ${input.generationId}.`
-    };
+    const { patchedControls, summary } = heuristicRevise(input.instruction, input.generationId);
+    const { promptAddendum, ...controls } = patchedControls;
+    return { summary, patchedControls: controls, promptAddendum };
   }
 }
 
-export class OpenAICompatibleAIAdapter implements AIAdapter {
-  readonly name = "OpenAICompatibleAIAdapter";
-  readonly available: boolean;
-  private readonly fallback = new MockAIAdapter();
-
-  constructor(private readonly config: { baseUrl?: string; apiKey?: string; model?: string }) {
-    this.available = Boolean(config.baseUrl && config.apiKey && config.model);
-  }
-
-  async extractStructure(request: StructureExtractionRequest): Promise<StructureTemplate> {
-    if (!this.available) {
-      return this.fallback.extractStructure(request);
-    }
-    // Real OpenAI-compatible call would go here. We deliberately leave it as a
-    // schema-validated fallback wrapper so the demo runs without paid keys.
-    // The fallback still returns a deterministic v1.2 StructureTemplate.
-    return this.fallback.extractStructure(request);
-  }
-
-  async reviseInstruction(input: { generationId: string; instruction: string }) {
-    return this.fallback.reviseInstruction!({ generationId: input.generationId, instruction: input.instruction });
-  }
-}
+export { OpenAICompatibleAIAdapter };
 
 export class DisabledASRAdapter implements ASRAdapter {
   readonly name = "DisabledASRAdapter";
@@ -309,14 +288,23 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
   const videoTool = env.VIDEO_TOOL === "mock"
     ? new MockVideoToolAdapter()
     : new FFmpegVideoToolAdapter(generatedDir);
-  const aiProvider = env.AI_PROVIDER ?? "mock";
-  const aiAdapter: AIAdapter = aiProvider === "openai_compatible"
-    ? new OpenAICompatibleAIAdapter({
-        baseUrl: env.OPENAI_COMPATIBLE_BASE_URL,
-        apiKey: env.OPENAI_COMPATIBLE_API_KEY,
-        model: env.OPENAI_COMPATIBLE_MODEL
-      })
-    : new MockAIAdapter();
+  const aiProvider = (env.AI_PROVIDER ?? "mock").toLowerCase();
+  let aiAdapter: AIAdapter;
+  if (aiProvider === "openai_compatible") {
+    aiAdapter = new OpenAICompatibleAIAdapter({
+      baseUrl: env.OPENAI_COMPATIBLE_BASE_URL,
+      apiKey: env.OPENAI_COMPATIBLE_API_KEY,
+      model: env.OPENAI_COMPATIBLE_MODEL
+    });
+  } else if (aiProvider === "ark_doubao") {
+    aiAdapter = new OpenAICompatibleAIAdapter({
+      baseUrl: env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3",
+      apiKey: env.ARK_API_KEY ?? env.OPENAI_COMPATIBLE_API_KEY,
+      model: env.ARK_MODEL ?? env.OPENAI_COMPATIBLE_MODEL
+    });
+  } else {
+    aiAdapter = new MockAIAdapter();
+  }
   const asrAdapter = env.ASR_PROVIDER === "faster_whisper" ? new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" }) : new DisabledASRAdapter();
   const ocrAdapter = env.OCR_PROVIDER === "easyocr" ? new EasyOCRAdapter() : new DisabledOCRAdapter();
   const vlmAdapter =
