@@ -14,6 +14,28 @@ export type SourcePolicy = "user_authorized" | "open_download_or_user_uploaded" 
 export type AnalysisPurpose = "sample" | "source";
 export type AnalyzerMode = "mock" | "ffmpeg" | "ffmpeg_opencv" | "ffmpeg_vlm_asr";
 export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
+export type RibbonSurfaceType = "thin_line" | "wide_band" | "textured_band" | "particle_trail";
+export type RibbonPathFamily = "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
+export type RibbonAxis = "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
+export type RibbonDepthBehavior = "flat" | "perspective_only" | "front_back_crossing" | "occlusion_with_title";
+export type RibbonLayoutRelation = "around_title" | "background_only" | "foreground_sweep" | "border_frame";
+export type RibbonTextRelation = "text_on_ribbon" | "near_ribbon" | "none";
+
+export interface RibbonMotionGeometry {
+  surfaceType: RibbonSurfaceType;
+  pathFamily: RibbonPathFamily;
+  axis: RibbonAxis;
+  depthBehavior: RibbonDepthBehavior;
+  layoutRelation: RibbonLayoutRelation;
+  textRelation: RibbonTextRelation;
+  confidence?: number;
+  evidenceFrames?: number[];
+  turns?: number;
+  radiusX?: number;
+  radiusZ?: number;
+  pitchY?: number;
+}
 
 export type JobType = "analysis" | "template_extraction" | "generation" | "render" | "export";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -151,6 +173,19 @@ export interface VideoAnalysisResult {
   warnings: string[];
   analyzerMode: AnalyzerMode;
   createdAt: string;
+  primaryMotif?: {
+    motif: string;
+    confidence: number;
+    evidence?: Record<string, unknown>;
+  };
+  motifCandidates?: Array<{
+    motif: string;
+    confidence: number;
+    evidence?: Record<string, unknown>;
+  }>;
+  motionGeometry?: {
+    ribbonMotion?: RibbonMotionGeometry;
+  };
 }
 
 export interface RequiredSlot {
@@ -229,6 +264,7 @@ export interface VisualStyleSpec {
   motionAsset?: string;
   colorProgression?: string[];
   typography?: string;
+  ribbonMotion?: RibbonMotionGeometry;
 }
 
 export interface ExcludeSegment {
@@ -305,12 +341,14 @@ export interface GenerationControls {
   packagingStyle?: "clean" | "bold" | "mg_motion";
   ctaStyle?: "soft" | "direct";
   allowAigcPlaceholder?: boolean;
+  creativeMode?: CreativeOutputMode;
 }
 
 export interface GenerationConstraints {
   forbiddenWords?: string[];
   mustMention?: string[];
   noSampleVisualCopy?: boolean;
+  sampleAssetReuse?: "disabled" | "authorized";
 }
 
 export interface GenerationRequest {
@@ -435,7 +473,14 @@ export interface TimelineMappingItem {
 }
 
 export interface MotionAtomSpec {
-  type: "ribbon_orbit" | "3d_ribbon_orbit" | "wide_3d_ribbon_surface" | "ribbon_surface_3d";
+  type:
+    | "ribbon_orbit"
+    | "3d_ribbon_orbit"
+    | "wide_3d_ribbon_surface"
+    | "ribbon_surface_3d"
+    | "true_3d_ribbon_mesh"
+    | "ribbon_mesh_3d"
+    | "parametric_ribbon_surface";
   fulfilledBy: "procedural_generation";
   keywords: string[];
   colorProgression: string[];
@@ -455,6 +500,18 @@ export interface MotionAtomSpec {
   specularHighlight?: boolean;
   shadowOpacity?: number;
   climaxBuild?: boolean;
+  surfaceType?: RibbonSurfaceType;
+  pathFamily?: RibbonPathFamily;
+  axis?: RibbonAxis;
+  depthBehavior?: RibbonDepthBehavior;
+  layoutRelation?: RibbonLayoutRelation;
+  textRelation?: RibbonTextRelation;
+  confidence?: number;
+  evidenceFrames?: number[];
+  turns?: number;
+  radiusX?: number;
+  radiusZ?: number;
+  pitchY?: number;
   startSec: number;
   endSec: number;
 }

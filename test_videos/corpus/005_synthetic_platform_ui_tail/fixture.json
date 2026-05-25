@@ -23,7 +23,18 @@
       }
     ],
     "videoTypeAnyOf": ["other", "motion_graphic_marketing_poster"],
-    "rendererAtomAnyOf": ["wide_3d_ribbon_surface", "packaging_overlay", "text_card"]
+    "rendererAtomAnyOf": ["parametric_ribbon_surface", "packaging_overlay", "text_card"],
+    "renderGates": {
+      "main": { "minBandWidth": 40, "minMotion": 0.012 },
+      "high_ctr": { "minBandWidth": 80, "minMotion": 0.025 },
+      "high_quality": { "minBandWidth": 8, "minMotion": 0.008 }
+    },
+    "vlmJudge": {
+      "preservesMotifMinScore": 0.45,
+      "preservesPhasingMinScore": 0.45,
+      "noCopyMinScore": 0.65,
+      "overallMinScore": 0.50
+    }
   },
   "negativeExpectations": {},
   "skipIf": {

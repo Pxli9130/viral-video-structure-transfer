@@ -16,10 +16,22 @@
     },
     "excludeSegments": [],
     "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
-    "rendererAtomAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d"]
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "renderGates": {
+      "main": { "minBandWidth": 40, "minMotion": 0.012 },
+      "high_ctr": { "minBandWidth": 80, "minMotion": 0.025 },
+      "high_quality": { "minBandWidth": 8, "minMotion": 0.008 }
+    },
+    "vlmJudge": {
+      "preservesMotifMinScore": 0.55,
+      "preservesPhasingMinScore": 0.45,
+      "noCopyMinScore": 0.65,
+      "overallMinScore": 0.55
+    }
   },
   "negativeExpectations": {
-    "primaryMotifNotAnyOf": ["orbit_line_2d", "static_poster", "particle_trail"]
+    "primaryMotifNotAnyOf": ["orbit_line_2d", "static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"]
   },
   "skipIf": {
     "missingVideo": false

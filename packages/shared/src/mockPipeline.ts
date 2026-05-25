@@ -16,6 +16,7 @@ import type {
   MotionAtomSpec,
   PackagingSpec,
   RequiredSlot,
+  RibbonMotionGeometry,
   RhythmSpec,
   SegmentRole,
   ShotCandidate,
@@ -572,10 +573,44 @@ function colorProgressionFromText(text: string | undefined): string[] | undefine
   return colors.length ? colors : undefined;
 }
 
-function visualStyleFromVlm(vlm: VLMVideoAnalysis | undefined): VisualStyleSpec | undefined {
+const DEFAULT_PARAMETRIC_RIBBON: RibbonMotionGeometry = {
+  surfaceType: "wide_band",
+  pathFamily: "planar_orbit",
+  axis: "screen_z",
+  depthBehavior: "perspective_only",
+  layoutRelation: "around_title",
+  textRelation: "text_on_ribbon",
+  confidence: 0.55,
+  evidenceFrames: []
+};
+
+function normaliseRibbonMotionGeometry(input: unknown, fallback: RibbonMotionGeometry = DEFAULT_PARAMETRIC_RIBBON): RibbonMotionGeometry {
+  const raw = (input && typeof input === "object" ? input : {}) as Partial<RibbonMotionGeometry>;
+  const pathFamily = raw.pathFamily ?? fallback.pathFamily;
+  const axis =
+    raw.axis ??
+    (pathFamily === "vertical_helix" ? "screen_y" : pathFamily === "planar_orbit" ? "screen_z" : pathFamily === "horizontal_wave" ? "screen_x" : fallback.axis);
+  return {
+    surfaceType: raw.surfaceType ?? fallback.surfaceType,
+    pathFamily,
+    axis,
+    depthBehavior: raw.depthBehavior ?? fallback.depthBehavior,
+    layoutRelation: raw.layoutRelation ?? fallback.layoutRelation,
+    textRelation: raw.textRelation ?? fallback.textRelation,
+    confidence: raw.confidence ?? fallback.confidence,
+    evidenceFrames: Array.isArray(raw.evidenceFrames) ? raw.evidenceFrames : fallback.evidenceFrames,
+    turns: raw.turns ?? fallback.turns,
+    radiusX: raw.radiusX ?? fallback.radiusX,
+    radiusZ: raw.radiusZ ?? fallback.radiusZ,
+    pitchY: raw.pitchY ?? fallback.pitchY
+  };
+}
+
+function visualStyleFromVlm(vlm: VLMVideoAnalysis | undefined, analysis?: VideoAnalysisResult): VisualStyleSpec | undefined {
   const explicit = vlm?.visualStyle;
   const packaging = vlm?.packaging;
-  if (!explicit && !packaging) return undefined;
+  const analysisRibbonMotion = analysis?.motionGeometry?.ribbonMotion;
+  if (!explicit && !packaging && !analysisRibbonMotion) return undefined;
   const stickers = packaging?.stickers ?? [];
   const motionAsset = explicit?.motionAsset ?? stickers.find((item) => /ribbon|orbit|彩带/i.test(item)) ?? stickers[0];
   return {
@@ -583,7 +618,12 @@ function visualStyleFromVlm(vlm: VLMVideoAnalysis | undefined): VisualStyleSpec 
     layout: explicit?.layout ?? packaging?.titleCards?.[0],
     motionAsset,
     colorProgression: explicit?.colorProgression ?? colorProgressionFromText(packaging?.colorStyle),
-    typography: explicit?.typography ?? packaging?.titleCards?.[0]
+    typography: explicit?.typography ?? packaging?.titleCards?.[0],
+    ribbonMotion: explicit?.ribbonMotion
+      ? normaliseRibbonMotionGeometry(explicit.ribbonMotion)
+      : analysisRibbonMotion
+        ? normaliseRibbonMotionGeometry(analysisRibbonMotion)
+        : undefined
   };
 }
 
@@ -641,7 +681,7 @@ export function buildFallbackTemplate(
     vertical,
     sourceSampleIds: [analysis.assetId],
     videoType: videoTypeFromVlm(vlm, vertical),
-    visualStyle: visualStyleFromVlm(vlm),
+    visualStyle: visualStyleFromVlm(vlm, analysis),
     excludeSegments,
     targetDurationSec: transferableDurationSec(durationSec, excludeSegments),
     segments: buildSegments(vlm),
@@ -832,8 +872,9 @@ function overlapsExcludeSegment(shot: ShotCandidate, segment: NonNullable<Struct
   return shot.endSec > segment.startSec && shot.startSec < segment.endSec;
 }
 
-function isExcludedSampleShot(template: StructureTemplate, source: SourceVideoUnderstanding, shot: ShotCandidate): boolean {
+function isExcludedSampleShot(template: StructureTemplate, source: SourceVideoUnderstanding, shot: ShotCandidate, request: GenerationRequest): boolean {
   if (!source.assetId || !template.sourceSampleIds.includes(source.assetId)) return false;
+  if (request.constraints?.sampleAssetReuse !== "authorized") return true;
   return (template.excludeSegments ?? []).some((segment) => overlapsExcludeSegment(shot, segment));
 }
 
@@ -844,7 +885,7 @@ export function matchSlots(
 ): SlotMapping[] {
   return template.requiredSlots.map((slot) => {
     const preferred = preferredTagForSlot(slot.slotType);
-    const candidateShots = source.candidates.filter((shot) => shot.tags.includes(preferred) && !isExcludedSampleShot(template, source, shot));
+    const candidateShots = source.candidates.filter((shot) => shot.tags.includes(preferred) && !isExcludedSampleShot(template, source, shot, request));
     if (candidateShots.length > 0) {
       const best = candidateShots[0];
       return {
@@ -958,11 +999,17 @@ export interface GapReportContext {
   template?: StructureTemplate;
 }
 
-const RIBBON_MOTIF_PATTERN = /3d[_\s-]*ribbon[_\s-]*orbit|ribbon[_\s-]*orbit|3d\s*彩带|动态\s*彩带/i;
+const RIBBON_MOTIF_PATTERN = /parametric[_\s-]*ribbon[_\s-]*surface|vertical[_\s-]*helix|3d[_\s-]*ribbon[_\s-]*orbit|ribbon[_\s-]*orbit|3d\s*彩带|动态\s*彩带/i;
+
+function ribbonMotionForTemplate(template: StructureTemplate | undefined): RibbonMotionGeometry | undefined {
+  return template?.visualStyle?.ribbonMotion ? normaliseRibbonMotionGeometry(template.visualStyle.ribbonMotion) : undefined;
+}
 
 function hasRibbonOrbitMotif(template: StructureTemplate | undefined): boolean {
   if (!template) return false;
+  if (ribbonMotionForTemplate(template)) return true;
   const haystack = [
+    template.visualStyle?.motionAsset,
     template.packaging.overlayStyle,
     template.packaging.titleCardStyle,
     template.packaging.coverStyle,
@@ -1090,6 +1137,8 @@ export function createFillPlan(
 ): FillAction[] {
   const hasReusableVisual = source.candidates.length > 0;
   const brief = parsePromptToBrief(request);
+  const ribbonAtom = ribbonAtomTypeForRequest(request, template);
+  const ribbonMotion = ribbonMotionForTemplate(template) ?? DEFAULT_PARAMETRIC_RIBBON;
   const mappingsBySegment = new Map<string, SlotMapping[]>();
   for (const m of mappings) {
     const list = mappingsBySegment.get(m.slotRole) ?? [];
@@ -1135,7 +1184,7 @@ export function createFillPlan(
                 : strategy === "reuse_with_crop_zoom"
                   ? { motion: "crop_zoom", fit: "cover" }
                 : strategy === "procedural_generation"
-                  ? { atom: "wide_3d_ribbon_surface", fulfilledBy: "procedural_generation" }
+                  ? { atom: ribbonAtom, fulfilledBy: "procedural_generation", ribbonMotion }
                 : strategy === "aigc_placeholder"
                   ? { aigcPrompt: `Clean vertical MG background for ${brief.productName}` }
                   : { mergeIntoSlotId: mergeIntoClipId, note: "Merge this slot's copy into adjacent matched sibling at render time." }
@@ -1148,18 +1197,41 @@ export function createFillPlan(
     {
       slotId: "synthetic_dynamic_3d_ribbon_asset_gap",
       strategy: "procedural_generation",
-      reason: "dynamic_3d_ribbon_asset -> fulfilled_by_procedural_generation -> wide_3d_ribbon_surface rendered.",
-      targetClipId: stableId("motion_atom", request.projectId, "wide_3d_ribbon_surface"),
+      reason: `dynamic_3d_ribbon_asset -> fulfilled_by_procedural_generation -> ${ribbonAtom} rendered.`,
+      targetClipId: stableId("motion_atom", request.projectId, ribbonAtom),
       rendererInstructions: {
-        atom: "wide_3d_ribbon_surface",
+        atom: ribbonAtom,
         fulfilledBy: "procedural_generation",
-        missingMotif: "dynamic_3d_ribbon_asset"
+        missingMotif: "dynamic_3d_ribbon_asset",
+        ribbonMotion
       }
     }
   ];
 }
 
-function subtitleForSlot(slotType: SlotType, brief: ParsedBrief): string {
+function creativeModeFor(request: GenerationRequest): NonNullable<GenerationRequest["controls"]>["creativeMode"] {
+  return request.controls?.creativeMode ?? "explainable_demo";
+}
+
+function isFinalCreativeMode(request: GenerationRequest): boolean {
+  const mode = creativeModeFor(request);
+  return mode === "final_creative" || mode === "high_fidelity_style";
+}
+
+function polishedPosterCopy(slotType: SlotType, brief: ParsedBrief): string {
+  const title = brief.productName || brief.topic;
+  const cleanTitle = /爆款结构迁移引擎/.test(title) ? "爆款结构迁移引擎" : title;
+  if (slotType === "hook_visual") return cleanTitle;
+  if (slotType === "product_closeup") return "Viral Structure Transfer Engine";
+  if (slotType === "usage_scene") return "Sample Analysis";
+  if (slotType === "subtitle_text" || slotType === "title_card") return "Material Gap";
+  if (slotType === "comparison" || slotType === "proof_visual") return "Video Recomposition";
+  if (slotType === "cta_visual") return brief.cta || "Upload. Analyze. Remix.";
+  return cleanTitle;
+}
+
+function subtitleForSlot(slotType: SlotType, brief: ParsedBrief, request: GenerationRequest): string {
+  if (isFinalCreativeMode(request)) return polishedPosterCopy(slotType, brief);
   if (slotType === "cta_visual") return brief.cta;
   if (slotType === "usage_scene") return `${brief.productName} fits ${brief.targetAudience}`;
   if (slotType === "comparison" || slotType === "proof_visual") return `${brief.sellingPoints[0]} with clearer everyday value`;
@@ -1179,6 +1251,8 @@ function slotsForPace(slotIds: string[], template: StructureTemplate, controls: 
 }
 
 function renderBackgroundForControls(controls: GenerationRequest["controls"] | undefined): string {
+  if (controls?.creativeMode === "high_fidelity_style") return "#f4efe4";
+  if (controls?.creativeMode === "final_creative" && controls?.packagingStyle === "mg_motion") return "#f7f1e8";
   if (controls?.packagingStyle === "clean") return "#f8fafc";
   if (controls?.packagingStyle === "bold") return "#7f1d1d";
   return "#0f172a";
@@ -1196,6 +1270,10 @@ function clipTypeForFill(strategy: FillStrategy | undefined): TimelineClipType {
 const RIBBON_KEYWORDS = ["STRUCTURE", "REMIX", "TIMELINE", "AIGC", "CREATION"];
 const RIBBON_COLORS = ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"];
 
+function ribbonAtomTypeForRequest(_request: GenerationRequest, _template?: StructureTemplate): MotionAtomSpec["type"] {
+  return "parametric_ribbon_surface";
+}
+
 function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, durationSec: number): MotionAtomSpec[] {
   const ribbonAction = fillPlan.find(
     (action) =>
@@ -1203,16 +1281,22 @@ function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, du
       String(action.rendererInstructions?.atom ?? "").includes("ribbon")
   );
   if (!ribbonAction) return [];
+  const highFidelity = request.controls?.creativeMode === "high_fidelity_style";
   const clean = request.controls?.packagingStyle === "clean";
   const aggressive = request.controls?.hookIntensity === "aggressive";
-  const style: MotionAtomSpec["style"] = clean ? "clean_premium" : "mg_motion";
-  const density = clean ? 2 : aggressive ? 5 : 3;
-  const speed = clean ? 0.55 : aggressive ? 1.35 : 0.92;
-  const opacity = clean ? 0.32 : aggressive ? 0.82 : 0.62;
-  const wideSurface = String(ribbonAction.rendererInstructions?.atom ?? "").includes("wide_3d_ribbon_surface");
+  const style: MotionAtomSpec["style"] = clean && !highFidelity ? "clean_premium" : "mg_motion";
+  const density = highFidelity ? 4 : clean ? 2 : aggressive ? 5 : 3;
+  const speed = highFidelity ? 0.82 : clean ? 0.55 : aggressive ? 1.35 : 0.92;
+  const opacity = highFidelity ? 0.74 : clean ? 0.32 : aggressive ? 0.82 : 0.62;
+  const atomType = String(ribbonAction.rendererInstructions?.atom ?? "");
+  const legacyFallback = atomType.includes("ribbon_orbit") && !atomType.includes("3d")
+    ? { ...DEFAULT_PARAMETRIC_RIBBON, surfaceType: "thin_line" as const, depthBehavior: "flat" as const }
+    : DEFAULT_PARAMETRIC_RIBBON;
+  const ribbonMotion = normaliseRibbonMotionGeometry(ribbonAction.rendererInstructions?.ribbonMotion, legacyFallback);
+  const thinRibbon = ribbonMotion.surfaceType === "thin_line";
   return [
     {
-      type: wideSurface ? "wide_3d_ribbon_surface" : "ribbon_orbit",
+      type: "parametric_ribbon_surface",
       fulfilledBy: "procedural_generation",
       keywords: RIBBON_KEYWORDS,
       colorProgression: RIBBON_COLORS,
@@ -1220,18 +1304,30 @@ function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, du
       density,
       speed,
       opacity,
-      bandWidth: clean ? 54 : aggressive ? 104 : 82,
-      edgeWidth: clean ? 10 : aggressive ? 18 : 14,
+      bandWidth: thinRibbon ? (clean ? 8 : 10) : highFidelity ? 122 : clean ? 54 : aggressive ? 104 : 82,
+      edgeWidth: thinRibbon ? 2 : highFidelity ? 20 : clean ? 10 : aggressive ? 18 : 14,
       gradientStops: RIBBON_COLORS,
-      frontLayerCount: clean ? 1 : aggressive ? 3 : 2,
-      backLayerCount: clean ? 1 : aggressive ? 3 : 2,
-      textOnRibbon: true,
-      depthLayering: true,
-      twistIntensity: clean ? 0.28 : aggressive ? 0.78 : 0.56,
-      perspectiveStrength: clean ? 0.22 : aggressive ? 0.68 : 0.48,
+      frontLayerCount: thinRibbon ? 1 : highFidelity ? 3 : clean ? 1 : aggressive ? 3 : 2,
+      backLayerCount: thinRibbon ? 1 : highFidelity ? 2 : clean ? 1 : aggressive ? 3 : 2,
+      textOnRibbon: ribbonMotion.textRelation === "text_on_ribbon",
+      depthLayering: ribbonMotion.depthBehavior === "front_back_crossing" || ribbonMotion.depthBehavior === "occlusion_with_title" || ribbonMotion.depthBehavior === "perspective_only",
+      twistIntensity: thinRibbon ? 0.12 : highFidelity ? 0.82 : clean ? 0.28 : aggressive ? 0.78 : 0.56,
+      perspectiveStrength: thinRibbon ? 0.12 : highFidelity ? 0.74 : clean ? 0.22 : aggressive ? 0.68 : 0.48,
       specularHighlight: true,
-      shadowOpacity: clean ? 0.18 : aggressive ? 0.58 : 0.42,
+      shadowOpacity: thinRibbon ? 0.12 : highFidelity ? 0.38 : clean ? 0.18 : aggressive ? 0.58 : 0.42,
       climaxBuild: true,
+      surfaceType: ribbonMotion.surfaceType,
+      pathFamily: ribbonMotion.pathFamily,
+      axis: ribbonMotion.axis,
+      depthBehavior: ribbonMotion.depthBehavior,
+      layoutRelation: ribbonMotion.layoutRelation,
+      textRelation: ribbonMotion.textRelation,
+      confidence: ribbonMotion.confidence,
+      evidenceFrames: ribbonMotion.evidenceFrames,
+      turns: ribbonMotion.turns ?? (ribbonMotion.pathFamily === "vertical_helix" ? 1.25 : undefined),
+      radiusX: ribbonMotion.radiusX,
+      radiusZ: ribbonMotion.radiusZ,
+      pitchY: ribbonMotion.pitchY,
       startSec: 0,
       endSec: durationSec
     }
@@ -1273,7 +1369,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         ? stableId("clip", generationId, slotId)
         : fillForSlot?.targetClipId ?? stableId("clip", generationId, slotId, "fill");
       const slotType: SlotType = slot?.slotType ?? "background";
-      const subtitle = subtitleForSlot(slotType, brief);
+      const subtitle = subtitleForSlot(slotType, brief, request);
       const durationSec = perSlotDuration;
       const role = segment.role;
       const sourceAssetId = matched ? source.assetId : undefined;
@@ -1387,7 +1483,10 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         pace: request.controls?.pace ?? "fast",
         packagingStyle: request.controls?.packagingStyle ?? "mg_motion",
         hookIntensity: request.controls?.hookIntensity ?? "strong",
-        ctaStyle: request.controls?.ctaStyle ?? "direct"
+        ctaStyle: request.controls?.ctaStyle ?? "direct",
+        creativeMode: request.controls?.creativeMode ?? "explainable_demo",
+        noSampleVisualCopy: request.constraints?.noSampleVisualCopy ?? true,
+        sampleAssetReuse: request.constraints?.sampleAssetReuse ?? "disabled"
       },
       notes: "P0 renderer target is html_preview; FFmpeg/Remotion/HyperFrames available as adapters."
     },

@@ -23,10 +23,36 @@
       }
     ],
     "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
-    "rendererAtomAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d"]
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "ribbonMotion": {
+      "surfaceType": "wide_band",
+      "pathFamily": "vertical_helix",
+      "axis": "screen_y",
+      "depthBehaviorAnyOf": ["front_back_crossing", "occlusion_with_title"],
+      "layoutRelation": "around_title",
+      "textRelation": "text_on_ribbon",
+      "minConfidence": 0.55
+    },
+    "renderGates": {
+      "main": { "minBandWidth": 40, "minMotion": 0.012 },
+      "high_ctr": { "minBandWidth": 80, "minMotion": 0.025 },
+      "high_quality": { "minBandWidth": 8, "minMotion": 0.008 }
+    },
+    "vlmJudge": {
+      "preservesMotifMinScore": 0.55,
+      "preservesPhasingMinScore": 0.45,
+      "noCopyMinScore": 0.65,
+      "overallMinScore": 0.55
+    }
   },
   "negativeExpectations": {
-    "primaryMotifNotAnyOf": ["static_poster", "particle_trail"]
+    "primaryMotifNotAnyOf": ["static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"],
+    "ribbonMotionNot": {
+      "pathFamily": ["planar_orbit"],
+      "axis": ["screen_z"],
+      "surfaceType": ["thin_line"]
+    }
   },
   "skipIf": {
     "missingVideo": true

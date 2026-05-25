@@ -1,0 +1,42 @@
+{
+  "id": "008_synthetic_diagonal_sweep_ribbon",
+  "title": "Synthetic diagonal sweep ribbon surface",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "239ac81060303177d066f62e18923f02cbb5b5165e4802b5d5c99ec740947091",
+    "durationSecRange": [13, 15],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_diagonal_sweep_ribbon"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "ribbonMotion": {
+      "surfaceType": "wide_band",
+      "pathFamily": "diagonal_sweep",
+      "axis": "diagonal",
+      "depthBehaviorAnyOf": ["perspective_only", "front_back_crossing"],
+      "layoutRelationAnyOf": ["foreground_sweep", "around_title"],
+      "textRelationAnyOf": ["text_on_ribbon", "near_ribbon"],
+      "minConfidence": 0.5
+    }
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["orbit_line_2d", "static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"],
+    "ribbonMotionNot": {
+      "pathFamily": ["vertical_helix", "planar_orbit"],
+      "axis": ["screen_y", "screen_z"],
+      "surfaceType": ["thin_line"]
+    }
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

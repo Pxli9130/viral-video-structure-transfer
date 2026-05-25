@@ -11,10 +11,10 @@
  * Usage:
  *   node scripts/vlm-judge-video.mjs \
  *     --input test_videos/marketing.mov \
- *     --output docs/marketing_case_artifacts/ai_challenge_poster_main.mp4 \
+ *     --output docs/artifacts/marketing_case/ai_challenge_poster_main.mp4 \
  *     --expected-motif wide_surface_ribbon_2_5d \
  *     --variant-label main \
- *     --out docs/marketing_case_artifacts/vlm-judge.main.json
+ *     --out docs/artifacts/marketing_case/vlm-judge.main.json
  *
  * Environment:
  *   GEMINI_API_KEY   required; if missing the script exits 0 with status=SKIPPED
@@ -127,17 +127,15 @@ You will see, in this order:
 ${motifLine}
 
 The OUTPUT must NOT directly copy sample frames, text, people, music or branded assets.
-It must transfer the structure: hook / sample-analysis nod / material gap call-out /
-recomposition beat / structure mapping / CTA hold.
+It must transfer structure/style grammar using new topic content and generated/procedural/authorized assets.
 
 Score on 0.0–1.0 for each criterion, then return STRICT minified JSON:
 {
-  "motif_preserved":      <0–1>,   // does the OUTPUT visually echo the SAMPLE's primary motif without copying frames
-  "phases_visible":       <0–1>,   // can you see at least 4 of: ${REQUIRED_PHASES.join(", ")} in OUTPUT
-  "cta_hold_present":     <0–1>,   // is there a clean CTA frame near the end of OUTPUT
-  "no_direct_copy":       <0–1>,   // 1.0 if NO sample text/people/branding is visibly reproduced; 0 if copied
-  "visual_quality":       <0–1>,   // resolution/contrast/legibility of OUTPUT frames
-  "overall":              <0–1>,   // your weighted aggregate, 0.4*motif + 0.2*phases + 0.15*cta + 0.15*no_direct_copy + 0.10*quality
+  "structure_transfer":      <0–1>, // transferred hook/body/climax/CTA rhythm and information hierarchy
+  "sample_style_fidelity":   <0–1>, // visually close to SAMPLE grammar: off-white poster, central title, info anchors, dominant ribbon, clean hold
+  "no_direct_copy":          <0–1>, // 1.0 if NO sample text/people/branding/frames are visibly reproduced; 0 if copied
+  "visual_quality":          <0–1>, // resolution/contrast/legibility/coherent motion of OUTPUT frames
+  "overall":                 <0–1>, // weighted aggregate: 0.30*structure + 0.40*style + 0.20*no_copy + 0.10*quality
   "rationale":            "<≤120 chars, English, what you saw>"
 }
 
@@ -250,13 +248,23 @@ async function main() {
     if (!Number.isFinite(num)) return 0;
     return Math.max(0, Math.min(1, num));
   };
+  const structureTransfer = clamp(scores.structure_transfer ?? scores.phases_visible);
+  const sampleStyleFidelity = clamp(scores.sample_style_fidelity ?? scores.motif_preserved);
+  const noDirectCopy = clamp(scores.no_direct_copy);
+  const visualQuality = clamp(scores.visual_quality);
+  const overall = Number.isFinite(Number(scores.overall))
+    ? clamp(scores.overall)
+    : clamp(structureTransfer * 0.3 + sampleStyleFidelity * 0.4 + noDirectCopy * 0.2 + visualQuality * 0.1);
   const norm = {
-    motif_preserved: clamp(scores.motif_preserved),
-    phases_visible: clamp(scores.phases_visible),
-    cta_hold_present: clamp(scores.cta_hold_present),
-    no_direct_copy: clamp(scores.no_direct_copy),
-    visual_quality: clamp(scores.visual_quality),
-    overall: clamp(scores.overall),
+    structure_transfer: structureTransfer,
+    sample_style_fidelity: sampleStyleFidelity,
+    no_direct_copy: noDirectCopy,
+    visual_quality: visualQuality,
+    overall,
+    // Backward-compatible aliases used by older corpus regression thresholds.
+    motif_preserved: sampleStyleFidelity,
+    phases_visible: structureTransfer,
+    cta_hold_present: structureTransfer,
     rationale: typeof scores.rationale === "string" ? scores.rationale : ""
   };
   if (norm.overall === 0) {

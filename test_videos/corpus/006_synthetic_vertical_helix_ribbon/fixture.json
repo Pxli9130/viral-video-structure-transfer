@@ -1,0 +1,47 @@
+{
+  "id": "006_synthetic_vertical_helix_ribbon",
+  "title": "Synthetic vertical helix ribbon surface",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "409e9603c48665ad004e01ead49f67feaf337c8dd15f71a5810d259a02bd1563",
+    "durationSecRange": [13, 15],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_vertical_helix_ribbon"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "ribbonMotion": {
+      "surfaceType": "wide_band",
+      "pathFamily": "vertical_helix",
+      "axis": "screen_y",
+      "depthBehaviorAnyOf": ["front_back_crossing", "occlusion_with_title"],
+      "layoutRelation": "around_title",
+      "textRelation": "text_on_ribbon",
+      "minConfidence": 0.55
+    },
+    "renderGates": {
+      "main": { "minBandWidth": 40, "minMotion": 0.012 },
+      "high_ctr": { "minBandWidth": 80, "minMotion": 0.025 },
+      "high_quality": { "minBandWidth": 8, "minMotion": 0.008 }
+    }
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["orbit_line_2d", "static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"],
+    "ribbonMotionNot": {
+      "pathFamily": ["planar_orbit", "diagonal_sweep"],
+      "axis": ["screen_z"],
+      "surfaceType": ["thin_line"]
+    }
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

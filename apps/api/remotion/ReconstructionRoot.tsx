@@ -2,7 +2,14 @@ import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 
 interface MotionAtomLike {
-  type: "ribbon_orbit" | "3d_ribbon_orbit" | "wide_3d_ribbon_surface" | "ribbon_surface_3d";
+  type:
+    | "ribbon_orbit"
+    | "3d_ribbon_orbit"
+    | "wide_3d_ribbon_surface"
+    | "ribbon_surface_3d"
+    | "true_3d_ribbon_mesh"
+    | "ribbon_mesh_3d"
+    | "parametric_ribbon_surface";
   fulfilledBy: "procedural_generation";
   keywords: string[];
   colorProgression: string[];
@@ -22,6 +29,18 @@ interface MotionAtomLike {
   specularHighlight?: boolean;
   shadowOpacity?: number;
   climaxBuild?: boolean;
+  surfaceType?: "thin_line" | "wide_band" | "textured_band" | "particle_trail";
+  pathFamily?: "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
+  axis?: "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
+  depthBehavior?: "flat" | "perspective_only" | "front_back_crossing" | "occlusion_with_title";
+  layoutRelation?: "around_title" | "background_only" | "foreground_sweep" | "border_frame";
+  textRelation?: "text_on_ribbon" | "near_ribbon" | "none";
+  confidence?: number;
+  evidenceFrames?: number[];
+  turns?: number;
+  radiusX?: number;
+  radiusZ?: number;
+  pitchY?: number;
   startSec: number;
   endSec: number;
 }
@@ -110,6 +129,9 @@ function hasRibbonAtom(timeline: TimelineLike): boolean {
 
 function clipBackground(role: string, timeline: TimelineLike): string {
   const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
+  const creativeMode = String(timeline.renderPlan?.adapterOptions?.creativeMode ?? "explainable_demo");
+  if (creativeMode === "high_fidelity_style") return "#f4efe4";
+  if (creativeMode === "final_creative" && packagingStyle === "mg_motion") return "#f7f1e8";
   if (packagingStyle === "clean") return "linear-gradient(180deg, #fbfdff 0%, #eef6ff 58%, #f8fafc 100%)";
   if (packagingStyle === "bold") return "linear-gradient(160deg, #7f1d1d 0%, #b91c1c 100%)";
   if (hasRibbonAtom(timeline)) return "radial-gradient(circle at 50% 36%, #263350 0%, #111827 48%, #050816 100%)";
@@ -119,6 +141,10 @@ function clipBackground(role: string, timeline: TimelineLike): string {
 
 function foregroundFor(timeline: TimelineLike): { text: string; muted: string; accent: string; box: string; shadow: string } {
   const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
+  const creativeMode = String(timeline.renderPlan?.adapterOptions?.creativeMode ?? "explainable_demo");
+  if (creativeMode === "high_fidelity_style" || (creativeMode === "final_creative" && packagingStyle === "mg_motion")) {
+    return { text: "#121212", muted: "#2f3440", accent: "#1e40af", box: "rgba(244,239,228,0.74)", shadow: "0 12px 30px rgba(34, 28, 18, 0.18)" };
+  }
   if (packagingStyle === "clean") {
     return { text: "#111827", muted: "#334155", accent: "#0f766e", box: "rgba(255, 255, 255, 0.78)", shadow: "0 6px 24px rgba(15,23,42,0.16)" };
   }
@@ -133,11 +159,34 @@ function ribbonAtomsFor(timeline: TimelineLike): MotionAtomLike[] {
 }
 
 function isRibbonAtom(atom: MotionAtomLike): boolean {
-  return atom.type === "ribbon_orbit" || atom.type === "3d_ribbon_orbit" || atom.type === "wide_3d_ribbon_surface" || atom.type === "ribbon_surface_3d";
+  return (
+    atom.type === "ribbon_orbit" ||
+    atom.type === "3d_ribbon_orbit" ||
+    atom.type === "wide_3d_ribbon_surface" ||
+    atom.type === "ribbon_surface_3d" ||
+    atom.type === "true_3d_ribbon_mesh" ||
+    atom.type === "ribbon_mesh_3d" ||
+    atom.type === "parametric_ribbon_surface"
+  );
 }
 
 function isSurfaceRibbonAtom(atom: MotionAtomLike): boolean {
-  return atom.type === "wide_3d_ribbon_surface" || atom.type === "ribbon_surface_3d";
+  return (
+    atom.type === "wide_3d_ribbon_surface" ||
+    atom.type === "ribbon_surface_3d" ||
+    atom.type === "true_3d_ribbon_mesh" ||
+    atom.type === "ribbon_mesh_3d" ||
+    atom.type === "parametric_ribbon_surface"
+  );
+}
+
+function isMeshRibbonAtom(atom: MotionAtomLike): boolean {
+  return (
+    atom.type === "true_3d_ribbon_mesh" ||
+    atom.type === "ribbon_mesh_3d" ||
+    (atom.type === "parametric_ribbon_surface" &&
+      (atom.depthBehavior === "front_back_crossing" || atom.depthBehavior === "occlusion_with_title"))
+  );
 }
 
 function readableSubtitle(text: string | undefined): string {
@@ -276,12 +325,120 @@ const RibbonOrbitLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: number }>
   );
 };
 
+function legacyPathFamily(atom: MotionAtomLike): NonNullable<MotionAtomLike["pathFamily"]> {
+  if (atom.pathFamily && atom.pathFamily !== "unknown") return atom.pathFamily;
+  if (atom.type === "ribbon_orbit" || atom.type === "3d_ribbon_orbit" || atom.type === "wide_3d_ribbon_surface" || atom.type === "ribbon_surface_3d") {
+    return "planar_orbit";
+  }
+  return "diagonal_sweep";
+}
+
+function pointsToPath(points: Array<[number, number]>): string {
+  return points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+}
+
+function verticalHelixPath(cx: number, top: number, bottom: number, radius: number, turns: number, phase: number, lean: number): string {
+  const points: Array<[number, number]> = [];
+  const steps = 88;
+  for (let step = 0; step <= steps; step += 1) {
+    const p = step / steps;
+    const theta = p * turns * Math.PI * 2 + phase;
+    const y = top + (bottom - top) * p;
+    const depthScale = 0.82 + Math.cos(theta) * 0.13;
+    const x = cx + Math.sin(theta) * radius * depthScale + (p - 0.5) * lean;
+    points.push([x, y]);
+  }
+  return pointsToPath(points);
+}
+
+function horizontalWavePath(left: number, right: number, cy: number, amplitude: number, waves: number, phase: number): string {
+  const points: Array<[number, number]> = [];
+  const steps = 72;
+  for (let step = 0; step <= steps; step += 1) {
+    const p = step / steps;
+    const x = left + (right - left) * p;
+    const y = cy + Math.sin(p * waves * Math.PI * 2 + phase) * amplitude;
+    points.push([x, y]);
+  }
+  return pointsToPath(points);
+}
+
+function spiralInPath(cx: number, cy: number, maxRadius: number, phase: number): string {
+  const points: Array<[number, number]> = [];
+  const steps = 84;
+  for (let step = 0; step <= steps; step += 1) {
+    const p = step / steps;
+    const theta = p * Math.PI * 5.2 + phase;
+    const radius = maxRadius * (1 - p * 0.72);
+    points.push([cx + Math.cos(theta) * radius, cy + Math.sin(theta) * radius * 1.35]);
+  }
+  return pointsToPath(points);
+}
+
+function parametricRibbonPaths(input: {
+  atom: MotionAtomLike;
+  width: number;
+  height: number;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  progress: number;
+  layer: "back" | "front";
+}): string[] {
+  const { atom, width, height, cx, cy, rx, ry, progress, layer } = input;
+  const pathFamily = legacyPathFamily(atom);
+  if (pathFamily === "vertical_helix") {
+    const turns = atom.turns ?? 1.25;
+    const radius = atom.radiusX ?? width * 0.31;
+    const top = height * 0.13;
+    const bottom = height * 0.84;
+    const phase = progress * 0.9 + (layer === "front" ? 0 : Math.PI);
+    return [
+      verticalHelixPath(cx, top, bottom, radius, turns, phase, width * 0.08),
+      verticalHelixPath(cx, top + height * 0.018, bottom - height * 0.012, radius * 0.9, turns, phase + Math.PI, -width * 0.05),
+      verticalHelixPath(cx, top + height * 0.045, bottom - height * 0.04, radius * 0.58, turns * 0.86, phase + Math.PI * 0.5, 0)
+    ];
+  }
+  if (pathFamily === "horizontal_wave" || pathFamily === "wave_loop") {
+    const waves = pathFamily === "wave_loop" ? 2.4 : 1.55;
+    return [
+      horizontalWavePath(width * -0.06, width * 1.06, cy, ry * 0.86, waves, progress * 1.25),
+      horizontalWavePath(width * -0.08, width * 1.08, cy + ry * 0.46, ry * 0.58, waves + 0.45, progress * 1.05 + Math.PI),
+      horizontalWavePath(width * -0.04, width * 1.04, cy - ry * 0.52, ry * 0.48, waves + 0.25, progress * 0.9 + Math.PI * 0.35)
+    ];
+  }
+  if (pathFamily === "spiral_in") {
+    return [
+      spiralInPath(cx, cy, Math.min(width, height) * 0.45, progress * 1.2),
+      spiralInPath(cx, cy, Math.min(width, height) * 0.34, progress * 1.2 + Math.PI),
+      spiralInPath(cx, cy, Math.min(width, height) * 0.24, progress * 1.2 + Math.PI * 0.45)
+    ];
+  }
+  if (pathFamily === "diagonal_sweep") {
+    return [
+      `M ${cx - rx * 0.88} ${cy + ry * 1.02} C ${cx - rx * 0.36} ${cy - ry * 1.66}, ${cx + rx * 0.24} ${cy - ry * 1.14}, ${cx + rx * 0.92} ${cy + ry * 0.88}`,
+      `M ${cx - rx * 0.98} ${cy - ry * 0.48} C ${cx - rx * 0.24} ${cy + ry * 1.7}, ${cx + rx * 0.36} ${cy + ry * 1.15}, ${cx + rx * 1.02} ${cy - ry * 0.78}`,
+      `M ${cx - rx * 0.82} ${cy + ry * 0.2} C ${cx - rx * 0.12} ${cy - ry * 0.85}, ${cx + rx * 0.42} ${cy + ry * 0.86}, ${cx + rx * 0.88} ${cy - ry * 0.16}`
+    ];
+  }
+  return [
+    `M ${cx - rx} ${cy - ry * 0.1} C ${cx - rx * 0.58} ${cy - ry * 1.55}, ${cx + rx * 0.55} ${cy - ry * 1.38}, ${cx + rx} ${cy + ry * 0.02} C ${cx + rx * 0.5} ${cy + ry * 1.42}, ${cx - rx * 0.5} ${cy + ry * 1.45}, ${cx - rx} ${cy - ry * 0.1}`,
+    `M ${cx - rx * 0.92} ${cy + ry * 0.52} C ${cx - rx * 0.18} ${cy - ry * 1.12}, ${cx + rx * 0.22} ${cy + ry * 1.35}, ${cx + rx * 0.98} ${cy - ry * 0.42}`,
+    `M ${cx - rx * 1.05} ${cy - ry * 0.44} C ${cx - rx * 0.38} ${cy + ry * 1.24}, ${cx + rx * 0.46} ${cy - ry * 1.18}, ${cx + rx * 1.04} ${cy + ry * 0.52}`
+  ];
+}
+
 const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: number; layer: "back" | "front" }> = ({ atom, clipStartSec, layer }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const globalSec = clipStartSec + frame / fps;
   if (globalSec < atom.startSec || globalSec > atom.endSec) return null;
 
+  const pathFamily = legacyPathFamily(atom);
+  const mesh = isMeshRibbonAtom(atom);
+  const thin = atom.surfaceType === "thin_line";
+  const verticalHelix = pathFamily === "vertical_helix";
   const clean = atom.style === "clean_premium";
   const colors = atom.gradientStops?.length
     ? atom.gradientStops
@@ -289,24 +446,23 @@ const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: numbe
       ? atom.colorProgression
       : ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"];
   const cx = width / 2;
-  const cy = height * (clean ? 0.44 : 0.46);
-  const rx = width * (clean ? 0.52 : 0.62);
-  const ry = height * (clean ? 0.16 : 0.23);
-  const bandWidth = atom.bandWidth ?? (clean ? 54 : 86);
-  const edgeWidth = atom.edgeWidth ?? Math.max(8, bandWidth * 0.16);
+  const cy = height * (verticalHelix ? 0.48 : mesh ? 0.43 : clean ? 0.44 : 0.46);
+  const rx = atom.radiusX ?? width * (verticalHelix ? 0.32 : mesh ? 0.76 : clean ? 0.52 : 0.62);
+  const ry = height * (verticalHelix ? 0.34 : mesh ? 0.22 : clean ? 0.16 : 0.23);
+  const bandWidth = atom.bandWidth ?? (thin ? 8 : mesh ? 122 : clean ? 54 : 86);
+  const edgeWidth = atom.edgeWidth ?? (thin ? 2 : Math.max(8, bandWidth * 0.16));
   const count = Math.max(1, Math.min(5, Math.round(layer === "front" ? atom.frontLayerCount ?? 2 : atom.backLayerCount ?? 2)));
   const speed = atom.speed * (layer === "front" ? 1.05 : 0.85);
   const baseOpacity = Math.max(0.12, Math.min(0.95, atom.opacity * (layer === "front" ? 0.86 : 0.7)));
   const twist = atom.twistIntensity ?? (clean ? 0.28 : 0.58);
   const perspective = atom.perspectiveStrength ?? (clean ? 0.22 : 0.48);
   const shadowOpacity = atom.shadowOpacity ?? (clean ? 0.18 : 0.42);
-  const progress = globalSec * speed;
-  const climax = atom.climaxBuild ? Math.min(1, Math.max(0.72, globalSec / Math.max(1, atom.endSec - atom.startSec))) : 1;
-  const paths = [
-    `M ${cx - rx} ${cy - ry * 0.1} C ${cx - rx * 0.58} ${cy - ry * 1.55}, ${cx + rx * 0.55} ${cy - ry * 1.38}, ${cx + rx} ${cy + ry * 0.02} C ${cx + rx * 0.5} ${cy + ry * 1.42}, ${cx - rx * 0.5} ${cy + ry * 1.45}, ${cx - rx} ${cy - ry * 0.1}`,
-    `M ${cx - rx * 0.92} ${cy + ry * 0.52} C ${cx - rx * 0.18} ${cy - ry * 1.12}, ${cx + rx * 0.22} ${cy + ry * 1.35}, ${cx + rx * 0.98} ${cy - ry * 0.42}`,
-    `M ${cx - rx * 1.05} ${cy - ry * 0.44} C ${cx - rx * 0.38} ${cy + ry * 1.24}, ${cx + rx * 0.46} ${cy - ry * 1.18}, ${cx + rx * 1.04} ${cy + ry * 0.52}`
-  ];
+  const holdStartSec = Math.max(atom.startSec, atom.endSec - 1.35);
+  const motionSec = mesh && globalSec > holdStartSec ? holdStartSec + (globalSec - holdStartSec) * 0.12 : globalSec;
+  const progress = motionSec * speed;
+  const progressRatio = Math.min(1, Math.max(0, (globalSec - atom.startSec) / Math.max(1, atom.endSec - atom.startSec)));
+  const climax = atom.climaxBuild ? (mesh ? 0.22 + progressRatio * 0.78 : Math.min(1, Math.max(0.72, globalSec / Math.max(1, atom.endSec - atom.startSec)))) : 1;
+  const paths = parametricRibbonPaths({ atom, width, height, cx, cy, rx, ry, progress, layer });
 
   return (
     <AbsoluteFill style={{ pointerEvents: "none", overflow: "hidden" }}>
@@ -330,14 +486,20 @@ const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: numbe
         {Array.from({ length: count }).map((_, index) => {
           const path = paths[index % paths.length];
           const pathId = `surfacePath-${atom.style}-${layer}-${index}`;
-          const rotation = progress * (layer === "front" ? 16 : -10) + index * 27 + (layer === "front" ? 8 : -11);
-          const translateY = Math.sin(progress * 1.5 + index * 0.7) * (clean ? 12 : 34);
-          const scaleX = 1 + Math.sin(progress * 1.1 + index) * perspective * 0.16;
-          const scaleY = 0.9 + Math.cos(progress * 1.25 + index) * perspective * 0.14;
-          const skew = Math.sin(progress * 1.7 + index) * twist * (layer === "front" ? 8 : 5);
-          const dash = clean ? 720 : 620;
-          const gap = clean ? 260 : 190;
-          const dashOffset = -globalSec * (clean ? 82 : 128) * speed - index * 190;
+          const rotation = verticalHelix
+            ? Math.sin(progress * 0.7 + index) * 2.4 + (layer === "front" ? -1.2 : 1.2)
+            : pathFamily === "planar_orbit"
+              ? progress * (layer === "front" ? 14 : -9) + index * 24 + (layer === "front" ? 6 : -8)
+              : mesh
+                ? progress * (layer === "front" ? 5.4 : -4.2) + index * 8 + (layer === "front" ? -7 : 4)
+                : progress * (layer === "front" ? 16 : -10) + index * 27 + (layer === "front" ? 8 : -11);
+          const translateY = verticalHelix ? Math.sin(progress * 0.9 + index) * 6 : Math.sin(progress * 1.5 + index * 0.7) * (mesh ? 20 : clean ? 12 : 34);
+          const scaleX = 1 + Math.sin(progress * 1.1 + index) * perspective * (verticalHelix ? 0.045 : mesh ? 0.12 : 0.16);
+          const scaleY = (verticalHelix ? 1 : mesh ? 0.98 : 0.9) + Math.cos(progress * 1.25 + index) * perspective * (verticalHelix ? 0.035 : mesh ? 0.1 : 0.14);
+          const skew = Math.sin(progress * 1.7 + index) * twist * (verticalHelix ? 2.2 : mesh ? (layer === "front" ? 5 : 3) : layer === "front" ? 8 : 5);
+          const dash = verticalHelix ? 1450 : mesh ? 980 : clean ? 720 : 620;
+          const gap = verticalHelix ? 70 : mesh ? 130 : clean ? 260 : 190;
+          const dashOffset = -motionSec * (verticalHelix ? 42 : mesh ? 68 : clean ? 82 : 128) * speed - index * (verticalHelix ? 62 : mesh ? 80 : 190);
           const surfaceOpacity = baseOpacity * climax * (1 - index * 0.08);
           return (
             <g
@@ -384,7 +546,7 @@ const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: numbe
                   opacity={clean ? 0.22 : 0.34}
                 />
               ) : null}
-              {atom.textOnRibbon && layer === "front" ? (
+              {atom.textOnRibbon && atom.textRelation !== "none" && layer === "front" ? (
                 <text
                   fill="#f8fafc"
                   fontSize={clean ? 15 : 18}
@@ -409,6 +571,9 @@ const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: numbe
 const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }> = ({ clip, timeline }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
+  const creativeMode = String(timeline.renderPlan?.adapterOptions?.creativeMode ?? "explainable_demo");
+  const showDebug = creativeMode === "explainable_demo";
+  const highFidelity = creativeMode === "high_fidelity_style";
   const colors = foregroundFor(timeline);
   const ribbonAtoms = ribbonAtomsFor(timeline);
   const surfaceRibbonAtoms = ribbonAtoms.filter(isSurfaceRibbonAtom);
@@ -419,12 +584,14 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
   const enter = Math.min(1, frame / (fps * 0.4));
   const translateY = (1 - enter) * 80;
   const opacity = enter;
-  const headlineSize = Math.round(Math.min(width, height) * (hasRibbon ? 0.076 : 0.07));
+  const headlineSize = Math.round(Math.min(width, height) * (highFidelity ? 0.112 : hasRibbon ? 0.076 : 0.07));
   const subSize = Math.round(Math.min(width, height) * (hasRibbon ? 0.032 : 0.04));
   const eyebrowSize = Math.round(Math.min(width, height) * 0.024);
-  const mainTitle = hasRibbon ? (clip.role === "cta" ? "Upload. Analyze. Remix." : "爆款结构迁移引擎") : mainTitleFor(clip);
+  const mainTitle = highFidelity ? "爆款结构迁移引擎" : hasRibbon ? (clip.role === "cta" ? "Upload. Analyze. Remix." : "爆款结构迁移引擎") : mainTitleFor(clip);
   const support = supportingLineFor(clip, hasRibbon);
   const bottom = bottomLineFor(clip, hasRibbon);
+  const posterKeywordStack = ["VIRAL", "STRUCTURE", "TRANSFER", "ENGINE"];
+  const posterPhases = ["Sample Analysis", "Material Gap", "Video Recomposition"];
   return (
     <AbsoluteFill
       style={{
@@ -443,8 +610,8 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
       <div
         style={{
           position: "absolute",
-          top: 80,
-          left: 64,
+          top: highFidelity ? 76 : 80,
+          left: highFidelity ? 54 : 64,
           fontSize: eyebrowSize,
           letterSpacing: 0,
           color: colors.accent,
@@ -452,9 +619,9 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
           opacity
         }}
       >
-        {clip.phaseLabel ? clip.phaseLabel : hasRibbon ? "AI FULL-STACK CHALLENGE 2026" : clip.role}
+        {showDebug && clip.phaseLabel ? clip.phaseLabel : hasRibbon ? "AI FULL-STACK CHALLENGE 2026" : clip.role}
       </div>
-      {clip.phaseSubtitle ? (
+      {showDebug && clip.phaseSubtitle ? (
         <div
           style={{
             position: "absolute",
@@ -471,7 +638,7 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
           {clip.phaseSubtitle}
         </div>
       ) : null}
-      {clip.mappingPairs && clip.mappingPairs.length > 0 ? (
+      {showDebug && clip.mappingPairs && clip.mappingPairs.length > 0 ? (
         <div
           style={{
             position: "absolute",
@@ -504,17 +671,87 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
           ))}
         </div>
       ) : null}
+      {highFidelity ? (
+        <>
+          <div
+            style={{
+              position: "absolute",
+              top: 136,
+              left: 54,
+              width: 148,
+              color: "#111827",
+              fontSize: 18,
+              fontWeight: 800,
+              lineHeight: 1.04,
+              textTransform: "uppercase",
+              opacity: 0.86
+            }}
+          >
+            {posterKeywordStack.map((word) => (
+              <div key={word}>{word}</div>
+            ))}
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              top: 74,
+              right: 56,
+              textAlign: "right",
+              color: "#111827",
+              fontSize: 16,
+              fontWeight: 700,
+              lineHeight: 1.3,
+              opacity: 0.74
+            }}
+          >
+            <div>05.25</div>
+            <div>STRUCTURE LAB</div>
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              left: 56,
+              bottom: 70,
+              color: "#111827",
+              fontSize: 18,
+              fontWeight: 700,
+              lineHeight: 1.55,
+              opacity: 0.72
+            }}
+          >
+            <div>2026</div>
+            {posterPhases.map((item) => (
+              <div key={item}>{item}</div>
+            ))}
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              right: 56,
+              bottom: 72,
+              color: "#111827",
+              fontSize: 18,
+              fontWeight: 800,
+              textAlign: "right",
+              opacity: 0.8
+            }}
+          >
+            Upload. Analyze. Remix.
+          </div>
+        </>
+      ) : null}
       <div
         style={{
           position: "absolute",
-          top: hasRibbon ? "30%" : "38%",
-          left: hasRibbon ? 72 : 64,
-          right: hasRibbon ? 72 : 64,
+          top: highFidelity ? "34%" : hasRibbon ? "30%" : "38%",
+          left: highFidelity ? 86 : hasRibbon ? 72 : 64,
+          right: highFidelity ? 86 : hasRibbon ? 72 : 64,
           fontSize: headlineSize,
-          fontWeight: 800,
-          lineHeight: 1.08,
+          fontWeight: highFidelity ? 900 : 800,
+          lineHeight: highFidelity ? 0.96 : 1.08,
           textAlign: hasRibbon ? "center" : "left",
-          textShadow: hasRibbon && !clean ? "0 10px 34px rgba(0,0,0,0.72)" : colors.shadow,
+          color: highFidelity ? "#101113" : colors.text,
+          textShadow: highFidelity ? "0 7px 20px rgba(91, 66, 34, 0.12)" : hasRibbon && !clean ? "0 10px 34px rgba(0,0,0,0.72)" : colors.shadow,
           transform: `translateY(${translateY}px)`,
           opacity
         }}
@@ -524,23 +761,23 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
       <div
         style={{
           position: "absolute",
-          top: hasRibbon ? "43%" : undefined,
+          top: highFidelity ? "50%" : hasRibbon ? "43%" : undefined,
           bottom: hasRibbon ? undefined : 80,
           left: 64,
           right: 64,
-          fontSize: subSize,
+          fontSize: highFidelity ? 28 : subSize,
           fontWeight: hasRibbon ? 700 : 500,
           padding: hasRibbon ? 0 : "12px 24px",
           background: hasRibbon ? "transparent" : colors.box,
           borderRadius: hasRibbon ? 0 : 18,
-          color: colors.muted,
+          color: highFidelity ? "#171717" : colors.muted,
           opacity,
           textAlign: hasRibbon ? "center" : "left"
         }}
       >
         {support}
       </div>
-      {hasRibbon ? (
+      {hasRibbon && !highFidelity ? (
         <>
           <div
             style={{

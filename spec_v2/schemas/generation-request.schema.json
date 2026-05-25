@@ -130,6 +130,13 @@
             "direct"
           ]
         },
+        "creativeMode": {
+          "enum": [
+            "explainable_demo",
+            "final_creative",
+            "high_fidelity_style"
+          ]
+        },
         "allowAigcPlaceholder": {
           "type": "boolean"
         }
@@ -153,6 +160,12 @@
         },
         "noSampleVisualCopy": {
           "type": "boolean"
+        },
+        "sampleAssetReuse": {
+          "enum": [
+            "disabled",
+            "authorized"
+          ]
         }
       },
       "additionalProperties": true

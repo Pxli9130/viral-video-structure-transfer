@@ -4,6 +4,8 @@
 
 The system learns reusable creative structures from high-performing short videos, stores them as a knowledge base of `StructureTemplate` + `KnowledgeAtom`, and applies them to a new source video plus a user prompt to produce a reconstructed short-video plan, browser preview, and (when FFmpeg is available) an MP4 demo.
 
+For the current implementation state, architecture, usage, artifact layout, and tooling, see [Current Project Guide](./CURRENT_PROJECT_GUIDE.md).
+
 ## Spec v1.2 documents
 
 - [Requirements](./spec_v2/requirements.md)

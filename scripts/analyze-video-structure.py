@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -68,15 +69,35 @@ MOTIF_ONTOLOGY = {
     },
 }
 
+RIBBON_MOTION_ONTOLOGY = {
+    "surfaceType": ["thin_line", "wide_band", "textured_band", "particle_trail"],
+    "pathFamily": ["vertical_helix", "planar_orbit", "diagonal_sweep", "horizontal_wave", "spiral_in", "wave_loop", "unknown"],
+    "axis": ["screen_y", "screen_z", "screen_x", "diagonal", "unknown"],
+    "depthBehavior": ["flat", "perspective_only", "front_back_crossing", "occlusion_with_title"],
+    "layoutRelation": ["around_title", "background_only", "foreground_sweep", "border_frame"],
+    "textRelation": ["text_on_ribbon", "near_ribbon", "none"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
+def resolve_tool(name: str) -> str:
+    conda_base = os.environ.get("CONDA_BASE", "/home/pxli/anaconda3")
+    conda_env = os.environ.get("VIRAL_CONDA_ENV", "viral")
+    candidate = Path(conda_base) / "envs" / conda_env / "bin" / name
+    if candidate.exists():
+        return str(candidate)
+    found = shutil.which(name)
+    if found:
+        return found
+    raise RuntimeError(f"{name} not found on PATH and not found in conda env {conda_env}")
+
+
 def run(cmd: list[str]) -> str:
-    if shutil.which(cmd[0]) is None:
-        raise RuntimeError(f"{cmd[0]} not found on PATH")
+    cmd = [resolve_tool(cmd[0]), *cmd[1:]]
     completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return completed.stdout
 
@@ -288,6 +309,194 @@ def band_width_estimate(frames: list[tuple[float, np.ndarray]]) -> int:
     return int(np.percentile(widths, 90))
 
 
+def saturated_mask(frame: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    return ((hsv[:, :, 1] > 80) & (hsv[:, :, 2] > 90)).astype(np.uint8)
+
+
+def sign_changes(values: list[float]) -> int:
+    if len(values) < 4:
+        return 0
+    diffs = np.diff(np.array(values, dtype=np.float64))
+    diffs = diffs[np.abs(diffs) > 1.5]
+    if len(diffs) < 2:
+        return 0
+    signs = np.sign(diffs)
+    return int(np.sum(signs[1:] != signs[:-1]))
+
+
+def ribbon_frame_stats(frames: list[tuple[float, np.ndarray]]) -> list[dict]:
+    stats = []
+    for time_sec, frame in frames:
+        mask = saturated_mask(frame)
+        h, w = mask.shape[:2]
+        ys, xs = np.where(mask > 0)
+        ratio = float(len(xs)) / float(max(1, h * w))
+        if len(xs) < max(40, int(h * w * 0.002)):
+            continue
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        bbox_w = max(1, x1 - x0 + 1)
+        bbox_h = max(1, y1 - y0 + 1)
+        row_centers: list[float] = []
+        sample_rows = np.linspace(y0, y1, 72).astype(int)
+        for row in sample_rows:
+            row_xs = np.where(mask[row, :] > 0)[0]
+            if len(row_xs) >= 3:
+                row_centers.append(float(np.mean(row_xs)))
+        row_std = float(np.std(row_centers)) / w if row_centers else 0.0
+        row_sign_changes = sign_changes(row_centers)
+        coords = np.column_stack((xs, ys)).astype(np.float32)
+        if len(coords) > 4000:
+            coords = coords[np.linspace(0, len(coords) - 1, 4000).astype(int)]
+        orientation_deg = 0.0
+        if len(coords) >= 8:
+            centered = coords - coords.mean(axis=0)
+            cov = np.cov(centered, rowvar=False)
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            vec = eigvecs[:, int(np.argmax(eigvals))]
+            orientation_deg = float(np.degrees(np.arctan2(vec[1], vec[0])))
+            if orientation_deg > 90:
+                orientation_deg -= 180
+            if orientation_deg < -90:
+                orientation_deg += 180
+        stats.append({
+            "timeSec": time_sec,
+            "ratio": ratio,
+            "bbox": [round(x0 / w, 4), round(y0 / h, 4), round(x1 / w, 4), round(y1 / h, 4)],
+            "center": [round(float(xs.mean()) / w, 4), round(float(ys.mean()) / h, 4)],
+            "bboxWidth": round(bbox_w / w, 4),
+            "bboxHeight": round(bbox_h / h, 4),
+            "verticalCoverage": round(len(np.unique(ys)) / h, 4),
+            "horizontalCoverage": round(len(np.unique(xs)) / w, 4),
+            "rowCenterStd": round(row_std, 4),
+            "rowSignChanges": row_sign_changes,
+            "orientationDeg": round(orientation_deg, 2),
+        })
+    return stats
+
+
+def classify_ribbon_motion_geometry(
+    frames: list[tuple[float, np.ndarray]],
+    foreground_curve: list[dict],
+    band_width: int,
+    layout_stability: float,
+    edge_density_avg: float,
+) -> dict | None:
+    stats = ribbon_frame_stats(frames)
+    fg_peak = max((row["ratio"] for row in foreground_curve), default=0.0)
+    if fg_peak < 0.006 and band_width < 6:
+        return None
+
+    if band_width >= 40 or fg_peak >= 0.05:
+        surface_type = "wide_band"
+    elif edge_density_avg > 0.05 and band_width >= 24:
+        surface_type = "textured_band"
+    else:
+        surface_type = "thin_line"
+
+    if not stats:
+        return {
+            "surfaceType": surface_type,
+            "pathFamily": "unknown",
+            "axis": "unknown",
+            "depthBehavior": "flat" if surface_type == "thin_line" else "perspective_only",
+            "layoutRelation": "background_only",
+            "textRelation": "none",
+            "confidence": 0.2,
+            "evidenceFrames": [],
+        }
+
+    centers_x = np.array([row["center"][0] for row in stats], dtype=float)
+    centers_y = np.array([row["center"][1] for row in stats], dtype=float)
+    avg_vcov = float(np.mean([row["verticalCoverage"] for row in stats]))
+    avg_hcov = float(np.mean([row["horizontalCoverage"] for row in stats]))
+    avg_bbox_w = float(np.mean([row["bboxWidth"] for row in stats]))
+    avg_bbox_h = float(np.mean([row["bboxHeight"] for row in stats]))
+    avg_row_std = float(np.mean([row["rowCenterStd"] for row in stats]))
+    avg_sign_changes = float(np.mean([row["rowSignChanges"] for row in stats]))
+    median_abs_angle = float(np.median([abs(row["orientationDeg"]) for row in stats]))
+    center_x_range = float(centers_x.max() - centers_x.min()) if len(centers_x) else 0.0
+    center_y_range = float(centers_y.max() - centers_y.min()) if len(centers_y) else 0.0
+
+    path_family = "unknown"
+    axis = "unknown"
+    confidence = 0.45
+    vertical_helix_signal = (
+        surface_type in ("wide_band", "textured_band")
+        and (
+            (avg_vcov >= 0.48 and avg_row_std >= 0.075 and avg_sign_changes >= 1.0 and center_x_range >= 0.18)
+            or (avg_vcov >= 0.65 and median_abs_angle >= 75 and avg_sign_changes >= 4.0)
+        )
+    )
+    planar_orbit_signal = avg_hcov >= 0.35 and (
+        surface_type == "thin_line" or (avg_bbox_w >= avg_bbox_h * 1.22 and avg_vcov <= 0.58 and center_y_range <= 0.14)
+    )
+    if surface_type == "thin_line":
+        path_family = "planar_orbit"
+        axis = "screen_z"
+        confidence = 0.58 + min(0.2, avg_hcov * 0.16)
+    elif vertical_helix_signal:
+        path_family = "vertical_helix"
+        axis = "screen_y"
+        confidence = 0.58 + min(0.25, avg_row_std) + min(0.12, avg_vcov * 0.12)
+    elif planar_orbit_signal:
+        path_family = "planar_orbit"
+        axis = "screen_z"
+        confidence = 0.58 + min(0.2, avg_hcov * 0.16)
+    elif avg_hcov >= 0.62 and avg_vcov <= 0.42 and (center_y_range >= 0.035 or median_abs_angle < 18):
+        path_family = "horizontal_wave"
+        axis = "screen_x"
+        confidence = 0.58 + min(0.2, avg_hcov * 0.18)
+    elif 18 <= median_abs_angle <= 72 and avg_bbox_w >= 0.48 and avg_bbox_h >= 0.22:
+        path_family = "diagonal_sweep"
+        axis = "diagonal"
+        confidence = 0.58 + min(0.2, median_abs_angle / 180)
+    else:
+        path_family = "planar_orbit" if surface_type != "particle_trail" else "unknown"
+        axis = "screen_z" if path_family == "planar_orbit" else "unknown"
+        confidence = 0.48
+
+    depth_behavior = "flat"
+    if surface_type in ("wide_band", "textured_band"):
+        if path_family == "vertical_helix":
+            depth_behavior = "front_back_crossing" if layout_stability < 0.72 else "occlusion_with_title"
+        elif path_family in ("planar_orbit", "diagonal_sweep", "spiral_in"):
+            depth_behavior = "perspective_only"
+    layout_relation = "around_title" if path_family in ("vertical_helix", "planar_orbit") else "foreground_sweep"
+    text_relation = "text_on_ribbon" if surface_type != "thin_line" and fg_peak >= 0.05 else "near_ribbon" if path_family != "unknown" else "none"
+    evidence_frames = [round(float(row["timeSec"]), 2) for row in sorted(stats, key=lambda row: row["ratio"], reverse=True)[:3]]
+
+    result = {
+        "surfaceType": surface_type,
+        "pathFamily": path_family,
+        "axis": axis,
+        "depthBehavior": depth_behavior,
+        "layoutRelation": layout_relation,
+        "textRelation": text_relation,
+        "confidence": round(min(0.92, confidence), 3),
+        "evidenceFrames": sorted(evidence_frames),
+        "turns": 1.25 if path_family == "vertical_helix" else None,
+        "radiusX": 260 if path_family == "vertical_helix" else None,
+        "radiusZ": 160 if path_family == "vertical_helix" else None,
+        "pitchY": 960 if path_family == "vertical_helix" else None,
+        "cvEvidence": {
+            "avgVerticalCoverage": round(avg_vcov, 4),
+            "avgHorizontalCoverage": round(avg_hcov, 4),
+            "avgBboxWidth": round(avg_bbox_w, 4),
+            "avgBboxHeight": round(avg_bbox_h, 4),
+            "avgRowCenterStd": round(avg_row_std, 4),
+            "avgRowSignChanges": round(avg_sign_changes, 3),
+            "medianAbsOrientationDeg": round(median_abs_angle, 2),
+            "centerXRange": round(center_x_range, 4),
+            "centerYRange": round(center_y_range, 4),
+            "foregroundPeak": round(fg_peak, 4),
+            "bandWidthEstimate": int(band_width),
+        },
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
 def detect_platform_tail(frames: list[tuple[float, np.ndarray]], duration_sec: float) -> dict | None:
     """Mark a tail segment when the final ~10% of frames flips palette or layout."""
     if len(frames) < 6:
@@ -482,6 +691,7 @@ def build_analysis_payload(
     edge_density_avg: float,
     band_width: int,
     motif_candidates: list[dict],
+    ribbon_motion: dict | None,
     platform_tail: dict | None,
 ) -> dict:
     duration = metadata["durationSec"]
@@ -535,7 +745,11 @@ def build_analysis_payload(
         "platformTailCandidate": platform_tail,
         "motifCandidates": motif_candidates,
         "primaryMotif": primary_motif,
-        "ontology": MOTIF_ONTOLOGY,
+        "motionGeometry": {"ribbonMotion": ribbon_motion} if ribbon_motion else {},
+        "ontology": {
+            **MOTIF_ONTOLOGY,
+            "ribbon_motion": RIBBON_MOTION_ONTOLOGY,
+        },
     }
 
 
@@ -568,6 +782,13 @@ def main() -> int:
     layout_stability = central_layout_stability(frames)
     edge_density_avg = edge_density(frames)
     band_width = band_width_estimate(frames)
+    ribbon_motion = classify_ribbon_motion_geometry(
+        frames=frames,
+        foreground_curve=foreground,
+        band_width=band_width,
+        layout_stability=layout_stability,
+        edge_density_avg=edge_density_avg,
+    )
     platform_tail = detect_platform_tail(frames, metadata["durationSec"])
     motifs = classify_motifs(
         motion_curve=motion,
@@ -589,6 +810,7 @@ def main() -> int:
         edge_density_avg=edge_density_avg,
         band_width=band_width,
         motif_candidates=motifs,
+        ribbon_motion=ribbon_motion,
         platform_tail=platform_tail,
     )
     out_path = Path(args.out)
@@ -597,6 +819,7 @@ def main() -> int:
     print(
         f"wrote {out_path} duration={metadata['durationSec']}s shots={len(shots)} "
         f"motifs={[(m['motif'], m['confidence']) for m in motifs[:3]]} "
+        f"ribbon_motion={ribbon_motion.get('pathFamily') if ribbon_motion else 'none'} "
         f"exclude_segments={len(payload['excludeSegments'])}"
     )
     return 0

@@ -20,7 +20,11 @@
   },
   "negativeExpectations": {
     "primaryMotifNotAnyOf": ["wide_surface_ribbon_2_5d", "orbit_line_2d", "textured_3d_band", "particle_trail"],
-    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d"]
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d", "parametric_ribbon_surface"],
+    "ribbonMotionNot": {
+      "pathFamily": ["vertical_helix", "planar_orbit", "diagonal_sweep"],
+      "surfaceType": ["wide_band"]
+    }
   },
   "skipIf": {
     "missingVideo": false

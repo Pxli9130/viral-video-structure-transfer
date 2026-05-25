@@ -2,11 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { marketingArtifactDir as artifactDir, rel, repoRoot } from "./artifact-paths.mjs";
 
-const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(moduleDir, "..");
-const artifactDir = path.join(repoRoot, "docs", "marketing_case_artifacts");
 const frameDir = path.join(artifactDir, "ribbon_diag_frames");
 const inputVideo = path.join(repoRoot, "test_videos", "marketing.mov");
 const outputs = [
@@ -28,10 +25,6 @@ const requiredFiles = [
   path.join(repoRoot, "apps", "api", "remotion", "ReconstructionRoot.tsx"),
   path.join(repoRoot, "packages", "shared", "src", "mockPipeline.ts")
 ];
-
-function rel(file) {
-  return path.relative(repoRoot, file);
-}
 
 function run(command, args, label) {
   const result = spawnSync(command, args, { encoding: "utf8" });
@@ -233,8 +226,8 @@ Generated: ${diagnosis.generatedAt}
 
 ## Generated Files
 
-- JSON: \`docs/marketing_case_artifacts/ribbon_motif_diagnosis.json\`
-- Report: \`docs/marketing_case_artifacts/ribbon_motif_diagnosis.md\`
+- JSON: \`${rel(path.join(artifactDir, "ribbon_motif_diagnosis.json"))}\`
+- Report: \`${rel(path.join(artifactDir, "ribbon_motif_diagnosis.md"))}\`
 - Comparison sheet: [ribbon_comparison_sheet.png](ribbon_comparison_sheet.png)
 
 ## Verdict

@@ -62,6 +62,94 @@
         },
         "typography": {
           "type": "string"
+        },
+        "ribbonMotion": {
+          "type": "object",
+          "required": [
+            "surfaceType",
+            "pathFamily",
+            "axis",
+            "depthBehavior",
+            "layoutRelation",
+            "textRelation"
+          ],
+          "properties": {
+            "surfaceType": {
+              "enum": [
+                "thin_line",
+                "wide_band",
+                "textured_band",
+                "particle_trail"
+              ]
+            },
+            "pathFamily": {
+              "enum": [
+                "vertical_helix",
+                "planar_orbit",
+                "diagonal_sweep",
+                "horizontal_wave",
+                "spiral_in",
+                "wave_loop",
+                "unknown"
+              ]
+            },
+            "axis": {
+              "enum": [
+                "screen_y",
+                "screen_z",
+                "screen_x",
+                "diagonal",
+                "unknown"
+              ]
+            },
+            "depthBehavior": {
+              "enum": [
+                "flat",
+                "perspective_only",
+                "front_back_crossing",
+                "occlusion_with_title"
+              ]
+            },
+            "layoutRelation": {
+              "enum": [
+                "around_title",
+                "background_only",
+                "foreground_sweep",
+                "border_frame"
+              ]
+            },
+            "textRelation": {
+              "enum": [
+                "text_on_ribbon",
+                "near_ribbon",
+                "none"
+              ]
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "evidenceFrames": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "turns": {
+              "type": "number"
+            },
+            "radiusX": {
+              "type": "number"
+            },
+            "radiusZ": {
+              "type": "number"
+            },
+            "pitchY": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": true

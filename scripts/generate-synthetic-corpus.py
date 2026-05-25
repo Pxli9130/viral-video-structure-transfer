@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -28,9 +29,20 @@ HEIGHT = 1280
 FPS = 30
 
 
+def resolve_tool(name: str) -> str:
+    conda_base = os.environ.get("CONDA_BASE", "/home/pxli/anaconda3")
+    conda_env = os.environ.get("VIRAL_CONDA_ENV", "viral")
+    candidate = Path(conda_base) / "envs" / conda_env / "bin" / name
+    if candidate.exists():
+        return str(candidate)
+    found = shutil.which(name)
+    if found:
+        return found
+    raise RuntimeError(f"{name} not on PATH and not found in conda env {conda_env}")
+
+
 def run(cmd: list[str]) -> None:
-    if shutil.which(cmd[0]) is None:
-        raise RuntimeError(f"{cmd[0]} not on PATH")
+    cmd = [resolve_tool(cmd[0]), *cmd[1:]]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed: {result.stderr or result.stdout}")
@@ -113,6 +125,104 @@ def generate_synthetic_wide_ribbon(work_dir: Path, out_mp4: Path, duration_sec: 
                 )
         # Soft footer line
         put_text_center(canvas, "AI FULL-STACK CHALLENGE 2026", 0.92, (110, 110, 110), 0.7, 2)
+        write_frame(work_dir, i, canvas)
+    encode_pngs(work_dir, out_mp4)
+
+
+def draw_helix_strand(canvas: np.ndarray, t: float, phase: float, color: tuple[int, int, int], front: bool) -> None:
+    h, w = canvas.shape[:2]
+    cx = w // 2
+    top = int(h * 0.12)
+    bottom = int(h * 0.86)
+    radius = int(w * 0.31)
+    turns = 1.35
+    steps = 96
+    points = []
+    depths = []
+    for idx in range(steps + 1):
+        p = idx / steps
+        theta = p * turns * math.pi * 2 + phase + t * 0.95
+        y = int(top + (bottom - top) * p)
+        x = int(cx + math.sin(theta) * radius + (p - 0.5) * w * 0.08)
+        z = math.cos(theta)
+        points.append((x, y))
+        depths.append(z)
+    for idx in range(len(points) - 1):
+        z = (depths[idx] + depths[idx + 1]) * 0.5
+        is_front = z >= 0
+        if is_front != front:
+            continue
+        thickness = int(42 + 34 * ((z + 1) * 0.5))
+        cv2.line(canvas, points[idx], points[idx + 1], color, thickness, cv2.LINE_AA)
+        if front:
+            cv2.line(canvas, points[idx], points[idx + 1], (255, 255, 255), max(3, thickness // 7), cv2.LINE_AA)
+
+
+def generate_synthetic_vertical_helix_ribbon(work_dir: Path, out_mp4: Path, duration_sec: float = 14.0) -> None:
+    """Wide DNA-like ribbon around the screen Y axis. Expected geometry:
+    wide_band + vertical_helix + screen_y + front/back crossing."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    total = int(duration_sec * FPS)
+    palette = [(240, 110, 60), (205, 80, 225), (90, 110, 245), (45, 150, 245), (60, 200, 225), (90, 205, 90)]
+    for i in range(total):
+        t = i / FPS
+        canvas = np.full((HEIGHT, WIDTH, 3), 248, dtype=np.uint8)
+        cv2.putText(canvas, "05.25", (48, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (45, 45, 45), 2, cv2.LINE_AA)
+        cv2.putText(canvas, "2026", (52, HEIGHT - 96), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (55, 55, 55), 2, cv2.LINE_AA)
+        for idx, phase in enumerate([0.0, math.pi]):
+            draw_helix_strand(canvas, t, phase, palette[idx * 2], front=False)
+        put_text_center(canvas, "VERTICAL HELIX", 0.40, (22, 22, 22), 1.35, 5)
+        put_text_center(canvas, "SCREEN Y AXIS", 0.47, (80, 80, 80), 0.82, 2)
+        for idx, phase in enumerate([0.0, math.pi]):
+            draw_helix_strand(canvas, t, phase, palette[(idx * 2 + 2 + int(t * 0.4)) % len(palette)], front=True)
+        cv2.putText(canvas, "STRUCTURE   REMIX   AIGC", (90, int(HEIGHT * 0.68)), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2, cv2.LINE_AA)
+        write_frame(work_dir, i, canvas)
+    encode_pngs(work_dir, out_mp4)
+
+
+def generate_synthetic_planar_orbit_ribbon(work_dir: Path, out_mp4: Path, duration_sec: float = 14.0) -> None:
+    """Wide ribbon orbit around the screen Z axis. Must not classify as vertical helix."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    total = int(duration_sec * FPS)
+    palette = [(245, 95, 60), (200, 70, 220), (95, 105, 240), (40, 140, 245)]
+    cx, cy = WIDTH // 2, int(HEIGHT * 0.48)
+    for i in range(total):
+        t = i / FPS
+        canvas = np.full((HEIGHT, WIDTH, 3), 248, dtype=np.uint8)
+        put_text_center(canvas, "PLANAR ORBIT", 0.39, (30, 30, 30), 1.3, 5)
+        put_text_center(canvas, "SCREEN Z AXIS", 0.46, (90, 90, 90), 0.82, 2)
+        for idx, color in enumerate(palette):
+            angle = (t * 46 + idx * 38) % 360
+            start = int((t * 80 + idx * 62) % 360)
+            end = start + 185
+            axes = (int(WIDTH * (0.38 + idx * 0.025)), int(HEIGHT * (0.105 + idx * 0.012)))
+            cv2.ellipse(canvas, (cx, cy), axes, angle, start, end, color, 54, cv2.LINE_AA)
+            cv2.ellipse(canvas, (cx, cy), axes, angle, start + 20, start + 58, (255, 255, 255), 8, cv2.LINE_AA)
+        put_text_center(canvas, "orbit only, no y-axis helix", 0.91, (120, 120, 120), 0.65, 2)
+        write_frame(work_dir, i, canvas)
+    encode_pngs(work_dir, out_mp4)
+
+
+def generate_synthetic_diagonal_sweep_ribbon(work_dir: Path, out_mp4: Path, duration_sec: float = 14.0) -> None:
+    """Wide bands sweeping diagonally across the frame."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    total = int(duration_sec * FPS)
+    palette = [(245, 95, 60), (200, 70, 220), (95, 105, 240), (40, 140, 245), (90, 200, 80)]
+    for i in range(total):
+        t = i / FPS
+        canvas = np.full((HEIGHT, WIDTH, 3), 249, dtype=np.uint8)
+        put_text_center(canvas, "DIAGONAL SWEEP", 0.40, (30, 30, 30), 1.18, 4)
+        put_text_center(canvas, "foreground sweep", 0.47, (90, 90, 90), 0.8, 2)
+        for band_idx, color in enumerate(palette):
+            phase = t * 0.75 + band_idx * 0.5
+            x0 = int(-WIDTH * 0.25 + math.sin(phase) * WIDTH * 0.22)
+            y0 = int(HEIGHT * (0.18 + band_idx * 0.12))
+            pts = []
+            for k in range(0, int(WIDTH * 1.6), 18):
+                x = x0 + k
+                y = y0 + int(k * 0.82 + math.sin(k * 0.018 + phase) * 58)
+                pts.append((x, y))
+            cv2.polylines(canvas, [np.array(pts, dtype=np.int32)], False, color, thickness=64, lineType=cv2.LINE_AA)
         write_frame(work_dir, i, canvas)
     encode_pngs(work_dir, out_mp4)
 
@@ -230,6 +340,9 @@ GENERATORS = {
     "003_synthetic_thin_orbit": generate_synthetic_thin_orbit,
     "004_synthetic_static_poster": generate_synthetic_static_poster,
     "005_synthetic_platform_ui_tail": generate_synthetic_platform_ui_tail,
+    "006_synthetic_vertical_helix_ribbon": generate_synthetic_vertical_helix_ribbon,
+    "007_synthetic_planar_orbit_ribbon": generate_synthetic_planar_orbit_ribbon,
+    "008_synthetic_diagonal_sweep_ribbon": generate_synthetic_diagonal_sweep_ribbon,
 }
 
 
