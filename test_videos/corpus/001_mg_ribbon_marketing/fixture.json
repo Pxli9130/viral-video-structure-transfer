@@ -1,0 +1,60 @@
+{
+  "id": "001_mg_ribbon_marketing",
+  "title": "MG dynamic poster with 3D ribbon (real)",
+  "input": {
+    "filename": "../../marketing.mov",
+    "sha256": "324f65df5079eac4361e58a6417d2edeb1ca5404ba7e6b7f7ceb2a1505191d33",
+    "durationSecRange": [16, 20],
+    "license": "demo_only",
+    "originUrl": null,
+    "videoIsReference": true
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [
+      {
+        "anchor": "tail",
+        "startSecRange": [14.0, 17.0],
+        "endSecRange": [17.0, 20.0],
+        "reasonKeywordsAnyOf": ["platform", "ui", "tail", "outro"]
+      }
+    ],
+    "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "ribbonMotion": {
+      "surfaceType": "wide_band",
+      "pathFamily": "vertical_helix",
+      "axis": "screen_y",
+      "depthBehaviorAnyOf": ["front_back_crossing", "occlusion_with_title"],
+      "layoutRelation": "around_title",
+      "textRelation": "text_on_ribbon",
+      "minConfidence": 0.55
+    },
+    "renderGates": {
+      "main": { "minBandWidth": 40, "minMotion": 0.012 },
+      "high_ctr": { "minBandWidth": 80, "minMotion": 0.025 },
+      "high_quality": { "minBandWidth": 8, "minMotion": 0.008 }
+    },
+    "vlmJudge": {
+      "preservesMotifMinScore": 0.55,
+      "preservesPhasingMinScore": 0.45,
+      "noCopyMinScore": 0.65,
+      "overallMinScore": 0.55
+    }
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"],
+    "ribbonMotionNot": {
+      "pathFamily": ["planar_orbit"],
+      "axis": ["screen_z"],
+      "surfaceType": ["thin_line"]
+    }
+  },
+  "skipIf": {
+    "missingVideo": true
+  }
+}

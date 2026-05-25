@@ -22,6 +22,11 @@
     "test:marketing": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run build --workspace @vvst/api && npm run test --workspace @vvst/shared -- src/__tests__/marketingPosterCase.test.ts && node scripts/run-marketing-poster-case.mjs",
     "test:unit": "npm run test --workspace @vvst/shared",
     "test:e2e": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run test --workspace @vvst/api",
+    "pipeline:full": "node scripts/run-full-pipeline.mjs",
+    "regression:corpus": "node scripts/run-corpus-regression.mjs",
+    "regression:corpus:refresh": "node scripts/run-corpus-regression.mjs --refresh-corpus",
+    "regression:corpus:strict": "node scripts/run-corpus-regression.mjs --strict",
+    "corpus:generate": "node -e \"const {spawnSync}=require('node:child_process');const r=spawnSync(process.env.CONDA_BASE? `${process.env.CONDA_BASE}/envs/${process.env.VIRAL_CONDA_ENV||'viral'}/bin/python` : 'python3', ['scripts/generate-synthetic-corpus.py','--root','test_videos/corpus'],{stdio:'inherit'});process.exit(r.status||0)\"",
     "typecheck": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run typecheck --workspaces"
   },
   "devDependencies": {

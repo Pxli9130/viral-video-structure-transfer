@@ -26,6 +26,26 @@ export const projectSchema = {
   }
 } as const;
 
+const ribbonMotionGeometrySchema = {
+  type: "object",
+  required: ["surfaceType", "pathFamily", "axis", "depthBehavior", "layoutRelation", "textRelation"],
+  additionalProperties: true,
+  properties: {
+    surfaceType: { enum: ["thin_line", "wide_band", "textured_band", "particle_trail"] },
+    pathFamily: { enum: ["vertical_helix", "planar_orbit", "diagonal_sweep", "horizontal_wave", "spiral_in", "wave_loop", "unknown"] },
+    axis: { enum: ["screen_y", "screen_z", "screen_x", "diagonal", "unknown"] },
+    depthBehavior: { enum: ["flat", "perspective_only", "front_back_crossing", "occlusion_with_title"] },
+    layoutRelation: { enum: ["around_title", "background_only", "foreground_sweep", "border_frame"] },
+    textRelation: { enum: ["text_on_ribbon", "near_ribbon", "none"] },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    evidenceFrames: { type: "array", items: { type: "number" } },
+    turns: { type: "number" },
+    radiusX: { type: "number" },
+    radiusZ: { type: "number" },
+    pitchY: { type: "number" }
+  }
+} as const;
+
 export const assetAnalysisSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "https://viral-video-structure-transfer.local/schemas/asset-analysis.schema.json",
@@ -100,7 +120,16 @@ export const assetAnalysisSchema = {
     ocr: { type: "array", items: { type: "object", additionalProperties: true } },
     warnings: { type: "array", items: { type: "string" } },
     analyzerMode: { enum: ["mock", "ffmpeg", "ffmpeg_opencv", "ffmpeg_vlm_asr"] },
-    createdAt: { type: "string" }
+    createdAt: { type: "string" },
+    primaryMotif: { type: "object", additionalProperties: true },
+    motifCandidates: { type: "array", items: { type: "object", additionalProperties: true } },
+    motionGeometry: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        ribbonMotion: ribbonMotionGeometrySchema
+      }
+    }
   }
 } as const;
 
@@ -170,6 +199,32 @@ export const structureTemplateSchema = {
     name: { type: "string" },
     vertical: { type: "string" },
     sourceSampleIds: { type: "array", items: { type: "string" } },
+    videoType: { type: "string" },
+    visualStyle: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        background: { type: "string" },
+        layout: { type: "string" },
+        motionAsset: { type: "string" },
+        colorProgression: { type: "array", items: { type: "string" } },
+        typography: { type: "string" },
+        ribbonMotion: ribbonMotionGeometrySchema
+      }
+    },
+    excludeSegments: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["startSec", "endSec", "reason"],
+        additionalProperties: true,
+        properties: {
+          startSec: { type: "number", minimum: 0 },
+          endSec: { type: "number", minimum: 0 },
+          reason: { type: "string" }
+        }
+      }
+    },
     targetDurationSec: { type: "number" },
     segments: {
       type: "array",
@@ -339,7 +394,8 @@ export const generationRequestSchema = {
         hookIntensity: { enum: ["safe", "strong", "aggressive"] },
         packagingStyle: { enum: ["clean", "bold", "mg_motion"] },
         ctaStyle: { enum: ["soft", "direct"] },
-        allowAigcPlaceholder: { type: "boolean" }
+        allowAigcPlaceholder: { type: "boolean" },
+        creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] }
       }
     },
     constraints: {
@@ -348,7 +404,8 @@ export const generationRequestSchema = {
       properties: {
         forbiddenWords: { type: "array", items: { type: "string" } },
         mustMention: { type: "array", items: { type: "string" } },
-        noSampleVisualCopy: { type: "boolean" }
+        noSampleVisualCopy: { type: "boolean" },
+        sampleAssetReuse: { enum: ["disabled", "authorized"] }
       }
     }
   },

@@ -5,12 +5,27 @@ import {
   validateStructureTemplate,
   validateTimeline,
   type GenerationRequest,
+  type RibbonMotionGeometry,
   type VideoAnalysisResult,
   type VLMVideoAnalysis
 } from "../index.js";
 
 const projectId = "project_marketing_poster_case";
 const sampleAssetId = "asset_marketing_mov";
+const marketingRibbonMotion: RibbonMotionGeometry = {
+  surfaceType: "wide_band",
+  pathFamily: "vertical_helix",
+  axis: "screen_y",
+  depthBehavior: "front_back_crossing",
+  layoutRelation: "around_title",
+  textRelation: "text_on_ribbon",
+  confidence: 0.78,
+  evidenceFrames: [4.6, 9.2, 13.8],
+  turns: 1.25,
+  radiusX: 260,
+  radiusZ: 160,
+  pitchY: 960
+};
 
 const marketingAnalysis: VideoAnalysisResult = {
   id: "analysis_marketing_mov",
@@ -27,14 +42,14 @@ const marketingAnalysis: VideoAnalysisResult = {
   },
   keyframes: [
     { id: "marketing_kf_1", timeSec: 0.5, description: "Minimal off-white poster with central Chinese title and fixed info anchors.", tags: ["hook_candidate", "text_card_candidate"] },
-    { id: "marketing_kf_2", timeSec: 4, description: "Large 3D ribbon enters diagonally and starts orbiting the title.", tags: ["background", "text_card_candidate"] },
+    { id: "marketing_kf_2", timeSec: 4, description: "Large ribbon surface enters and starts a vertical helix around the title.", tags: ["background", "text_card_candidate"] },
     { id: "marketing_kf_3", timeSec: 8.5, description: "Keyword repetition and color progression strengthen brand memory.", tags: ["text_card_candidate"] },
     { id: "marketing_kf_4", timeSec: 13.5, description: "Dense multi-color ribbon climax around static poster typography.", tags: ["comparison_candidate", "text_card_candidate"] },
     { id: "marketing_kf_5", timeSec: 16.6, description: "Social platform profile page tail, not part of the transferable creative structure.", tags: ["background"] }
   ],
   shots: [
     { id: "marketing_shot_hook", startSec: 0, endSec: 2, durationSec: 2, tags: ["hook_candidate", "text_card_candidate"], confidence: 0.9, notes: "Main title appears immediately." },
-    { id: "marketing_shot_ribbon_entry", startSec: 2, endSec: 6, durationSec: 4, tags: ["background", "text_card_candidate"], confidence: 0.86, notes: "3D ribbon enters and orbits the static poster." },
+    { id: "marketing_shot_ribbon_entry", startSec: 2, endSec: 6, durationSec: 4, tags: ["background", "text_card_candidate"], confidence: 0.86, notes: "Ribbon surface enters as a vertical helix around the static poster." },
     { id: "marketing_shot_keyword_memory", startSec: 6, endSec: 10, durationSec: 4, tags: ["text_card_candidate"], confidence: 0.84, notes: "English keywords repeat around the poster." },
     { id: "marketing_shot_color_climax", startSec: 10, endSec: 14.5, durationSec: 4.5, tags: ["comparison_candidate", "text_card_candidate"], confidence: 0.82, notes: "Color diversity and motion density increase." },
     { id: "marketing_shot_cta_poster", startSec: 14.5, endSec: 15.7, durationSec: 1.2, tags: ["cta_candidate", "text_card_candidate"], confidence: 0.82, notes: "Clean final poster hold." },
@@ -53,24 +68,40 @@ const marketingAnalysis: VideoAnalysisResult = {
 
 const marketingVlm: VLMVideoAnalysis = {
   videoSummary:
-    "Marketing motion-graphic poster: minimal off-white poster, central static typography, 3D ribbon orbit, repeated English keywords, progressive color build, and a social-platform UI tail after the creative ending.",
+    "Marketing motion-graphic poster: minimal off-white poster, central static typography, wide parametric ribbon surface moving as a vertical helix around the screen Y axis, repeated English keywords, progressive color build, and a social-platform UI tail after the creative ending.",
+  videoType: "motion_graphic_marketing_poster",
+  visualStyle: {
+    background: "minimal_off_white",
+    layout: "central_static_typography",
+    motionAsset: "parametric_ribbon_surface",
+    ribbonMotion: marketingRibbonMotion,
+    colorProgression: ["blue", "purple", "pink", "orange", "yellow", "green"],
+    typography: "Chinese main title + English keyword repetition"
+  },
+  excludeSegments: [
+    {
+      startSec: 15.7,
+      endSec: 18.4,
+      reason: "social platform UI / screen recording tail; do not transfer"
+    }
+  ],
   shots: [
     { start: 0, end: 2, purpose: "hook", visual: "Main title appears immediately on a minimal poster layout.", transition: "none" },
-    { start: 2, end: 6, purpose: "visual_attention", visual: "A large 3D ribbon enters diagonally and orbits around the title.", transition: "ribbon sweep" },
-    { start: 6, end: 10, purpose: "brand_memory", visual: "English keywords repeat on and around the ribbon while poster anchors remain fixed.", transition: "orbit loop" },
+    { start: 2, end: 6, purpose: "visual_attention", visual: "A large ribbon surface enters and starts a vertical helix around the title.", transition: "ribbon sweep" },
+    { start: 6, end: 10, purpose: "brand_memory", visual: "English keywords repeat on and around the Y-axis ribbon while poster anchors remain fixed.", transition: "helix loop" },
     { start: 10, end: 14.5, purpose: "climax", visual: "Color diversity and motion density increase to a multi-color ribbon climax.", transition: "color progression" },
     { start: 14.5, end: 15.7, purpose: "cta", visual: "Clean final poster hold with date, location, logo, and action cue.", transition: "hold" }
   ],
   structure: {
     hook: "Show main title immediately and keep the poster readable.",
     setup: "Use central static typography, large negative space, and fixed information anchors.",
-    sellingPoints: ["minimal poster layout", "3D ribbon orbit", "keyword repetition", "color progression", "clean final CTA"],
+    sellingPoints: ["minimal poster layout", "parametric vertical helix ribbon", "keyword repetition", "color progression", "clean final CTA"],
     climax: "Increase color diversity and motion density before the final poster hold.",
     cta: "Freeze a clean final poster with date, location, logo, and action cue."
   },
   rhythm: {
     avgShotLength: 3.1,
-    fastSections: ["3-8s ribbon sweep", "8-13s color acceleration"],
+    fastSections: ["3-8s vertical ribbon helix", "8-13s color acceleration"],
     peakMoments: ["13-15.7s multi-color ribbon climax"],
     peakTimeRatio: 0.78,
     notes: "0-3s establishes poster, 3-8s motion entry, 8-13s keyword/color build, 13-15.7s climax, 15.7-18.4s platform UI tail excluded."
@@ -78,13 +109,13 @@ const marketingVlm: VLMVideoAnalysis = {
   packaging: {
     subtitleDensity: "medium",
     titleCards: ["central static typography + English keyword repetition"],
-    stickers: ["3d_ribbon_orbit", "keyword_ring", "date_location_anchor"],
+    stickers: ["parametric_ribbon_surface", "vertical_helix_y", "keyword_ring", "date_location_anchor"],
     colorStyle: "blue → purple → pink → orange → yellow → green progression",
     coverStyle: "minimal off-white poster with large central title"
   },
   reusablePatterns: [
-    "minimal information poster + 3D ribbon dynamic packaging",
-    "keyword orbit around central static typography",
+    "minimal information poster + parametric ribbon dynamic packaging",
+    "vertical helix ribbon around central static typography",
     "progressive multi-color climax",
     "clean final poster CTA hold"
   ],
@@ -134,18 +165,63 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
 
     expect(validateStructureTemplate(template).valid).toBe(true);
     expect(template.name).toContain("Learned MG Structure");
-    expect(template.targetDurationSec).toBeCloseTo(18.433333, 1);
+    expect(template.videoType).toBe("motion_graphic_marketing_poster");
+    expect(template.visualStyle).toMatchObject({
+      background: "minimal_off_white",
+      layout: "central_static_typography",
+      motionAsset: "parametric_ribbon_surface",
+      ribbonMotion: marketingRibbonMotion,
+      typography: "Chinese main title + English keyword repetition"
+    });
+    expect(template.visualStyle?.colorProgression).toEqual(["blue", "purple", "pink", "orange", "yellow", "green"]);
+    expect(template.excludeSegments).toEqual([
+      expect.objectContaining({
+        startSec: 15.7,
+        endSec: 18.4,
+        reason: expect.stringContaining("social platform UI")
+      })
+    ]);
+    expect(template.targetDurationSec).toBeCloseTo(15.7, 1);
     expect(template.packaging.titleCardStyle).toContain("central static typography");
-    expect(template.packaging.overlayStyle).toContain("3d_ribbon_orbit");
+    expect(template.packaging.overlayStyle).toContain("parametric_ribbon_surface");
     expect(template.packaging.coverStyle).toContain("minimal off-white poster");
-    expect(template.qualityRationale).toContain("3D ribbon");
+    expect(template.qualityRationale).toContain("parametric ribbon");
     expect(marketingVlm.raw).toContain("15.7-18.4");
-    expect(template.structureAtoms.some((atom) => atom.description.includes("3D ribbon"))).toBe(true);
+    expect(template.structureAtoms.some((atom) => atom.description.includes("vertical helix ribbon"))).toBe(true);
     expect(template.structureAtoms.map((atom) => atom.name)).toEqual(
       expect.arrayContaining(["Title-card hook", "Contrast proof beat", "Brand-reveal CTA", "Reusable motion motif"])
     );
     expect(template.structureAtoms.map((atom) => atom.name).join(" ")).not.toContain("造物");
     expect(template.structureAtoms.map((atom) => atom.name).join(" ")).not.toContain("小红书");
+  });
+
+  it("does not reuse sample shots that overlap template excludeSegments", () => {
+    const template = buildFallbackTemplate(marketingAnalysis, "b2b_marketing_mg", projectId, marketingVlm);
+    const result = generateMigrationResult({
+      template,
+      sourceAsset: {
+        id: sampleAssetId,
+        projectId,
+        role: "source_video",
+        type: "video",
+        filename: "marketing.mov",
+        sourcePolicy: "demo_only",
+        tags: ["background", "cta_candidate"],
+        status: "ready",
+        createdAt: "2026-05-24T00:00:00.000Z"
+      },
+      sourceAnalysis: {
+        ...marketingAnalysis,
+        purpose: "source",
+        shots: marketingAnalysis.shots.map((shot) =>
+          shot.id === "marketing_shot_platform_tail" ? { ...shot, tags: ["hook_candidate", "product_like", "cta_candidate"] } : shot
+        )
+      },
+      request: aiChallengeRequest()
+    });
+
+    const selectedShotIds = result.slotMapping.map((mapping) => mapping.selectedShotId).filter(Boolean);
+    expect(selectedShotIds).not.toContain("marketing_shot_platform_tail");
   });
 
   it("migrates the poster structure to the AI challenge topic with visible gaps and no copied sample text", () => {
@@ -172,16 +248,27 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
       generation.fillPlan.some(
         (action) =>
           action.strategy === "procedural_generation" &&
-          action.rendererInstructions?.atom === "ribbon_orbit" &&
+          action.rendererInstructions?.atom === "parametric_ribbon_surface" &&
           action.rendererInstructions?.fulfilledBy === "procedural_generation"
       )
     ).toBe(true);
     expect(generation.timeline.renderPlan?.adapterOptions?.packagingStyle).toBe("mg_motion");
     expect(generation.timeline.renderPlan?.motionAtoms?.[0]).toMatchObject({
-      type: "ribbon_orbit",
+      type: "parametric_ribbon_surface",
       fulfilledBy: "procedural_generation",
-      style: "mg_motion"
+      style: "mg_motion",
+      surfaceType: "wide_band",
+      pathFamily: "vertical_helix",
+      axis: "screen_y",
+      textOnRibbon: true,
+      depthLayering: true,
+      specularHighlight: true,
+      climaxBuild: true
     });
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.bandWidth).toBeGreaterThanOrEqual(70);
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.frontLayerCount).toBeGreaterThanOrEqual(2);
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.backLayerCount).toBeGreaterThanOrEqual(2);
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.gradientStops?.length).toBeGreaterThanOrEqual(6);
     expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.keywords).toEqual(
       expect.arrayContaining(["STRUCTURE", "REMIX", "TIMELINE", "AIGC", "CREATION"])
     );
@@ -216,13 +303,18 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
     expect(highCtr.timeline.id).not.toBe(highQuality.timeline.id);
     expect(highCtr.timeline.renderPlan?.background).not.toBe(highQuality.timeline.renderPlan?.background);
     expect(highCtr.timeline.clips.length).toBeGreaterThan(highQuality.timeline.clips.length);
-    expect(mainAtom).toMatchObject({ type: "ribbon_orbit", fulfilledBy: "procedural_generation", style: "mg_motion" });
-    expect(ctrAtom).toMatchObject({ type: "ribbon_orbit", fulfilledBy: "procedural_generation", style: "mg_motion" });
-    expect(qualityAtom).toMatchObject({ type: "ribbon_orbit", fulfilledBy: "procedural_generation", style: "clean_premium" });
+    expect(mainAtom).toMatchObject({ type: "parametric_ribbon_surface", fulfilledBy: "procedural_generation", style: "mg_motion", pathFamily: "vertical_helix", axis: "screen_y" });
+    expect(ctrAtom).toMatchObject({ type: "parametric_ribbon_surface", fulfilledBy: "procedural_generation", style: "mg_motion", pathFamily: "vertical_helix", axis: "screen_y" });
+    expect(qualityAtom).toMatchObject({ type: "parametric_ribbon_surface", fulfilledBy: "procedural_generation", style: "clean_premium", pathFamily: "vertical_helix", axis: "screen_y" });
     expect(ctrAtom?.density).toBeGreaterThan(mainAtom?.density ?? 0);
     expect(ctrAtom?.speed).toBeGreaterThan(mainAtom?.speed ?? 0);
+    expect(ctrAtom?.bandWidth).toBeGreaterThan(mainAtom?.bandWidth ?? 0);
+    expect(ctrAtom?.frontLayerCount).toBeGreaterThan(mainAtom?.frontLayerCount ?? 0);
     expect(qualityAtom?.density).toBeLessThan(mainAtom?.density ?? Number.POSITIVE_INFINITY);
     expect(qualityAtom?.speed).toBeLessThan(mainAtom?.speed ?? Number.POSITIVE_INFINITY);
+    expect(qualityAtom?.bandWidth).toBeLessThan(mainAtom?.bandWidth ?? Number.POSITIVE_INFINITY);
+    expect(qualityAtom?.textOnRibbon).toBe(true);
+    expect(qualityAtom?.depthLayering).toBe(true);
     expect(qualityAtom?.opacity).toBeGreaterThan(0);
   });
 });

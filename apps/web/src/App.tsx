@@ -121,6 +121,22 @@ function renderOutputUrl(render: RenderResponse["render"] | null): string | null
   return filename ? `/generated/${filename}` : null;
 }
 
+function percent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function clipLabel(generation: GenerationResult, clipId: string): string {
+  const clip = generation.timeline.clips.find((item) => item.id === clipId);
+  if (!clip) return clipId;
+  return `${clip.role} ${clip.startSec.toFixed(1)}-${(clip.startSec + clip.durationSec).toFixed(1)}s`;
+}
+
+function visualStyleLine(template: StructureTemplate | null): string {
+  const style = template?.visualStyle;
+  if (!style) return "No structured visual style yet";
+  return [style.background, style.layout, style.motionAsset, style.typography].filter(Boolean).join(" · ");
+}
+
 function StatusLine({ state, error }: { state: ApiState; error: string | null }) {
   if (state === "loading") return <span className="status">Working...</span>;
   if (state === "error") return <span className="status error">{error}</span>;
@@ -528,6 +544,33 @@ export default function App() {
                   <span>Rhythm</span>
                 </div>
               </div>
+              {selectedTemplate && (
+                <div className="template-facts">
+                  <article>
+                    <strong>Video Type</strong>
+                    <span>{selectedTemplate.videoType ?? "unclassified"}</span>
+                  </article>
+                  <article>
+                    <strong>Visual Style</strong>
+                    <span>{visualStyleLine(selectedTemplate)}</span>
+                    {selectedTemplate.visualStyle?.colorProgression?.length ? (
+                      <small>{selectedTemplate.visualStyle.colorProgression.join(" → ")}</small>
+                    ) : null}
+                  </article>
+                  <article>
+                    <strong>Exclude Segments</strong>
+                    {(selectedTemplate.excludeSegments ?? []).length ? (
+                      selectedTemplate.excludeSegments?.map((segment) => (
+                        <span key={`${segment.startSec}-${segment.endSec}`}>
+                          {segment.startSec.toFixed(1)}–{segment.endSec.toFixed(1)}s · {segment.reason}
+                        </span>
+                      ))
+                    ) : (
+                      <span>none</span>
+                    )}
+                  </article>
+                </div>
+              )}
               <div className="segment-row">
                 {selectedTemplate?.segments.map((segment) => (
                   <article key={segment.id}>
@@ -774,7 +817,39 @@ export default function App() {
             {generation ? (
               <div className="compare-grid">
                 <div>
-                  <h3>Selected Atoms</h3>
+                  <h3>Sample Template Segments</h3>
+                  <div className="segment-row vertical">
+                    {selectedTemplate?.segments.map((segment) => {
+                      const mapping = generation.timeline.mapping.find((item) => item.templateSegmentId === segment.id);
+                      return (
+                        <article key={segment.id} className="segment-diff-card">
+                          <strong>{segment.role} · {percent(segment.startRatio)}–{percent(segment.endRatio)}</strong>
+                          <span>{segment.intent}</span>
+                          <small>
+                            Mapped to: {mapping?.targetClipIds.length
+                              ? mapping.targetClipIds.map((clipId) => clipLabel(generation, clipId)).join(" / ")
+                              : "no generated clip"}
+                          </small>
+                        </article>
+                      );
+                    })}
+                    {!selectedTemplate?.segments.length && <p className="empty">No sample template selected.</p>}
+                  </div>
+                  {(selectedTemplate?.excludeSegments ?? []).length > 0 && (
+                    <>
+                      <h3 style={{ marginTop: 16 }}>Excluded Sample Segments</h3>
+                      <div className="segment-row vertical">
+                        {selectedTemplate?.excludeSegments?.map((segment) => (
+                          <article key={`${segment.startSec}-${segment.endSec}`}>
+                            <strong>{segment.startSec.toFixed(1)}–{segment.endSec.toFixed(1)}s</strong>
+                            <span>{segment.reason}</span>
+                            <small>Not transferred into the generated timeline.</small>
+                          </article>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  <h3 style={{ marginTop: 16 }}>Selected Atoms</h3>
                   <div className="segment-row vertical">
                     {generation.selectedAtoms.map((atom) => (
                       <article key={atom.id}>

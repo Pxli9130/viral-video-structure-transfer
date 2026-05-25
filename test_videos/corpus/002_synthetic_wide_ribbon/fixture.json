@@ -1,0 +1,39 @@
+{
+  "id": "002_synthetic_wide_ribbon",
+  "title": "Synthetic wide colorful ribbon surface (deterministic)",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "f59e1eda5fb601f07b057be5cb1dac93cfbc3954faf7625076cec7fb82afac2b",
+    "durationSecRange": [13, 15],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_wide_ribbon"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "renderGates": {
+      "main": { "minBandWidth": 40, "minMotion": 0.012 },
+      "high_ctr": { "minBandWidth": 80, "minMotion": 0.025 },
+      "high_quality": { "minBandWidth": 8, "minMotion": 0.008 }
+    },
+    "vlmJudge": {
+      "preservesMotifMinScore": 0.55,
+      "preservesPhasingMinScore": 0.45,
+      "noCopyMinScore": 0.65,
+      "overallMinScore": 0.55
+    }
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["orbit_line_2d", "static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"]
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

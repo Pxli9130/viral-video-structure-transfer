@@ -1,0 +1,42 @@
+{
+  "id": "007_synthetic_planar_orbit_ribbon",
+  "title": "Synthetic planar orbit ribbon surface",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "a9bc90057f79f0287df1c014fad75876135915a524da2ad289406c6801e67da8",
+    "durationSecRange": [13, 15],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_planar_orbit_ribbon"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
+    "rendererAtomAnyOf": ["parametric_ribbon_surface"],
+    "ribbonMotion": {
+      "surfaceType": "wide_band",
+      "pathFamily": "planar_orbit",
+      "axis": "screen_z",
+      "depthBehaviorAnyOf": ["perspective_only", "front_back_crossing"],
+      "layoutRelation": "around_title",
+      "textRelation": "text_on_ribbon",
+      "minConfidence": 0.5
+    }
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["static_poster", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface"],
+    "ribbonMotionNot": {
+      "pathFamily": ["vertical_helix"],
+      "axis": ["screen_y"],
+      "surfaceType": ["thin_line"]
+    }
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

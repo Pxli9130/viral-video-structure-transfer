@@ -1,0 +1,40 @@
+{
+  "id": "003_synthetic_thin_orbit",
+  "title": "Synthetic thin orbit stroke (no wide band, no thick surface)",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "b923ccc234ab8419902001906b95f7cd4881c2d6bd9a7c875d37534b51ba1b4a",
+    "durationSecRange": [11, 13],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_thin_orbit"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["orbit_line_2d", "static_poster"],
+      "minConfidence": 0.4
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["other"],
+    "rendererAtomAnyOf": ["packaging_overlay", "text_card"],
+    "ribbonMotion": {
+      "surfaceType": "thin_line",
+      "pathFamily": "planar_orbit",
+      "axis": "screen_z",
+      "depthBehavior": "flat",
+      "textRelationAnyOf": ["near_ribbon", "none"],
+      "minConfidence": 0.45
+    }
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d", "parametric_ribbon_surface"],
+    "ribbonMotionNot": {
+      "surfaceType": ["wide_band"],
+      "pathFamily": ["vertical_helix"]
+    }
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

@@ -55,7 +55,7 @@ button:disabled {
 
 .app-shell {
   margin: 0 auto;
-  max-width: 1440px;
+  max-width: 1840px;
   padding: 24px;
 }
 
@@ -116,9 +116,10 @@ h3 {
 }
 
 .workspace {
+  align-items: start;
   display: grid;
   gap: 18px;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1fr) minmax(430px, 1.4fr);
 }
 
 .rail,
@@ -131,6 +132,8 @@ h3 {
 
 .rail {
   align-self: start;
+  grid-column: 1;
+  grid-row: 1;
   padding: 18px;
   position: sticky;
   top: 18px;
@@ -163,11 +166,41 @@ dd {
 }
 
 .flow {
-  display: grid;
-  gap: 18px;
+  display: contents;
+}
+
+.flow > .panel:nth-child(1) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.flow > .panel:nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.flow > .panel:nth-child(3) {
+  grid-column: 2;
+  grid-row: 2 / span 2;
+}
+
+.flow > .panel:nth-child(4) {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+.flow > .panel:nth-child(5) {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.flow > .panel:nth-child(6) {
+  grid-column: 3;
+  grid-row: 2 / span 2;
 }
 
 .panel {
+  min-width: 0;
   padding: 18px;
 }
 
@@ -244,10 +277,26 @@ textarea {
   grid-template-columns: 0.8fr 1fr 1.2fr;
 }
 
+.workspace .two-col {
+  grid-template-columns: 1fr;
+}
+
+.workspace .metrics,
+.workspace .analysis-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .metrics {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.template-facts {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
   margin-bottom: 14px;
 }
 
@@ -259,6 +308,7 @@ textarea {
 }
 
 .metrics div,
+.template-facts article,
 .analysis-summary article,
 .asset-list article,
 .gap-list article,
@@ -276,6 +326,7 @@ textarea {
 }
 
 .metrics span,
+.template-facts span,
 .analysis-summary span,
 .asset-list span,
 .gap-list span,
@@ -289,11 +340,17 @@ textarea {
 }
 
 .gap-list small,
-.story-list small {
+.story-list small,
+.template-facts small,
+.segment-row small {
   color: #475569;
   display: block;
   font-size: 12px;
   margin-top: 6px;
+}
+
+.segment-diff-card {
+  border-left: 4px solid #0f766e;
 }
 
 .segment-row,
@@ -440,12 +497,23 @@ th {
   margin: 0;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1280px) {
   .workspace,
   .two-col,
   .result-grid,
   .compare-grid {
     grid-template-columns: 1fr;
+  }
+
+  .flow {
+    display: grid;
+    gap: 18px;
+  }
+
+  .flow > .panel:nth-child(n),
+  .rail {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .rail {
