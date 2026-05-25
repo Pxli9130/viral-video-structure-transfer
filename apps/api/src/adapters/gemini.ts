@@ -22,6 +22,21 @@ with this exact top-level shape:
 
 {
   "video_summary": "<one paragraph>",
+  "video_type": "<motion_graphic_marketing_poster|live_action_promo|talking_head|vlog|beat_cut|short_drama|ecommerce|other>",
+  "visual_style": {
+    "background": "<e.g. minimal_off_white / dark_tech / live_action>",
+    "layout": "<e.g. central_static_typography / talking_head_caption_stack>",
+    "motion_asset": "<e.g. 3d_ribbon_orbit / handheld_camera / product_closeup>",
+    "color_progression": ["<color or hex in observed progression>"],
+    "typography": "<font/layout treatment>"
+  },
+  "exclude_segments": [
+    {
+      "start_sec": <seconds, number>,
+      "end_sec": <seconds, number>,
+      "reason": "<platform UI tail / end slate not part of creative structure / failed frame / etc>"
+    }
+  ],
   "shots": [
     {
       "start": <seconds, number>,
@@ -73,6 +88,9 @@ with this exact top-level shape:
 Constraints:
 - All time values are seconds, fractional ok.
 - shots[].purpose MUST be one of hook|setup|body|proof|transition|cta.
+- video_type should classify the sample's transferable creative format, not the product category.
+- visual_style should describe reusable visual method and packaging; do not copy original text content.
+- exclude_segments must include social-platform UI tails, profile pages, recording artifacts, black frames and non-transferable end screens.
 - material_gaps_for_new_video entries MUST be drawn from: hook_visual, product_closeup, usage_scene, comparison, proof_visual, cta_visual, subtitle_text, title_card, transition, background.
 - Output STRICT JSON only.`;
 
@@ -112,8 +130,33 @@ function normalise(raw: string): VLMVideoAnalysis {
         purpose: shot.purpose ?? undefined
       }))
     : [];
+  const visualStyleRaw = parsed?.visual_style ?? parsed?.visualStyle ?? {};
+  const excludeSegmentsRaw = parsed?.exclude_segments ?? parsed?.excludeSegments;
+  const excludeSegments: VLMVideoAnalysis["excludeSegments"] = Array.isArray(excludeSegmentsRaw)
+    ? excludeSegmentsRaw
+        .map((segment: any) => {
+          const startSec = safeNumber(segment?.start_sec ?? segment?.startSec ?? segment?.start, NaN);
+          const endSec = safeNumber(segment?.end_sec ?? segment?.endSec ?? segment?.end, NaN);
+          if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) return undefined;
+          return {
+            startSec,
+            endSec,
+            reason: String(segment?.reason ?? "Excluded from transferable creative structure.")
+          };
+        })
+        .filter((segment): segment is NonNullable<VLMVideoAnalysis["excludeSegments"]>[number] => Boolean(segment))
+    : undefined;
   return {
     videoSummary: String(parsed?.video_summary ?? parsed?.videoSummary ?? ""),
+    videoType: parsed?.video_type ?? parsed?.videoType,
+    visualStyle: {
+      background: visualStyleRaw?.background,
+      layout: visualStyleRaw?.layout,
+      motionAsset: visualStyleRaw?.motion_asset ?? visualStyleRaw?.motionAsset,
+      colorProgression: visualStyleRaw?.color_progression ?? visualStyleRaw?.colorProgression,
+      typography: visualStyleRaw?.typography
+    },
+    excludeSegments,
     shots,
     structure: {
       hook: parsed?.structure?.hook,

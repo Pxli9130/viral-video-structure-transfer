@@ -223,12 +223,29 @@ export interface PackagingSpec {
   coverStyle?: string;
 }
 
+export interface VisualStyleSpec {
+  background?: string;
+  layout?: string;
+  motionAsset?: string;
+  colorProgression?: string[];
+  typography?: string;
+}
+
+export interface ExcludeSegment {
+  startSec: number;
+  endSec: number;
+  reason: string;
+}
+
 export interface StructureTemplate {
   id: string;
   projectId: string;
   name: string;
   vertical: Vertical;
   sourceSampleIds: string[];
+  videoType?: string;
+  visualStyle?: VisualStyleSpec;
+  excludeSegments?: ExcludeSegment[];
   targetDurationSec?: number;
   segments: StructureSegment[];
   requiredSlots: RequiredSlot[];
@@ -418,7 +435,7 @@ export interface TimelineMappingItem {
 }
 
 export interface MotionAtomSpec {
-  type: "ribbon_orbit" | "3d_ribbon_orbit";
+  type: "ribbon_orbit" | "3d_ribbon_orbit" | "wide_3d_ribbon_surface" | "ribbon_surface_3d";
   fulfilledBy: "procedural_generation";
   keywords: string[];
   colorProgression: string[];
@@ -426,6 +443,18 @@ export interface MotionAtomSpec {
   density: number;
   speed: number;
   opacity: number;
+  bandWidth?: number;
+  edgeWidth?: number;
+  gradientStops?: string[];
+  frontLayerCount?: number;
+  backLayerCount?: number;
+  textOnRibbon?: boolean;
+  depthLayering?: boolean;
+  twistIntensity?: number;
+  perspectiveStrength?: number;
+  specularHighlight?: boolean;
+  shadowOpacity?: number;
+  climaxBuild?: boolean;
   startSec: number;
   endSec: number;
 }

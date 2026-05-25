@@ -5,9 +5,11 @@ import type {
   KnowledgeAtom,
   RendererTarget,
   RenderOutput,
+  ExcludeSegment,
   StructureTemplate,
   TranscriptSegment,
   VideoAnalysisResult,
+  VisualStyleSpec,
   Vertical
 } from "./types.js";
 
@@ -86,6 +88,9 @@ export interface VLMShotInsight {
 
 export interface VLMVideoAnalysis {
   videoSummary: string;
+  videoType?: string;
+  visualStyle?: VisualStyleSpec;
+  excludeSegments?: ExcludeSegment[];
   shots: VLMShotInsight[];
   structure: {
     hook?: string;

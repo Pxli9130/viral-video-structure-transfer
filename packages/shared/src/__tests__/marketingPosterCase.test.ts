@@ -54,6 +54,21 @@ const marketingAnalysis: VideoAnalysisResult = {
 const marketingVlm: VLMVideoAnalysis = {
   videoSummary:
     "Marketing motion-graphic poster: minimal off-white poster, central static typography, 3D ribbon orbit, repeated English keywords, progressive color build, and a social-platform UI tail after the creative ending.",
+  videoType: "motion_graphic_marketing_poster",
+  visualStyle: {
+    background: "minimal_off_white",
+    layout: "central_static_typography",
+    motionAsset: "3d_ribbon_orbit",
+    colorProgression: ["blue", "purple", "pink", "orange", "yellow", "green"],
+    typography: "Chinese main title + English keyword repetition"
+  },
+  excludeSegments: [
+    {
+      startSec: 15.7,
+      endSec: 18.4,
+      reason: "social platform UI / screen recording tail; do not transfer"
+    }
+  ],
   shots: [
     { start: 0, end: 2, purpose: "hook", visual: "Main title appears immediately on a minimal poster layout.", transition: "none" },
     { start: 2, end: 6, purpose: "visual_attention", visual: "A large 3D ribbon enters diagonally and orbits around the title.", transition: "ribbon sweep" },
@@ -134,7 +149,22 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
 
     expect(validateStructureTemplate(template).valid).toBe(true);
     expect(template.name).toContain("Learned MG Structure");
-    expect(template.targetDurationSec).toBeCloseTo(18.433333, 1);
+    expect(template.videoType).toBe("motion_graphic_marketing_poster");
+    expect(template.visualStyle).toMatchObject({
+      background: "minimal_off_white",
+      layout: "central_static_typography",
+      motionAsset: "3d_ribbon_orbit",
+      typography: "Chinese main title + English keyword repetition"
+    });
+    expect(template.visualStyle?.colorProgression).toEqual(["blue", "purple", "pink", "orange", "yellow", "green"]);
+    expect(template.excludeSegments).toEqual([
+      expect.objectContaining({
+        startSec: 15.7,
+        endSec: 18.4,
+        reason: expect.stringContaining("social platform UI")
+      })
+    ]);
+    expect(template.targetDurationSec).toBeCloseTo(15.7, 1);
     expect(template.packaging.titleCardStyle).toContain("central static typography");
     expect(template.packaging.overlayStyle).toContain("3d_ribbon_orbit");
     expect(template.packaging.coverStyle).toContain("minimal off-white poster");
@@ -146,6 +176,35 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
     );
     expect(template.structureAtoms.map((atom) => atom.name).join(" ")).not.toContain("造物");
     expect(template.structureAtoms.map((atom) => atom.name).join(" ")).not.toContain("小红书");
+  });
+
+  it("does not reuse sample shots that overlap template excludeSegments", () => {
+    const template = buildFallbackTemplate(marketingAnalysis, "b2b_marketing_mg", projectId, marketingVlm);
+    const result = generateMigrationResult({
+      template,
+      sourceAsset: {
+        id: sampleAssetId,
+        projectId,
+        role: "source_video",
+        type: "video",
+        filename: "marketing.mov",
+        sourcePolicy: "demo_only",
+        tags: ["background", "cta_candidate"],
+        status: "ready",
+        createdAt: "2026-05-24T00:00:00.000Z"
+      },
+      sourceAnalysis: {
+        ...marketingAnalysis,
+        purpose: "source",
+        shots: marketingAnalysis.shots.map((shot) =>
+          shot.id === "marketing_shot_platform_tail" ? { ...shot, tags: ["hook_candidate", "product_like", "cta_candidate"] } : shot
+        )
+      },
+      request: aiChallengeRequest()
+    });
+
+    const selectedShotIds = result.slotMapping.map((mapping) => mapping.selectedShotId).filter(Boolean);
+    expect(selectedShotIds).not.toContain("marketing_shot_platform_tail");
   });
 
   it("migrates the poster structure to the AI challenge topic with visible gaps and no copied sample text", () => {
@@ -172,16 +231,24 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
       generation.fillPlan.some(
         (action) =>
           action.strategy === "procedural_generation" &&
-          action.rendererInstructions?.atom === "ribbon_orbit" &&
+          action.rendererInstructions?.atom === "wide_3d_ribbon_surface" &&
           action.rendererInstructions?.fulfilledBy === "procedural_generation"
       )
     ).toBe(true);
     expect(generation.timeline.renderPlan?.adapterOptions?.packagingStyle).toBe("mg_motion");
     expect(generation.timeline.renderPlan?.motionAtoms?.[0]).toMatchObject({
-      type: "ribbon_orbit",
+      type: "wide_3d_ribbon_surface",
       fulfilledBy: "procedural_generation",
-      style: "mg_motion"
+      style: "mg_motion",
+      textOnRibbon: true,
+      depthLayering: true,
+      specularHighlight: true,
+      climaxBuild: true
     });
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.bandWidth).toBeGreaterThanOrEqual(70);
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.frontLayerCount).toBeGreaterThanOrEqual(2);
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.backLayerCount).toBeGreaterThanOrEqual(2);
+    expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.gradientStops?.length).toBeGreaterThanOrEqual(6);
     expect(generation.timeline.renderPlan?.motionAtoms?.[0]?.keywords).toEqual(
       expect.arrayContaining(["STRUCTURE", "REMIX", "TIMELINE", "AIGC", "CREATION"])
     );
@@ -216,13 +283,18 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
     expect(highCtr.timeline.id).not.toBe(highQuality.timeline.id);
     expect(highCtr.timeline.renderPlan?.background).not.toBe(highQuality.timeline.renderPlan?.background);
     expect(highCtr.timeline.clips.length).toBeGreaterThan(highQuality.timeline.clips.length);
-    expect(mainAtom).toMatchObject({ type: "ribbon_orbit", fulfilledBy: "procedural_generation", style: "mg_motion" });
-    expect(ctrAtom).toMatchObject({ type: "ribbon_orbit", fulfilledBy: "procedural_generation", style: "mg_motion" });
-    expect(qualityAtom).toMatchObject({ type: "ribbon_orbit", fulfilledBy: "procedural_generation", style: "clean_premium" });
+    expect(mainAtom).toMatchObject({ type: "wide_3d_ribbon_surface", fulfilledBy: "procedural_generation", style: "mg_motion" });
+    expect(ctrAtom).toMatchObject({ type: "wide_3d_ribbon_surface", fulfilledBy: "procedural_generation", style: "mg_motion" });
+    expect(qualityAtom).toMatchObject({ type: "wide_3d_ribbon_surface", fulfilledBy: "procedural_generation", style: "clean_premium" });
     expect(ctrAtom?.density).toBeGreaterThan(mainAtom?.density ?? 0);
     expect(ctrAtom?.speed).toBeGreaterThan(mainAtom?.speed ?? 0);
+    expect(ctrAtom?.bandWidth).toBeGreaterThan(mainAtom?.bandWidth ?? 0);
+    expect(ctrAtom?.frontLayerCount).toBeGreaterThan(mainAtom?.frontLayerCount ?? 0);
     expect(qualityAtom?.density).toBeLessThan(mainAtom?.density ?? Number.POSITIVE_INFINITY);
     expect(qualityAtom?.speed).toBeLessThan(mainAtom?.speed ?? Number.POSITIVE_INFINITY);
+    expect(qualityAtom?.bandWidth).toBeLessThan(mainAtom?.bandWidth ?? Number.POSITIVE_INFINITY);
+    expect(qualityAtom?.textOnRibbon).toBe(true);
+    expect(qualityAtom?.depthLayering).toBe(true);
     expect(qualityAtom?.opacity).toBeGreaterThan(0);
   });
 });

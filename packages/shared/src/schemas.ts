@@ -170,6 +170,31 @@ export const structureTemplateSchema = {
     name: { type: "string" },
     vertical: { type: "string" },
     sourceSampleIds: { type: "array", items: { type: "string" } },
+    videoType: { type: "string" },
+    visualStyle: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        background: { type: "string" },
+        layout: { type: "string" },
+        motionAsset: { type: "string" },
+        colorProgression: { type: "array", items: { type: "string" } },
+        typography: { type: "string" }
+      }
+    },
+    excludeSegments: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["startSec", "endSec", "reason"],
+        additionalProperties: true,
+        properties: {
+          startSec: { type: "number", minimum: 0 },
+          endSec: { type: "number", minimum: 0 },
+          reason: { type: "string" }
+        }
+      }
+    },
     targetDurationSec: { type: "number" },
     segments: {
       type: "array",

@@ -32,6 +32,7 @@ import type {
   TimelineLayer,
   TimelineMappingItem,
   TranscriptSegment,
+  VisualStyleSpec,
   VideoAnalysisResult,
   Vertical
 } from "./types.js";
@@ -501,6 +502,91 @@ function buildRhythm(durationSec: number, vlm?: VLMVideoAnalysis): RhythmSpec {
   };
 }
 
+function parseRawVlm(raw: string | undefined): Record<string, any> | undefined {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as Record<string, any>;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTimeRange(value: unknown): { startSec: number; endSec: number } | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = value.match(/(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)/i);
+  if (!match) return undefined;
+  const startSec = Number(match[1]);
+  const endSec = Number(match[2]);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) return undefined;
+  return { startSec, endSec };
+}
+
+function normaliseExcludeSegments(input: unknown, durationSec: number): StructureTemplate["excludeSegments"] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item: any) => {
+      const range = parseTimeRange(item?.time ?? item?.range);
+      const startSec = Number(item?.startSec ?? item?.start_sec ?? item?.start ?? range?.startSec);
+      const endSec = Number(item?.endSec ?? item?.end_sec ?? item?.end ?? range?.endSec);
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) return undefined;
+      return {
+        startSec: round(clamp(startSec, 0, durationSec)),
+        endSec: round(clamp(endSec, 0, durationSec)),
+        reason: String(item?.reason ?? item?.notes ?? "Excluded from transferable creative structure.")
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function excludeSegmentsFromVlm(vlm: VLMVideoAnalysis | undefined, durationSec: number): StructureTemplate["excludeSegments"] {
+  const raw = parseRawVlm(vlm?.raw);
+  return normaliseExcludeSegments(vlm?.excludeSegments ?? raw?.excludeSegments ?? raw?.exclude_segments, durationSec);
+}
+
+function transferableDurationSec(durationSec: number, excludeSegments: StructureTemplate["excludeSegments"]): number {
+  if (!excludeSegments?.length) return durationSec;
+  const excludedSec = excludeSegments.reduce((sum, segment) => sum + Math.max(0, segment.endSec - segment.startSec), 0);
+  return Math.max(1, round(durationSec - excludedSec));
+}
+
+function videoTypeFromVlm(vlm: VLMVideoAnalysis | undefined, vertical: Vertical): string {
+  if (vlm?.videoType) return vlm.videoType;
+  const haystack = [vlm?.videoSummary, vlm?.packaging?.coverStyle, vlm?.packaging?.titleCards?.join(" "), vlm?.packaging?.stickers?.join(" ")]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (/motion|mg|poster|ribbon|title card|动态海报|海报|彩带/.test(haystack)) return "motion_graphic_marketing_poster";
+  if (/talking|口播|person|face/.test(haystack)) return "talking_head";
+  if (/vlog/.test(haystack)) return "vlog";
+  return vertical;
+}
+
+function colorProgressionFromText(text: string | undefined): string[] | undefined {
+  if (!text) return undefined;
+  const lower = text.toLowerCase();
+  const colors: string[] = [];
+  const push = (name: string) => {
+    if (lower.includes(name) && !colors.includes(name)) colors.push(name);
+  };
+  ["blue", "purple", "pink", "orange", "yellow", "green", "red", "black", "white"].forEach(push);
+  return colors.length ? colors : undefined;
+}
+
+function visualStyleFromVlm(vlm: VLMVideoAnalysis | undefined): VisualStyleSpec | undefined {
+  const explicit = vlm?.visualStyle;
+  const packaging = vlm?.packaging;
+  if (!explicit && !packaging) return undefined;
+  const stickers = packaging?.stickers ?? [];
+  const motionAsset = explicit?.motionAsset ?? stickers.find((item) => /ribbon|orbit|彩带/i.test(item)) ?? stickers[0];
+  return {
+    background: explicit?.background ?? packaging?.coverStyle,
+    layout: explicit?.layout ?? packaging?.titleCards?.[0],
+    motionAsset,
+    colorProgression: explicit?.colorProgression ?? colorProgressionFromText(packaging?.colorStyle),
+    typography: explicit?.typography ?? packaging?.titleCards?.[0]
+  };
+}
+
 function buildSourcePolicy(): SourcePolicyBlock {
   return {
     sampleSource: "demo_only",
@@ -543,6 +629,7 @@ export function buildFallbackTemplate(
   vlm?: VLMVideoAnalysis
 ): StructureTemplate {
   const durationSec = analysis.metadata.durationSec;
+  const excludeSegments = excludeSegmentsFromVlm(vlm, durationSec);
   const templateId = stableId("template", analysis.assetId, durationSec, vertical);
   const owningProject = projectId ?? analysis.projectId;
   const createdAt = nowIso();
@@ -553,7 +640,10 @@ export function buildFallbackTemplate(
     name: nameFromVlm(vlm, defaultName),
     vertical,
     sourceSampleIds: [analysis.assetId],
-    targetDurationSec: durationSec,
+    videoType: videoTypeFromVlm(vlm, vertical),
+    visualStyle: visualStyleFromVlm(vlm),
+    excludeSegments,
+    targetDurationSec: transferableDurationSec(durationSec, excludeSegments),
     segments: buildSegments(vlm),
     requiredSlots: buildRequiredSlots(),
     rhythm: buildRhythm(durationSec, vlm),
@@ -738,6 +828,15 @@ function preferredTagForSlot(slotType: SlotType): string {
   return map[slotType];
 }
 
+function overlapsExcludeSegment(shot: ShotCandidate, segment: NonNullable<StructureTemplate["excludeSegments"]>[number]): boolean {
+  return shot.endSec > segment.startSec && shot.startSec < segment.endSec;
+}
+
+function isExcludedSampleShot(template: StructureTemplate, source: SourceVideoUnderstanding, shot: ShotCandidate): boolean {
+  if (!source.assetId || !template.sourceSampleIds.includes(source.assetId)) return false;
+  return (template.excludeSegments ?? []).some((segment) => overlapsExcludeSegment(shot, segment));
+}
+
 export function matchSlots(
   template: StructureTemplate,
   source: SourceVideoUnderstanding,
@@ -745,7 +844,7 @@ export function matchSlots(
 ): SlotMapping[] {
   return template.requiredSlots.map((slot) => {
     const preferred = preferredTagForSlot(slot.slotType);
-    const candidateShots = source.candidates.filter((shot) => shot.tags.includes(preferred));
+    const candidateShots = source.candidates.filter((shot) => shot.tags.includes(preferred) && !isExcludedSampleShot(template, source, shot));
     if (candidateShots.length > 0) {
       const best = candidateShots[0];
       return {
@@ -1033,10 +1132,10 @@ export function createFillPlan(
             ? { text: `${brief.productName}: ${brief.sellingPoints[0] ?? brief.topic}`, layout: "centered" }
             : strategy === "packaging_overlay"
               ? { headline: brief.cta, sticker: "benefit_badge" }
-              : strategy === "reuse_with_crop_zoom"
-                ? { motion: "crop_zoom", fit: "cover" }
+                : strategy === "reuse_with_crop_zoom"
+                  ? { motion: "crop_zoom", fit: "cover" }
                 : strategy === "procedural_generation"
-                  ? { atom: "ribbon_orbit", fulfilledBy: "procedural_generation" }
+                  ? { atom: "wide_3d_ribbon_surface", fulfilledBy: "procedural_generation" }
                 : strategy === "aigc_placeholder"
                   ? { aigcPrompt: `Clean vertical MG background for ${brief.productName}` }
                   : { mergeIntoSlotId: mergeIntoClipId, note: "Merge this slot's copy into adjacent matched sibling at render time." }
@@ -1049,10 +1148,10 @@ export function createFillPlan(
     {
       slotId: "synthetic_dynamic_3d_ribbon_asset_gap",
       strategy: "procedural_generation",
-      reason: "dynamic_3d_ribbon_asset -> fulfilled_by_procedural_generation -> ribbon_orbit rendered.",
-      targetClipId: stableId("motion_atom", request.projectId, "ribbon_orbit"),
+      reason: "dynamic_3d_ribbon_asset -> fulfilled_by_procedural_generation -> wide_3d_ribbon_surface rendered.",
+      targetClipId: stableId("motion_atom", request.projectId, "wide_3d_ribbon_surface"),
       rendererInstructions: {
-        atom: "ribbon_orbit",
+        atom: "wide_3d_ribbon_surface",
         fulfilledBy: "procedural_generation",
         missingMotif: "dynamic_3d_ribbon_asset"
       }
@@ -1098,21 +1197,22 @@ const RIBBON_KEYWORDS = ["STRUCTURE", "REMIX", "TIMELINE", "AIGC", "CREATION"];
 const RIBBON_COLORS = ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"];
 
 function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, durationSec: number): MotionAtomSpec[] {
-  const hasProceduralRibbon = fillPlan.some(
+  const ribbonAction = fillPlan.find(
     (action) =>
       action.strategy === "procedural_generation" &&
       String(action.rendererInstructions?.atom ?? "").includes("ribbon")
   );
-  if (!hasProceduralRibbon) return [];
+  if (!ribbonAction) return [];
   const clean = request.controls?.packagingStyle === "clean";
   const aggressive = request.controls?.hookIntensity === "aggressive";
   const style: MotionAtomSpec["style"] = clean ? "clean_premium" : "mg_motion";
   const density = clean ? 2 : aggressive ? 5 : 3;
   const speed = clean ? 0.55 : aggressive ? 1.35 : 0.92;
   const opacity = clean ? 0.32 : aggressive ? 0.82 : 0.62;
+  const wideSurface = String(ribbonAction.rendererInstructions?.atom ?? "").includes("wide_3d_ribbon_surface");
   return [
     {
-      type: "ribbon_orbit",
+      type: wideSurface ? "wide_3d_ribbon_surface" : "ribbon_orbit",
       fulfilledBy: "procedural_generation",
       keywords: RIBBON_KEYWORDS,
       colorProgression: RIBBON_COLORS,
@@ -1120,6 +1220,18 @@ function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, du
       density,
       speed,
       opacity,
+      bandWidth: clean ? 54 : aggressive ? 104 : 82,
+      edgeWidth: clean ? 10 : aggressive ? 18 : 14,
+      gradientStops: RIBBON_COLORS,
+      frontLayerCount: clean ? 1 : aggressive ? 3 : 2,
+      backLayerCount: clean ? 1 : aggressive ? 3 : 2,
+      textOnRibbon: true,
+      depthLayering: true,
+      twistIntensity: clean ? 0.28 : aggressive ? 0.78 : 0.56,
+      perspectiveStrength: clean ? 0.22 : aggressive ? 0.68 : 0.48,
+      specularHighlight: true,
+      shadowOpacity: clean ? 0.18 : aggressive ? 0.58 : 0.42,
+      climaxBuild: true,
       startSec: 0,
       endSec: durationSec
     }

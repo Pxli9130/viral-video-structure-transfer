@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 
 interface MotionAtomLike {
-  type: "ribbon_orbit" | "3d_ribbon_orbit";
+  type: "ribbon_orbit" | "3d_ribbon_orbit" | "wide_3d_ribbon_surface" | "ribbon_surface_3d";
   fulfilledBy: "procedural_generation";
   keywords: string[];
   colorProgression: string[];
@@ -10,6 +10,18 @@ interface MotionAtomLike {
   density: number;
   speed: number;
   opacity: number;
+  bandWidth?: number;
+  edgeWidth?: number;
+  gradientStops?: string[];
+  frontLayerCount?: number;
+  backLayerCount?: number;
+  textOnRibbon?: boolean;
+  depthLayering?: boolean;
+  twistIntensity?: number;
+  perspectiveStrength?: number;
+  specularHighlight?: boolean;
+  shadowOpacity?: number;
+  climaxBuild?: boolean;
   startSec: number;
   endSec: number;
 }
@@ -23,6 +35,9 @@ interface TimelineClipLike {
   subtitleText?: string;
   visualIntent?: string;
   layers?: Array<{ kind: string; text?: string }>;
+  phaseLabel?: string;
+  phaseSubtitle?: string;
+  mappingPairs?: Array<{ sample: string; arrow?: string; target: string }>;
 }
 
 interface TimelineLike {
@@ -90,7 +105,7 @@ const ROLE_BACKGROUNDS: Record<string, [string, string]> = {
 };
 
 function hasRibbonAtom(timeline: TimelineLike): boolean {
-  return (timeline.renderPlan?.motionAtoms ?? []).some((atom) => atom.type === "ribbon_orbit" || atom.type === "3d_ribbon_orbit");
+  return (timeline.renderPlan?.motionAtoms ?? []).some((atom) => isRibbonAtom(atom));
 }
 
 function clipBackground(role: string, timeline: TimelineLike): string {
@@ -114,7 +129,15 @@ function foregroundFor(timeline: TimelineLike): { text: string; muted: string; a
 }
 
 function ribbonAtomsFor(timeline: TimelineLike): MotionAtomLike[] {
-  return (timeline.renderPlan?.motionAtoms ?? []).filter((atom) => atom.type === "ribbon_orbit" || atom.type === "3d_ribbon_orbit");
+  return (timeline.renderPlan?.motionAtoms ?? []).filter((atom) => isRibbonAtom(atom));
+}
+
+function isRibbonAtom(atom: MotionAtomLike): boolean {
+  return atom.type === "ribbon_orbit" || atom.type === "3d_ribbon_orbit" || atom.type === "wide_3d_ribbon_surface" || atom.type === "ribbon_surface_3d";
+}
+
+function isSurfaceRibbonAtom(atom: MotionAtomLike): boolean {
+  return atom.type === "wide_3d_ribbon_surface" || atom.type === "ribbon_surface_3d";
 }
 
 function readableSubtitle(text: string | undefined): string {
@@ -253,11 +276,143 @@ const RibbonOrbitLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: number }>
   );
 };
 
+const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: number; layer: "back" | "front" }> = ({ atom, clipStartSec, layer }) => {
+  const frame = useCurrentFrame();
+  const { fps, width, height } = useVideoConfig();
+  const globalSec = clipStartSec + frame / fps;
+  if (globalSec < atom.startSec || globalSec > atom.endSec) return null;
+
+  const clean = atom.style === "clean_premium";
+  const colors = atom.gradientStops?.length
+    ? atom.gradientStops
+    : atom.colorProgression.length
+      ? atom.colorProgression
+      : ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"];
+  const cx = width / 2;
+  const cy = height * (clean ? 0.44 : 0.46);
+  const rx = width * (clean ? 0.52 : 0.62);
+  const ry = height * (clean ? 0.16 : 0.23);
+  const bandWidth = atom.bandWidth ?? (clean ? 54 : 86);
+  const edgeWidth = atom.edgeWidth ?? Math.max(8, bandWidth * 0.16);
+  const count = Math.max(1, Math.min(5, Math.round(layer === "front" ? atom.frontLayerCount ?? 2 : atom.backLayerCount ?? 2)));
+  const speed = atom.speed * (layer === "front" ? 1.05 : 0.85);
+  const baseOpacity = Math.max(0.12, Math.min(0.95, atom.opacity * (layer === "front" ? 0.86 : 0.7)));
+  const twist = atom.twistIntensity ?? (clean ? 0.28 : 0.58);
+  const perspective = atom.perspectiveStrength ?? (clean ? 0.22 : 0.48);
+  const shadowOpacity = atom.shadowOpacity ?? (clean ? 0.18 : 0.42);
+  const progress = globalSec * speed;
+  const climax = atom.climaxBuild ? Math.min(1, Math.max(0.72, globalSec / Math.max(1, atom.endSec - atom.startSec))) : 1;
+  const paths = [
+    `M ${cx - rx} ${cy - ry * 0.1} C ${cx - rx * 0.58} ${cy - ry * 1.55}, ${cx + rx * 0.55} ${cy - ry * 1.38}, ${cx + rx} ${cy + ry * 0.02} C ${cx + rx * 0.5} ${cy + ry * 1.42}, ${cx - rx * 0.5} ${cy + ry * 1.45}, ${cx - rx} ${cy - ry * 0.1}`,
+    `M ${cx - rx * 0.92} ${cy + ry * 0.52} C ${cx - rx * 0.18} ${cy - ry * 1.12}, ${cx + rx * 0.22} ${cy + ry * 1.35}, ${cx + rx * 0.98} ${cy - ry * 0.42}`,
+    `M ${cx - rx * 1.05} ${cy - ry * 0.44} C ${cx - rx * 0.38} ${cy + ry * 1.24}, ${cx + rx * 0.46} ${cy - ry * 1.18}, ${cx + rx * 1.04} ${cy + ry * 0.52}`
+  ];
+
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none", overflow: "hidden" }}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ position: "absolute", inset: 0 }}>
+        <defs>
+          {Array.from({ length: count }).map((_, index) => (
+            <linearGradient key={`grad-${index}`} id={`surfaceGrad-${atom.style}-${layer}-${index}`} x1="8%" y1="22%" x2="92%" y2="78%">
+              {colors.map((color, colorIndex) => (
+                <stop
+                  key={`${color}-${colorIndex}`}
+                  offset={`${Math.round((colorIndex / Math.max(1, colors.length - 1)) * 100)}%`}
+                  stopColor={color}
+                />
+              ))}
+            </linearGradient>
+          ))}
+          <filter id={`surfaceShadow-${atom.style}-${layer}`} x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx={layer === "front" ? 0 : 8} dy={layer === "front" ? 10 : 18} stdDeviation={clean ? 7 : 12} floodColor="#020617" floodOpacity={shadowOpacity} />
+          </filter>
+        </defs>
+        {Array.from({ length: count }).map((_, index) => {
+          const path = paths[index % paths.length];
+          const pathId = `surfacePath-${atom.style}-${layer}-${index}`;
+          const rotation = progress * (layer === "front" ? 16 : -10) + index * 27 + (layer === "front" ? 8 : -11);
+          const translateY = Math.sin(progress * 1.5 + index * 0.7) * (clean ? 12 : 34);
+          const scaleX = 1 + Math.sin(progress * 1.1 + index) * perspective * 0.16;
+          const scaleY = 0.9 + Math.cos(progress * 1.25 + index) * perspective * 0.14;
+          const skew = Math.sin(progress * 1.7 + index) * twist * (layer === "front" ? 8 : 5);
+          const dash = clean ? 720 : 620;
+          const gap = clean ? 260 : 190;
+          const dashOffset = -globalSec * (clean ? 82 : 128) * speed - index * 190;
+          const surfaceOpacity = baseOpacity * climax * (1 - index * 0.08);
+          return (
+            <g
+              key={`${layer}-${index}`}
+              style={{
+                transform: `translate(${cx}px, ${cy + translateY}px) rotate(${rotation}deg) skewX(${skew}deg) scale(${scaleX}, ${scaleY}) translate(${-cx}px, ${-cy}px)`,
+                transformOrigin: `${cx}px ${cy}px`
+              }}
+            >
+              <path id={pathId} d={path} fill="none" stroke="transparent" strokeWidth={1} />
+              <path
+                d={path}
+                fill="none"
+                stroke="#111827"
+                strokeWidth={bandWidth + edgeWidth}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={`${dash} ${gap}`}
+                strokeDashoffset={dashOffset}
+                opacity={surfaceOpacity * 0.7}
+                filter={`url(#surfaceShadow-${atom.style}-${layer})`}
+              />
+              <path
+                d={path}
+                fill="none"
+                stroke={`url(#surfaceGrad-${atom.style}-${layer}-${index})`}
+                strokeWidth={bandWidth}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={`${dash} ${gap}`}
+                strokeDashoffset={dashOffset}
+                opacity={surfaceOpacity}
+              />
+              {atom.specularHighlight ? (
+                <path
+                  d={path}
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth={Math.max(4, bandWidth * 0.18)}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={`${dash * 0.34} ${gap * 2.2}`}
+                  strokeDashoffset={dashOffset - 80}
+                  opacity={clean ? 0.22 : 0.34}
+                />
+              ) : null}
+              {atom.textOnRibbon && layer === "front" ? (
+                <text
+                  fill="#f8fafc"
+                  fontSize={clean ? 15 : 18}
+                  fontWeight={800}
+                  letterSpacing={0}
+                  opacity={clean ? 0.7 : 0.9}
+                  style={{ textShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
+                >
+                  <textPath href={`#${pathId}`} startOffset={`${(globalSec * 18 * speed + index * 28) % 100}%`}>
+                    {`${atom.keywords.join("   ")}   ${atom.keywords.join("   ")}`}
+                  </textPath>
+                </text>
+              ) : null}
+            </g>
+          );
+        })}
+      </svg>
+    </AbsoluteFill>
+  );
+};
+
 const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }> = ({ clip, timeline }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const colors = foregroundFor(timeline);
   const ribbonAtoms = ribbonAtomsFor(timeline);
+  const surfaceRibbonAtoms = ribbonAtoms.filter(isSurfaceRibbonAtom);
+  const orbitRibbonAtoms = ribbonAtoms.filter((atom) => !isSurfaceRibbonAtom(atom));
   const hasRibbon = ribbonAtoms.length > 0;
   const primaryAtom = ribbonAtoms[0];
   const clean = primaryAtom?.style === "clean_premium";
@@ -279,7 +434,10 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
           'system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif'
       }}
     >
-      {ribbonAtoms.map((atom) => (
+      {surfaceRibbonAtoms.map((atom) => (
+        <RibbonSurface3DLayer key={`${atom.type}-${atom.style}-back`} atom={atom} clipStartSec={clip.startSec} layer="back" />
+      ))}
+      {orbitRibbonAtoms.map((atom) => (
         <RibbonOrbitLayer key={`${atom.type}-${atom.style}`} atom={atom} clipStartSec={clip.startSec} />
       ))}
       <div
@@ -294,8 +452,58 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
           opacity
         }}
       >
-        {hasRibbon ? "AI FULL-STACK CHALLENGE 2026" : clip.role}
+        {clip.phaseLabel ? clip.phaseLabel : hasRibbon ? "AI FULL-STACK CHALLENGE 2026" : clip.role}
       </div>
+      {clip.phaseSubtitle ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 112,
+            left: 64,
+            right: 64,
+            fontSize: eyebrowSize + 4,
+            fontWeight: 600,
+            color: colors.muted,
+            letterSpacing: 0,
+            opacity
+          }}
+        >
+          {clip.phaseSubtitle}
+        </div>
+      ) : null}
+      {clip.mappingPairs && clip.mappingPairs.length > 0 ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 60,
+            right: 60,
+            bottom: 200,
+            display: "grid",
+            gridTemplateColumns: "1fr auto 1fr",
+            rowGap: 10,
+            columnGap: 12,
+            alignItems: "center",
+            color: colors.muted,
+            fontSize: Math.round(Math.min(width, height) * 0.025),
+            fontWeight: 600,
+            background: clean ? "rgba(255,255,255,0.78)" : "rgba(15,23,42,0.55)",
+            padding: "16px 18px",
+            borderRadius: 16,
+            opacity
+          }}
+        >
+          <div style={{ textAlign: "right", fontWeight: 700, color: colors.accent }}>Sample 样例</div>
+          <div />
+          <div style={{ fontWeight: 700, color: colors.accent }}>New 重构</div>
+          {clip.mappingPairs.slice(0, 4).map((pair, idx) => (
+            <React.Fragment key={idx}>
+              <div style={{ textAlign: "right" }}>{pair.sample}</div>
+              <div style={{ textAlign: "center", opacity: 0.7 }}>{pair.arrow ?? "→"}</div>
+              <div>{pair.target}</div>
+            </React.Fragment>
+          ))}
+        </div>
+      ) : null}
       <div
         style={{
           position: "absolute",
@@ -370,6 +578,9 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
           </div>
         </>
       ) : null}
+      {surfaceRibbonAtoms.map((atom) => (
+        <RibbonSurface3DLayer key={`${atom.type}-${atom.style}-front`} atom={atom} clipStartSec={clip.startSec} layer="front" />
+      ))}
     </AbsoluteFill>
   );
 };

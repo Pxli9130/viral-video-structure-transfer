@@ -39,6 +39,58 @@
         "type": "string"
       }
     },
+    "videoType": {
+      "type": "string"
+    },
+    "visualStyle": {
+      "type": "object",
+      "properties": {
+        "background": {
+          "type": "string"
+        },
+        "layout": {
+          "type": "string"
+        },
+        "motionAsset": {
+          "type": "string"
+        },
+        "colorProgression": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "typography": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "excludeSegments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "startSec",
+          "endSec",
+          "reason"
+        ],
+        "properties": {
+          "startSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "endSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
     "targetDurationSec": {
       "type": "number"
     },
@@ -157,6 +209,7 @@
                 "text_card",
                 "packaging_overlay",
                 "reorder_structure",
+                "procedural_generation",
                 "aigc_placeholder"
               ]
             }
