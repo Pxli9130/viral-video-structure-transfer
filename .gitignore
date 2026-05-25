@@ -13,3 +13,7 @@ storage/db/
 storage/*.json
 *.log
 npm-debug.log*
+test_videos/
+assets/
+spec_v2/implementation-status.md
+docs/

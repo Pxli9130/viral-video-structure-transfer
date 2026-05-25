@@ -251,7 +251,15 @@ textarea {
   margin-bottom: 14px;
 }
 
+.analysis-summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
 .metrics div,
+.analysis-summary article,
 .asset-list article,
 .gap-list article,
 .story-list article,
@@ -268,6 +276,7 @@ textarea {
 }
 
 .metrics span,
+.analysis-summary span,
 .asset-list span,
 .gap-list span,
 .story-list span,
@@ -277,6 +286,14 @@ textarea {
   font-size: 13px;
   line-height: 1.35;
   margin-top: 4px;
+}
+
+.gap-list small,
+.story-list small {
+  color: #475569;
+  display: block;
+  font-size: 12px;
+  margin-top: 6px;
 }
 
 .segment-row,
@@ -306,6 +323,14 @@ textarea {
   overflow: auto;
   padding: 14px;
   white-space: pre-wrap;
+}
+
+.render-player {
+  aspect-ratio: 9 / 16;
+  background: #020617;
+  border-radius: 8px;
+  max-height: 420px;
+  width: min(260px, 100%);
 }
 
 table {
@@ -349,6 +374,29 @@ th {
 .pill.missing {
   background: #ffe4e6;
   color: #be123c;
+}
+
+.severity {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 11px;
+  margin-left: 8px;
+  padding: 3px 7px;
+}
+
+.severity.high {
+  background: #ffe4e6;
+  color: #be123c;
+}
+
+.severity.medium {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.severity.low {
+  background: #dcfce7;
+  color: #166534;
 }
 
 .timeline-column {
@@ -418,6 +466,7 @@ th {
 
   .form-grid,
   .metrics,
+  .analysis-summary,
   .segment-row {
     grid-template-columns: 1fr;
   }

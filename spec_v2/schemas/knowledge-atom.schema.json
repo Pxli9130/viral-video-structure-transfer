@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-video-structure-transfer.local/schemas/knowledge-atom.schema.json",
+  "title": "KnowledgeAtom",
+  "type": "object",
+  "required": [
+    "id",
+    "projectId",
+    "templateId",
+    "role",
+    "category",
+    "name",
+    "description",
+    "applicableVerticals",
+    "usageRules"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string"
+    },
+    "templateId": {
+      "type": "string"
+    },
+    "role": {
+      "enum": [
+        "hook",
+        "setup",
+        "body",
+        "proof",
+        "transition",
+        "cta"
+      ]
+    },
+    "category": {
+      "enum": [
+        "hook_pattern",
+        "rhythm_pattern",
+        "subtitle_style",
+        "packaging_pattern",
+        "transition_pattern",
+        "cta_pattern",
+        "gap_fill_strategy",
+        "shot_pattern"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "applicableVerticals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "usageRules": {
+      "type": "string"
+    },
+    "exampleMapping": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "additionalProperties": true
+}

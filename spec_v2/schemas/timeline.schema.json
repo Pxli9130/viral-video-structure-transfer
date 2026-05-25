@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-video-structure-transfer.local/schemas/timeline.schema.json",
+  "title": "Timeline",
+  "type": "object",
+  "required": [
+    "id",
+    "projectId",
+    "generationId",
+    "durationSec",
+    "aspectRatio",
+    "rendererTarget",
+    "clips",
+    "mapping",
+    "gapReport",
+    "fillPlan",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string"
+    },
+    "generationId": {
+      "type": "string"
+    },
+    "durationSec": {
+      "type": "number",
+      "minimum": 0
+    },
+    "aspectRatio": {
+      "enum": [
+        "9:16",
+        "16:9",
+        "1:1"
+      ]
+    },
+    "rendererTarget": {
+      "enum": [
+        "mock_preview",
+        "html_preview",
+        "ffmpeg",
+        "remotion",
+        "hyperframes"
+      ]
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "startSec",
+          "durationSec",
+          "type",
+          "layers"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "hook",
+              "setup",
+              "body",
+              "proof",
+              "transition",
+              "cta"
+            ]
+          },
+          "startSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "durationSec": {
+            "type": "number",
+            "minimum": 0
+          },
+          "type": {
+            "enum": [
+              "video",
+              "image",
+              "text_card",
+              "generated_card",
+              "placeholder"
+            ]
+          },
+          "sourceAssetId": {
+            "type": "string"
+          },
+          "sourceShotId": {
+            "type": "string"
+          },
+          "visualIntent": {
+            "type": "string"
+          },
+          "scriptText": {
+            "type": "string"
+          },
+          "subtitleText": {
+            "type": "string"
+          },
+          "transitionIn": {
+            "type": "string"
+          },
+          "transitionOut": {
+            "type": "string"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "kind"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "base_visual",
+                    "subtitle",
+                    "title_bar",
+                    "sticker",
+                    "arrow",
+                    "highlight",
+                    "background",
+                    "audio"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "object"
+                },
+                "timing": {
+                  "type": "object"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "gapFillStrategy": {
+            "enum": [
+              "none",
+              "reuse_with_crop_zoom",
+              "text_card",
+              "packaging_overlay",
+              "reorder_structure",
+              "aigc_placeholder"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "mapping": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "templateSegmentId",
+          "atomIds",
+          "targetClipIds",
+          "explanation"
+        ],
+        "properties": {
+          "templateSegmentId": {
+            "type": "string"
+          },
+          "atomIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "targetClipIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "explanation": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "gapReport": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "slotId",
+          "status",
+          "severity",
+          "reason",
+          "impact"
+        ],
+        "properties": {
+          "slotId": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "matched",
+              "weak_match",
+              "missing"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "fillPlan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "slotId",
+          "strategy",
+          "reason",
+          "targetClipId"
+        ],
+        "properties": {
+          "slotId": {
+            "type": "string"
+          },
+          "strategy": {
+            "enum": [
+              "reuse_with_crop_zoom",
+              "text_card",
+              "packaging_overlay",
+              "reorder_structure",
+              "aigc_placeholder"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "targetClipId": {
+            "type": "string"
+          },
+          "rendererInstructions": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "renderPlan": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "createdAt": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

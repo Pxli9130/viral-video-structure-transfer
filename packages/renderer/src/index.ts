@@ -1,8 +1,8 @@
-import type { RenderOutput, Timeline } from "@vvst/shared";
+import type { RenderOutput, RendererTarget, Timeline } from "@vvst/shared";
 import { nowIso, stableId } from "@vvst/shared";
 
 export interface RendererAdapter {
-  target: "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+  target: RendererTarget;
   render(timeline: Timeline, generationId: string): Promise<RenderOutput>;
 }
 
@@ -15,22 +15,22 @@ function escapeHtml(value: string): string {
 }
 
 export class HtmlPreviewRenderer implements RendererAdapter {
-  target = "html_preview" as const;
+  target: RendererTarget = "html_preview";
 
   async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
     const clips = timeline.clips
       .map((clip, index) => {
-        const subtitle = escapeHtml(
-          clip.layers.find((layer) => layer.type === "subtitle")?.text ?? clip.visualIntent ?? `Clip ${index + 1}`
-        );
-        const source = escapeHtml(clip.role);
+        const subtitleLayer = clip.layers.find((layer) => layer.kind === "subtitle");
+        const subtitle = escapeHtml(clip.subtitleText ?? subtitleLayer?.text ?? clip.visualIntent ?? `Clip ${index + 1}`);
+        const role = escapeHtml(clip.role);
         const fill = clip.gapFillStrategy && clip.gapFillStrategy !== "none" ? ` / ${escapeHtml(clip.gapFillStrategy)}` : "";
+        const sourceTag = clip.sourceAssetId ? "source video shot" : clip.type === "text_card" ? "text card" : clip.type;
         return `<article class="clip">
   <div class="frame">
     <strong>${subtitle}</strong>
-    <span>${source}${fill}</span>
+    <span>${role}${fill}</span>
   </div>
-  <p>${escapeHtml(clip.sourceSegmentId ?? clip.role)} · ${clip.durationSec}s</p>
+  <p>${escapeHtml(sourceTag)} · ${clip.durationSec.toFixed(1)}s</p>
 </article>`;
       })
       .join("\n");
@@ -40,11 +40,12 @@ export class HtmlPreviewRenderer implements RendererAdapter {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Timeline Preview</title>
+  <title>Timeline Preview · ${escapeHtml(timeline.id)}</title>
   <style>
     body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #f8fafc; color: #172033; }
     main { max-width: 1120px; margin: 0 auto; padding: 32px; }
-    h1 { font-size: 28px; margin: 0 0 16px; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    .meta { color: #475569; font-size: 13px; margin-bottom: 24px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
     .clip { border: 1px solid #d7dee8; border-radius: 8px; background: #fff; overflow: hidden; }
     .frame { aspect-ratio: 9 / 16; display: flex; flex-direction: column; justify-content: end; gap: 12px; padding: 18px; background: linear-gradient(160deg, #0f766e, #111827 70%); color: white; }
@@ -56,6 +57,7 @@ export class HtmlPreviewRenderer implements RendererAdapter {
 <body>
   <main>
     <h1>Timeline Preview</h1>
+    <p class="meta">${escapeHtml(timeline.aspectRatio)} · ${timeline.durationSec.toFixed(1)}s · target: ${escapeHtml(timeline.rendererTarget)}</p>
     <div class="grid">${clips}</div>
   </main>
 </body>
@@ -65,7 +67,7 @@ export class HtmlPreviewRenderer implements RendererAdapter {
       renderId: stableId("render", generationId, timeline.id),
       generationId,
       rendererTarget: this.target,
-      status: "succeeded",
+      status: "completed",
       previewHtml,
       createdAt: nowIso()
     };
@@ -73,15 +75,15 @@ export class HtmlPreviewRenderer implements RendererAdapter {
 }
 
 export class MockRenderer implements RendererAdapter {
-  target = "mock_preview" as const;
+  target: RendererTarget = "mock_preview";
 
   async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
     return {
       renderId: stableId("render_mock", generationId, timeline.id),
       generationId,
       rendererTarget: this.target,
-      status: "succeeded",
-      previewHtml: "<p>Mock preview generated.</p>",
+      status: "completed",
+      previewHtml: `<p>Mock preview for timeline ${timeline.id} (${timeline.durationSec}s).</p>`,
       createdAt: nowIso()
     };
   }

@@ -1,0 +1,445 @@
+{
+  "id": "timeline_rldt",
+  "projectId": "demo_v1_2_project",
+  "generationId": "generation_119r9ef",
+  "durationSec": 15.01,
+  "aspectRatio": "9:16",
+  "rendererTarget": "html_preview",
+  "clips": [
+    {
+      "id": "clip_8ip3yk",
+      "role": "hook",
+      "startSec": 0,
+      "durationSec": 1.5,
+      "type": "video",
+      "sourceAssetId": "demo_source_video",
+      "sourceShotId": "source_shot_1",
+      "visualIntent": "Opening product/result visual",
+      "scriptText": "Open with the pain point or visible result in one line.",
+      "subtitleText": "便携式桌面加湿器: 小巧便携",
+      "transitionIn": "none",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_1nqy7i4",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_visual_3p78cz",
+          "kind": "base_visual",
+          "assetId": "demo_source_video",
+          "sourceShotId": "source_shot_1",
+          "timing": {
+            "fit": "cover",
+            "motion": "crop_zoom"
+          }
+        },
+        {
+          "id": "layer_subtitle_1osumoi",
+          "kind": "subtitle",
+          "text": "便携式桌面加湿器: 小巧便携",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "none"
+    },
+    {
+      "id": "clip_14yls5i",
+      "role": "hook",
+      "startSec": 1.5,
+      "durationSec": 1.5,
+      "type": "text_card",
+      "visualIntent": "Selling point subtitle copy",
+      "scriptText": "Open with the pain point or visible result in one line.",
+      "subtitleText": "静音",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_r4h6l7",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_card_1880jlx",
+          "kind": "base_visual",
+          "text": "静音",
+          "style": {
+            "card": "MG card with icon/sticker and 1-line headline",
+            "role": "hook",
+            "strategy": "text_card"
+          }
+        },
+        {
+          "id": "layer_subtitle_1880jlx",
+          "kind": "subtitle",
+          "text": "静音",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "text_card"
+    },
+    {
+      "id": "clip_1cqrbbb",
+      "role": "body",
+      "startSec": 3,
+      "durationSec": 2.5,
+      "type": "video",
+      "sourceAssetId": "demo_source_video",
+      "sourceShotId": "source_shot_1",
+      "visualIntent": "Concrete product/feature closeup",
+      "scriptText": "One benefit per shot, alternating closeup, usage and text card.",
+      "subtitleText": "小巧便携 in one compact design",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_1pcdwy7",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_visual_1j9bv8o",
+          "kind": "base_visual",
+          "assetId": "demo_source_video",
+          "sourceShotId": "source_shot_1",
+          "timing": {
+            "fit": "cover",
+            "motion": "crop_zoom"
+          }
+        },
+        {
+          "id": "layer_subtitle_tb700k",
+          "kind": "subtitle",
+          "text": "小巧便携 in one compact design",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "none"
+    },
+    {
+      "id": "clip_11j3e94",
+      "role": "body",
+      "startSec": 5.5,
+      "durationSec": 2.5,
+      "type": "video",
+      "sourceAssetId": "demo_source_video",
+      "sourceShotId": "source_shot_1",
+      "visualIntent": "Usage / context / scenario",
+      "scriptText": "One benefit per shot, alternating closeup, usage and text card.",
+      "subtitleText": "便携式桌面加湿器 fits 办公室久坐人群、学生",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_1ciyxzd",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_visual_1kloyfq",
+          "kind": "base_visual",
+          "assetId": "demo_source_video",
+          "sourceShotId": "source_shot_1",
+          "timing": {
+            "fit": "cover",
+            "motion": "crop_zoom"
+          }
+        },
+        {
+          "id": "layer_subtitle_19dvl4z",
+          "kind": "subtitle",
+          "text": "便携式桌面加湿器 fits 办公室久坐人群、学生",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "none"
+    },
+    {
+      "id": "clip_14yls5i",
+      "role": "body",
+      "startSec": 8,
+      "durationSec": 2.5,
+      "type": "text_card",
+      "visualIntent": "Selling point subtitle copy",
+      "scriptText": "One benefit per shot, alternating closeup, usage and text card.",
+      "subtitleText": "静音",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_r4h6l7",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_card_1880jlx",
+          "kind": "base_visual",
+          "text": "静音",
+          "style": {
+            "card": "MG card with icon/sticker and 1-line headline",
+            "role": "body",
+            "strategy": "text_card"
+          }
+        },
+        {
+          "id": "layer_subtitle_1880jlx",
+          "kind": "subtitle",
+          "text": "静音",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "text_card"
+    },
+    {
+      "id": "clip_16etkhb",
+      "role": "proof",
+      "startSec": 10.5,
+      "durationSec": 2.25,
+      "type": "video",
+      "sourceAssetId": "demo_source_video",
+      "sourceShotId": "source_shot_5",
+      "visualIntent": "Proof / contrast / before-after",
+      "scriptText": "Before/after or pain/solution; concrete and skimmable.",
+      "subtitleText": "小巧便携 with clearer everyday value",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_nm94h5",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_visual_bm2lh2",
+          "kind": "base_visual",
+          "assetId": "demo_source_video",
+          "sourceShotId": "source_shot_5",
+          "timing": {
+            "fit": "cover",
+            "motion": "crop_zoom"
+          }
+        },
+        {
+          "id": "layer_subtitle_7zewqq",
+          "kind": "subtitle",
+          "text": "小巧便携 with clearer everyday value",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "none"
+    },
+    {
+      "id": "clip_87ig89",
+      "role": "cta",
+      "startSec": 12.75,
+      "durationSec": 1.13,
+      "type": "video",
+      "sourceAssetId": "demo_source_video",
+      "sourceShotId": "source_shot_1",
+      "visualIntent": "Closing CTA visual / card",
+      "scriptText": "CTA verb + strongest benefit recap.",
+      "subtitleText": "点击了解更多",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_1ejarkg",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_visual_1gc5ko7",
+          "kind": "base_visual",
+          "assetId": "demo_source_video",
+          "sourceShotId": "source_shot_1",
+          "timing": {
+            "fit": "cover",
+            "motion": "crop_zoom"
+          }
+        },
+        {
+          "id": "layer_subtitle_mom6lj",
+          "kind": "subtitle",
+          "text": "点击了解更多",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        },
+        {
+          "id": "layer_cta_overlay_1ejarkg",
+          "kind": "highlight",
+          "text": "点击了解更多",
+          "style": {
+            "emphasis": "strong"
+          }
+        }
+      ],
+      "gapFillStrategy": "none"
+    },
+    {
+      "id": "clip_14yls5i",
+      "role": "cta",
+      "startSec": 13.88,
+      "durationSec": 1.13,
+      "type": "text_card",
+      "visualIntent": "Selling point subtitle copy",
+      "scriptText": "CTA verb + strongest benefit recap.",
+      "subtitleText": "静音",
+      "transitionIn": "hard_cut",
+      "transitionOut": "hard_cut",
+      "layers": [
+        {
+          "id": "layer_bg_r4h6l7",
+          "kind": "background",
+          "style": {
+            "color": "#0f172a"
+          }
+        },
+        {
+          "id": "layer_card_1880jlx",
+          "kind": "base_visual",
+          "text": "静音",
+          "style": {
+            "card": "MG card with icon/sticker and 1-line headline",
+            "role": "cta",
+            "strategy": "text_card"
+          }
+        },
+        {
+          "id": "layer_subtitle_1880jlx",
+          "kind": "subtitle",
+          "text": "静音",
+          "style": {
+            "position": "lower_third",
+            "density": "high"
+          }
+        }
+      ],
+      "gapFillStrategy": "text_card"
+    }
+  ],
+  "mapping": [
+    {
+      "templateSegmentId": "seg_hook",
+      "atomIds": [
+        "atom_hook_zaxrxj",
+        "atom_rhythm_zaxrxj",
+        "atom_subtitle_zaxrxj",
+        "atom_gap_fill_zaxrxj"
+      ],
+      "targetClipIds": [
+        "clip_8ip3yk",
+        "clip_14yls5i"
+      ],
+      "explanation": "Segment hook mapped to 2 clip(s); intent: Stop scroll with a product-like visual and a clear benefit promise.."
+    },
+    {
+      "templateSegmentId": "seg_body",
+      "atomIds": [
+        "atom_rhythm_zaxrxj",
+        "atom_subtitle_zaxrxj",
+        "atom_gap_fill_zaxrxj"
+      ],
+      "targetClipIds": [
+        "clip_1cqrbbb",
+        "clip_11j3e94",
+        "clip_14yls5i"
+      ],
+      "explanation": "Segment body mapped to 3 clip(s); intent: Explain core value with usage, closeup and MG selling-point cards.."
+    },
+    {
+      "templateSegmentId": "seg_proof",
+      "atomIds": [
+        "atom_rhythm_zaxrxj",
+        "atom_subtitle_zaxrxj",
+        "atom_proof_zaxrxj",
+        "atom_gap_fill_zaxrxj"
+      ],
+      "targetClipIds": [
+        "clip_16etkhb"
+      ],
+      "explanation": "Segment proof mapped to 1 clip(s); intent: Show proof, comparison or social trust before the close.."
+    },
+    {
+      "templateSegmentId": "seg_cta",
+      "atomIds": [
+        "atom_rhythm_zaxrxj",
+        "atom_subtitle_zaxrxj",
+        "atom_cta_zaxrxj",
+        "atom_gap_fill_zaxrxj"
+      ],
+      "targetClipIds": [
+        "clip_87ig89",
+        "clip_14yls5i"
+      ],
+      "explanation": "Segment cta mapped to 2 clip(s); intent: Close with action and a final remembered benefit.."
+    }
+  ],
+  "gapReport": [
+    {
+      "slotId": "slot_subtitle_text",
+      "status": "weak_match",
+      "severity": "medium",
+      "reason": "No source shot matched; prompt copy can drive a card or overlay.",
+      "impact": "subtitle_text can be supported by prompt copy but lacks strong source visuals."
+    }
+  ],
+  "fillPlan": [
+    {
+      "slotId": "slot_subtitle_text",
+      "strategy": "text_card",
+      "reason": "Use deterministic text/MG card driven by prompt brief.",
+      "targetClipId": "clip_14yls5i",
+      "rendererInstructions": {
+        "text": "便携式桌面加湿器: 小巧便携",
+        "layout": "centered"
+      }
+    }
+  ],
+  "renderPlan": {
+    "width": 720,
+    "height": 1280,
+    "fps": 30,
+    "background": "#0f172a",
+    "notes": "P0 renderer target is html_preview; FFmpeg/Remotion/HyperFrames available as adapters."
+  },
+  "warnings": [
+    "Using deterministic mock source-video analysis."
+  ],
+  "createdAt": "2026-05-22T19:32:04.034Z"
+}

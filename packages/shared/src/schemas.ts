@@ -1,233 +1,289 @@
+// Decision (locked 2026-05-23): schemas in this file are kept SEMANTICALLY EQUIVALENT to
+// spec_v2/schemas/*.json rather than byte-identical. Two intentional differences:
+//   1. structure-template uses an inlined knowledgeAtom body here to sidestep AJV's
+//      "duplicate $id" error that fires when both knowledge-atom.schema.json and the
+//      inlined items would carry the same $id at runtime.
+//   2. timeline's rendererInstructions makes additionalProperties: true explicit so that
+//      renderer-specific keys (e.g. drawtext params) round-trip through validation.
+// Both schemas validate identical data; see spec_v2/implementation-status.md §3 for the
+// full rationale and §7 "Known intentional deviations".
+
+export const projectSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/project.schema.json",
+  title: "Project",
+  type: "object",
+  required: ["id", "name", "vertical", "aspectRatio", "targetDurationSec", "createdAt", "updatedAt"],
+  additionalProperties: false,
+  properties: {
+    id: { type: "string" },
+    name: { type: "string", minLength: 1 },
+    vertical: { enum: ["b2b_marketing_mg", "vlog", "talking_head", "beat_cut", "short_drama", "ecommerce"] },
+    aspectRatio: { enum: ["9:16", "16:9", "1:1"] },
+    targetDurationSec: { type: "number", minimum: 5, maximum: 180 },
+    createdAt: { type: "string" },
+    updatedAt: { type: "string" }
+  }
+} as const;
+
+export const assetAnalysisSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/asset-analysis.schema.json",
+  title: "VideoAnalysisResult",
+  type: "object",
+  required: ["id", "assetId", "projectId", "purpose", "metadata", "keyframes", "shots", "warnings", "analyzerMode", "createdAt"],
+  additionalProperties: false,
+  properties: {
+    id: { type: "string" },
+    assetId: { type: "string" },
+    projectId: { type: "string" },
+    purpose: { enum: ["sample", "source"] },
+    metadata: {
+      type: "object",
+      required: ["durationSec"],
+      additionalProperties: true,
+      properties: {
+        durationSec: { type: "number", minimum: 0 },
+        width: { type: "number", minimum: 1 },
+        height: { type: "number", minimum: 1 },
+        fps: { type: "number", minimum: 0 },
+        hasAudio: { type: "boolean" },
+        codec: { type: "string" }
+      }
+    },
+    keyframes: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "timeSec"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          timeSec: { type: "number", minimum: 0 },
+          path: { type: "string" },
+          description: { type: "string" },
+          tags: { type: "array", items: { type: "string" } }
+        }
+      }
+    },
+    shots: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "startSec", "endSec", "durationSec", "tags", "confidence"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          startSec: { type: "number", minimum: 0 },
+          endSec: { type: "number", minimum: 0 },
+          durationSec: { type: "number", minimum: 0 },
+          thumbnailPath: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          notes: { type: "string" }
+        }
+      }
+    },
+    transcript: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["startSec", "endSec", "text"],
+        additionalProperties: true,
+        properties: {
+          startSec: { type: "number" },
+          endSec: { type: "number" },
+          text: { type: "string" }
+        }
+      }
+    },
+    ocr: { type: "array", items: { type: "object", additionalProperties: true } },
+    warnings: { type: "array", items: { type: "string" } },
+    analyzerMode: { enum: ["mock", "ffmpeg", "ffmpeg_opencv", "ffmpeg_vlm_asr"] },
+    createdAt: { type: "string" }
+  }
+} as const;
+
+const knowledgeAtomBody = {
+  type: "object",
+  required: ["id", "projectId", "templateId", "role", "category", "name", "description", "applicableVerticals", "usageRules"],
+  additionalProperties: true,
+  properties: {
+    id: { type: "string" },
+    projectId: { type: "string" },
+    templateId: { type: "string" },
+    role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+    category: {
+      enum: [
+        "hook_pattern",
+        "rhythm_pattern",
+        "subtitle_style",
+        "packaging_pattern",
+        "transition_pattern",
+        "cta_pattern",
+        "gap_fill_strategy",
+        "shot_pattern"
+      ]
+    },
+    name: { type: "string" },
+    description: { type: "string" },
+    applicableVerticals: { type: "array", items: { type: "string" } },
+    usageRules: { type: "string" },
+    exampleMapping: { type: "string" },
+    confidence: { type: "number", minimum: 0, maximum: 1 }
+  }
+} as const;
+
+export const knowledgeAtomSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/knowledge-atom.schema.json",
+  title: "KnowledgeAtom",
+  ...knowledgeAtomBody
+} as const;
+
 export const structureTemplateSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "https://viral-video-structure-transfer.local/schemas/structure-template.schema.json",
   title: "StructureTemplate",
   type: "object",
   required: [
-    "schemaVersion",
     "id",
+    "projectId",
     "name",
     "vertical",
-    "sourceExample",
-    "summary",
+    "sourceSampleIds",
     "segments",
-    "packaging",
+    "requiredSlots",
     "rhythm",
-    "qualityRules",
+    "packaging",
     "structureAtoms",
     "editingTechniques",
-    "sourcePolicy"
+    "replacementPolicy",
+    "qualityRationale",
+    "sourcePolicy",
+    "createdAt"
   ],
-  additionalProperties: false,
+  additionalProperties: true,
   properties: {
-    schemaVersion: { type: "string", const: "1.1" },
-    id: { type: "string", minLength: 1 },
+    id: { type: "string" },
     projectId: { type: "string" },
-    name: { type: "string", minLength: 1 },
-    vertical: {
-      type: "string",
-      enum: ["b2b_marketing_mg", "vlog", "talking_head", "cutting_beat", "short_drama", "generic"]
-    },
-    sourceExample: { $ref: "#/$defs/sourceExample" },
-    summary: { type: "string", minLength: 1 },
-    targetDurationSec: { type: "number", minimum: 1 },
-    aspectRatio: { type: "string", enum: ["9:16", "16:9", "1:1", "4:5"] },
-    segments: { type: "array", minItems: 1, items: { $ref: "#/$defs/segment" } },
-    packaging: { $ref: "#/$defs/packaging" },
-    rhythm: { $ref: "#/$defs/rhythm" },
-    qualityRules: { type: "array", minItems: 1, items: { $ref: "#/$defs/qualityRule" } },
-    structureAtoms: { type: "array", minItems: 1, items: { $ref: "#/$defs/structureAtom" } },
-    editingTechniques: { type: "array", items: { $ref: "#/$defs/editingTechnique" } },
-    qualityRationale: { type: "string" },
-    replacementPolicy: { $ref: "#/$defs/replacementPolicy" },
-    sourcePolicy: { $ref: "#/$defs/sourcePolicy" },
-    createdAt: { type: "string" },
-    updatedAt: { type: "string" }
-  },
-  $defs: {
-    sourceExample: {
-      type: "object",
-      required: ["assetId", "durationSec"],
-      additionalProperties: false,
-      properties: {
-        assetId: { type: "string" },
-        filename: { type: "string" },
-        durationSec: { type: "number", minimum: 0 },
-        width: { type: "integer", minimum: 1 },
-        height: { type: "integer", minimum: 1 },
-        fps: { type: "number", minimum: 0 },
-        thumbnailPath: { type: "string" }
+    name: { type: "string" },
+    vertical: { type: "string" },
+    sourceSampleIds: { type: "array", items: { type: "string" } },
+    targetDurationSec: { type: "number" },
+    segments: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        required: ["id", "role", "startRatio", "endRatio", "intent", "slots"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+          startRatio: { type: "number", minimum: 0, maximum: 1 },
+          endRatio: { type: "number", minimum: 0, maximum: 1 },
+          intent: { type: "string" },
+          scriptPattern: { type: "string" },
+          slots: { type: "array", items: { type: "string" } },
+          recommendedDurationSec: { type: "number" }
+        }
       }
     },
-    segment: {
-      type: "object",
-      required: ["id", "role", "startSec", "endSec", "intent", "shots", "requiredSlots"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        role: { type: "string", enum: ["hook", "body", "proof", "transition", "cta", "other"] },
-        startSec: { type: "number", minimum: 0 },
-        endSec: { type: "number", minimum: 0 },
-        intent: { type: "string" },
-        pacing: { type: "string", enum: ["slow", "medium", "fast", "variable"] },
-        sourceRationale: { type: "string" },
-        requiredSlots: { type: "array", items: { $ref: "#/$defs/slot" } },
-        shots: { type: "array", items: { $ref: "#/$defs/shot" } },
-        packagingRefs: { type: "array", items: { type: "string" } }
-      }
-    },
-    shot: {
-      type: "object",
-      required: ["id", "startSec", "endSec", "shotType", "visualIntent"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        startSec: { type: "number", minimum: 0 },
-        endSec: { type: "number", minimum: 0 },
-        shotType: {
-          type: "string",
-          enum: ["product_closeup", "usage_scene", "comparison", "lifestyle_scene", "text_card", "background", "cta", "unknown"]
-        },
-        visualIntent: { type: "string" },
-        motion: { type: "string" },
-        transitionIn: { type: "string" },
-        transitionOut: { type: "string" },
-        textOverlay: { type: "string" }
-      }
-    },
-    slot: {
-      type: "object",
-      required: ["id", "slotType", "required", "description"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        slotType: {
-          type: "string",
-          enum: [
-            "hook_visual",
-            "product_closeup",
-            "usage_scene",
-            "comparison_scene",
-            "proof_visual",
-            "cta_visual",
-            "text_or_subtitle",
-            "background",
-            "other"
-          ]
-        },
-        required: { type: "boolean" },
-        description: { type: "string" },
-        preferredAssetTags: { type: "array", items: { type: "string" } },
-        fallbackAllowed: { type: "boolean" }
-      }
-    },
-    packaging: {
-      type: "object",
-      required: ["style", "subtitle", "cards", "transitions"],
-      additionalProperties: false,
-      properties: {
-        style: { type: "string", enum: ["clean", "bold", "mg_motion", "cinematic", "ugc", "generic"] },
-        subtitle: {
-          type: "object",
-          required: ["density", "position"],
-          additionalProperties: false,
-          properties: {
-            density: { type: "string", enum: ["low", "medium", "high"] },
-            position: { type: "string" },
-            fontHint: { type: "string" },
-            safeArea: { type: "string" }
-          }
-        },
-        cards: {
-          type: "array",
-          items: {
-            type: "object",
-            required: ["id", "purpose", "style"],
-            additionalProperties: false,
-            properties: {
-              id: { type: "string" },
-              purpose: { type: "string" },
-              style: { type: "string" }
+    requiredSlots: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "role", "slotType", "required", "description"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+          slotType: {
+            enum: [
+              "hook_visual",
+              "product_closeup",
+              "usage_scene",
+              "comparison",
+              "proof_visual",
+              "cta_visual",
+              "subtitle_text",
+              "title_card",
+              "transition",
+              "background"
+            ]
+          },
+          required: { type: "boolean" },
+          description: { type: "string" },
+          preferredTags: { type: "array", items: { type: "string" } },
+          fallbackStrategies: {
+            type: "array",
+            items: {
+              enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"]
             }
           }
-        },
-        stickers: { type: "array", items: { type: "string" } },
-        transitions: { type: "array", items: { type: "string" } },
-        coverSuggestion: { type: "string" }
+        }
       }
     },
     rhythm: {
       type: "object",
-      required: ["averageShotDurationSec", "pace", "climaxPosition"],
-      additionalProperties: false,
+      required: ["pace", "averageShotDurationSec"],
+      additionalProperties: true,
       properties: {
-        averageShotDurationSec: { type: "number", minimum: 0 },
-        pace: { type: "string", enum: ["slow", "medium", "fast", "variable"] },
-        climaxPosition: { type: "string" },
-        beatNotes: { type: "string" }
+        pace: { enum: ["slow", "medium", "fast", "mixed"] },
+        averageShotDurationSec: { type: "number" },
+        peakTimeRatio: { type: "number" },
+        notes: { type: "string" }
       }
     },
-    qualityRule: {
+    packaging: {
       type: "object",
-      required: ["id", "rule", "reason"],
-      additionalProperties: false,
+      additionalProperties: true,
       properties: {
-        id: { type: "string" },
-        rule: { type: "string" },
-        reason: { type: "string" },
-        severity: { type: "string", enum: ["info", "warning", "critical"] }
+        subtitleStyle: { type: "string" },
+        titleCardStyle: { type: "string" },
+        overlayStyle: { type: "string" },
+        transitionStyle: { type: "string" },
+        coverStyle: { type: "string" }
       }
     },
-    structureAtom: {
-      type: "object",
-      required: ["id", "role", "name", "description", "applicableWhen"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        role: { type: "string", enum: ["hook", "body", "proof", "transition", "cta", "packaging"] },
-        name: { type: "string" },
-        description: { type: "string" },
-        applicableWhen: { type: "string" },
-        requiresSlots: { type: "array", items: { type: "string" } },
-        replacementPolicy: { type: "string" },
-        sourceSegmentIds: { type: "array", items: { type: "string" } }
-      }
-    },
-    editingTechnique: {
-      type: "object",
-      required: ["id", "name", "description"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        name: { type: "string" },
-        description: { type: "string" },
-        params: { type: "object", additionalProperties: true }
+    structureAtoms: { type: "array", items: knowledgeAtomBody },
+    editingTechniques: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "name", "category", "description"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          category: { type: "string" },
+          description: { type: "string" },
+          usageRules: { type: "string" }
+        }
       }
     },
     replacementPolicy: {
       type: "object",
-      additionalProperties: false,
+      additionalProperties: true,
       properties: {
-        allowSourceVideoReuse: { type: "boolean" },
-        allowTextCardSubstitution: { type: "boolean" },
-        allowAigcPlaceholder: { type: "boolean" },
+        doNotCopySampleVisuals: { type: "boolean" },
+        allowedTransfer: { type: "array", items: { type: "string" } },
+        forbiddenTransfer: { type: "array", items: { type: "string" } }
+      }
+    },
+    qualityRationale: { type: "string" },
+    sourcePolicy: {
+      type: "object",
+      required: ["sampleSource", "commercialUse"],
+      additionalProperties: true,
+      properties: {
+        sampleSource: { enum: ["user_authorized", "open_download_or_user_uploaded", "demo_only", "unknown"] },
+        commercialUse: { type: "boolean" },
         notes: { type: "string" }
       }
     },
-    sourcePolicy: {
-      type: "object",
-      required: ["sampleSource", "commercialUse", "doNotCopyOriginalContent"],
-      additionalProperties: false,
-      properties: {
-        sampleSource: {
-          type: "string",
-          enum: ["open_download_or_user_uploaded", "user_authorized", "demo_only", "unknown"]
-        },
-        commercialUse: { type: "boolean" },
-        doNotCopyOriginalContent: { type: "boolean" },
-        notes: { type: "string" }
-      }
-    }
+    createdAt: { type: "string" }
   }
 } as const;
 
@@ -236,96 +292,72 @@ export const generationRequestSchema = {
   $id: "https://viral-video-structure-transfer.local/schemas/generation-request.schema.json",
   title: "GenerationRequest",
   type: "object",
-  required: ["schemaVersion", "projectId", "inputMode", "prompt", "target"],
+  required: ["projectId", "inputMode", "prompt", "target"],
   additionalProperties: false,
   properties: {
-    schemaVersion: { type: "string", const: "1.1" },
-    requestId: { type: "string" },
-    projectId: { type: "string", minLength: 1 },
-    inputMode: { type: "string", enum: ["video_plus_prompt", "brief_assets", "prompt_only"] },
-    selectedTemplateIds: { type: "array", items: { type: "string" } },
-    knowledgeBaseScope: {
+    projectId: { type: "string" },
+    inputMode: { enum: ["video_plus_prompt", "brief_assets", "prompt_only"] },
+    sourceVideo: {
       type: "object",
-      additionalProperties: false,
-      properties: {
-        vertical: { type: "string", enum: ["b2b_marketing_mg", "vlog", "talking_head", "cutting_beat", "short_drama", "generic"] },
-        preferLatest: { type: "boolean" },
-        allowedAtomRoles: { type: "array", items: { type: "string" } }
-      }
-    },
-    sourceVideo: { $ref: "#/$defs/assetRef" },
-    assets: { type: "array", items: { $ref: "#/$defs/assetRef" } },
-    prompt: { type: "string", minLength: 1 },
-    brief: { $ref: "#/$defs/brief" },
-    target: { $ref: "#/$defs/target" },
-    controls: { $ref: "#/$defs/controls" },
-    constraints: { $ref: "#/$defs/constraints" }
-  },
-  allOf: [
-    {
-      if: { properties: { inputMode: { const: "video_plus_prompt" } }, required: ["inputMode"] },
-      then: { required: ["sourceVideo"] }
-    }
-  ],
-  $defs: {
-    assetRef: {
-      type: "object",
-      required: ["assetId", "role"],
-      additionalProperties: false,
+      required: ["assetId"],
+      additionalProperties: true,
       properties: {
         assetId: { type: "string" },
-        role: { type: "string", enum: ["source_video", "user_image", "user_text", "generated_background", "example_video"] },
-        manualTags: { type: "array", items: { type: "string" } },
-        notes: { type: "string" }
+        analysisId: { type: "string" }
       }
     },
-    brief: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        topic: { type: "string" },
-        productName: { type: "string" },
-        targetAudience: { type: "string" },
-        sellingPoints: { type: "array", items: { type: "string" } },
-        tone: { type: "string" },
-        cta: { type: "string" },
-        forbiddenContent: { type: "array", items: { type: "string" } }
+    selectedTemplateIds: { type: "array", items: { type: "string" } },
+    selectedAtomIds: { type: "array", items: { type: "string" } },
+    assets: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          assetId: { type: "string" },
+          role: { type: "string" }
+        }
       }
     },
+    prompt: { type: "string", minLength: 1 },
     target: {
       type: "object",
-      required: ["vertical", "targetDurationSec", "aspectRatio", "outputMode"],
-      additionalProperties: false,
+      required: ["vertical", "aspectRatio", "targetDurationSec", "outputMode"],
+      additionalProperties: true,
       properties: {
-        vertical: { type: "string", enum: ["b2b_marketing_mg", "vlog", "talking_head", "cutting_beat", "short_drama", "generic"] },
-        targetDurationSec: { type: "number", minimum: 3, maximum: 300 },
-        aspectRatio: { type: "string", enum: ["9:16", "16:9", "1:1", "4:5"] },
-        outputMode: { type: "string", enum: ["storyboard_preview", "mp4_render"] }
+        vertical: { type: "string" },
+        aspectRatio: { enum: ["9:16", "16:9", "1:1"] },
+        targetDurationSec: { type: "number", minimum: 5, maximum: 180 },
+        outputMode: { enum: ["storyboard_preview", "mp4_render", "timeline_only"] }
       }
     },
     controls: {
       type: "object",
-      additionalProperties: false,
+      additionalProperties: true,
       properties: {
-        pace: { type: "string", enum: ["slow", "medium", "fast"] },
-        hookIntensity: { type: "string", enum: ["safe", "strong", "aggressive"] },
-        packagingStyle: { type: "string", enum: ["clean", "bold", "mg_motion"] },
-        ctaStyle: { type: "string", enum: ["soft", "direct"] },
-        allowAigcPlaceholder: { type: "boolean" },
-        allowReorder: { type: "boolean" }
+        pace: { enum: ["slow", "medium", "fast"] },
+        hookIntensity: { enum: ["safe", "strong", "aggressive"] },
+        packagingStyle: { enum: ["clean", "bold", "mg_motion"] },
+        ctaStyle: { enum: ["soft", "direct"] },
+        allowAigcPlaceholder: { type: "boolean" }
       }
     },
     constraints: {
       type: "object",
-      additionalProperties: false,
+      additionalProperties: true,
       properties: {
-        doNotUseSampleVisuals: { type: "boolean" },
-        mustUseSourceVideo: { type: "boolean" },
-        maxClips: { type: "integer", minimum: 1 },
-        notes: { type: "string" }
+        forbiddenWords: { type: "array", items: { type: "string" } },
+        mustMention: { type: "array", items: { type: "string" } },
+        noSampleVisualCopy: { type: "boolean" }
       }
     }
-  }
+  },
+  allOf: [
+    {
+      if: { properties: { inputMode: { const: "video_plus_prompt" } } },
+      then: { required: ["sourceVideo"] }
+    }
+  ]
 } as const;
 
 export const timelineSchema = {
@@ -333,154 +365,135 @@ export const timelineSchema = {
   $id: "https://viral-video-structure-transfer.local/schemas/timeline.schema.json",
   title: "Timeline",
   type: "object",
-  required: [
-    "schemaVersion",
-    "id",
-    "generationId",
-    "targetDurationSec",
-    "aspectRatio",
-    "rendererTarget",
-    "clips",
-    "mapping",
-    "gapReport",
-    "fillPlan",
-    "storyboard"
-  ],
-  additionalProperties: false,
+  required: ["id", "projectId", "generationId", "durationSec", "aspectRatio", "rendererTarget", "clips", "mapping", "gapReport", "fillPlan", "createdAt"],
+  additionalProperties: true,
   properties: {
-    schemaVersion: { type: "string", const: "1.1" },
-    id: { type: "string", minLength: 1 },
+    id: { type: "string" },
     projectId: { type: "string" },
-    generationId: { type: "string", minLength: 1 },
-    targetDurationSec: { type: "number", minimum: 1 },
-    aspectRatio: { type: "string", enum: ["9:16", "16:9", "1:1", "4:5"] },
-    rendererTarget: { type: "string", enum: ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"] },
-    clips: { type: "array", minItems: 1, items: { $ref: "#/$defs/clip" } },
-    mapping: { type: "array", items: { $ref: "#/$defs/mapping" } },
-    gapReport: { type: "array", items: { $ref: "#/$defs/gap" } },
-    fillPlan: { type: "array", items: { $ref: "#/$defs/fillAction" } },
-    storyboard: { type: "array", minItems: 1, items: { $ref: "#/$defs/storyboardItem" } },
-    renderPlan: { $ref: "#/$defs/renderPlan" },
-    migrationExplanation: { type: "string" },
-    warnings: { type: "array", items: { type: "string" } },
-    createdAt: { type: "string" }
-  },
-  $defs: {
-    clip: {
-      type: "object",
-      required: ["id", "startSec", "durationSec", "role", "visualIntent", "layers"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        sourceSlotId: { type: "string" },
-        sourceSegmentId: { type: "string" },
-        startSec: { type: "number", minimum: 0 },
-        durationSec: { type: "number", exclusiveMinimum: 0 },
-        role: { type: "string", enum: ["hook", "body", "proof", "transition", "cta", "other"] },
-        visualIntent: { type: "string" },
-        transitionIn: { type: "string" },
-        transitionOut: { type: "string" },
-        layers: { type: "array", minItems: 1, items: { $ref: "#/$defs/layer" } },
-        gapFillStrategy: {
-          type: "string",
-          enum: ["none", "reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "aigc_placeholder"]
+    generationId: { type: "string" },
+    durationSec: { type: "number", minimum: 0 },
+    aspectRatio: { enum: ["9:16", "16:9", "1:1"] },
+    rendererTarget: { enum: ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"] },
+    clips: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        required: ["id", "role", "startSec", "durationSec", "type", "layers"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+          startSec: { type: "number", minimum: 0 },
+          durationSec: { type: "number", minimum: 0 },
+          type: { enum: ["video", "image", "text_card", "generated_card", "placeholder"] },
+          sourceAssetId: { type: "string" },
+          sourceShotId: { type: "string" },
+          visualIntent: { type: "string" },
+          scriptText: { type: "string" },
+          subtitleText: { type: "string" },
+          transitionIn: { type: "string" },
+          transitionOut: { type: "string" },
+          layers: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["id", "kind"],
+              additionalProperties: true,
+              properties: {
+                id: { type: "string" },
+                kind: { enum: ["base_visual", "subtitle", "title_bar", "sticker", "arrow", "highlight", "background", "audio"] },
+                text: { type: "string" },
+                style: { type: "object" },
+                timing: { type: "object" }
+              }
+            }
+          },
+          gapFillStrategy: {
+            enum: ["none", "reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"]
+          }
         }
-      }
-    },
-    layer: {
-      type: "object",
-      required: ["id", "type", "startOffsetSec", "durationSec"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        type: {
-          type: "string",
-          enum: ["video", "image", "text_card", "subtitle", "shape", "sticker", "generated_placeholder", "background"]
-        },
-        assetId: { type: "string" },
-        sourceShotId: { type: "string" },
-        startOffsetSec: { type: "number", minimum: 0 },
-        durationSec: { type: "number", exclusiveMinimum: 0 },
-        text: { type: "string" },
-        style: { type: "object", additionalProperties: true },
-        transform: { type: "object", additionalProperties: true },
-        placeholderPrompt: { type: "string" }
       }
     },
     mapping: {
-      type: "object",
-      required: ["sourceId", "targetClipId", "status", "explanation"],
-      additionalProperties: false,
-      properties: {
-        sourceId: { type: "string" },
-        sourceType: { type: "string", enum: ["segment", "slot", "atom", "technique"] },
-        targetClipId: { type: "string" },
-        status: { type: "string", enum: ["matched", "weak_match", "missing_filled"] },
-        explanation: { type: "string" },
-        usedAssetIds: { type: "array", items: { type: "string" } }
-      }
-    },
-    gap: {
-      type: "object",
-      required: ["id", "slotId", "gapType", "severity", "impact"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        slotId: { type: "string" },
-        gapType: {
-          type: "string",
-          enum: ["hook_visual", "product_closeup", "usage_scene", "comparison_scene", "proof_visual", "cta_visual", "text_or_subtitle", "background", "other"]
-        },
-        severity: { type: "string", enum: ["low", "medium", "high"] },
-        impact: { type: "string" },
-        recommendedStrategies: {
-          type: "array",
-          items: { type: "string", enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "aigc_placeholder"] }
+      type: "array",
+      items: {
+        type: "object",
+        required: ["templateSegmentId", "atomIds", "targetClipIds", "explanation"],
+        additionalProperties: true,
+        properties: {
+          templateSegmentId: { type: "string" },
+          atomIds: { type: "array", items: { type: "string" } },
+          targetClipIds: { type: "array", items: { type: "string" } },
+          explanation: { type: "string" }
         }
       }
     },
-    fillAction: {
-      type: "object",
-      required: ["id", "gapId", "strategy", "description", "resultClipId"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string" },
-        gapId: { type: "string" },
-        strategy: {
-          type: "string",
-          enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "aigc_placeholder"]
-        },
-        description: { type: "string" },
-        resultClipId: { type: "string" },
-        sourceAssetIds: { type: "array", items: { type: "string" } },
-        aigcPrompt: { type: "string" }
+    gapReport: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["slotId", "status", "severity", "reason", "impact"],
+        additionalProperties: true,
+        properties: {
+          slotId: { type: "string" },
+          status: { enum: ["matched", "weak_match", "missing"] },
+          severity: { enum: ["low", "medium", "high"] },
+          reason: { type: "string" },
+          impact: { type: "string" }
+        }
       }
     },
-    storyboardItem: {
-      type: "object",
-      required: ["clipId", "timeRange", "shotDescription", "subtitle", "assetUsage", "packaging"],
-      additionalProperties: false,
-      properties: {
-        clipId: { type: "string" },
-        timeRange: { type: "string" },
-        shotDescription: { type: "string" },
-        subtitle: { type: "string" },
-        assetUsage: { type: "string" },
-        packaging: { type: "string" },
-        rationale: { type: "string" }
+    fillPlan: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["slotId", "strategy", "reason", "targetClipId"],
+        additionalProperties: true,
+        properties: {
+          slotId: { type: "string" },
+          strategy: { enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"] },
+          reason: { type: "string" },
+          targetClipId: { type: "string" },
+          rendererInstructions: { type: "object", additionalProperties: true }
+        }
       }
     },
-    renderPlan: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        width: { type: "integer", minimum: 1 },
-        height: { type: "integer", minimum: 1 },
-        fps: { type: "number", minimum: 1 },
-        background: { type: "string" },
-        notes: { type: "string" },
-        adapterOptions: { type: "object", additionalProperties: true }
+    renderPlan: { type: "object", additionalProperties: true },
+    warnings: { type: "array", items: { type: "string" } },
+    createdAt: { type: "string" }
+  }
+} as const;
+
+export const jobSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/job.schema.json",
+  title: "Job",
+  type: "object",
+  required: ["id", "type", "status", "progress", "steps", "createdAt", "updatedAt"],
+  additionalProperties: true,
+  properties: {
+    id: { type: "string" },
+    type: { enum: ["analysis", "template_extraction", "generation", "render", "export"] },
+    status: { enum: ["queued", "running", "completed", "failed", "cancelled"] },
+    progress: { type: "number", minimum: 0, maximum: 100 },
+    steps: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["name", "status"],
+        additionalProperties: true,
+        properties: {
+          name: { type: "string" },
+          status: { enum: ["queued", "running", "completed", "failed", "skipped"] },
+          message: { type: "string" }
+        }
       }
-    }
+    },
+    inputSummary: { type: "object", additionalProperties: true },
+    outputRefs: { type: "object", additionalProperties: true },
+    error: { type: "object", additionalProperties: true },
+    createdAt: { type: "string" },
+    updatedAt: { type: "string" }
   }
 } as const;
