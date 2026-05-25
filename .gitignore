@@ -13,7 +13,17 @@ storage/db/
 storage/*.json
 *.log
 npm-debug.log*
-test_videos/
+# Ignore raw test videos (proprietary footage) but keep the corpus fixture contract.
+test_videos/*.mov
+test_videos/*.mp4
+test_videos/*.webm
+test_videos/converted/
+test_videos/corpus/*/video.*
+test_videos/corpus/*/.analysis.json
+test_videos/corpus/*/.frames_tmp/
+
 assets/
 spec_v2/implementation-status.md
 docs/
+storage/
+test_videos/manual/

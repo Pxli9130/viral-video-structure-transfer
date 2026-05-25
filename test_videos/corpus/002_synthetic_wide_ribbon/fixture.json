@@ -1,0 +1,27 @@
+{
+  "id": "002_synthetic_wide_ribbon",
+  "title": "Synthetic wide colorful ribbon surface (deterministic)",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "f59e1eda5fb601f07b057be5cb1dac93cfbc3954faf7625076cec7fb82afac2b",
+    "durationSecRange": [13, 15],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_wide_ribbon"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "textured_3d_band"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["motion_graphic_marketing_poster", "other"],
+    "rendererAtomAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d"]
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["orbit_line_2d", "static_poster", "particle_trail"]
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

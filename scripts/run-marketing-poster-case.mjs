@@ -725,6 +725,36 @@ await writeFile(path.join(artifactDir, "variant-summary.json"), JSON.stringify(v
 // Run the visual + audio acceptance evaluator on every variant.
 const generationsByLabel = { main, high_ctr: highCtr, high_quality: highQuality };
 const evaluationByLabel = {};
+const judgeByLabel = {};
+
+function runVlmJudge({ label, inputVideo, outputVideo, expectedMotif, outPath }) {
+  const args = [
+    "scripts/vlm-judge-video.mjs",
+    "--input", inputVideo,
+    "--output", outputVideo,
+    "--expected-motif", expectedMotif,
+    "--variant-label", label,
+    "--out", outPath
+  ];
+  // Up to 2 retries on transient network failure (Gemini occasionally drops connections).
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = spawnSync(process.execPath, args, { encoding: "utf8" });
+    if (result.status !== 0) {
+      console.warn(`VLM judge ${label} exited ${result.status} on attempt ${attempt}: ${result.stderr || result.stdout}`);
+    }
+    let report;
+    try {
+      report = JSON.parse(spawnSync("cat", [outPath], { encoding: "utf8" }).stdout);
+    } catch (error) {
+      report = { status: "FAILED", reason: error.message };
+    }
+    const isTransient = report?.status === "FAILED" && /fetch failed|ECONN|ETIMEDOUT|503|429/i.test(String(report.reason ?? ""));
+    if (!isTransient || attempt === 3) return report;
+    console.warn(`Retrying VLM judge for ${label} (transient: ${report.reason})...`);
+  }
+  return { status: "FAILED", reason: "exhausted retries" };
+}
+
 for (const summary of renderSummaries) {
   const generationJsonPath = path.join(artifactDir, `generation.${summary.label}.json`);
   await writeFile(generationJsonPath, JSON.stringify(publicGeneration(generationsByLabel[summary.label]), null, 2), "utf8");
@@ -746,6 +776,18 @@ for (const summary of renderSummaries) {
   });
   evaluationByLabel[summary.label] = evaluation;
   summary.evaluation = evaluation;
+
+  // VLM-as-judge: bounded-rubric Gemini judge per variant.
+  const judgeOut = path.join(artifactDir, `vlm-judge.${summary.label}.json`);
+  const judgeReport = runVlmJudge({
+    label: summary.label,
+    inputVideo: videoPath,
+    outputVideo: summary.render.fixedPath,
+    expectedMotif: "wide_surface_ribbon_2_5d",
+    outPath: judgeOut
+  });
+  judgeByLabel[summary.label] = judgeReport;
+  summary.judge = judgeReport;
 }
 
 const evaluatorSummaryLines = renderSummaries.map((summary) => {
@@ -836,6 +878,16 @@ ${tableRows(variantSummary, (variant) => `| ${variant.label} | ${variant.clips} 
 ## Acceptance Evaluator
 
 ${evaluatorSummaryLines}
+
+## VLM-as-Judge (Gemini bounded rubric)
+
+${renderSummaries.map((summary) => {
+  const j = summary.judge ?? {};
+  if (j.status === "SKIPPED") return `- ${summary.label}: SKIPPED — ${j.reason}`;
+  if (j.status === "FAILED") return `- ${summary.label}: FAILED — ${j.reason}`;
+  const s = j.scores ?? {};
+  return `- ${summary.label}: overall=${s.overall?.toFixed?.(2) ?? "?"} | motif=${s.motif_preserved?.toFixed?.(2) ?? "?"} phases=${s.phases_visible?.toFixed?.(2) ?? "?"} cta=${s.cta_hold_present?.toFixed?.(2) ?? "?"} no_copy=${s.no_direct_copy?.toFixed?.(2) ?? "?"} quality=${s.visual_quality?.toFixed?.(2) ?? "?"} — "${s.rationale ?? ""}"`;
+}).join("\n")}
 
 ## Render Sanity
 

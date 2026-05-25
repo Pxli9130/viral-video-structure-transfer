@@ -1,0 +1,28 @@
+{
+  "id": "004_synthetic_static_poster",
+  "title": "Synthetic static poster (near-zero motion)",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "72c02cb7a225b994284ba74698a5efe9232f4348d92c59e89a5f131b0cdcce42",
+    "durationSecRange": [9, 11],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_static_poster"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["static_poster", "product_card"],
+      "minConfidence": 0.5
+    },
+    "excludeSegments": [],
+    "videoTypeAnyOf": ["other"],
+    "rendererAtomAnyOf": ["text_card", "packaging_overlay"]
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["wide_surface_ribbon_2_5d", "orbit_line_2d", "textured_3d_band", "particle_trail"],
+    "rendererAtomNotAnyOf": ["wide_3d_ribbon_surface", "ribbon_surface_3d"]
+  },
+  "skipIf": {
+    "missingVideo": false
+  }
+}

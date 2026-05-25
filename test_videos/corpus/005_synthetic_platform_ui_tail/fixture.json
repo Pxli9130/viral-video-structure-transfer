@@ -1,0 +1,32 @@
+{
+  "id": "005_synthetic_platform_ui_tail",
+  "title": "Synthetic creative content with platform UI tail",
+  "input": {
+    "filename": "video.mp4",
+    "sha256": "91cb31733ef6ecd05bf8689ce6c0308577d76138d6aee53ca0d2384b6eb0854c",
+    "durationSecRange": [15, 17],
+    "license": "synthetic",
+    "originUrl": null,
+    "generator": "scripts/generate-synthetic-corpus.py::generate_synthetic_platform_ui_tail"
+  },
+  "expectations": {
+    "primaryMotif": {
+      "anyOf": ["wide_surface_ribbon_2_5d", "kinetic_typography", "static_poster"],
+      "minConfidence": 0.4
+    },
+    "excludeSegments": [
+      {
+        "anchor": "tail",
+        "startSecRange": [11.0, 14.0],
+        "endSecRange": [15.0, 17.0],
+        "reasonKeywordsAnyOf": ["platform", "ui", "tail", "outro", "recording"]
+      }
+    ],
+    "videoTypeAnyOf": ["other", "motion_graphic_marketing_poster"],
+    "rendererAtomAnyOf": ["wide_3d_ribbon_surface", "packaging_overlay", "text_card"]
+  },
+  "negativeExpectations": {},
+  "skipIf": {
+    "missingVideo": false
+  }
+}
