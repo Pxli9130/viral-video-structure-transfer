@@ -46,6 +46,40 @@ type RenderResponse = {
   render: { outputPath?: string; previewHtml?: string; rendererTarget: RendererTarget; status: string };
 };
 
+type ReviseResponse = {
+  generationId: string;
+  previousGenerationId?: string;
+  instruction: string;
+  summary: string;
+  patchedControls: Record<string, unknown>;
+  promptAddendum?: string | null;
+  applied: boolean;
+  generation?: GenerationResult;
+};
+
+type VariantResponse = {
+  label: string;
+  displayName: string;
+  strategy: string;
+  generationId: string;
+  generation: GenerationResult;
+};
+
+type VariantsResponse = {
+  baseGenerationId: string;
+  count: number;
+  variants: VariantResponse[];
+};
+
+type ScorecardResponse = {
+  generationId: string;
+  overall: number;
+  dimensions: Array<{ name: string; score: number; comment: string }>;
+  rationale: string;
+  judge: "heuristic" | "llm" | "llm+heuristic";
+  warnings?: string[];
+};
+
 type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string; details?: unknown } };
 
 async function api<T>(input: string, init?: RequestInit): Promise<T> {
@@ -80,6 +114,13 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
+function renderOutputUrl(render: RenderResponse["render"] | null): string | null {
+  const outputPath = render?.outputPath;
+  if (!outputPath || !outputPath.endsWith(".mp4")) return null;
+  const filename = outputPath.split(/[\\/]/).pop();
+  return filename ? `/generated/${filename}` : null;
+}
+
 function StatusLine({ state, error }: { state: ApiState; error: string | null }) {
   if (state === "loading") return <span className="status">Working...</span>;
   if (state === "error") return <span className="status error">{error}</span>;
@@ -100,6 +141,7 @@ export default function App() {
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBaseResponse | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [sampleDescription, setSampleDescription] = useState("B2B MG promo: hook, product value, proof card, CTA.");
+  const [sampleAnalysis, setSampleAnalysis] = useState<ExampleAnalysis | null>(null);
   const [sourceAssetId, setSourceAssetId] = useState<string>("");
   const [sourceAnalysis, setSourceAnalysis] = useState<ExampleAnalysis | null>(null);
   const [prompt, setPrompt] = useState(defaultPrompt);
@@ -108,11 +150,16 @@ export default function App() {
   const [generation, setGeneration] = useState<GenerationResult | null>(null);
   const [rendererTarget, setRendererTarget] = useState<RendererTarget>("html_preview");
   const [renderResult, setRenderResult] = useState<RenderResponse["render"] | null>(null);
+  const [reviseInstruction, setReviseInstruction] = useState("放慢节奏，减少字幕，CTA 更柔和");
+  const [reviseResult, setReviseResult] = useState<ReviseResponse | null>(null);
+  const [variants, setVariants] = useState<VariantResponse[]>([]);
+  const [scorecard, setScorecard] = useState<ScorecardResponse | null>(null);
 
   const selectedTemplate = useMemo(
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
     [selectedTemplateId, templates]
   );
+  const renderedVideoUrl = renderOutputUrl(renderResult);
 
   async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
     setApiState("loading");
@@ -214,6 +261,7 @@ export default function App() {
         })
       });
       if (response.template) setSelectedTemplateId(response.template.id);
+      setSampleAnalysis(response.analysis);
       await refreshProject(project.id);
     });
   }
@@ -234,6 +282,8 @@ export default function App() {
       if (role === "source_video") {
         setSourceAssetId(asset.id);
         setSourceAnalysis(analysis.analysis);
+      } else {
+        setSampleAnalysis(analysis.analysis);
       }
       if (analysis.template) setSelectedTemplateId(analysis.template.id);
       await refreshProject(project.id);
@@ -295,6 +345,9 @@ export default function App() {
       });
       setGeneration(response.generation);
       setRenderResult(null);
+      setReviseResult(null);
+      setVariants([]);
+      setScorecard(null);
     });
   }
 
@@ -306,6 +359,44 @@ export default function App() {
         body: JSON.stringify({ rendererTarget })
       });
       setRenderResult(response.render);
+    });
+  }
+
+  async function reviseGeneration() {
+    if (!generation || !reviseInstruction.trim()) return;
+    await run(async () => {
+      const response = await api<ReviseResponse>(`/api/generations/${generation.id}/revise`, {
+        method: "POST",
+        body: JSON.stringify({ instruction: reviseInstruction.trim() })
+      });
+      setReviseResult(response);
+      if (response.generation) {
+        setGeneration(response.generation);
+        setRenderResult(null);
+        setScorecard(null);
+      }
+    });
+  }
+
+  async function generateVariants() {
+    if (!generation) return;
+    await run(async () => {
+      const response = await api<VariantsResponse>(`/api/generations/${generation.id}/variants`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setVariants(response.variants);
+    });
+  }
+
+  async function scoreGeneration() {
+    if (!generation) return;
+    await run(async () => {
+      const response = await api<ScorecardResponse>(`/api/generations/${generation.id}/scorecard`, {
+        method: "POST",
+        body: JSON.stringify({ skipLlm: false })
+      });
+      setScorecard(response);
     });
   }
 
@@ -388,6 +479,26 @@ export default function App() {
               Sample description fallback
               <textarea value={sampleDescription} onChange={(event) => setSampleDescription(event.target.value)} />
             </label>
+            {sampleAnalysis && (
+              <div className="analysis-summary">
+                <article>
+                  <strong>{sampleAnalysis.video.metadata.durationSec.toFixed(1)}s</strong>
+                  <span>{sampleAnalysis.video.metadata.width ?? "-"}×{sampleAnalysis.video.metadata.height ?? "-"} · {sampleAnalysis.video.analyzerMode}</span>
+                </article>
+                <article>
+                  <strong>{sampleAnalysis.video.shots.length}</strong>
+                  <span>shots / {sampleAnalysis.video.keyframes.length} keyframes</span>
+                </article>
+                <article>
+                  <strong>{sampleAnalysis.video.transcript?.length ?? 0}</strong>
+                  <span>ASR cues</span>
+                </article>
+                <article>
+                  <strong>{sampleAnalysis.video.ocr?.length ?? 0}</strong>
+                  <span>OCR rows</span>
+                </article>
+              </div>
+            )}
           </section>
 
           <section className="panel two-col">
@@ -426,6 +537,16 @@ export default function App() {
                 ))}
                 {!selectedTemplate && <p className="empty">Analyze a sample to create a v1.2 structure template.</p>}
               </div>
+              {sampleAnalysis && (
+                <div className="segment-row vertical">
+                  {sampleAnalysis.video.keyframes.slice(0, 4).map((frame) => (
+                    <article key={frame.id}>
+                      <strong>{frame.id} · {frame.timeSec.toFixed(1)}s</strong>
+                      <span>{frame.description ?? frame.path ?? "keyframe"} · {(frame.tags ?? []).join(", ") || "no tags"}</span>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
             <div>
               <label>
@@ -545,41 +666,57 @@ export default function App() {
               </button>
             </div>
             {generation ? (
-              <div className="result-grid">
-                <div>
-                  <h3>Slot Mapping</h3>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Slot</th>
-                        <th>Status</th>
-                        <th>Reason</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {generation.slotMapping.map((mapping) => (
-                        <tr key={mapping.slotId}>
-                          <td>{mapping.slotType}</td>
-                          <td><span className={`pill ${mapping.status}`}>{mapping.status}</span></td>
-                          <td>{mapping.reason}</td>
+              <>
+                <div className="result-grid">
+                  <div>
+                    <h3>Slot Mapping</h3>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Slot</th>
+                          <th>Status</th>
+                          <th>Reason</th>
                         </tr>
+                      </thead>
+                      <tbody>
+                        {generation.slotMapping.map((mapping) => (
+                          <tr key={mapping.slotId}>
+                            <td>{mapping.slotType}</td>
+                            <td><span className={`pill ${mapping.status}`}>{mapping.status}</span></td>
+                            <td>{mapping.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div>
+                    <h3>Gap Fill</h3>
+                    <div className="gap-list">
+                      {generation.fillPlan.map((action) => (
+                        <article key={action.targetClipId}>
+                          <strong>{action.strategy}</strong>
+                          <span>{action.reason}</span>
+                        </article>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div>
-                  <h3>Gap Fill</h3>
-                  <div className="gap-list">
-                    {generation.fillPlan.map((action) => (
-                      <article key={action.targetClipId}>
-                        <strong>{action.strategy}</strong>
-                        <span>{action.reason}</span>
-                      </article>
-                    ))}
-                    {!generation.fillPlan.length && <p className="empty">No gaps detected.</p>}
+                      {!generation.fillPlan.length && <p className="empty">No gaps detected.</p>}
+                    </div>
                   </div>
                 </div>
-              </div>
+                <h3 style={{ marginTop: 18 }}>Gap Report</h3>
+                <div className="gap-list">
+                  {generation.gapReport.map((gap) => (
+                    <article key={`${gap.slotId}-${gap.gapType ?? gap.status}`}>
+                      <strong>
+                        {gap.gapLabelZh ?? gap.gapLabel ?? gap.slotId}
+                        <span className={`severity ${gap.severity}`}>{gap.severity}</span>
+                      </strong>
+                      <span>{gap.impact}</span>
+                      <small>{gap.recommendedFillStrategies?.join(", ") ?? "no strategy"}</small>
+                    </article>
+                  ))}
+                  {!generation.gapReport.length && <p className="empty">No material gaps detected.</p>}
+                </div>
+              </>
             ) : (
               <p className="empty">Run reconstruction to see mapping, gaps, fill plan and timeline.</p>
             )}
@@ -619,6 +756,19 @@ export default function App() {
                     {renderResult.status} → {renderResult.outputPath ?? renderResult.rendererTarget}
                   </p>
                 )}
+                {renderedVideoUrl && (
+                  <video className="render-player" controls src={renderedVideoUrl} />
+                )}
+                <label className="wide">
+                  Revise instruction
+                  <textarea value={reviseInstruction} onChange={(event) => setReviseInstruction(event.target.value)} />
+                </label>
+                <div className="button-row">
+                  <button onClick={reviseGeneration} disabled={apiState === "loading"}>Revise</button>
+                  <button onClick={generateVariants} disabled={apiState === "loading"}>Generate Variants</button>
+                  <button onClick={scoreGeneration} disabled={apiState === "loading"}>Scorecard</button>
+                </div>
+                {reviseResult && <p className="empty">Revise: {reviseResult.summary}</p>}
               </div>
             )}
             {generation ? (
@@ -656,6 +806,33 @@ export default function App() {
                       </article>
                     ))}
                   </div>
+                  {variants.length > 0 && (
+                    <>
+                      <h3 style={{ marginTop: 16 }}>Variants</h3>
+                      <div className="story-list">
+                        {variants.map((variant) => (
+                          <article key={variant.generationId}>
+                            <strong>{variant.displayName} · {variant.label}</strong>
+                            <span>{variant.strategy}</span>
+                            <small>{variant.generation.timeline.clips.length} clips · {variant.generation.timeline.renderPlan?.background}</small>
+                          </article>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {scorecard && (
+                    <>
+                      <h3 style={{ marginTop: 16 }}>Scorecard · {scorecard.overall}/100 · {scorecard.judge}</h3>
+                      <div className="story-list">
+                        {scorecard.dimensions.map((dimension) => (
+                          <article key={dimension.name}>
+                            <strong>{dimension.name}: {dimension.score}</strong>
+                            <span>{dimension.comment}</span>
+                          </article>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div className="timeline-column">
                   <h3>Timeline Preview</h3>

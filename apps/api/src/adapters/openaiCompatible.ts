@@ -95,7 +95,8 @@ export class OpenAICompatibleAIAdapter implements AIAdapter {
       const patch = mergeReviseControls(llm);
       return {
         summary: llm.summary || `Applied: ${input.instruction}`,
-        patchedControls: patch
+        patchedControls: patch,
+        promptAddendum: llm.patch?.prompt
       };
     } catch (error) {
       const heuristic = heuristicRevise(input.instruction, input.generationId);
@@ -285,7 +286,8 @@ function mergeEnrichment(baseline: StructureTemplate, enrichment: TemplateEnrich
 }
 
 function mergeReviseControls(llm: ReviseLLMOutput): Partial<GenerationControls> {
-  const patch: Partial<GenerationControls> = {};
+  const { prompt: _prompt, ...nestedPatch } = llm.patch ?? {};
+  const patch: Partial<GenerationControls> = { ...nestedPatch };
   if (llm.pace) patch.pace = llm.pace;
   if (llm.hookIntensity) patch.hookIntensity = llm.hookIntensity;
   if (llm.packagingStyle) patch.packagingStyle = llm.packagingStyle;

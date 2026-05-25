@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildFallbackTemplate,
@@ -111,6 +113,23 @@ describe("v1.2 mock pipeline", () => {
     expect(brief.cta).toContain("点击");
   });
 
+  it("parses English product and semicolon selling points", () => {
+    const brief = parsePromptToBrief({
+      ...request(),
+      prompt: [
+        "Product: HydroPulse Smart Bottle",
+        "Audience: university students",
+        "Selling points: hydration reminder every 45 min; silent LED reminder; 24h cold insulation",
+        "CTA: Stay hydrated all day"
+      ].join("\n")
+    });
+
+    expect(brief.productName).toBe("HydroPulse Smart Bottle");
+    expect(brief.targetAudience).toBe("university students");
+    expect(brief.sellingPoints).toContain("silent LED reminder");
+    expect(brief.cta).toBe("Stay hydrated all day");
+  });
+
   it("matches at least one slot to source video candidates", () => {
     const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
     const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
@@ -119,6 +138,32 @@ describe("v1.2 mock pipeline", () => {
     const mappings = matchSlots(template, source, request());
 
     expect(mappings.some((mapping) => mapping.status === "matched")).toBe(true);
+  });
+
+  it("does not match an unrelated source shot when a required preferred tag is absent", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sourceAnalysis = buildMockVideoAnalysis({ assetId: "source_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
+    const noUsageSource = {
+      ...sourceAnalysis,
+      transcript: [],
+      ocr: [],
+      shots: sourceAnalysis.shots.map((shot, index) => ({
+        ...shot,
+        tags: index === 0 ? ["product_like"] : ["background"]
+      }))
+    };
+    const plainRequest: GenerationRequest = {
+      ...request(),
+      prompt: "Product: HydroPulse Smart Bottle\nSelling points: cold insulation\nCTA: Learn more"
+    };
+    const source = understandSourceVideo(noUsageSource, { ...sourceAsset(), tags: [] }, plainRequest);
+    const mappings = matchSlots(template, source, plainRequest);
+
+    expect(mappings.find((mapping) => mapping.slotType === "product_closeup")?.status).toBe("matched");
+    const usage = mappings.find((mapping) => mapping.slotType === "usage_scene");
+    expect(usage?.status).toBe("missing");
+    expect(usage?.selectedShotId).toBeUndefined();
   });
 
   it("detects and fills gaps when source video is missing", () => {
@@ -168,7 +213,15 @@ describe("v1.2 mock pipeline", () => {
     expect(enriched.rhythm.pace).toBe("medium");
     expect(enriched.packaging.coverStyle).toBe("centered title");
     expect(enriched.structureAtoms.length).toBeGreaterThan(baseline.structureAtoms.length);
-    expect(enriched.structureAtoms.some((atom) => atom.name.includes("3D ribbon loop"))).toBe(true);
+    expect(enriched.structureAtoms.some((atom) => atom.description.includes("3D ribbon loop"))).toBe(true);
+    const atomNames = enriched.structureAtoms.map((atom) => atom.name).join(" | ");
+    expect(atomNames).not.toContain("Minimalist white ribbon");
+    expect(atomNames).not.toContain("Multi-color ribbon climax");
+    expect(atomNames).not.toContain("Brand handle reveal");
+    expect(atomNames).not.toContain("3D ribbon loop");
+    expect(enriched.structureAtoms.map((atom) => atom.name)).toEqual(
+      expect.arrayContaining(["Attention-first hook", "Climax proof beat", "Brand-reveal CTA", "Reusable motion motif"])
+    );
     for (const atom of enriched.structureAtoms) {
       expect(new Set(atom.applicableVerticals).size).toBe(atom.applicableVerticals.length);
     }
@@ -210,6 +263,69 @@ describe("v1.2 mock pipeline", () => {
     if (subtitleSlotMissing) {
       expect(gaps.some((g) => g.gapType === "voiceover_or_script_missing")).toBe(true);
     }
+  });
+
+  it("treats noisy transcript as missing script and OCR text as a usable subtitle signal (FR-008)", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const base = buildMockVideoAnalysis({ assetId: "source_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
+    const noTextCards = base.shots.map((shot) => ({ ...shot, tags: ["product_like"] }));
+    const noisySource = understandSourceVideo(
+      { ...base, shots: noTextCards, transcript: [{ startSec: 0, endSec: 10, text: "um" }], ocr: [] },
+      sourceAsset(),
+      { ...request(), prompt: "请重构这个视频" }
+    );
+    const noisyGaps = generateGapReport(matchSlots(template, noisySource, request()), { source: noisySource, template });
+    expect(noisyGaps.some((gap) => gap.gapType === "voiceover_or_script_missing")).toBe(true);
+
+    const ocrSource = understandSourceVideo(
+      { ...base, shots: noTextCards, transcript: [{ startSec: 0, endSec: 10, text: "um" }], ocr: [{ text: "核心卖点字幕" }] },
+      sourceAsset(),
+      { ...request(), prompt: "请重构这个视频" }
+    );
+    const ocrGaps = generateGapReport(matchSlots(template, ocrSource, request()), { source: ocrSource, template });
+    expect(ocrGaps.some((gap) => gap.gapType === "voiceover_or_script_missing")).toBe(false);
+  });
+
+  it("flags low transcript subtitle density even when a short ASR cue exists (FR-008)", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sourceAnalysis = {
+      ...buildMockVideoAnalysis({ assetId: "source_video", projectId: "project_demo", purpose: "source", durationSec: 30 }),
+      transcript: [{ startSec: 0, endSec: 1, text: "Hydration reminder now" }],
+      ocr: []
+    };
+    const source = understandSourceVideo(sourceAnalysis, sourceAsset(), request());
+    const gaps = generateGapReport(matchSlots(template, source, request()), { source, template });
+
+    expect(gaps.some((gap) => gap.gapType === "subtitle_density_low")).toBe(true);
+  });
+
+  it("changes timeline rhythm and ids when pace or variant salt changes", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sourceAnalysis = buildMockVideoAnalysis({ assetId: "source_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
+    const fast = generateMigrationResult({ template, request: request(), sourceAsset: sourceAsset(), sourceAnalysis });
+    const slowRequest = { ...request(), controls: { ...request().controls, pace: "slow" as const, packagingStyle: "clean" as const } };
+    const slow = generateMigrationResult({ template, request: slowRequest, sourceAsset: sourceAsset(), sourceAnalysis });
+    const salted = generateMigrationResult({ template, request: slowRequest, sourceAsset: sourceAsset(), sourceAnalysis, generationIdSalt: "high_quality" });
+    const avg = (durations: number[]) => durations.reduce((sum, value) => sum + value, 0) / durations.length;
+
+    expect(slow.timeline.clips.length).toBeLessThan(fast.timeline.clips.length);
+    expect(avg(slow.timeline.clips.map((clip) => clip.durationSec))).toBeGreaterThan(avg(fast.timeline.clips.map((clip) => clip.durationSec)));
+    expect(slow.timeline.renderPlan?.background).toBe("#f8fafc");
+    expect(salted.id).not.toBe(slow.id);
+    expect(salted.timeline.id).not.toBe(slow.timeline.id);
+  });
+
+  it("keeps runtime schema semantically equivalent while spec structureAtoms uses $ref", () => {
+    const schemaPath = path.resolve(process.cwd(), "../../spec_v2/schemas/structure-template.schema.json");
+    const specSchema = JSON.parse(readFileSync(schemaPath, "utf8"));
+    expect(specSchema.properties.structureAtoms.items.$ref).toBe("knowledge-atom.schema.json");
+
+    const analysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo");
+    expect(validateStructureTemplate(template).valid).toBe(true);
   });
 
   it("picks reorder_structure when a body slot has an unmatched sibling but the segment already has a match", () => {

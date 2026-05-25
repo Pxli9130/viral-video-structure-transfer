@@ -219,7 +219,7 @@ export const structureTemplateSchema = {
           fallbackStrategies: {
             type: "array",
             items: {
-              enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "aigc_placeholder"]
+              enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"]
             }
           }
         }
@@ -410,7 +410,7 @@ export const timelineSchema = {
             }
           },
           gapFillStrategy: {
-            enum: ["none", "reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "aigc_placeholder"]
+            enum: ["none", "reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"]
           }
         }
       }
@@ -452,7 +452,7 @@ export const timelineSchema = {
         additionalProperties: true,
         properties: {
           slotId: { type: "string" },
-          strategy: { enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "aigc_placeholder"] },
+          strategy: { enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"] },
           reason: { type: "string" },
           targetClipId: { type: "string" },
           rendererInstructions: { type: "object", additionalProperties: true }

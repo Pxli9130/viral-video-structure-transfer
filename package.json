@@ -18,10 +18,11 @@
     "seed:demo": "npm run build --workspace @vvst/shared && node scripts/seed-demo.mjs",
     "demo:seed": "npm run seed:demo",
     "validate:schemas": "npm run build --workspace @vvst/shared && node scripts/validate-schemas.mjs",
-    "test": "npm run test --workspace @vvst/shared && npm run test --workspace @vvst/api",
+    "test": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run test --workspace @vvst/shared && npm run test --workspace @vvst/api",
+    "test:marketing": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run build --workspace @vvst/api && npm run test --workspace @vvst/shared -- src/__tests__/marketingPosterCase.test.ts && node scripts/run-marketing-poster-case.mjs",
     "test:unit": "npm run test --workspace @vvst/shared",
-    "test:e2e": "npm run test --workspace @vvst/api",
-    "typecheck": "npm run typecheck --workspaces"
+    "test:e2e": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run test --workspace @vvst/api",
+    "typecheck": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run typecheck --workspaces"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

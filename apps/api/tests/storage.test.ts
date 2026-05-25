@@ -53,6 +53,23 @@ describe("StorageBackend contracts (Json + SQLite parity)", () => {
     expect(read.projects[0].id).toBe("p1");
   });
 
+  it("DatabaseStore implements collection StorageAdapter read/upsert/remove", async () => {
+    const backend = new JsonStorageBackend({ dbPath: path.join(tmpRoot, "adapter", "app.json") });
+    const store = new DatabaseStore(backend);
+    const project = sampleDb().projects[0];
+    await store.upsert("projects", project);
+    const projects = await store.read<typeof project>("projects");
+    expect(projects.map((item) => item.id)).toEqual(["p1"]);
+
+    await store.upsert("projects", { ...project, name: "updated" });
+    const updated = await store.read<typeof project>("projects");
+    expect(updated).toHaveLength(1);
+    expect(updated[0].name).toBe("updated");
+
+    await store.remove("projects", "p1");
+    expect(await store.read<typeof project>("projects")).toHaveLength(0);
+  });
+
   it("SqliteStorageBackend round-trips projects/jobs and clears removed ids", async () => {
     const backend = new SqliteStorageBackend({ dbPath: path.join(tmpRoot, "sqlite", "app.sqlite") });
     const store = new DatabaseStore(backend);

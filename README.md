@@ -90,12 +90,18 @@ npm run dev:api          # backend only
 npm run dev:web          # frontend only
 npm run build            # build all workspaces
 npm run typecheck        # tsc --noEmit across workspaces
-npm test                 # vitest run in packages/shared
+npm test                 # shared + api vitest suites
 npm run seed:demo        # produce storage/db/app.json + storage/demo/*.json fixtures
 npm run validate:schemas # AJV-validate fixtures + DB rows
 ```
 
-`npm run dev` requires Node 18+ (the project uses `--experimental-vm-modules`-friendly ESM). If you have multiple Node installs, point `npm` at the right one (e.g. `nvm use 22`).
+`npm run dev` requires Node 18+ (the project uses `--experimental-vm-modules`-friendly ESM). If you have multiple Node installs, point `npm` at the right one (e.g. `nvm use 22`). When the default JSON backend is used and `storage/db/app.json` is missing, API startup automatically runs the demo seed before the store is opened. SQLite mode does not auto-write the JSON demo DB; run `npm run seed:demo` explicitly if you want those fixtures.
+
+The FFmpeg/Python path is designed to use the conda env `viral`:
+
+```bash
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral npm run dev:api
+```
 
 ## Adapter map (NFR-001)
 
@@ -174,9 +180,9 @@ Heuristic revise (without an LLM key) recognises hook intensity, pace, subtitle 
 ## Running the test suites
 
 ```bash
-npm test                # shared 12/12 + api 3/3 (e2e + storage parity)
+npm test                # shared unit + api storage/openai/e2e suites
 npm run test:unit       # shared only
-npm run test:e2e        # full pipeline e2e via supertest (no listen, mock adapters)
+npm run test:e2e        # HTTP integration pipeline via supertest (mock adapters)
 npm run validate:schemas
 # optional: bundle-only smoke for the Remotion entry (no Chromium download)
 cd apps/api && RUN_REMOTION_BUNDLE_TEST=true npx vitest run tests/remotion-bundle.test.ts

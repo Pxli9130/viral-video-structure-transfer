@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { HtmlPreviewRenderer, MockRenderer } from "@vvst/renderer";
 import {
   nowIso,
@@ -25,6 +26,19 @@ function resolveFfmpegBin(): string {
 }
 
 const FFMPEG_BIN = resolveFfmpegBin();
+const API_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function resolveRemotionBrowserExecutable(): string | undefined {
+  const explicit = process.env.REMOTION_BROWSER_EXECUTABLE;
+  const home = process.env.HOME ?? "/home/pxli";
+  const candidates = [
+    explicit,
+    path.join(API_ROOT, "node_modules", ".remotion", "chrome-headless-shell", "linux64", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+    path.resolve(process.cwd(), "apps", "api", "node_modules", ".remotion", "chrome-headless-shell", "linux64", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+    path.join(home, ".cache", "ms-playwright", "chromium_headless_shell-1208", "chrome-headless-shell-linux64", "chrome-headless-shell")
+  ].filter(Boolean) as string[];
+  return candidates.find((candidate) => existsSync(candidate));
+}
 
 function resolveCjkFontFile(): string | undefined {
   const explicit = process.env.FFMPEG_FONT_FILE;
@@ -80,14 +94,18 @@ function runFfmpeg(args: string[]): Promise<{ stdout: string; stderr: string }> 
 }
 
 function escapeDrawText(text: string): string {
+  const normalized = text.replace(/[\r\n]+/g, " ").trim();
+  const maxLength = /[\u4e00-\u9fff]/.test(normalized) ? 22 : 52;
+  const truncated =
+    normalized.length <= maxLength
+      ? normalized
+      : `${normalized.slice(0, maxLength - 3).replace(/\s+\S*$/, "") || normalized.slice(0, maxLength - 3)}...`;
   // FFmpeg filter argument escaping for drawtext text= value, even inside single quotes:
   // backslash, single quote and the filter-arg-separator colon all need escaping.
-  return text
+  return truncated
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
-    .replace(/'/g, "’")
-    .replace(/[\r\n]+/g, " ")
-    .slice(0, 60);
+    .replace(/'/g, "’");
 }
 
 function pickResolution(timeline: Timeline): { width: number; height: number } {
@@ -102,7 +120,15 @@ function pickResolution(timeline: Timeline): { width: number; height: number } {
   }
 }
 
-function backgroundFor(clip: TimelineClip): string {
+function ffmpegColor(hex: string | undefined, fallback: string): string {
+  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return fallback;
+  return `0x${hex.slice(1)}`;
+}
+
+function backgroundFor(clip: TimelineClip, timeline: Timeline): string {
+  const base = ffmpegColor(timeline.renderPlan?.background, "");
+  const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
+  if (base && (packagingStyle === "clean" || packagingStyle === "bold")) return base;
   switch (clip.role) {
     case "hook":
       return "0x0f172a";
@@ -115,6 +141,49 @@ function backgroundFor(clip: TimelineClip): string {
     default:
       return "0x1f2937";
   }
+}
+
+interface DrawTextStyle {
+  fontColor: string;
+  boxColor: string;
+  sourceFontSize: number;
+  cardFontSize: number;
+}
+
+function drawTextStyle(timeline: Timeline): DrawTextStyle {
+  const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
+  if (packagingStyle === "clean") {
+    return { fontColor: "0x111827", boxColor: "white@0.72", sourceFontSize: 40, cardFontSize: 44 };
+  }
+  if (packagingStyle === "bold") {
+    return { fontColor: "white", boxColor: "0x7f1d1d@0.78", sourceFontSize: 46, cardFontSize: 52 };
+  }
+  return { fontColor: "white", boxColor: "black@0.45", sourceFontSize: 34, cardFontSize: 36 };
+}
+
+function drawTextFilter(text: string, style: DrawTextStyle, size: number, y: string): string {
+  return `drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${style.fontColor}:fontsize=${size}:x=(w-text_w)/2:y=${y}:box=1:boxcolor=${style.boxColor}:boxborderw=18`;
+}
+
+function mgMotionDecorationFilters(timeline: Timeline, width: number, height: number): string[] {
+  const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
+  if (packagingStyle !== "mg_motion") return [];
+  const top = Math.round(height * 0.15);
+  const mid = Math.round(height * 0.72);
+  const lower = Math.round(height * 0.82);
+  const keywordStyle: DrawTextStyle = {
+    fontColor: "0x38bdf8",
+    boxColor: "black@0.0",
+    sourceFontSize: 28,
+    cardFontSize: 28
+  };
+  return [
+    `drawbox=x=0:y=${top}:w=${width}:h=26:color=0x38bdf8@0.22:t=fill`,
+    `drawbox=x=0:y=${top + 34}:w=${width}:h=18:color=0xa855f7@0.24:t=fill`,
+    `drawbox=x=0:y=${mid}:w=${width}:h=22:color=0xf97316@0.25:t=fill`,
+    `drawbox=x=0:y=${lower}:w=${width}:h=16:color=0x22c55e@0.24:t=fill`,
+    drawTextFilter("STRUCTURE / REMIX / TIMELINE / AIGC", keywordStyle, 28, String(top + 58))
+  ];
 }
 
 export interface FFmpegRendererOptions {
@@ -138,6 +207,7 @@ export class FFmpegRenderer implements RendererAdapter {
 
     const { width, height } = pickResolution(timeline);
     const fps = timeline.renderPlan?.fps ?? 30;
+    const textStyle = drawTextStyle(timeline);
     const segmentFiles: string[] = [];
     const warnings: string[] = [];
 
@@ -146,7 +216,7 @@ export class FFmpegRenderer implements RendererAdapter {
       const segmentPath = path.join(workDir, `clip_${index + 1}.mp4`);
       const subtitle = escapeDrawText(clip.subtitleText ?? clip.visualIntent ?? "");
       const duration = Math.max(0.5, clip.durationSec);
-      const usedSource = await this.renderClip(clip, segmentPath, { width, height, fps, duration, subtitle, warnings });
+      const usedSource = await this.renderClip(clip, segmentPath, { width, height, fps, duration, subtitle, warnings, timeline, textStyle });
       if (!usedSource && (this.opts.preferSourceClips ?? false)) {
         warnings.push(`Clip ${clip.id}: no usable source asset; fell back to generated card.`);
       }
@@ -177,7 +247,7 @@ export class FFmpegRenderer implements RendererAdapter {
   private async renderClip(
     clip: TimelineClip,
     segmentPath: string,
-    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[] }
+    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
   ): Promise<boolean> {
     const sourcePath = clip.sourceAssetId ? this.opts.assetResolver.resolve(clip.sourceAssetId) : undefined;
     if (sourcePath && (clip.type === "video" || clip.type === "image")) {
@@ -186,7 +256,7 @@ export class FFmpegRenderer implements RendererAdapter {
           `scale=${options.width}:${options.height}:force_original_aspect_ratio=increase`,
           `crop=${options.width}:${options.height}`,
           options.subtitle
-            ? `drawtext=${FONT_FILE_ARG}text='${options.subtitle}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-(text_h*2):box=1:boxcolor=black@0.45:boxborderw=18`
+            ? drawTextFilter(options.subtitle, options.textStyle, options.textStyle.sourceFontSize, "h-(text_h*2)")
             : ""
         ]
           .filter(Boolean)
@@ -225,12 +295,15 @@ export class FFmpegRenderer implements RendererAdapter {
   private async renderGeneratedCard(
     clip: TimelineClip,
     segmentPath: string,
-    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[] }
+    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
   ): Promise<boolean> {
-    const color = backgroundFor(clip);
+    const color = backgroundFor(clip, options.timeline);
+    const decorations = mgMotionDecorationFilters(options.timeline, options.width, options.height);
     const filter = `color=c=${color}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)},format=yuv420p${
+      decorations.length ? `,${decorations.join(",")}` : ""
+    }${
       options.subtitle
-        ? `,drawtext=${FONT_FILE_ARG}text='${options.subtitle}':fontcolor=white:fontsize=46:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.45:boxborderw=18`
+        ? `,${drawTextFilter(options.subtitle, options.textStyle, options.textStyle.cardFontSize, "(h-text_h)/2")}`
         : ""
     }`;
     await runFfmpeg([
@@ -261,6 +334,7 @@ export interface RemotionRendererOptions {
   generatedDir: string;
   entryPoint?: string;
   compositionId?: string;
+  browserExecutable?: string;
 }
 
 export class RemotionRenderer implements RendererAdapter {
@@ -299,10 +373,12 @@ export class RemotionRenderer implements RendererAdapter {
       }
 
       const inputProps = { timeline };
+      const browserExecutable = this.opts.browserExecutable ?? resolveRemotionBrowserExecutable();
       const composition = await selectComposition({
         serveUrl: this.bundleLocation,
         id: this.opts.compositionId ?? "ViralReconstruction",
-        inputProps
+        inputProps,
+        browserExecutable
       });
 
       await renderMedia({
@@ -311,6 +387,7 @@ export class RemotionRenderer implements RendererAdapter {
         codec: "h264",
         outputLocation: outputPath,
         inputProps,
+        browserExecutable,
         chromiumOptions: { headless: true }
       });
 

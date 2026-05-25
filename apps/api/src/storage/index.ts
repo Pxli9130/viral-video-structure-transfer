@@ -4,6 +4,7 @@ import { DatabaseStore } from "./store.js";
 import type { StorageBackend } from "./backend.js";
 
 export { DatabaseStore } from "./store.js";
+export { CollectionStorageAdapter } from "./collectionAdapter.js";
 export { JsonStorageBackend } from "./jsonBackend.js";
 export type { StorageBackend } from "./backend.js";
 export type { CollectionName, Database } from "./types.js";

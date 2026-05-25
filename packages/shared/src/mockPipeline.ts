@@ -13,6 +13,7 @@ import type {
   GenerationRequest,
   GenerationResult,
   KnowledgeAtom,
+  MotionAtomSpec,
   PackagingSpec,
   RequiredSlot,
   RhythmSpec,
@@ -188,6 +189,54 @@ function summariseVlm(vlm: VLMVideoAnalysis | undefined): string {
   return vlm.videoSummary.slice(0, 160);
 }
 
+function abstractHookAtomName(observed: string | undefined): string {
+  const text = (observed ?? "").toLowerCase();
+  if (!text) return "Result-first hook";
+  if (/result|outcome|after|效果|结果/.test(text)) return "Result-first hook";
+  if (/pain|problem|before|痛点|问题/.test(text)) return "Pain-point hook";
+  if (/product|hero|closeup|close-up|device|bottle|商品|产品|特写/.test(text)) return "Product-first hook";
+  if (/title|headline|text|card|字幕|标题|文案/.test(text)) return "Title-card hook";
+  return "Attention-first hook";
+}
+
+function abstractProofAtomName(observed: string | undefined): string {
+  const text = (observed ?? "").toLowerCase();
+  if (!text) return "Proof by contrast card";
+  if (/contrast|comparison|before|after|\bvs\b|对比|前后/.test(text)) return "Contrast proof beat";
+  if (/metric|stat|number|data|%|倍|数据/.test(text)) return "Metric proof beat";
+  if (/review|testimonial|social|口碑|评价/.test(text)) return "Social-proof beat";
+  if (/climax|peak|reveal|高潮|爆点/.test(text)) return "Climax proof beat";
+  return "Proof by contrast card";
+}
+
+function abstractCtaAtomName(observed: string | undefined): string {
+  const text = (observed ?? "").toLowerCase();
+  if (!text) return "Readable CTA end card";
+  if (/brand|handle|logo|reveal|品牌|账号|标识/.test(text)) return "Brand-reveal CTA";
+  if (/buy|shop|click|learn|download|点击|购买|了解|领取/.test(text)) return "Direct action CTA";
+  if (/follow|subscribe|关注|订阅/.test(text)) return "Follow CTA";
+  if (/soft|save|remember|收藏|保存/.test(text)) return "Soft CTA end card";
+  return "Readable CTA end card";
+}
+
+function abstractSellingPointAtomName(sellingPoints: string[]): string {
+  if (sellingPoints.length > 1) return "Benefit-stack selling-point card";
+  if (sellingPoints.length === 1) return "Single-benefit selling-point card";
+  return "Crop-zoom + benefit overlay";
+}
+
+function abstractReusablePatternName(pattern: string): string {
+  const text = pattern.toLowerCase();
+  if (/transition|slide|wipe|cut|转场|切换/.test(text)) return "Reusable transition motif";
+  if (/motion|loop|3d|ribbon|camera|zoom|spin|动画|运镜/.test(text)) return "Reusable motion motif";
+  if (/color|palette|neon|gradient|色彩|配色/.test(text)) return "Reusable color system";
+  if (/cover|title|lock|thumbnail|封面|标题/.test(text)) return "Reusable cover layout";
+  if (/subtitle|caption|text|字幕|文案/.test(text)) return "Reusable subtitle treatment";
+  if (/cta|closing|end|结尾|引导/.test(text)) return "Reusable CTA ending";
+  if (/proof|comparison|contrast|对比|证明/.test(text)) return "Reusable proof layout";
+  return "Reusable shot pattern";
+}
+
 function buildStructureAtoms(
   templateId: string,
   projectId: string,
@@ -208,7 +257,7 @@ function buildStructureAtoms(
       templateId,
       role: "hook",
       category: "hook_pattern",
-      name: vlm?.structure?.hook ? `Hook: ${vlm.structure.hook.slice(0, 60)}` : "Result-first hook",
+      name: abstractHookAtomName(vlm?.structure?.hook),
       description: vlm?.structure?.hook
         ? `Observed opening: ${vlm.structure.hook}`
         : "Open with the clearest product/result frame and a short benefit claim.",
@@ -251,7 +300,7 @@ function buildStructureAtoms(
       templateId,
       role: "proof",
       category: "packaging_pattern",
-      name: vlm?.structure?.climax ? `Proof: ${vlm.structure.climax.slice(0, 60)}` : "Proof by contrast card",
+      name: abstractProofAtomName(vlm?.structure?.climax),
       description: vlm?.structure?.climax
         ? `Climax beat observed: ${vlm.structure.climax}`
         : "Split layout for before/after or pain/solution.",
@@ -265,7 +314,7 @@ function buildStructureAtoms(
       templateId,
       role: "cta",
       category: "cta_pattern",
-      name: vlm?.structure?.cta ? `CTA: ${vlm.structure.cta.slice(0, 60)}` : "Readable CTA end card",
+      name: abstractCtaAtomName(vlm?.structure?.cta),
       description: vlm?.structure?.cta
         ? `Observed CTA pattern: ${vlm.structure.cta}`
         : "Hold final CTA with benefit recap and brand mark.",
@@ -279,9 +328,7 @@ function buildStructureAtoms(
       templateId,
       role: "body",
       category: "gap_fill_strategy",
-      name: sellingPoints.length
-        ? `Selling-point card: ${sellingPoints.slice(0, 2).join(" / ")}`
-        : "Crop-zoom + benefit overlay",
+      name: abstractSellingPointAtomName(sellingPoints),
       description: sellingPoints.length
         ? `Reuse this card pattern for selling points: ${sellingPoints.join(", ")}.`
         : "Reuse the strongest source shot with crop/zoom; overlay benefit text.",
@@ -298,7 +345,7 @@ function buildStructureAtoms(
     templateId,
     role: /hook|opening/i.test(pattern) ? "hook" : /cta|closing|end/i.test(pattern) ? "cta" : /proof|comparison|contrast/i.test(pattern) ? "proof" : "body",
     category: /transition/i.test(pattern) ? "transition_pattern" : /subtitle|caption|text/i.test(pattern) ? "subtitle_style" : "shot_pattern",
-    name: `Reusable: ${pattern.slice(0, 60)}`,
+    name: abstractReusablePatternName(pattern),
     description: vlmSummary
       ? `Pattern '${pattern}' observed in: ${vlmSummary}`
       : `Pattern '${pattern}' observed in source video.`,
@@ -541,21 +588,74 @@ export function parsePromptToBrief(request: GenerationRequest): ParsedBrief {
     const match = prompt.match(new RegExp(`(?:${label})[:：]\\s*([^\\n]+)`, "i"));
     return match?.[1]?.trim();
   };
+  const matchLooseProduct = (): string | undefined => {
+    const firstLine = prompt
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (!firstLine) return undefined;
+    const cleaned = firstLine
+      .replace(/^(subject|topic|product|主题|商品|产品)\s*[:：-]\s*/i, "")
+      .replace(/\b(?:ad|promo|launch|video|short)\b.*$/i, "")
+      .trim();
+    return cleaned.length >= 2 ? cleaned : undefined;
+  };
+  const looseSellingPoints = prompt.match(/(?:selling points|benefits|usp)\s+([^\n]+)/i)?.[1]?.trim();
   const sellingPointsRaw =
     matchLine("卖点|selling points|benefits|usp") ??
+    looseSellingPoints ??
     (prompt.match(/[突强]出([^\n。]+)/)?.[1] ?? "");
   const sellingPoints = sellingPointsRaw
-    .split(/[、,，;；]/)
+    .split(/[、,，;；\n]/)
     .map((item) => item.trim())
     .filter(Boolean);
+  const topic = matchLine("主题|topic") ?? matchLine("商品|产品|product") ?? matchLooseProduct() ?? "B2B marketing promo";
   return {
-    topic: matchLine("主题|topic") ?? matchLine("商品|产品|product") ?? "B2B marketing promo",
-    productName: matchLine("商品|产品|product") ?? matchLine("主题|topic") ?? "Demo product",
+    topic,
+    productName: matchLine("商品|产品|product") ?? matchLine("主题|topic") ?? matchLooseProduct() ?? "Demo product",
     targetAudience: matchLine("目标用户|audience|target") ?? "business users",
     sellingPoints: sellingPoints.length ? sellingPoints : ["clear value", "easy to understand", "mobile-friendly"],
     tone: matchLine("风格|style|tone") ?? "fast MG promo",
     cta: matchLine("CTA|引导|结尾") ?? "Click to learn more",
     forbiddenContent: request.constraints?.forbiddenWords ?? []
+  };
+}
+
+interface TranscriptQuality {
+  validCueCount: number;
+  charCount: number;
+  coverageRatio: number;
+  charsPerSec: number;
+  usableScript: boolean;
+  subtitleDense: boolean;
+}
+
+function meaningfulTextLength(text: string): number {
+  return (text.match(/[\p{L}\p{N}\u4e00-\u9fff]/gu) ?? []).length;
+}
+
+function isNoiseTranscriptText(text: string): boolean {
+  const clean = text.trim().toLowerCase();
+  if (!clean) return true;
+  if (/^\[[^\]]*(music|noise|silence|applause|音乐|噪音|静音)[^\]]*\]$/.test(clean)) return true;
+  if (/^(uh+|um+|嗯+|啊+|啦+|la+|hi|ok|okay|test|字幕)$/i.test(clean)) return true;
+  return meaningfulTextLength(clean) < 4;
+}
+
+function analyzeTranscriptQuality(transcript: TranscriptSegment[], totalDurationSec: number): TranscriptQuality {
+  const meaningful = transcript.filter((cue) => !isNoiseTranscriptText(cue.text ?? ""));
+  const charCount = meaningful.reduce((sum, cue) => sum + meaningfulTextLength(cue.text ?? ""), 0);
+  const coverageSec = meaningful.reduce((sum, cue) => sum + Math.max(0, cue.endSec - cue.startSec), 0);
+  const duration = Math.max(1, totalDurationSec);
+  const coverageRatio = Math.min(1, coverageSec / duration);
+  const charsPerSec = charCount / duration;
+  return {
+    validCueCount: meaningful.length,
+    charCount,
+    coverageRatio,
+    charsPerSec,
+    usableScript: meaningful.length >= 1 && charCount >= 12,
+    subtitleDense: meaningful.length >= 2 && charCount >= 24 && coverageRatio >= 0.18 && charsPerSec >= 0.6
   };
 }
 
@@ -605,7 +705,9 @@ export function understandSourceVideo(
       if (index === 0) blended.add("hook_candidate");
       promptTags.forEach((tag) => blended.add(tag));
       // ASR: shots overlapping a transcript cue with substantive text become text_card_candidate carriers.
-      const hasAsrText = transcript.some((cue) => cue.endSec > shot.startSec && cue.startSec < shot.endSec && (cue.text ?? "").trim().length > 0);
+      const hasAsrText = transcript.some(
+        (cue) => cue.endSec > shot.startSec && cue.startSec < shot.endSec && !isNoiseTranscriptText(cue.text ?? "")
+      );
       if (hasAsrText) blended.add("text_card_candidate");
       // OCR: any on-screen text in the keyframe window also flags subtitle/text-card candidacy.
       if (ocrText.length) blended.add("text_card_candidate");
@@ -757,10 +859,29 @@ export interface GapReportContext {
   template?: StructureTemplate;
 }
 
+const RIBBON_MOTIF_PATTERN = /3d[_\s-]*ribbon[_\s-]*orbit|ribbon[_\s-]*orbit|3d\s*彩带|动态\s*彩带/i;
+
+function hasRibbonOrbitMotif(template: StructureTemplate | undefined): boolean {
+  if (!template) return false;
+  const haystack = [
+    template.packaging.overlayStyle,
+    template.packaging.titleCardStyle,
+    template.packaging.coverStyle,
+    template.qualityRationale,
+    ...template.structureAtoms.flatMap((atom) => [atom.name, atom.description, atom.usageRules, atom.exampleMapping])
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return RIBBON_MOTIF_PATTERN.test(haystack);
+}
+
 export function generateGapReport(mappings: SlotMapping[], context: GapReportContext = {}): GapReportItem[] {
   const transcript = context.source?.transcript ?? [];
   const ocrText = context.source?.ocrText ?? [];
-  const hasScript = transcript.some((cue) => (cue.text ?? "").trim().length > 0) || ocrText.length > 0;
+  const sourceDurationSec = Math.max(1, ...(context.source?.candidates ?? []).map((candidate) => candidate.endSec));
+  const transcriptQuality = analyzeTranscriptQuality(transcript, sourceDurationSec);
+  const hasOcrText = ocrText.some((text) => meaningfulTextLength(text) >= 2);
+  const hasScript = transcriptQuality.usableScript || hasOcrText;
   const subtitleSignals = context.source?.candidates?.filter((c) => c.tags.includes("text_card_candidate")).length ?? 0;
 
   const slotGaps: GapReportItem[] = mappings
@@ -800,17 +921,37 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
       gapLabelZh: "缺少口播或脚本",
       recommendedFillStrategies: ["text_card", "packaging_overlay"]
     });
-  } else if (hasSourceContext && hasScript && subtitleSignals === 0) {
+  } else if (
+    hasSourceContext &&
+    hasScript &&
+    (subtitleSignals === 0 || (transcript.length > 0 && !transcriptQuality.subtitleDense && !hasOcrText))
+  ) {
     slotGaps.push({
       slotId: "synthetic_subtitle_density_gap",
       status: "weak_match",
       severity: "low",
-      reason: "Transcript is available but source shots lack subtitle-friendly text card candidates.",
+      reason: `Transcript is available but subtitle support is weak (valid cues=${transcriptQuality.validCueCount}, coverage=${Math.round(
+        transcriptQuality.coverageRatio * 100
+      )}%, density=${transcriptQuality.charsPerSec.toFixed(2)} chars/sec).`,
       impact: "字幕密度偏低，重构时应当主动叠加卖点字幕。",
       gapType: "subtitle_density_low",
       gapLabel: "Subtitle density is low",
       gapLabelZh: "字幕密度偏低",
       recommendedFillStrategies: ["text_card", "packaging_overlay"]
+    });
+  }
+
+  if (hasRibbonOrbitMotif(context.template)) {
+    slotGaps.push({
+      slotId: "synthetic_dynamic_3d_ribbon_asset_gap",
+      status: "missing",
+      severity: "high",
+      reason: "Template requires a 3D ribbon/orbit dynamic visual motif, but no user-provided dynamic ribbon asset is available for the new video.",
+      impact: "缺少动态 3D 彩带主视觉；应由程序化 motion atom 补全，而不是退化成静态文字卡。",
+      gapType: "dynamic_3d_ribbon_asset",
+      gapLabel: "Dynamic 3D ribbon/orbit visual is missing",
+      gapLabelZh: "缺少动态 3D 彩带主视觉",
+      recommendedFillStrategies: ["procedural_generation"]
     });
   }
 
@@ -845,7 +986,8 @@ function chooseStrategy(ctx: StrategyContext): FillStrategy {
 export function createFillPlan(
   mappings: SlotMapping[],
   source: SourceVideoUnderstanding,
-  request: GenerationRequest
+  request: GenerationRequest,
+  template?: StructureTemplate
 ): FillAction[] {
   const hasReusableVisual = source.candidates.length > 0;
   const brief = parsePromptToBrief(request);
@@ -855,7 +997,7 @@ export function createFillPlan(
     list.push(m);
     mappingsBySegment.set(m.slotRole, list);
   }
-  return mappings
+  const slotFillPlan = mappings
     .filter((mapping) => mapping.status !== "matched")
     .map((mapping) => {
       const siblings = mappingsBySegment.get(mapping.slotRole) ?? [];
@@ -880,6 +1022,8 @@ export function createFillPlan(
               ? "Use title bar, sticker, highlight and CTA overlay to compensate for weak material."
               : strategy === "reorder_structure"
                 ? `Reorder: merge ${mapping.slotType} responsibilities into matched sibling slot ${mergeIntoClipId ?? "(adjacent)"}, dropping the gap clip.`
+                : strategy === "procedural_generation"
+                  ? "Fulfill the missing dynamic visual motif with a renderer-backed procedural motion atom."
                 : strategy === "aigc_placeholder"
                   ? "Mark a placeholder prompt for future generated asset."
                   : "Use deterministic text/MG card driven by prompt brief.",
@@ -891,11 +1035,29 @@ export function createFillPlan(
               ? { headline: brief.cta, sticker: "benefit_badge" }
               : strategy === "reuse_with_crop_zoom"
                 ? { motion: "crop_zoom", fit: "cover" }
+                : strategy === "procedural_generation"
+                  ? { atom: "ribbon_orbit", fulfilledBy: "procedural_generation" }
                 : strategy === "aigc_placeholder"
                   ? { aigcPrompt: `Clean vertical MG background for ${brief.productName}` }
                   : { mergeIntoSlotId: mergeIntoClipId, note: "Merge this slot's copy into adjacent matched sibling at render time." }
       };
     });
+
+  if (!hasRibbonOrbitMotif(template)) return slotFillPlan;
+  return [
+    ...slotFillPlan,
+    {
+      slotId: "synthetic_dynamic_3d_ribbon_asset_gap",
+      strategy: "procedural_generation",
+      reason: "dynamic_3d_ribbon_asset -> fulfilled_by_procedural_generation -> ribbon_orbit rendered.",
+      targetClipId: stableId("motion_atom", request.projectId, "ribbon_orbit"),
+      rendererInstructions: {
+        atom: "ribbon_orbit",
+        fulfilledBy: "procedural_generation",
+        missingMotif: "dynamic_3d_ribbon_asset"
+      }
+    }
+  ];
 }
 
 function subtitleForSlot(slotType: SlotType, brief: ParsedBrief): string {
@@ -908,12 +1070,60 @@ function subtitleForSlot(slotType: SlotType, brief: ParsedBrief): string {
   return brief.topic;
 }
 
+function slotsForPace(slotIds: string[], template: StructureTemplate, controls: GenerationRequest["controls"] | undefined): string[] {
+  if (controls?.pace !== "slow") return slotIds;
+  const visualSlots = slotIds.filter((slotId) => {
+    const slot = template.requiredSlots.find((item) => item.id === slotId);
+    return slot?.slotType !== "subtitle_text" && slot?.slotType !== "title_card";
+  });
+  return visualSlots.length > 0 ? visualSlots : slotIds;
+}
+
+function renderBackgroundForControls(controls: GenerationRequest["controls"] | undefined): string {
+  if (controls?.packagingStyle === "clean") return "#f8fafc";
+  if (controls?.packagingStyle === "bold") return "#7f1d1d";
+  return "#0f172a";
+}
+
 function clipTypeForFill(strategy: FillStrategy | undefined): TimelineClipType {
   if (strategy === "reuse_with_crop_zoom") return "video";
   if (strategy === "text_card") return "text_card";
   if (strategy === "packaging_overlay") return "generated_card";
+  if (strategy === "procedural_generation") return "generated_card";
   if (strategy === "aigc_placeholder") return "placeholder";
   return "generated_card";
+}
+
+const RIBBON_KEYWORDS = ["STRUCTURE", "REMIX", "TIMELINE", "AIGC", "CREATION"];
+const RIBBON_COLORS = ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"];
+
+function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, durationSec: number): MotionAtomSpec[] {
+  const hasProceduralRibbon = fillPlan.some(
+    (action) =>
+      action.strategy === "procedural_generation" &&
+      String(action.rendererInstructions?.atom ?? "").includes("ribbon")
+  );
+  if (!hasProceduralRibbon) return [];
+  const clean = request.controls?.packagingStyle === "clean";
+  const aggressive = request.controls?.hookIntensity === "aggressive";
+  const style: MotionAtomSpec["style"] = clean ? "clean_premium" : "mg_motion";
+  const density = clean ? 2 : aggressive ? 5 : 3;
+  const speed = clean ? 0.55 : aggressive ? 1.35 : 0.92;
+  const opacity = clean ? 0.32 : aggressive ? 0.82 : 0.62;
+  return [
+    {
+      type: "ribbon_orbit",
+      fulfilledBy: "procedural_generation",
+      keywords: RIBBON_KEYWORDS,
+      colorProgression: RIBBON_COLORS,
+      style,
+      density,
+      speed,
+      opacity,
+      startSec: 0,
+      endSec: durationSec
+    }
+  ];
 }
 
 export interface BuildTimelineInput {
@@ -937,7 +1147,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   for (const segment of template.segments) {
     const segmentDuration = Math.max(0.6, round((segment.endRatio - segment.startRatio) * totalSec));
     const slotIds = segment.slots.filter((slotId) => template.requiredSlots.some((slot) => slot.id === slotId));
-    const slotsForSegment = slotIds.length > 0 ? slotIds : segment.slots;
+    const slotsForSegment = slotsForPace(slotIds.length > 0 ? slotIds : segment.slots, template, request.controls);
     const perSlotDuration = round(segmentDuration / Math.max(slotsForSegment.length, 1));
     const segmentClipIds: string[] = [];
 
@@ -962,7 +1172,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         {
           id: stableId("layer_bg", clipId),
           kind: "background",
-          style: { color: request.controls?.packagingStyle === "clean" ? "#f8fafc" : "#0f172a" }
+          style: { color: renderBackgroundForControls(request.controls) }
         }
       ];
       if (matched && sourceAssetId) {
@@ -1053,13 +1263,20 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
     rendererTarget: "html_preview",
     clips,
     mapping,
-    gapReport: generateGapReport(mappings, { source, template }),
-    fillPlan,
-    renderPlan: {
+      gapReport: generateGapReport(mappings, { source, template }),
+      fillPlan,
+      renderPlan: {
       width: aspectRatio === "9:16" ? 720 : 1280,
-      height: aspectRatio === "9:16" ? 1280 : 720,
-      fps: 30,
-      background: request.controls?.packagingStyle === "clean" ? "#f8fafc" : "#0f172a",
+        height: aspectRatio === "9:16" ? 1280 : 720,
+        fps: 30,
+        background: renderBackgroundForControls(request.controls),
+        motionAtoms: buildMotionAtoms(fillPlan, request, durationSec),
+        adapterOptions: {
+        pace: request.controls?.pace ?? "fast",
+        packagingStyle: request.controls?.packagingStyle ?? "mg_motion",
+        hookIntensity: request.controls?.hookIntensity ?? "strong",
+        ctaStyle: request.controls?.ctaStyle ?? "direct"
+      },
       notes: "P0 renderer target is html_preview; FFmpeg/Remotion/HyperFrames available as adapters."
     },
     warnings: [
@@ -1080,6 +1297,7 @@ export interface GenerateMigrationInput {
   sourceAsset?: Asset;
   sourceAnalysis?: VideoAnalysisResult;
   sourceVlm?: VLMVideoAnalysis;
+  generationIdSalt?: string;
 }
 
 export function generateMigrationResult(input: GenerateMigrationInput): GenerationResult {
@@ -1088,10 +1306,12 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
   if (!requestValidation.valid) {
     throw new Error(`Invalid generation request: ${requestValidation.errors.join("; ")}`);
   }
-  const generationId = stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds);
+  const generationId = input.generationIdSalt
+    ? stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds, request.controls, input.generationIdSalt)
+    : stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds, request.controls);
   const source = understandSourceVideo(sourceAnalysis, sourceAsset, request, sourceVlm);
   const slotMapping = matchSlots(template, source, request);
-  const fillPlan = createFillPlan(slotMapping, source, request);
+  const fillPlan = createFillPlan(slotMapping, source, request, template);
   const { timeline, storyboard } = buildTimeline({
     template,
     request,

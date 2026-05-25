@@ -47,6 +47,7 @@ export type FillStrategy =
   | "text_card"
   | "packaging_overlay"
   | "reorder_structure"
+  | "procedural_generation"
   | "aigc_placeholder";
 
 export type SourceTag =
@@ -344,7 +345,8 @@ export type GapCategory =
   | "transition_missing"
   | "background_missing"
   | "voiceover_or_script_missing"
-  | "subtitle_density_low";
+  | "subtitle_density_low"
+  | "dynamic_3d_ribbon_asset";
 
 export interface GapReportItem {
   slotId: string;
@@ -415,11 +417,25 @@ export interface TimelineMappingItem {
   explanation: string;
 }
 
+export interface MotionAtomSpec {
+  type: "ribbon_orbit" | "3d_ribbon_orbit";
+  fulfilledBy: "procedural_generation";
+  keywords: string[];
+  colorProgression: string[];
+  style: "mg_motion" | "clean_premium";
+  density: number;
+  speed: number;
+  opacity: number;
+  startSec: number;
+  endSec: number;
+}
+
 export interface RenderPlan {
   width?: number;
   height?: number;
   fps?: number;
   background?: string;
+  motionAtoms?: MotionAtomSpec[];
   notes?: string;
   rendererTarget?: RendererTarget;
   adapterOptions?: Record<string, unknown>;

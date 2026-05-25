@@ -2,6 +2,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
@@ -77,6 +78,44 @@ async function ensureStorageDirs(): Promise<void> {
   await fs.mkdir(path.join(storageRoot, "demo"), { recursive: true });
 }
 
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runSeedDemoIfNeeded(): Promise<void> {
+  const backend = (process.env.STORAGE_BACKEND ?? "json").toLowerCase();
+  const shouldSeed = backend === "json" && process.env.VVST_NO_LISTEN !== "true";
+  if (!shouldSeed) return;
+  const appJson = path.join(dbDir, "app.json");
+  if (await fileExists(appJson)) return;
+  await ensureStorageDirs();
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(repoRoot, "scripts", "seed-demo.mjs")], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        STORAGE_DIR: path.relative(repoRoot, storageRoot),
+        CONDA_BASE: process.env.CONDA_BASE ?? "/home/pxli/anaconda3",
+        VIRAL_CONDA_ENV: process.env.VIRAL_CONDA_ENV ?? "viral"
+      },
+      stdio: "inherit"
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`seed-demo exited with code ${code}`));
+    });
+  });
+}
+
 function pickEnum<T extends string>(value: unknown, allowed: T[], fallback: T): T {
   return allowed.includes(value as T) ? (value as T) : fallback;
 }
@@ -96,6 +135,7 @@ function parseTags(value: unknown): string[] {
 }
 
 await ensureStorageDirs();
+await runSeedDemoIfNeeded();
 const store = await buildDatabaseStore({ backend: process.env.STORAGE_BACKEND, storageRoot });
 const adapters: AdapterSet = buildAdapterSet(process.env, generatedDir);
 
@@ -458,6 +498,7 @@ function buildAssetResolver(db: Database): AssetPathResolver {
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "8mb" }));
+app.use("/generated", express.static(generatedDir));
 
 app.get("/healthz", (_req, res) => {
   ok(res, {
@@ -916,14 +957,12 @@ async function runGeneration(
       request,
       sourceAsset,
       sourceAnalysis,
-      sourceVlm
+      sourceVlm,
+      generationIdSalt: options.variantLabel
     });
     if (options.variantLabel) {
-      const variantId = stableId("generation", request.projectId, request.prompt, options.variantLabel);
       generation = {
         ...generation,
-        id: variantId,
-        timeline: { ...generation.timeline, generationId: variantId },
         migrationExplanation: `[${options.variantLabel}] ${generation.migrationExplanation}`,
         warnings: [`variant=${options.variantLabel}`, ...generation.warnings]
       };
@@ -1006,9 +1045,8 @@ app.post(
       return;
     }
     const dryRun = req.body.dryRun === true || req.query.dryRun === "true";
-    const reviser = adapters.aiAdapter.reviseInstruction;
-    const llmResult = reviser
-      ? await reviser({ generationId: generation.id, instruction })
+    const llmResult = adapters.aiAdapter.reviseInstruction
+      ? await adapters.aiAdapter.reviseInstruction({ generationId: generation.id, instruction })
       : { summary: `(mock) revision noted: ${instruction}`, patchedControls: undefined, promptAddendum: undefined };
 
     if (dryRun || (!llmResult.patchedControls && !llmResult.promptAddendum)) {
