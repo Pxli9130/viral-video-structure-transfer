@@ -619,6 +619,12 @@ function aiChallengeRequest(controls = {}) {
       { assetId: "target_info_anchor", role: "date/product_info" },
       { assetId: "target_procedural_ribbon", role: "generated/procedural_motion_asset" }
     ],
+    targetAssets: [
+      { id: "target_title_copy", kind: "copy", role: "title headline copy", text: "爆款结构迁移引擎 / Viral Structure Transfer Engine", tags: ["title", "copy"] },
+      { id: "target_logo_mark", kind: "logo", role: "brand logo cta", text: "VVST", tags: ["logo", "cta"] },
+      { id: "target_info_anchor", kind: "cta_info", role: "date product info cta", text: "2026 · Upload. Analyze. Remix.", tags: ["date", "product_info", "cta"] },
+      { id: "target_background", kind: "background_image", role: "minimal off-white poster background", tags: ["background", "poster"] }
+    ],
     prompt: [
       "主题：爆款结构迁移引擎",
       "英文名：Viral Structure Transfer Engine",
@@ -1112,8 +1118,8 @@ Generated: ${nowIso()}
 - Contact sheet: [contact_sheet.png](contact_sheet.png)
 - Timeline JSON: [timeline.json](timeline.json)
 - Full generation JSON: [generation-result.json](generation-result.json)
-- Critical motif: \`dynamic_3d_ribbon_asset -> fulfilled_by_procedural_generation -> ${proceduralAction.rendererInstructions.atom} rendered\`
-- Renderer: Remotion procedural motion atom, no online asset download
+- Critical motif: \`dynamic_3d_ribbon_asset -> ${proceduralAction.rendererInstructions.renderer ?? "remotion_mg"} -> ${proceduralAction.rendererInstructions.atom} rendered\`
+- Renderer: ${proceduralAction.rendererInstructions.renderer ?? "remotion_mg"} procedural motion atom, fallback=${proceduralAction.rendererInstructions.fallbackRenderer ?? "ffmpeg_compose"}, no online asset download
 
 ## Output Modes
 
@@ -1131,9 +1137,9 @@ ${tableRows(main.gapReport, (gap) => `| ${gap.gapLabelZh ?? gap.gapLabel ?? gap.
 
 ## Fill Strategy Evidence
 
-| Missing Motif | Fill Strategy | Renderer Atom | Fulfilled By |
-|---|---|---|---|
-| dynamic_3d_ribbon_asset | ${proceduralAction.strategy} | ${proceduralAction.rendererInstructions.atom} | fulfilled_by_${proceduralAction.rendererInstructions.fulfilledBy} |
+| Missing Motif | Fill Strategy | Renderer Backend | Renderer Atom | Fulfilled By |
+|---|---|---|---|---|
+| dynamic_3d_ribbon_asset | ${proceduralAction.strategy} | ${proceduralAction.rendererInstructions.renderer ?? "remotion_mg"} | ${proceduralAction.rendererInstructions.atom} | fulfilled_by_${proceduralAction.rendererInstructions.fulfilledBy} |
 
 ## General Ribbon Motion Geometry
 
@@ -1277,6 +1283,8 @@ const html = `<!doctype html>
         <tbody>
           <tr><th>Missing motif</th><td><code>dynamic_3d_ribbon_asset</code></td></tr>
           <tr><th>Fulfilled by</th><td><code>fulfilled_by_procedural_generation</code></td></tr>
+          <tr><th>Renderer backend</th><td><code>${proceduralAction.rendererInstructions.renderer ?? "remotion_mg"}</code></td></tr>
+          <tr><th>Fallback backend</th><td><code>${proceduralAction.rendererInstructions.fallbackRenderer ?? "ffmpeg_compose"}</code></td></tr>
           <tr><th>Renderer atom</th><td><code>${proceduralAction.rendererInstructions.atom}</code></td></tr>
           <tr><th>Keywords</th><td>${mainMotionAtom.keywords.join(" / ")}</td></tr>
         </tbody>
@@ -1370,6 +1378,8 @@ console.log(JSON.stringify({
   dynamic_3d_ribbon_asset: {
     fulfilledBy: proceduralAction.rendererInstructions.fulfilledBy,
     strategy: proceduralAction.strategy,
+    renderer: proceduralAction.rendererInstructions.renderer ?? "remotion_mg",
+    fallbackRenderer: proceduralAction.rendererInstructions.fallbackRenderer ?? "ffmpeg_compose",
     atom: proceduralAction.rendererInstructions.atom
   },
   gaps: main.gapReport.length,

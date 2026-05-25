@@ -14,7 +14,9 @@ export type SourcePolicy = "user_authorized" | "open_download_or_user_uploaded" 
 export type AnalysisPurpose = "sample" | "source";
 export type AnalyzerMode = "mock" | "ffmpeg" | "ffmpeg_opencv" | "ffmpeg_vlm_asr";
 export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+export type RendererBackend = "remotion_mg" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
 export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
+export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
 export type RibbonSurfaceType = "thin_line" | "wide_band" | "textured_band" | "particle_trail";
 export type RibbonPathFamily = "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
 export type RibbonAxis = "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
@@ -328,6 +330,19 @@ export interface GenerationRequestAsset {
   role?: string;
 }
 
+export interface TargetAssetInput {
+  id: string;
+  kind: TargetAssetKind;
+  role?: string;
+  path?: string;
+  url?: string;
+  text?: string;
+  filename?: string;
+  mimeType?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+}
+
 export interface GenerationTarget {
   vertical: Vertical;
   aspectRatio: AspectRatio;
@@ -342,6 +357,14 @@ export interface GenerationControls {
   ctaStyle?: "soft" | "direct";
   allowAigcPlaceholder?: boolean;
   creativeMode?: CreativeOutputMode;
+  subtitleDensity?: "minimal" | "medium" | "dense";
+  stylePreset?: "sample_like" | "clean_premium" | "white_poster" | "bold_mg";
+  ctaTiming?: "early" | "default" | "late";
+  ribbon?: Partial<RibbonMotionGeometry> & {
+    speedMultiplier?: number;
+    densityMultiplier?: number;
+    premiumFinish?: boolean;
+  };
 }
 
 export interface GenerationConstraints {
@@ -358,6 +381,7 @@ export interface GenerationRequest {
   selectedTemplateIds?: string[];
   selectedAtomIds?: string[];
   assets?: GenerationRequestAsset[];
+  targetAssets?: TargetAssetInput[];
   prompt: string;
   target: GenerationTarget;
   controls?: GenerationControls;
@@ -384,6 +408,10 @@ export interface SlotMapping {
   candidateShotIds: string[];
   selectedShotId?: string;
   selectedAssetId?: string;
+  selectedTargetAssetId?: string;
+  selectedTargetAssetKind?: TargetAssetKind;
+  targetAssetCandidateIds?: string[];
+  assetAvailability?: "target_asset_mapped" | "target_asset_weak_match" | "no_user_asset_available" | "source_video_mapped";
   confidence: number;
   reason: string;
   risks: string[];
@@ -415,6 +443,21 @@ export interface GapReportItem {
   recommendedFillStrategies?: FillStrategy[];
   slotType?: SlotType;
   slotRole?: SegmentRole;
+  assetAvailability?: SlotMapping["assetAvailability"];
+  mappedAssetId?: string;
+  fillSource?: "target_asset" | "source_video" | "procedural_generation" | "text_or_copy" | "none";
+  fulfilledByBackend?: RendererBackend;
+}
+
+export interface RendererInstruction {
+  renderer?: RendererBackend;
+  fallbackRenderer?: RendererBackend;
+  atom?: MotionAtomSpec["type"] | string;
+  strategy?: FillStrategy;
+  requiredInputs?: string[];
+  fulfilledBy?: "target_asset" | "source_video" | "procedural_generation" | "aigc_stub" | "text_or_copy";
+  ribbonMotion?: RibbonMotionGeometry;
+  [key: string]: unknown;
 }
 
 export interface FillAction {
@@ -422,7 +465,7 @@ export interface FillAction {
   strategy: FillStrategy;
   reason: string;
   targetClipId: string;
-  rendererInstructions?: Record<string, unknown>;
+  rendererInstructions?: RendererInstruction;
 }
 
 export interface StoryboardItem {
@@ -524,7 +567,30 @@ export interface RenderPlan {
   motionAtoms?: MotionAtomSpec[];
   notes?: string;
   rendererTarget?: RendererTarget;
+  rendererBackend?: RendererBackend;
   adapterOptions?: Record<string, unknown>;
+}
+
+export type EditOperationType =
+  | "change_output_mode"
+  | "remove_debug_labels"
+  | "adjust_ribbon"
+  | "adjust_cta_timing"
+  | "change_style_preset"
+  | "reduce_subtitle_density";
+
+export interface EditOperation {
+  type: EditOperationType;
+  value?: string | number | boolean | Record<string, unknown>;
+  reason: string;
+}
+
+export interface NaturalLanguageEditPlan {
+  instruction: string;
+  operations: EditOperation[];
+  patchedControls: Partial<GenerationControls>;
+  promptAddendum?: string;
+  summary: string;
 }
 
 export interface Timeline {

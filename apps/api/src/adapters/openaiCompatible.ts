@@ -1,5 +1,6 @@
 import {
   buildFallbackTemplate,
+  parseNaturalLanguageEdit,
   type AIAdapter,
   type GenerationControls,
   type GenerationRequest,
@@ -305,6 +306,7 @@ const ZH_SOFT_CTA = /(cta|结尾).*(柔|缓|温和|soft)|soft cta/i;
 const ZH_PRODUCT_FIRST = /把.*商品.*提前|商品信息提前|product first/i;
 
 export function heuristicRevise(instruction: string, generationId: string): { summary: string; patchedControls: Partial<GenerationControls> & { promptAddendum?: string } } {
+  const shared = parseNaturalLanguageEdit(instruction);
   const patch: Partial<GenerationControls> & { promptAddendum?: string } = {};
   const reasons: string[] = [];
   if (ZH_HOOK_AGGRESSIVE.test(instruction)) {
@@ -337,9 +339,13 @@ export function heuristicRevise(instruction: string, generationId: string): { su
     patch.promptAddendum = "请把商品信息/特写提前到 hook 段。";
     reasons.push("把商品信息提前 → 在 prompt 中追加优先级提示");
   }
+  Object.assign(patch, shared.patchedControls);
+  if (shared.promptAddendum && !patch.promptAddendum) {
+    patch.promptAddendum = shared.promptAddendum;
+  }
   return {
-    summary: reasons.length
-      ? `(heuristic) generation ${generationId}: ${reasons.join("; ")}`
+    summary: reasons.length || shared.operations.length
+      ? `(heuristic) generation ${generationId}: ${[...reasons, shared.summary].filter(Boolean).join("; ")}`
       : `(heuristic) generation ${generationId}: 未识别指令意图，沿用原参数。`,
     patchedControls: patch
   };

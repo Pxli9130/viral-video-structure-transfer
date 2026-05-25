@@ -8,7 +8,10 @@ import {
   generateGapReport,
   generateMigrationResult,
   matchSlots,
+  parseNaturalLanguageEdit,
   parsePromptToBrief,
+  applyNaturalLanguageEditToRequest,
+  applyNaturalLanguageEditToTimeline,
   understandSourceVideo,
   validateAssetAnalysis,
   validateGenerationRequest,
@@ -181,6 +184,57 @@ describe("v1.2 mock pipeline", () => {
     expect(gaps.length).toBeGreaterThan(0);
     expect(fillPlan).toHaveLength(gaps.length);
     expect(fillPlan.every((action) => Boolean(action.targetClipId))).toBe(true);
+  });
+
+  it("maps target assets to slots before falling back to prompt-only cards", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sparseSource = understandSourceVideo(undefined, undefined, {
+      ...request(),
+      inputMode: "brief_assets",
+      sourceVideo: undefined
+    });
+    const targetRequest: GenerationRequest = {
+      ...request(),
+      inputMode: "brief_assets",
+      sourceVideo: undefined,
+      targetAssets: [
+        { id: "hero_image", kind: "image", role: "hook product visual", path: "fixtures/hero.png", tags: ["hook", "product"] },
+        { id: "brand_logo", kind: "logo", role: "logo cta brand", path: "fixtures/logo.png", tags: ["logo", "cta"] },
+        { id: "poster_copy", kind: "copy", role: "title copy", text: "爆款结构迁移引擎" }
+      ]
+    };
+    const mappings = matchSlots(template, sparseSource, targetRequest);
+    expect(mappings.find((mapping) => mapping.slotType === "hook_visual")).toMatchObject({
+      status: "matched",
+      selectedTargetAssetId: "hero_image",
+      assetAvailability: "target_asset_mapped"
+    });
+    expect(mappings.some((mapping) => mapping.targetAssetCandidateIds?.length)).toBe(true);
+    const gaps = generateGapReport(mappings, { source: sparseSource, template });
+    expect(gaps.every((gap) => gap.assetAvailability)).toBe(true);
+  });
+
+  it("parses and applies natural-language edit operations", () => {
+    const plan = parseNaturalLanguageEdit("去掉解释性文字，换成白底高质感风格，让 ribbon 更慢、更高级，把 CTA 提前，减少字幕，增强视觉主导");
+    expect(plan.operations.map((operation) => operation.type)).toEqual(
+      expect.arrayContaining(["remove_debug_labels", "change_style_preset", "adjust_ribbon", "adjust_cta_timing", "reduce_subtitle_density"])
+    );
+    expect(plan.patchedControls).toMatchObject({
+      creativeMode: "final_creative",
+      packagingStyle: "clean",
+      stylePreset: "white_poster",
+      ctaTiming: "early",
+      subtitleDensity: "minimal"
+    });
+
+    const edited = applyNaturalLanguageEditToRequest(request(), plan);
+    expect(edited.controls?.ribbon?.speedMultiplier).toBeLessThan(1);
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const generation = generateMigrationResult({ template, request: edited });
+    const adjusted = applyNaturalLanguageEditToTimeline(generation.timeline, plan);
+    expect(adjusted.renderPlan?.adapterOptions?.editOperations).toContain("adjust_ribbon");
   });
 
   it("weaves VLM video_summary, structure and reusable_patterns into StructureTemplate", () => {

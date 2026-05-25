@@ -374,6 +374,26 @@ export const generationRequestSchema = {
         }
       }
     },
+    targetAssets: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "kind"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          kind: { enum: ["image", "video", "logo", "copy", "cta_info", "background_image"] },
+          role: { type: "string" },
+          path: { type: "string" },
+          url: { type: "string" },
+          text: { type: "string" },
+          filename: { type: "string" },
+          mimeType: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          metadata: { type: "object", additionalProperties: true }
+        }
+      }
+    },
     prompt: { type: "string", minLength: 1 },
     target: {
       type: "object",
@@ -395,7 +415,11 @@ export const generationRequestSchema = {
         packagingStyle: { enum: ["clean", "bold", "mg_motion"] },
         ctaStyle: { enum: ["soft", "direct"] },
         allowAigcPlaceholder: { type: "boolean" },
-        creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] }
+        creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] },
+        subtitleDensity: { enum: ["minimal", "medium", "dense"] },
+        stylePreset: { enum: ["sample_like", "clean_premium", "white_poster", "bold_mg"] },
+        ctaTiming: { enum: ["early", "default", "late"] },
+        ribbon: { type: "object", additionalProperties: true }
       }
     },
     constraints: {

@@ -8,6 +8,7 @@ import {
   stableId,
   type RenderOutput,
   type RendererAdapter,
+  type RendererBackend,
   type RendererTarget,
   type Timeline,
   type TimelineClip
@@ -489,20 +490,122 @@ export interface RendererSelectOptions extends FFmpegRendererOptions {
   remotionCompositionId?: string;
 }
 
-export function selectRenderer(target: RendererTarget, opts: RendererSelectOptions): RendererAdapter {
-  switch (target) {
-    case "ffmpeg":
-      return new FFmpegRenderer(opts);
-    case "mock_preview":
-      return new MockRenderer();
-    case "remotion":
-      return new RemotionRenderer({
+export class ImageCardRenderer implements RendererAdapter {
+  readonly target: RendererTarget = "html_preview";
+
+  async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
+    const renderId = stableId("render_image_card", generationId, timeline.id);
+    const cards = timeline.clips.map((clip) => `<article><strong>${clip.role}</strong><p>${clip.subtitleText ?? clip.visualIntent ?? ""}</p></article>`).join("");
+    return {
+      renderId,
+      generationId,
+      rendererTarget: this.target,
+      status: "completed",
+      previewHtml: `<section class="image-card-renderer">${cards}</section>`,
+      createdAt: nowIso()
+    };
+  }
+}
+
+export class AigcVideoFillStubRenderer implements RendererAdapter {
+  readonly target: RendererTarget = "hyperframes";
+  private readonly opts: { generatedDir: string };
+
+  constructor(opts: { generatedDir: string }) {
+    this.opts = opts;
+  }
+
+  async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
+    const renderId = stableId("render_aigc_stub", generationId, timeline.id);
+    const manifestDir = path.join(this.opts.generatedDir, "aigc_video_fill_stub", renderId);
+    await fs.mkdir(manifestDir, { recursive: true });
+    const manifestPath = path.join(manifestDir, "manifest.json");
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify(
+        {
+          renderer: "aigc_video_fill_stub",
+          generationId,
+          timelineId: timeline.id,
+          note: "Stub only. No paid or external video-generation API was called.",
+          fillPlan: timeline.fillPlan.map((action) => ({
+            slotId: action.slotId,
+            strategy: action.strategy,
+            renderer: action.rendererInstructions?.renderer,
+            fallbackRenderer: action.rendererInstructions?.fallbackRenderer,
+            requiredInputs: action.rendererInstructions?.requiredInputs ?? []
+          }))
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    return {
+      renderId,
+      generationId,
+      rendererTarget: this.target,
+      status: "completed",
+      outputPath: manifestPath,
+      previewHtml: `<p>AIGC video fill stub manifest written to ${path.basename(manifestPath)}. No external model call was made.</p>`,
+      createdAt: nowIso()
+    };
+  }
+}
+
+export interface RendererRegistryEntry {
+  backend: RendererBackend;
+  target: RendererTarget;
+  label: string;
+  create(opts: RendererSelectOptions): RendererAdapter;
+}
+
+export const RendererRegistry: Record<RendererBackend, RendererRegistryEntry> = {
+  remotion_mg: {
+    backend: "remotion_mg",
+    target: "remotion",
+    label: "Remotion MG/dynamic poster renderer",
+    create: (opts) =>
+      new RemotionRenderer({
         generatedDir: opts.generatedDir,
         entryPoint: opts.remotionEntryPoint,
         compositionId: opts.remotionCompositionId
-      });
+      })
+  },
+  ffmpeg_compose: {
+    backend: "ffmpeg_compose",
+    target: "ffmpeg",
+    label: "FFmpeg source compose renderer",
+    create: (opts) => new FFmpegRenderer(opts)
+  },
+  image_card: {
+    backend: "image_card",
+    target: "html_preview",
+    label: "Deterministic text/image card renderer",
+    create: () => new ImageCardRenderer()
+  },
+  aigc_video_fill_stub: {
+    backend: "aigc_video_fill_stub",
+    target: "hyperframes",
+    label: "AIGC video fill stub manifest renderer",
+    create: (opts) => new AigcVideoFillStubRenderer({ generatedDir: opts.generatedDir })
+  }
+};
+
+export function selectRendererBackend(backend: RendererBackend, opts: RendererSelectOptions): RendererAdapter {
+  return RendererRegistry[backend].create(opts);
+}
+
+export function selectRenderer(target: RendererTarget, opts: RendererSelectOptions): RendererAdapter {
+  switch (target) {
+    case "ffmpeg":
+      return selectRendererBackend("ffmpeg_compose", opts);
+    case "remotion":
+      return selectRendererBackend("remotion_mg", opts);
     case "hyperframes":
       return new HyperFramesRenderer({ generatedDir: opts.generatedDir });
+    case "mock_preview":
+      return new MockRenderer();
     case "html_preview":
     default:
       return new HtmlPreviewRenderer();
