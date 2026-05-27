@@ -242,7 +242,7 @@ describe("marketing.mov dynamic poster structure-transfer testcase", () => {
       )
     ).toBe(true);
     expect(generation.fillPlan.map((action) => action.strategy)).toEqual(
-      expect.arrayContaining(["aigc_placeholder", "text_card", "packaging_overlay", "procedural_generation"])
+      expect.arrayContaining(["proxy_placeholder", "text_card", "packaging_overlay", "procedural_generation"])
     );
     expect(
       generation.fillPlan.some(

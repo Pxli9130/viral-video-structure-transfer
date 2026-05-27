@@ -31,8 +31,10 @@ import {
   type Project,
   type RenderOutput,
   type RendererTarget,
+  type SlotReplacementBinding,
   type SourcePolicy,
   type StructureTemplate,
+  type TargetAssetKind,
   type TemplateRecord,
   type Vertical,
   type VideoAnalysisResult,
@@ -339,6 +341,15 @@ async function createAssetFromRequest(req: Request, projectId: string, file?: Ex
     status: "ready",
     createdAt: nowIso()
   };
+}
+
+function targetKindForReplacementAsset(asset: Asset): TargetAssetKind {
+  const haystack = [asset.role, asset.filename, ...(asset.tags ?? [])].join(" ").toLowerCase();
+  if (/logo|brand|标识|品牌/.test(haystack)) return "logo";
+  if (/cta|action|引导|行动/.test(haystack)) return "cta_info";
+  if (asset.type === "video") return "video";
+  if (asset.type === "text") return "copy";
+  return "image";
 }
 
 async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisPurpose, mode: AnalyzerMode | "auto", body: Request["body"]): Promise<{ job: Job; analysis: VideoAnalysisResult; templateRecord?: TemplateRecord; vlm?: VLMVideoAnalysis }> {
@@ -1032,6 +1043,87 @@ app.get(
 );
 
 app.post(
+  "/api/generations/:generationId/replacements",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const generation = assertFound(
+      db.generations.find((item) => item.id === req.params.generationId),
+      "Generation"
+    );
+    const slotId = String(req.body.slotId ?? "");
+    const assetId = String(req.body.assetId ?? "");
+    if (!slotId || !assetId) {
+      fail(res, 400, "VALIDATION_ERROR", "slotId and assetId are required");
+      return;
+    }
+    const slotExists =
+      generation.replacementSlots?.some((slot) => slot.slotId === slotId) ||
+      generation.slotMapping.some((mapping) => mapping.slotId === slotId) ||
+      generation.gapReport.some((gap) => gap.slotId === slotId || gap.replacementSlotId === slotId || gap.gapType === slotId);
+    if (!slotExists) {
+      fail(res, 400, "VALIDATION_ERROR", `Slot ${slotId} does not exist on generation ${generation.id}`);
+      return;
+    }
+    const asset = assertFound(db.assets.find((item) => item.id === assetId), "Replacement asset");
+    if (asset.projectId !== generation.projectId) {
+      fail(res, 403, "PROJECT_MISMATCH", "Replacement asset must belong to the same project as the generation");
+      return;
+    }
+    if (!["image", "video", "text"].includes(asset.type)) {
+      fail(res, 400, "VALIDATION_ERROR", "Replacement asset must be an image, video, GIF/image, logo/image, or text/copy asset");
+      return;
+    }
+
+    const binding: SlotReplacementBinding = {
+      slotId,
+      assetId,
+      applyMotionFromSlot: req.body.applyMotionFromSlot !== false,
+      createdAt: nowIso()
+    };
+    const nextBindings = [
+      ...(generation.request.replacementBindings ?? []).filter((item) => item.slotId !== slotId),
+      binding
+    ];
+    const replacementTargetAsset = {
+      id: asset.id,
+      kind: targetKindForReplacementAsset(asset),
+      role: `replacement:${slotId}`,
+      filename: asset.filename,
+      mimeType: asset.mimeType,
+      text: asset.text,
+      tags: Array.from(new Set([...(asset.tags ?? []), "slot_replacement", slotId])),
+      metadata: {
+        replacementSlotId: slotId,
+        sourcePolicy: asset.sourcePolicy
+      }
+    };
+    const nextTargetAssets = [
+      ...(generation.request.targetAssets ?? []).filter((item) => item.id !== asset.id),
+      replacementTargetAsset
+    ];
+    const nextRequest: GenerationRequest = {
+      ...generation.request,
+      targetAssets: nextTargetAssets,
+      replacementBindings: nextBindings
+    };
+    const variantLabel = `replacement_${Date.now().toString(36)}`;
+    const outcome = await runGeneration(db, nextRequest, { variantLabel });
+    await persistGenerationOutcome(outcome);
+    ok(
+      res,
+      {
+        previousGenerationId: generation.id,
+        generationId: outcome.generation.id,
+        replacementSlot: outcome.generation.replacementSlots?.find((slot) => slot.slotId === slotId) ?? null,
+        binding,
+        generation: outcome.generation
+      },
+      201
+    );
+  })
+);
+
+app.post(
   "/api/generations/:generationId/revise",
   asyncRoute(async (req, res) => {
     const db = await store.read();
@@ -1179,17 +1271,75 @@ interface ScorecardDimensionOut {
   comment: string;
 }
 
+interface EvaluatorGateOut {
+  id: string;
+  passed: boolean;
+  value: number | boolean | string;
+  comment: string;
+}
+
 interface ScorecardOut {
   generationId: string;
   overall: number;
   dimensions: ScorecardDimensionOut[];
   rationale: string;
   judge: "heuristic" | "llm" | "llm+heuristic";
+  gates?: EvaluatorGateOut[];
   warnings?: string[];
 }
 
 function clamp01(value: number): number {
   return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+function replacementEvaluatorGates(generation: GenerationResult): EvaluatorGateOut[] {
+  const slots = generation.replacementSlots ?? [];
+  const unresolved = slots.filter((slot) => slot.status === "missing" || slot.status === "proxy_generated").length;
+  const userReplaced = slots.filter((slot) => slot.status === "user_replaced" || slot.status === "rendered").length;
+  const proxyVisible = generation.timeline.clips.some(
+    (clip) =>
+      clip.gapFillStrategy === "proxy_placeholder" ||
+      clip.layers.some((layer) => layer.style?.fillStrategy === "proxy_placeholder")
+  );
+  const replacementAssetIds = new Set(slots.map((slot) => slot.boundAssetId).filter(Boolean));
+  const replacementRendered = generation.timeline.clips.some((clip) =>
+    clip.layers.some((layer) => Boolean(layer.assetId && replacementAssetIds.has(layer.assetId)))
+  );
+  const motionPreserved = slots
+    .filter((slot) => slot.boundAssetId)
+    .every((slot) => slot.applyMotionFromSlot !== false && Boolean(slot.motionSpec));
+  return [
+    {
+      id: "unresolved_placeholder_count",
+      passed: unresolved === 0 || userReplaced === 0,
+      value: unresolved,
+      comment: userReplaced > 0 ? "All replaced showcase slots should avoid unresolved proxies." : "No user replacement was supplied; unresolved proxies are allowed but visible."
+    },
+    {
+      id: "user_replaced_slot_count",
+      passed: userReplaced > 0 || slots.length === 0,
+      value: userReplaced,
+      comment: "Counts slots bound through the replacement workflow."
+    },
+    {
+      id: "proxy_slot_visible",
+      passed: proxyVisible || slots.length === 0 || userReplaced > 0,
+      value: proxyVisible,
+      comment: "Proxy placeholders should be visible before a user supplies an asset."
+    },
+    {
+      id: "replacement_asset_rendered",
+      passed: replacementRendered || userReplaced === 0,
+      value: replacementRendered,
+      comment: "A bound replacement asset should appear in the generated timeline."
+    },
+    {
+      id: "motion_preserved_after_replacement",
+      passed: motionPreserved,
+      value: motionPreserved,
+      comment: "Replacement bindings preserve the original slot motion spec."
+    }
+  ];
 }
 
 function computeHeuristicScorecard(generation: GenerationResult): ScorecardOut {
@@ -1241,7 +1391,8 @@ function computeHeuristicScorecard(generation: GenerationResult): ScorecardOut {
     overall,
     dimensions,
     rationale: `Heuristic scorecard: slot fill ${Math.round((matched / total) * 100)}%, source-backed clips ${sourceClips}/${totalClips}, avg shot ${rhythm.toFixed(2)}s.`,
-    judge: "heuristic"
+    judge: "heuristic",
+    gates: replacementEvaluatorGates(generation)
   };
 }
 
@@ -1262,7 +1413,8 @@ function mergeScorecards(heuristic: ScorecardOut, llm: NonNullable<Awaited<Retur
     overall,
     dimensions,
     rationale: `${heuristic.rationale} | LLM: ${llm.rationale}`,
-    judge: "llm+heuristic"
+    judge: "llm+heuristic",
+    gates: heuristic.gates
   };
 }
 

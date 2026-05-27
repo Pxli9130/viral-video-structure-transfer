@@ -17,6 +17,16 @@ export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remot
 export type RendererBackend = "remotion_mg" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
 export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
 export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
+export type AcceptedReplacementAssetType = "image" | "video" | "gif" | "logo" | "copy";
+export type ReplacementSlotStatus = "missing" | "proxy_generated" | "user_replaced" | "rendered";
+export type ReplacementVisualForm =
+  | "rotating_object"
+  | "product_card"
+  | "background"
+  | "logo"
+  | "cta"
+  | "text_card"
+  | "ribbon_motif";
 export type RibbonSurfaceType = "thin_line" | "wide_band" | "textured_band" | "particle_trail";
 export type RibbonPathFamily = "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
 export type RibbonAxis = "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
@@ -72,7 +82,50 @@ export type FillStrategy =
   | "packaging_overlay"
   | "reorder_structure"
   | "procedural_generation"
-  | "aigc_placeholder";
+  | "aigc_placeholder"
+  | "proxy_placeholder"
+  | "user_asset_replace";
+
+export interface MotionSpec {
+  type: "spin" | "scale" | "crop_zoom" | "ribbon_follow" | "none";
+  axis?: "x" | "y" | "z" | "screen_x" | "screen_y" | "screen_z";
+  speed?: number;
+  durationSec?: number;
+  easing?: string;
+  preserveFromSlot?: boolean;
+  [key: string]: unknown;
+}
+
+export interface PlaceholderSpec {
+  type: "proxy_shape" | "proxy_card" | "aigc_draft" | "procedural_object";
+  shape?: "sphere" | "circle" | "cube" | "plane" | "ribbon" | "generic_product";
+  color?: string;
+  label?: string;
+  motion?: MotionSpec;
+  [key: string]: unknown;
+}
+
+export interface SlotReplacementBinding {
+  slotId: string;
+  assetId: string;
+  applyMotionFromSlot?: boolean;
+  createdAt?: string;
+}
+
+export interface ReplacementSlot {
+  slotId: string;
+  semanticLabel: string;
+  visualForm: ReplacementVisualForm;
+  status: ReplacementSlotStatus;
+  placeholderSpec?: PlaceholderSpec;
+  acceptedAssetTypes: AcceptedReplacementAssetType[];
+  boundAssetId?: string;
+  motionSpec?: MotionSpec;
+  applyMotionFromSlot?: boolean;
+  gapType?: GapCategory;
+  rendererBackend?: RendererBackend;
+  targetClipId?: string;
+}
 
 export type SourceTag =
   | "hook_candidate"
@@ -382,6 +435,7 @@ export interface GenerationRequest {
   selectedAtomIds?: string[];
   assets?: GenerationRequestAsset[];
   targetAssets?: TargetAssetInput[];
+  replacementBindings?: SlotReplacementBinding[];
   prompt: string;
   target: GenerationTarget;
   controls?: GenerationControls;
@@ -441,11 +495,15 @@ export interface GapReportItem {
   gapLabel?: string;
   gapLabelZh?: string;
   recommendedFillStrategies?: FillStrategy[];
+  placeholderSpec?: PlaceholderSpec;
+  acceptedAssetTypes?: AcceptedReplacementAssetType[];
+  clickToReplace?: boolean;
+  replacementSlotId?: string;
   slotType?: SlotType;
   slotRole?: SegmentRole;
   assetAvailability?: SlotMapping["assetAvailability"];
   mappedAssetId?: string;
-  fillSource?: "target_asset" | "source_video" | "procedural_generation" | "text_or_copy" | "none";
+  fillSource?: "target_asset" | "source_video" | "procedural_generation" | "text_or_copy" | "proxy_placeholder" | "user_asset" | "none";
   fulfilledByBackend?: RendererBackend;
 }
 
@@ -455,8 +513,14 @@ export interface RendererInstruction {
   atom?: MotionAtomSpec["type"] | string;
   strategy?: FillStrategy;
   requiredInputs?: string[];
-  fulfilledBy?: "target_asset" | "source_video" | "procedural_generation" | "aigc_stub" | "text_or_copy";
+  fulfilledBy?: "target_asset" | "source_video" | "procedural_generation" | "aigc_stub" | "text_or_copy" | "proxy_placeholder" | "user_asset";
   ribbonMotion?: RibbonMotionGeometry;
+  placeholderSpec?: PlaceholderSpec;
+  replacementSlotId?: string;
+  boundAssetId?: string;
+  replacementAssetKind?: TargetAssetKind;
+  motionSpec?: MotionSpec;
+  applyMotionFromSlot?: boolean;
   [key: string]: unknown;
 }
 
@@ -505,6 +569,8 @@ export interface TimelineClip {
   transitionIn?: string;
   transitionOut?: string;
   layers: TimelineLayer[];
+  replacementSlotId?: string;
+  placeholderSpec?: PlaceholderSpec;
   gapFillStrategy?: "none" | FillStrategy;
 }
 
@@ -604,6 +670,7 @@ export interface Timeline {
   mapping: TimelineMappingItem[];
   gapReport: GapReportItem[];
   fillPlan: FillAction[];
+  replacementSlots?: ReplacementSlot[];
   renderPlan?: RenderPlan;
   warnings?: string[];
   createdAt: string;
@@ -619,6 +686,7 @@ export interface GenerationResult {
   slotMapping: SlotMapping[];
   gapReport: GapReportItem[];
   fillPlan: FillAction[];
+  replacementSlots?: ReplacementSlot[];
   storyboard: StoryboardItem[];
   timeline: Timeline;
   validation: {

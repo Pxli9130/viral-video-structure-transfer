@@ -6,6 +6,7 @@ import { artifactRoot, marketingArtifactDir, rel } from "./artifact-paths.mjs";
 const demoDir = path.join(artifactRoot, "product_demo");
 const htmlPath = path.join(demoDir, "index.html");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
+const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
 
 const failures = [];
 
@@ -19,13 +20,23 @@ function requireFile(filePath) {
 
 const html = requireFile(htmlPath);
 const manifestText = requireFile(manifestPath);
+const slotReplacementDemoText = requireFile(slotReplacementDemoPath);
 let manifest = {};
+let slotReplacementDemo = {};
 
 if (manifestText) {
   try {
     manifest = JSON.parse(manifestText);
   } catch (error) {
     failures.push(`ui-manifest.json is not valid JSON: ${error.message}`);
+  }
+}
+
+if (slotReplacementDemoText) {
+  try {
+    slotReplacementDemo = JSON.parse(slotReplacementDemoText);
+  } catch (error) {
+    failures.push(`slot-replacement-demo.json is not valid JSON: ${error.message}`);
   }
 }
 
@@ -37,12 +48,16 @@ const requiredText = [
   "Generated Outputs",
   "High Fidelity",
   "Natural Language Edit Before/After",
-  "Edit replay example — generated from existing variants, not a live re-render.",
+  "Generated through existing parser/request regeneration path",
+  "not a relabeled pair of pre-existing variants",
   "Artifact Gallery",
   "Structure Timeline Rail",
   "Selection rationale:",
   "External-service disclosure",
-  "Motif Gap:"
+  "Motif Gap:",
+  "Interactive Gap Fill",
+  "素材槽位替换器",
+  "proxy placeholder -> user replacement"
 ];
 
 for (const text of requiredText) {
@@ -63,7 +78,7 @@ if (hasVlmArtifacts && /VLM judge is skipped/i.test(html)) {
   failures.push("Page incorrectly says VLM judge is skipped while VLM artifacts exist.");
 }
 
-const combinedGeneratedText = `${html}\n${manifestText}`;
+const combinedGeneratedText = `${html}\n${manifestText}\n${slotReplacementDemoText}`;
 const forbiddenPatterns = [
   { label: "absolute local path", pattern: /\/home\/pxli/ },
   { label: "Gemini key name", pattern: /GEMINI_API_KEY/i },
@@ -101,7 +116,12 @@ const requiredManifestFields = [
   ["evaluator.available", manifest.evaluator?.available],
   ["evaluator.byVariant", manifest.evaluator?.byVariant],
   ["vlm.available", manifest.vlm?.available],
-  ["vlm.byVariant", manifest.vlm?.byVariant]
+  ["vlm.byVariant", manifest.vlm?.byVariant],
+  ["interactiveGapFill.available", manifest.interactiveGapFill?.available],
+  ["interactiveGapFill.demoArtifact", manifest.interactiveGapFill?.demoArtifact],
+  ["naturalLanguageEdit.available", manifest.naturalLanguageEdit?.available],
+  ["naturalLanguageEdit.demoArtifact", manifest.naturalLanguageEdit?.demoArtifact],
+  ["naturalLanguageEdit.parsedOperations", manifest.naturalLanguageEdit?.parsedOperations]
 ];
 
 for (const [field, value] of requiredManifestFields) {
@@ -116,6 +136,22 @@ if (!Array.isArray(manifest.artifactsConsumed) || !manifest.artifactsConsumed.le
 
 if (!Array.isArray(manifest.videos?.found) || !Array.isArray(manifest.videos?.missing)) {
   failures.push("Manifest videos.found and videos.missing must be arrays.");
+}
+
+if (manifest.interactiveGapFill?.available !== true) {
+  failures.push("Manifest does not mark Interactive Gap Fill as available.");
+}
+
+if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {
+  failures.push("slot-replacement-demo.json must show user_asset_replace after state.");
+}
+
+if (manifest.naturalLanguageEdit?.available !== true) {
+  failures.push("Manifest does not mark Natural Language Edit as available.");
+}
+
+if (!Array.isArray(manifest.naturalLanguageEdit?.parsedOperations) || manifest.naturalLanguageEdit.parsedOperations.length === 0) {
+  failures.push("Manifest naturalLanguageEdit.parsedOperations must be non-empty.");
 }
 
 if (hasVlmArtifacts && manifest.vlm?.available !== true) {

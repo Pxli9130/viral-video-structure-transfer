@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Img, Sequence, Video, useCurrentFrame, useVideoConfig } from "remotion";
 
 interface MotionAtomLike {
   type:
@@ -45,15 +45,27 @@ interface MotionAtomLike {
   endSec: number;
 }
 
+interface PlaceholderSpecLike {
+  type?: string;
+  shape?: string;
+  color?: string;
+  label?: string;
+  motion?: Record<string, unknown>;
+}
+
 interface TimelineClipLike {
   id: string;
   role: string;
   startSec: number;
   durationSec: number;
   type: string;
+  sourceAssetId?: string;
   subtitleText?: string;
   visualIntent?: string;
-  layers?: Array<{ kind: string; text?: string }>;
+  gapFillStrategy?: string;
+  replacementSlotId?: string;
+  placeholderSpec?: PlaceholderSpecLike;
+  layers?: Array<{ kind: string; text?: string; assetId?: string; style?: Record<string, unknown>; timing?: Record<string, unknown> }>;
   phaseLabel?: string;
   phaseSubtitle?: string;
   mappingPairs?: Array<{ sample: string; arrow?: string; target: string }>;
@@ -75,6 +87,7 @@ interface TimelineLike {
 
 export interface ReconstructionProps {
   timeline: TimelineLike;
+  assetMap?: Record<string, { src: string; ext?: string; type?: string }>;
 }
 
 export const defaultTimeline: TimelineLike = {
@@ -568,7 +581,129 @@ const RibbonSurface3DLayer: React.FC<{ atom: MotionAtomLike; clipStartSec: numbe
   );
 };
 
-const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }> = ({ clip, timeline }) => {
+function layerPlaceholderSpec(layer: NonNullable<TimelineClipLike["layers"]>[number] | undefined, clip: TimelineClipLike): PlaceholderSpecLike | undefined {
+  const fromLayer = layer?.style?.placeholderSpec;
+  if (fromLayer && typeof fromLayer === "object") return fromLayer as PlaceholderSpecLike;
+  return clip.placeholderSpec;
+}
+
+const ReplacementVisualLayer: React.FC<{
+  clip: TimelineClipLike;
+  assetMap?: ReconstructionProps["assetMap"];
+}> = ({ clip, assetMap }) => {
+  const frame = useCurrentFrame();
+  const { fps, width, height } = useVideoConfig();
+  const replacementLayer = clip.layers?.find(
+    (layer) =>
+      layer.style?.fillStrategy === "user_asset_replace" ||
+      layer.style?.fillStrategy === "proxy_placeholder" ||
+      layer.style?.replacementSlotId === clip.replacementSlotId
+  );
+  const placeholder = layerPlaceholderSpec(replacementLayer, clip);
+  const assetId = replacementLayer?.assetId ?? clip.sourceAssetId;
+  const asset = assetId ? assetMap?.[assetId] : undefined;
+  const motionSpec = (replacementLayer?.timing?.motionSpec ?? placeholder?.motion ?? {}) as Record<string, unknown>;
+  const speed = Number(motionSpec.speed ?? 0.8);
+  const rotate = Number.isFinite(speed) ? (frame / fps) * speed * 92 : 0;
+  const bob = Math.sin((frame / fps) * 2.4) * 14;
+  const isVideo = asset?.ext ? [".mp4", ".mov", ".webm", ".m4v"].includes(asset.ext) : clip.type === "video";
+  const visualWidth = Math.min(width * 0.48, 360);
+  const visualHeight = Math.min(height * 0.26, 330);
+  const baseStyle: React.CSSProperties = {
+    position: "absolute",
+    left: "50%",
+    top: "47%",
+    width: visualWidth,
+    height: visualHeight,
+    transform: `translate(-50%, -50%) translateY(${bob}px) rotateY(${rotate}deg) scale(${1 + Math.sin(frame / 18) * 0.025})`,
+    transformStyle: "preserve-3d",
+    objectFit: "contain",
+    filter: "drop-shadow(0 18px 30px rgba(15,23,42,0.28))",
+    zIndex: 5
+  };
+
+  if (asset?.src && clip.gapFillStrategy === "user_asset_replace") {
+    return (
+      <>
+        {isVideo ? (
+          <Video muted loop src={asset.src} style={baseStyle} />
+        ) : (
+          <Img src={asset.src} style={baseStyle} />
+        )}
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "64%",
+            transform: "translateX(-50%)",
+            background: "rgba(16,185,129,0.9)",
+            color: "white",
+            borderRadius: 999,
+            padding: "8px 14px",
+            fontSize: 18,
+            fontWeight: 900,
+            zIndex: 6
+          }}
+        >
+          USER REPLACED · motion preserved
+        </div>
+      </>
+    );
+  }
+
+  if (clip.gapFillStrategy !== "proxy_placeholder") return null;
+  const color = placeholder?.color ?? "#E53935";
+  const label = placeholder?.label ?? "Replaceable proxy";
+  const shape = placeholder?.shape ?? "sphere";
+  const sphere = shape === "sphere" || shape === "circle";
+  return (
+    <>
+      <div
+        style={{
+          ...baseStyle,
+          width: sphere ? Math.min(width * 0.38, 280) : visualWidth,
+          height: sphere ? Math.min(width * 0.38, 280) : visualHeight,
+          borderRadius: sphere ? "50%" : 28,
+          background: sphere
+            ? `radial-gradient(circle at 34% 28%, #fff 0%, ${color} 24%, #7f1d1d 76%, #320b0b 100%)`
+            : `linear-gradient(135deg, ${color}, #64748b)`,
+          border: "6px solid rgba(255,255,255,0.55)",
+          boxShadow: "inset -34px -26px 48px rgba(0,0,0,0.25), 0 22px 48px rgba(0,0,0,0.28)",
+          display: "grid",
+          placeItems: "center",
+          color: "white",
+          textAlign: "center",
+          padding: 26,
+          fontWeight: 900,
+          fontSize: 22,
+          lineHeight: 1.1,
+          zIndex: 5
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "64%",
+          transform: "translateX(-50%)",
+          background: "rgba(249,115,22,0.94)",
+          color: "white",
+          borderRadius: 999,
+          padding: "8px 14px",
+          fontSize: 18,
+          fontWeight: 900,
+          zIndex: 6
+        }}
+      >
+        Missing slot · click to replace
+      </div>
+    </>
+  );
+};
+
+const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike; assetMap?: ReconstructionProps["assetMap"] }> = ({ clip, timeline, assetMap }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const creativeMode = String(timeline.renderPlan?.adapterOptions?.creativeMode ?? "explainable_demo");
@@ -607,6 +742,7 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
       {orbitRibbonAtoms.map((atom) => (
         <RibbonOrbitLayer key={`${atom.type}-${atom.style}`} atom={atom} clipStartSec={clip.startSec} />
       ))}
+      <ReplacementVisualLayer clip={clip} assetMap={assetMap} />
       <div
         style={{
           position: "absolute",
@@ -822,7 +958,7 @@ const HeadlineCard: React.FC<{ clip: TimelineClipLike; timeline: TimelineLike }>
   );
 };
 
-export const ReconstructionRoot: React.FC<ReconstructionProps> = ({ timeline }) => {
+export const ReconstructionRoot: React.FC<ReconstructionProps> = ({ timeline, assetMap }) => {
   const config = useVideoConfig();
   const fps = config.fps;
   const safeTimeline = timeline ?? defaultTimeline;
@@ -833,7 +969,7 @@ export const ReconstructionRoot: React.FC<ReconstructionProps> = ({ timeline }) 
         const durationInFrames = Math.max(1, Math.round(clip.durationSec * fps));
         return (
           <Sequence key={clip.id} from={from} durationInFrames={durationInFrames}>
-            <HeadlineCard clip={clip} timeline={safeTimeline} />
+            <HeadlineCard clip={clip} timeline={safeTimeline} assetMap={assetMap} />
           </Sequence>
         );
       })}

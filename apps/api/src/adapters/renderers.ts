@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { HtmlPreviewRenderer, MockRenderer } from "@vvst/renderer";
 import {
@@ -336,6 +337,7 @@ export interface RemotionRendererOptions {
   entryPoint?: string;
   compositionId?: string;
   browserExecutable?: string;
+  assetResolver?: AssetPathResolver;
 }
 
 export class RemotionRenderer implements RendererAdapter {
@@ -373,7 +375,22 @@ export class RemotionRenderer implements RendererAdapter {
         this.bundleLocation = await bundle({ entryPoint });
       }
 
-      const inputProps = { timeline };
+      const assetIds = Array.from(
+        new Set(
+          timeline.clips.flatMap((clip) => [
+            clip.sourceAssetId,
+            ...clip.layers.map((layer) => layer.assetId)
+          ]).filter((assetId): assetId is string => Boolean(assetId))
+        )
+      );
+      const assetMap = Object.fromEntries(
+        assetIds.flatMap((assetId) => {
+          const resolved = this.opts.assetResolver?.resolve(assetId);
+          if (!resolved || !existsSync(resolved)) return [];
+          return [[assetId, { src: pathToFileURL(resolved).href, ext: path.extname(resolved).toLowerCase() }]];
+        })
+      );
+      const inputProps = { timeline, assetMap };
       const browserExecutable = this.opts.browserExecutable ?? resolveRemotionBrowserExecutable();
       const composition = await selectComposition({
         serveUrl: this.bundleLocation,
@@ -569,7 +586,8 @@ export const RendererRegistry: Record<RendererBackend, RendererRegistryEntry> = 
       new RemotionRenderer({
         generatedDir: opts.generatedDir,
         entryPoint: opts.remotionEntryPoint,
-        compositionId: opts.remotionCompositionId
+        compositionId: opts.remotionCompositionId,
+        assetResolver: opts.assetResolver
       })
   },
   ffmpeg_compose: {

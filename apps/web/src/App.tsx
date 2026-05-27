@@ -75,9 +75,18 @@ type ScorecardResponse = {
   generationId: string;
   overall: number;
   dimensions: Array<{ name: string; score: number; comment: string }>;
+  gates?: Array<{ id: string; passed: boolean; value: number | boolean | string; comment: string }>;
   rationale: string;
   judge: "heuristic" | "llm" | "llm+heuristic";
   warnings?: string[];
+};
+
+type ReplacementResponse = {
+  previousGenerationId: string;
+  generationId: string;
+  replacementSlot: NonNullable<GenerationResult["replacementSlots"]>[number] | null;
+  binding: { slotId: string; assetId: string; applyMotionFromSlot?: boolean };
+  generation: GenerationResult;
 };
 
 type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string; details?: unknown } };
@@ -170,12 +179,17 @@ export default function App() {
   const [reviseResult, setReviseResult] = useState<ReviseResponse | null>(null);
   const [variants, setVariants] = useState<VariantResponse[]>([]);
   const [scorecard, setScorecard] = useState<ScorecardResponse | null>(null);
+  const [selectedReplacementSlotId, setSelectedReplacementSlotId] = useState<string>("");
+  const [replacementResult, setReplacementResult] = useState<ReplacementResponse | null>(null);
 
   const selectedTemplate = useMemo(
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
     [selectedTemplateId, templates]
   );
   const renderedVideoUrl = renderOutputUrl(renderResult);
+  const replacementSlots = generation?.replacementSlots ?? [];
+  const selectedReplacementSlot =
+    replacementSlots.find((slot) => slot.slotId === selectedReplacementSlotId) ?? replacementSlots[0] ?? null;
 
   async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
     setApiState("loading");
@@ -240,6 +254,13 @@ export default function App() {
   useEffect(() => {
     void loadProjects();
   }, []);
+
+  useEffect(() => {
+    const firstSlotId = generation?.replacementSlots?.[0]?.slotId ?? "";
+    setSelectedReplacementSlotId((current) =>
+      current && generation?.replacementSlots?.some((slot) => slot.slotId === current) ? current : firstSlotId
+    );
+  }, [generation?.id]);
 
   async function createProject() {
     await run(async () => {
@@ -364,6 +385,7 @@ export default function App() {
       setReviseResult(null);
       setVariants([]);
       setScorecard(null);
+      setReplacementResult(null);
     });
   }
 
@@ -390,6 +412,7 @@ export default function App() {
         setGeneration(response.generation);
         setRenderResult(null);
         setScorecard(null);
+        setReplacementResult(null);
       }
     });
   }
@@ -413,6 +436,32 @@ export default function App() {
         body: JSON.stringify({ skipLlm: false })
       });
       setScorecard(response);
+    });
+  }
+
+  async function uploadReplacementAsset(file: File | null) {
+    if (!project || !generation || !selectedReplacementSlot || !file) return;
+    await run(async () => {
+      const body = new FormData();
+      body.set("file", file);
+      body.set("role", file.type.startsWith("video/") ? "source_video" : "user_image");
+      body.set("sourcePolicy", "user_authorized");
+      body.set("tags", `slot_replacement,${selectedReplacementSlot.slotId},${selectedReplacementSlot.visualForm}`);
+      const asset = await api<Asset>(`/api/projects/${project.id}/assets`, { method: "POST", body });
+      const response = await api<ReplacementResponse>(`/api/generations/${generation.id}/replacements`, {
+        method: "POST",
+        body: JSON.stringify({
+          slotId: selectedReplacementSlot.slotId,
+          assetId: asset.id,
+          applyMotionFromSlot: true
+        })
+      });
+      setReplacementResult(response);
+      setGeneration(response.generation);
+      setRenderResult(null);
+      setScorecard(null);
+      setSelectedReplacementSlotId(response.replacementSlot?.slotId ?? selectedReplacementSlot.slotId);
+      await refreshProject(project.id);
     });
   }
 
@@ -759,6 +808,63 @@ export default function App() {
                   ))}
                   {!generation.gapReport.length && <p className="empty">No material gaps detected.</p>}
                 </div>
+                <h3 style={{ marginTop: 18 }}>Interactive Gap Fill</h3>
+                <div className="replacement-workbench">
+                  <div className="replacement-slot-list">
+                    {replacementSlots.map((slot) => (
+                      <button
+                        type="button"
+                        key={slot.slotId}
+                        className={`replacement-slot ${slot.status} ${selectedReplacementSlot?.slotId === slot.slotId ? "active" : ""}`}
+                        onClick={() => setSelectedReplacementSlotId(slot.slotId)}
+                      >
+                        <span>{slot.status.replace(/_/g, " ")}</span>
+                        <strong>{slot.semanticLabel}</strong>
+                        <small>{slot.visualForm} · {(slot.acceptedAssetTypes ?? []).join(", ")}</small>
+                      </button>
+                    ))}
+                    {!replacementSlots.length && <p className="empty">No click-to-replace slots detected in this generation.</p>}
+                  </div>
+                  {selectedReplacementSlot && (
+                    <article className="slot-inspector">
+                      <div className="slot-inspector-head">
+                        <div>
+                          <strong>{selectedReplacementSlot.semanticLabel}</strong>
+                          <span>{selectedReplacementSlot.slotId}</span>
+                        </div>
+                        <span className={`pill ${selectedReplacementSlot.status}`}>{selectedReplacementSlot.status.replace(/_/g, " ")}</span>
+                      </div>
+                      <dl>
+                        <div>
+                          <dt>Current fill</dt>
+                          <dd>{selectedReplacementSlot.boundAssetId ?? selectedReplacementSlot.placeholderSpec?.label ?? "proxy placeholder"}</dd>
+                        </div>
+                        <div>
+                          <dt>Motion</dt>
+                          <dd>{selectedReplacementSlot.motionSpec?.type ?? "slot motion"} · {String(selectedReplacementSlot.motionSpec?.axis ?? "preserved")}</dd>
+                        </div>
+                        <div>
+                          <dt>Renderer</dt>
+                          <dd>{selectedReplacementSlot.rendererBackend ?? "remotion_mg"}</dd>
+                        </div>
+                      </dl>
+                      <label className="file-button replacement-upload">
+                        Upload replacement
+                        <input type="file" accept="image/*,video/*,.gif" onChange={(event) => uploadReplacementAsset(event.target.files?.[0] ?? null)} />
+                      </label>
+                      <p className="empty">Click-to-replace keeps the learned timing, layout and motion, then regenerates the generation with a managed uploaded asset.</p>
+                    </article>
+                  )}
+                </div>
+                {replacementResult && (
+                  <div className="replacement-diff">
+                    <strong>Before / After replacement diff</strong>
+                    <span>{replacementResult.previousGenerationId} → {replacementResult.generationId}</span>
+                    <code>fillStrategy: proxy_placeholder → user_asset_replace</code>
+                    <code>assetId: {replacementResult.binding.assetId}</code>
+                    <code>motion: preserved from slot</code>
+                  </div>
+                )}
               </>
             ) : (
               <p className="empty">Run reconstruction to see mapping, gaps, fill plan and timeline.</p>
@@ -903,6 +1009,12 @@ export default function App() {
                           <article key={dimension.name}>
                             <strong>{dimension.name}: {dimension.score}</strong>
                             <span>{dimension.comment}</span>
+                          </article>
+                        ))}
+                        {scorecard.gates?.map((gate) => (
+                          <article key={gate.id}>
+                            <strong>{gate.id}: {gate.passed ? "PASS" : "CHECK"}</strong>
+                            <span>{String(gate.value)} · {gate.comment}</span>
                           </article>
                         ))}
                       </div>

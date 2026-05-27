@@ -14,8 +14,12 @@ import type {
   GenerationResult,
   KnowledgeAtom,
   MotionAtomSpec,
+  MotionSpec,
   PackagingSpec,
+  PlaceholderSpec,
   RequiredSlot,
+  ReplacementSlot,
+  SlotReplacementBinding,
   RibbonMotionGeometry,
   RhythmSpec,
   SegmentRole,
@@ -903,6 +907,112 @@ function targetAssetsForRequest(request: GenerationRequest): TargetAssetInput[] 
   });
 }
 
+function replacementBindingsForRequest(request: GenerationRequest): SlotReplacementBinding[] {
+  const seen = new Set<string>();
+  return (request.replacementBindings ?? []).filter((binding) => {
+    if (!binding.slotId || !binding.assetId || seen.has(binding.slotId)) return false;
+    seen.add(binding.slotId);
+    return true;
+  });
+}
+
+function replacementBindingFor(
+  request: GenerationRequest,
+  slotId: string | undefined,
+  gapType?: GapCategory,
+  missingMotif?: string
+): SlotReplacementBinding | undefined {
+  const bindings = replacementBindingsForRequest(request);
+  return bindings.find((binding) => {
+    if (slotId && binding.slotId === slotId) return true;
+    if (gapType && (binding.slotId === gapType || binding.slotId.includes(gapType))) return true;
+    if (missingMotif && (binding.slotId === missingMotif || binding.slotId.includes(missingMotif))) return true;
+    return false;
+  });
+}
+
+function targetAssetForId(request: GenerationRequest, assetId: string | undefined): TargetAssetInput | undefined {
+  if (!assetId) return undefined;
+  return targetAssetsForRequest(request).find((asset) => asset.id === assetId);
+}
+
+const REPLACEABLE_SLOT_TYPES = new Set<SlotType>([
+  "hook_visual",
+  "product_closeup",
+  "usage_scene",
+  "comparison",
+  "proof_visual",
+  "cta_visual",
+  "background"
+]);
+
+function isReplaceableVisualSlot(slotType: SlotType | undefined): boolean {
+  return Boolean(slotType && REPLACEABLE_SLOT_TYPES.has(slotType));
+}
+
+function visualFormForSlot(slotType: SlotType | undefined, gapType?: GapCategory): ReplacementSlot["visualForm"] {
+  if (gapType === "dynamic_3d_ribbon_asset") return "ribbon_motif";
+  if (slotType === "product_closeup" || slotType === "hook_visual" || slotType === "usage_scene") return "rotating_object";
+  if (slotType === "background") return "background";
+  if (slotType === "cta_visual") return "cta";
+  if (slotType === "title_card" || slotType === "subtitle_text") return "text_card";
+  return "product_card";
+}
+
+function acceptedAssetTypesForSlot(slotType: SlotType | undefined, gapType?: GapCategory): ReplacementSlot["acceptedAssetTypes"] {
+  if (gapType === "dynamic_3d_ribbon_asset") return ["image", "video", "gif"];
+  if (slotType === "cta_visual") return ["image", "logo", "copy"];
+  if (slotType === "subtitle_text" || slotType === "title_card") return ["copy", "image"];
+  if (slotType === "background") return ["image", "video"];
+  return ["image", "video", "gif"];
+}
+
+function motionSpecForSlot(slotType: SlotType | undefined, gapType?: GapCategory): MotionSpec {
+  if (gapType === "dynamic_3d_ribbon_asset") {
+    return { type: "ribbon_follow", axis: "screen_y", speed: 0.92, preserveFromSlot: true };
+  }
+  if (slotType === "product_closeup" || slotType === "hook_visual" || slotType === "usage_scene") {
+    return { type: "spin", axis: "y", speed: 0.8, preserveFromSlot: true };
+  }
+  if (slotType === "background") {
+    return { type: "crop_zoom", speed: 0.45, preserveFromSlot: true };
+  }
+  return { type: "scale", speed: 0.35, preserveFromSlot: true };
+}
+
+function placeholderSpecForSlot(slotType: SlotType | undefined, label: string, gapType?: GapCategory): PlaceholderSpec {
+  const motion = motionSpecForSlot(slotType, gapType);
+  if (gapType === "dynamic_3d_ribbon_asset") {
+    return {
+      type: "procedural_object",
+      shape: "ribbon",
+      color: "#7C3AED",
+      label: "Dynamic ribbon placeholder",
+      motion
+    };
+  }
+  if (slotType === "cta_visual" || slotType === "title_card" || slotType === "subtitle_text") {
+    return {
+      type: "proxy_card",
+      shape: "plane",
+      color: "#CBD5E1",
+      label,
+      motion
+    };
+  }
+  return {
+    type: "proxy_shape",
+    shape: "sphere",
+    color: "#E53935",
+    label,
+    motion
+  };
+}
+
+function shouldExposeReplacementSlot(mapping: SlotMapping): boolean {
+  return mapping.status !== "matched" && isReplaceableVisualSlot(mapping.slotType);
+}
+
 function targetAssetKindsForSlot(slotType: SlotType): TargetAssetKind[] {
   const map: Record<SlotType, TargetAssetKind[]> = {
     hook_visual: ["video", "image", "background_image", "logo"],
@@ -1114,6 +1224,7 @@ const SLOT_GAP_LABELS: Record<SlotType, { category: GapCategory; en: string; zh:
 export interface GapReportContext {
   source?: SourceVideoUnderstanding;
   template?: StructureTemplate;
+  request?: GenerationRequest;
 }
 
 const RIBBON_MOTIF_PATTERN = /parametric[_\s-]*ribbon[_\s-]*surface|vertical[_\s-]*helix|3d[_\s-]*ribbon[_\s-]*orbit|ribbon[_\s-]*orbit|3d\s*彩带|动态\s*彩带/i;
@@ -1166,7 +1277,15 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
         gapType: meta?.category,
         gapLabel: meta?.en,
         gapLabelZh: meta?.zh,
-        recommendedFillStrategies: meta?.strategies,
+        recommendedFillStrategies: shouldExposeReplacementSlot(mapping)
+          ? Array.from(new Set(["proxy_placeholder" as const, ...(meta?.strategies ?? [])]))
+          : meta?.strategies,
+        placeholderSpec: shouldExposeReplacementSlot(mapping)
+          ? placeholderSpecForSlot(mapping.slotType, `${meta?.en ?? mapping.slotType} placeholder`, meta?.category)
+          : undefined,
+        acceptedAssetTypes: shouldExposeReplacementSlot(mapping) ? acceptedAssetTypesForSlot(mapping.slotType, meta?.category) : undefined,
+        clickToReplace: shouldExposeReplacementSlot(mapping) || undefined,
+        replacementSlotId: shouldExposeReplacementSlot(mapping) ? mapping.slotId : undefined,
         assetAvailability: mapping.assetAvailability,
         mappedAssetId: mapping.selectedTargetAssetId ?? mapping.selectedAssetId,
         fillSource: mapping.assetAvailability === "target_asset_weak_match" ? "target_asset" : mapping.assetAvailability === "source_video_mapped" ? "source_video" : "none"
@@ -1217,7 +1336,11 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
       gapType: "dynamic_3d_ribbon_asset",
       gapLabel: "Dynamic 3D ribbon/orbit visual is missing",
       gapLabelZh: "缺少动态 3D 彩带主视觉",
-      recommendedFillStrategies: ["procedural_generation"],
+      recommendedFillStrategies: ["procedural_generation", "proxy_placeholder"],
+      placeholderSpec: placeholderSpecForSlot(undefined, "Dynamic ribbon placeholder", "dynamic_3d_ribbon_asset"),
+      acceptedAssetTypes: acceptedAssetTypesForSlot(undefined, "dynamic_3d_ribbon_asset"),
+      clickToReplace: true,
+      replacementSlotId: "synthetic_dynamic_3d_ribbon_asset_gap",
       assetAvailability: "no_user_asset_available",
       fillSource: "procedural_generation",
       fulfilledByBackend: "remotion_mg"
@@ -1234,9 +1357,11 @@ interface StrategyContext {
   request: GenerationRequest;
   segmentMatchedSiblings: SlotMapping[];
   totalUnmatchedInSegment: number;
+  replacementBinding?: SlotReplacementBinding;
 }
 
 function chooseStrategy(ctx: StrategyContext): FillStrategy {
+  if (ctx.replacementBinding) return "user_asset_replace";
   const allowAigc = ctx.request.controls?.allowAigcPlaceholder ?? true;
   const allowReorder = ctx.mapping.status !== "matched" && ctx.segmentMatchedSiblings.length > 0;
   const slotType = ctx.mapping.slotType;
@@ -1245,6 +1370,7 @@ function chooseStrategy(ctx: StrategyContext): FillStrategy {
   }
   if ((slotType === "hook_visual" || slotType === "product_closeup") && ctx.hasReusableVisual) return "reuse_with_crop_zoom";
   if (slotType === "usage_scene" && ctx.hasReusableVisual) return "reuse_with_crop_zoom";
+  if (isReplaceableVisualSlot(slotType) && ctx.mapping.status === "missing") return "proxy_placeholder";
   if (slotType === "comparison" || slotType === "proof_visual") return "text_card";
   if (slotType === "cta_visual") return "packaging_overlay";
   if (slotType === "subtitle_text" || slotType === "title_card") return "text_card";
@@ -1274,12 +1400,18 @@ export function createFillPlan(
       const siblings = mappingsBySegment.get(mapping.slotRole) ?? [];
       const matchedSiblings = siblings.filter((sib) => sib.slotId !== mapping.slotId && sib.status === "matched");
       const unmatchedInSegment = siblings.filter((sib) => sib.status !== "matched").length;
+      const gapMeta = SLOT_GAP_LABELS[mapping.slotType];
+      const replacementBinding = replacementBindingFor(request, mapping.slotId, gapMeta?.category);
+      const replacementAsset = targetAssetForId(request, replacementBinding?.assetId);
+      const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${gapMeta?.en ?? mapping.slotType} placeholder`, gapMeta?.category);
+      const motionSpec = motionSpecForSlot(mapping.slotType, gapMeta?.category);
       const strategy = chooseStrategy({
         mapping,
         hasReusableVisual,
         request,
         segmentMatchedSiblings: matchedSiblings,
-        totalUnmatchedInSegment: unmatchedInSegment
+        totalUnmatchedInSegment: unmatchedInSegment,
+        replacementBinding
       });
       const targetClipId = stableId("clip", request.projectId, mapping.slotId, strategy);
       const mergeIntoClipId = strategy === "reorder_structure" ? matchedSiblings[0]?.slotId : undefined;
@@ -1289,6 +1421,10 @@ export function createFillPlan(
         reason:
           strategy === "reuse_with_crop_zoom"
             ? "Reuse the strongest available source shot with crop/zoom and benefit overlay."
+            : strategy === "user_asset_replace"
+              ? `Bind uploaded replacement asset ${replacementBinding?.assetId ?? "unknown"} to ${mapping.slotType} and preserve the slot motion.`
+              : strategy === "proxy_placeholder"
+                ? `Generate a visible proxy placeholder for ${mapping.slotType}; user can replace it while keeping timing and motion.`
             : strategy === "packaging_overlay"
               ? "Use title bar, sticker, highlight and CTA overlay to compensate for weak material."
               : strategy === "reorder_structure"
@@ -1300,7 +1436,34 @@ export function createFillPlan(
                   : "Use deterministic text/MG card driven by prompt brief.",
         targetClipId,
         rendererInstructions:
-          strategy === "text_card"
+          strategy === "user_asset_replace"
+            ? {
+                renderer: "remotion_mg",
+                fallbackRenderer: "ffmpeg_compose",
+                strategy,
+                fulfilledBy: "user_asset",
+                requiredInputs: ["managed_uploaded_asset", "slot_motion"],
+                replacementSlotId: mapping.slotId,
+                boundAssetId: replacementBinding?.assetId,
+                replacementAssetKind: replacementAsset?.kind ?? "image",
+                applyMotionFromSlot: replacementBinding?.applyMotionFromSlot ?? true,
+                motionSpec,
+                placeholderSpec
+              }
+            : strategy === "proxy_placeholder"
+              ? {
+                  renderer: "remotion_mg",
+                  fallbackRenderer: "image_card",
+                  strategy,
+                  fulfilledBy: "proxy_placeholder",
+                  requiredInputs: ["slot_intent", "slot_motion"],
+                  replacementSlotId: mapping.slotId,
+                  placeholderSpec,
+                  acceptedAssetTypes: acceptedAssetTypesForSlot(mapping.slotType, gapMeta?.category),
+                  motionSpec,
+                  clickToReplace: true
+                }
+              : strategy === "text_card"
             ? { renderer: "image_card", fallbackRenderer: "remotion_mg", strategy, fulfilledBy: "text_or_copy", requiredInputs: ["prompt_copy"], text: `${brief.productName}: ${brief.sellingPoints[0] ?? brief.topic}`, layout: "centered" }
             : strategy === "packaging_overlay"
               ? { renderer: "remotion_mg", fallbackRenderer: "image_card", strategy, fulfilledBy: "text_or_copy", requiredInputs: ["copy", "logo_or_cta_optional"], headline: brief.cta, sticker: "benefit_badge" }
@@ -1315,9 +1478,70 @@ export function createFillPlan(
       return action;
     });
 
-  if (!hasRibbonOrbitMotif(template)) return slotFillPlan;
+  const boundSlotFillPlan: FillAction[] = replacementBindingsForRequest(request)
+    .filter((binding) => !slotFillPlan.some((action) => action.slotId === binding.slotId))
+    .flatMap((binding): FillAction[] => {
+      const mapping = mappings.find((item) => item.slotId === binding.slotId);
+      if (!mapping) return [];
+      const gapMeta = SLOT_GAP_LABELS[mapping.slotType];
+      const replacementAsset = targetAssetForId(request, binding.assetId);
+      const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${gapMeta?.en ?? mapping.slotType} placeholder`, gapMeta?.category);
+      const motionSpec = motionSpecForSlot(mapping.slotType, gapMeta?.category);
+      return [{
+        slotId: binding.slotId,
+        strategy: "user_asset_replace",
+        reason: `Bind uploaded replacement asset ${binding.assetId} to ${mapping.slotType} and preserve the slot motion.`,
+        targetClipId: stableId("clip", request.projectId, binding.slotId, "user_asset_replace"),
+        rendererInstructions: {
+          renderer: "remotion_mg",
+          fallbackRenderer: "ffmpeg_compose",
+          strategy: "user_asset_replace",
+          fulfilledBy: "user_asset",
+          requiredInputs: ["managed_uploaded_asset", "slot_motion"],
+          replacementSlotId: binding.slotId,
+          boundAssetId: binding.assetId,
+          replacementAssetKind: replacementAsset?.kind ?? "image",
+          applyMotionFromSlot: binding.applyMotionFromSlot ?? true,
+          motionSpec,
+          placeholderSpec
+        }
+      }];
+    });
+
+  const baseFillPlan = [...slotFillPlan, ...boundSlotFillPlan];
+
+  if (!hasRibbonOrbitMotif(template)) return baseFillPlan;
+  const ribbonBinding = replacementBindingFor(request, "synthetic_dynamic_3d_ribbon_asset_gap", "dynamic_3d_ribbon_asset", "dynamic_3d_ribbon_asset");
+  if (ribbonBinding) {
+    const replacementAsset = targetAssetForId(request, ribbonBinding.assetId);
+    const placeholderSpec = placeholderSpecForSlot(undefined, "Dynamic ribbon placeholder", "dynamic_3d_ribbon_asset");
+    return [
+      ...baseFillPlan,
+      {
+        slotId: "synthetic_dynamic_3d_ribbon_asset_gap",
+        strategy: "user_asset_replace",
+        reason: `dynamic_3d_ribbon_asset -> user_asset_replace -> ${ribbonBinding.assetId}; slot motion preserved.`,
+        targetClipId: stableId("motion_atom", request.projectId, "dynamic_3d_ribbon_asset", ribbonBinding.assetId),
+        rendererInstructions: {
+          renderer: "remotion_mg",
+          fallbackRenderer: "ffmpeg_compose",
+          strategy: "user_asset_replace",
+          fulfilledBy: "user_asset",
+          requiredInputs: ["managed_uploaded_asset", "template_motion_geometry"],
+          replacementSlotId: "synthetic_dynamic_3d_ribbon_asset_gap",
+          boundAssetId: ribbonBinding.assetId,
+          replacementAssetKind: replacementAsset?.kind ?? "image",
+          applyMotionFromSlot: ribbonBinding.applyMotionFromSlot ?? true,
+          motionSpec: motionSpecForSlot(undefined, "dynamic_3d_ribbon_asset"),
+          placeholderSpec,
+          missingMotif: "dynamic_3d_ribbon_asset",
+          ribbonMotion
+        }
+      }
+    ];
+  }
   return [
-    ...slotFillPlan,
+    ...baseFillPlan,
     {
       slotId: "synthetic_dynamic_3d_ribbon_asset_gap",
       strategy: "procedural_generation",
@@ -1392,6 +1616,8 @@ function clipTypeForFill(strategy: FillStrategy | undefined): TimelineClipType {
   if (strategy === "packaging_overlay") return "generated_card";
   if (strategy === "procedural_generation") return "generated_card";
   if (strategy === "aigc_placeholder") return "placeholder";
+  if (strategy === "proxy_placeholder") return "placeholder";
+  if (strategy === "user_asset_replace") return "image";
   return "generated_card";
 }
 
@@ -1464,6 +1690,62 @@ function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, du
   ];
 }
 
+function replacementSlotsFromGapReport(gapReport: GapReportItem[], fillPlan: FillAction[]): ReplacementSlot[] {
+  const fromGaps = gapReport
+    .filter((gap) => gap.clickToReplace || gap.placeholderSpec || gap.replacementSlotId)
+    .map((gap) => {
+      const fill =
+        fillPlan.find((action) => action.slotId === gap.slotId) ??
+        fillPlan.find((action) => action.rendererInstructions?.missingMotif && action.rendererInstructions.missingMotif === gap.gapType);
+      const instructions = fill?.rendererInstructions ?? {};
+      const boundAssetId = typeof instructions.boundAssetId === "string" ? instructions.boundAssetId : undefined;
+      const replacementSlotId = gap.replacementSlotId ?? gap.slotId;
+      const motionSpec = (instructions.motionSpec ?? gap.placeholderSpec?.motion ?? motionSpecForSlot(gap.slotType, gap.gapType)) as MotionSpec;
+      const placeholderSpec = (instructions.placeholderSpec ?? gap.placeholderSpec ?? placeholderSpecForSlot(gap.slotType, gap.gapLabel ?? replacementSlotId, gap.gapType)) as PlaceholderSpec;
+      const status: ReplacementSlot["status"] =
+        fill?.strategy === "user_asset_replace" && boundAssetId
+          ? "user_replaced"
+          : fill?.strategy === "procedural_generation"
+            ? "proxy_generated"
+            : "proxy_generated";
+      return {
+        slotId: replacementSlotId,
+        semanticLabel: gap.gapLabelZh ?? gap.gapLabel ?? gap.slotType ?? gap.gapType ?? replacementSlotId,
+        visualForm: visualFormForSlot(gap.slotType, gap.gapType),
+        status,
+        placeholderSpec,
+        acceptedAssetTypes: gap.acceptedAssetTypes ?? acceptedAssetTypesForSlot(gap.slotType, gap.gapType),
+        boundAssetId,
+        motionSpec,
+        applyMotionFromSlot: instructions.applyMotionFromSlot === false ? false : true,
+        gapType: gap.gapType,
+        rendererBackend: (instructions.renderer ?? gap.fulfilledByBackend) as ReplacementSlot["rendererBackend"],
+        targetClipId: fill?.targetClipId
+      };
+    });
+  const seen = new Set(fromGaps.map((slot) => slot.slotId));
+  const fromBoundActions = fillPlan
+    .filter((action) => action.strategy === "user_asset_replace" && !seen.has(action.rendererInstructions?.replacementSlotId ?? action.slotId))
+    .map((action) => {
+      const instructions = action.rendererInstructions ?? {};
+      const slotId = instructions.replacementSlotId ?? action.slotId;
+      return {
+        slotId,
+        semanticLabel: `Replacement slot ${slotId}`,
+        visualForm: "product_card" as const,
+        status: "user_replaced" as const,
+        placeholderSpec: instructions.placeholderSpec as PlaceholderSpec | undefined,
+        acceptedAssetTypes: ["image", "video", "gif", "logo", "copy"] as ReplacementSlot["acceptedAssetTypes"],
+        boundAssetId: typeof instructions.boundAssetId === "string" ? instructions.boundAssetId : undefined,
+        motionSpec: instructions.motionSpec as MotionSpec | undefined,
+        applyMotionFromSlot: instructions.applyMotionFromSlot === false ? false : true,
+        rendererBackend: instructions.renderer as ReplacementSlot["rendererBackend"],
+        targetClipId: action.targetClipId
+      };
+    });
+  return [...fromGaps, ...fromBoundActions];
+}
+
 export interface BuildTimelineInput {
   template: StructureTemplate;
   request: GenerationRequest;
@@ -1493,7 +1775,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       const slot = template.requiredSlots.find((item) => item.id === slotId);
       const mappingForSlot = mappings.find((item) => item.slotId === slotId);
       const fillForSlot = fillPlan.find((item) => item.slotId === slotId);
-      const matched = mappingForSlot?.status === "matched";
+      const replacementFill = fillForSlot?.strategy === "user_asset_replace";
+      const proxyFill = fillForSlot?.strategy === "proxy_placeholder";
+      const matched = mappingForSlot?.status === "matched" && !replacementFill;
       const strategy: "none" | FillStrategy = matched ? "none" : (fillForSlot?.strategy ?? "text_card");
       const clipId = matched
         ? stableId("clip", generationId, slotId)
@@ -1503,7 +1787,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       const durationSec = perSlotDuration;
       const role = segment.role;
       const targetAssetId = mappingForSlot?.selectedTargetAssetId;
-      const sourceAssetId = matched ? (targetAssetId ?? source.assetId) : undefined;
+      const replacementAssetId =
+        typeof fillForSlot?.rendererInstructions?.boundAssetId === "string" ? fillForSlot.rendererInstructions.boundAssetId : undefined;
+      const sourceAssetId = replacementFill ? replacementAssetId : matched ? (targetAssetId ?? source.assetId) : undefined;
       const sourceShotId = matched ? mappingForSlot?.selectedShotId : undefined;
       const clipType: TimelineClipType = matched
         ? mappingForSlot?.selectedTargetAssetKind === "image" || mappingForSlot?.selectedTargetAssetKind === "logo" || mappingForSlot?.selectedTargetAssetKind === "background_image"
@@ -1511,6 +1797,12 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
           : mappingForSlot?.selectedTargetAssetKind === "copy" || mappingForSlot?.selectedTargetAssetKind === "cta_info"
             ? "text_card"
             : "video"
+        : replacementFill
+          ? fillForSlot?.rendererInstructions?.replacementAssetKind === "video"
+            ? "video"
+            : fillForSlot?.rendererInstructions?.replacementAssetKind === "copy" || fillForSlot?.rendererInstructions?.replacementAssetKind === "cta_info"
+              ? "text_card"
+              : "image"
         : clipTypeForFill(fillForSlot?.strategy);
 
       const layers: TimelineLayer[] = [
@@ -1520,13 +1812,50 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
           style: { color: renderBackgroundForControls(request.controls), assetAvailability: mappingForSlot?.assetAvailability }
         }
       ];
-      if (matched && sourceAssetId) {
+      if (replacementFill && sourceAssetId) {
+        layers.push({
+          id: stableId("layer_replacement", clipId, sourceAssetId),
+          kind: "base_visual",
+          assetId: sourceAssetId,
+          timing: {
+            fit: "contain",
+            motion: "slot_preserved",
+            motionSpec: fillForSlot?.rendererInstructions?.motionSpec,
+            applyMotionFromSlot: fillForSlot?.rendererInstructions?.applyMotionFromSlot
+          },
+          style: {
+            fillStrategy: "user_asset_replace",
+            replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
+            placeholderSpec: fillForSlot?.rendererInstructions?.placeholderSpec,
+            targetAssetKind: fillForSlot?.rendererInstructions?.replacementAssetKind
+          }
+        });
+      } else if (matched && sourceAssetId) {
         layers.push({
           id: stableId("layer_visual", clipId, sourceAssetId),
           kind: "base_visual",
           assetId: sourceAssetId,
           sourceShotId,
           timing: { fit: "cover", motion: "crop_zoom", targetAssetKind: mappingForSlot?.selectedTargetAssetKind }
+        });
+      } else if (proxyFill) {
+        const placeholderSpec = fillForSlot?.rendererInstructions?.placeholderSpec as PlaceholderSpec | undefined;
+        layers.push({
+          id: stableId("layer_proxy", clipId, slotId),
+          kind: "base_visual",
+          text: placeholderSpec?.label ?? `${slotType} placeholder`,
+          timing: {
+            fit: "contain",
+            motion: "proxy_placeholder",
+            motionSpec: fillForSlot?.rendererInstructions?.motionSpec
+          },
+          style: {
+            fillStrategy: "proxy_placeholder",
+            replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
+            placeholderSpec,
+            acceptedAssetTypes: fillForSlot?.rendererInstructions?.acceptedAssetTypes,
+            clickToReplace: true
+          }
         });
       } else {
         layers.push({
@@ -1565,6 +1894,8 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         transitionIn: cursor === 0 ? "none" : "hard_cut",
         transitionOut: "hard_cut",
         layers,
+        replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId,
+        placeholderSpec: fillForSlot?.rendererInstructions?.placeholderSpec as PlaceholderSpec | undefined,
         gapFillStrategy: strategy
       });
 
@@ -1600,6 +1931,8 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
 
   const durationSec = round(cursor);
   const aspectRatio = request.target.aspectRatio;
+  const timelineGapReport = generateGapReport(mappings, { source, template, request });
+  const replacementSlots = replacementSlotsFromGapReport(timelineGapReport, fillPlan);
 
   const timeline: Timeline = {
     id: stableId("timeline", generationId, request.prompt),
@@ -1610,16 +1943,17 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
     rendererTarget: "html_preview",
     clips,
     mapping,
-      gapReport: generateGapReport(mappings, { source, template }),
-      fillPlan,
-      renderPlan: {
+    gapReport: timelineGapReport,
+    fillPlan,
+    replacementSlots,
+    renderPlan: {
       width: aspectRatio === "9:16" ? 720 : 1280,
-        height: aspectRatio === "9:16" ? 1280 : 720,
-        fps: 30,
-        background: renderBackgroundForControls(request.controls),
-        motionAtoms: buildMotionAtoms(fillPlan, request, durationSec),
-        rendererBackend: "remotion_mg",
-        adapterOptions: {
+      height: aspectRatio === "9:16" ? 1280 : 720,
+      fps: 30,
+      background: renderBackgroundForControls(request.controls),
+      motionAtoms: buildMotionAtoms(fillPlan, request, durationSec),
+      rendererBackend: "remotion_mg",
+      adapterOptions: {
         pace: request.controls?.pace ?? "fast",
         packagingStyle: request.controls?.packagingStyle ?? "mg_motion",
         hookIntensity: request.controls?.hookIntensity ?? "strong",
@@ -1661,8 +1995,8 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
     throw new Error(`Invalid generation request: ${requestValidation.errors.join("; ")}`);
   }
   const generationId = input.generationIdSalt
-    ? stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds, request.controls, input.generationIdSalt)
-    : stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds, request.controls);
+    ? stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds, request.controls, request.targetAssets, request.replacementBindings, input.generationIdSalt)
+    : stableId("generation", request.projectId, request.prompt, request.selectedTemplateIds, request.controls, request.targetAssets, request.replacementBindings);
   const source = understandSourceVideo(sourceAnalysis, sourceAsset, request, sourceVlm);
   const slotMapping = matchSlots(template, source, request);
   const fillPlan = createFillPlan(slotMapping, source, request, template);
@@ -1694,6 +2028,7 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
     slotMapping,
     gapReport: timeline.gapReport,
     fillPlan,
+    replacementSlots: timeline.replacementSlots,
     storyboard,
     timeline,
     validation: {

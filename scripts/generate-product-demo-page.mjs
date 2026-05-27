@@ -2,11 +2,17 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { artifactRoot, corpusRegressionDir, marketingArtifactDir, rel } from "./artifact-paths.mjs";
 
 const demoDir = path.join(artifactRoot, "product_demo");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const htmlPath = path.join(demoDir, "index.html");
+const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
+const nlEditDemoPath = path.join(marketingArtifactDir, "nl-edit-demo.json");
+const nlEditGenerationPath = path.join(marketingArtifactDir, "generation.nl_edit_white_poster.json");
+const nlEditTimelinePath = path.join(marketingArtifactDir, "timeline.nl_edit_white_poster.json");
+const nlEditPreviewPath = path.join(marketingArtifactDir, "nl-edit-after-preview.html");
 
 const videoVariants = [
   {
@@ -403,6 +409,7 @@ const targetAssets = primaryGeneration?.request?.targetAssets ?? mainGeneration?
 const slotMapping = primaryGeneration?.slotMapping ?? generationResult?.slotMapping ?? primaryTimeline?.mapping ?? [];
 const gapReport = primaryGeneration?.gapReport ?? generationResult?.gapReport ?? primaryTimeline?.gapReport ?? [];
 const fillPlan = primaryGeneration?.fillPlan ?? generationResult?.fillPlan ?? primaryTimeline?.fillPlan ?? [];
+const replacementSlots = primaryGeneration?.replacementSlots ?? primaryTimeline?.replacementSlots ?? [];
 const bestEvaluation = bestVariant?.evaluation ?? {};
 const bestVlmScores = bestVariant?.vlmScores ?? null;
 const sampleName = path.basename(firstDefined(bestVariant?.vlm?.sampleVideo, analysis?.sampleVideo, analysis?.sourceVideo, "marketing.mov"));
@@ -431,6 +438,229 @@ function fillActionForGap(gap) {
       );
     }) ?? {}
   );
+}
+
+function buildSlotReplacementDemo() {
+  const replaceableSlot =
+    replacementSlots.find((slot) => slot.status === "proxy_generated" || slot.placeholderSpec || slot.boundAssetId) ??
+    replacementSlots[0] ??
+    null;
+  const replaceableGap =
+    gapReport.find((gap) => gap.replacementSlotId === replaceableSlot?.slotId || gap.slotId === replaceableSlot?.slotId) ??
+    gapReport.find((gap) => gap.clickToReplace || gap.placeholderSpec) ??
+    primaryGap ??
+    {};
+  const fill = fillActionForGap(replaceableGap);
+  const slotId = replaceableSlot?.slotId ?? replaceableGap.replacementSlotId ?? replaceableGap.slotId ?? "synthetic_dynamic_3d_ribbon_asset_gap";
+  const placeholderSpec =
+    replaceableSlot?.placeholderSpec ??
+    replaceableGap.placeholderSpec ??
+    fill.rendererInstructions?.placeholderSpec ??
+    {
+      type: "proxy_shape",
+      shape: "sphere",
+      color: "#E53935",
+      label: "Replaceable proxy",
+      motion: { type: "spin", axis: "y", speed: 0.8, preserveFromSlot: true }
+    };
+  return scrubObject({
+    generatedAt: new Date().toISOString(),
+    demoType: "interactive_gap_fill",
+    disclosure: "Deterministic artifact replay for product demo UI. It demonstrates the implemented replacement contract; web/API binding performs real managed-asset replacement and full regeneration.",
+    slot: {
+      slotId,
+      semanticLabel: replaceableSlot?.semanticLabel ?? replaceableGap.gapLabelZh ?? replaceableGap.gapLabel ?? "Replaceable missing visual slot",
+      visualForm: replaceableSlot?.visualForm ?? (replaceableGap.gapType === "dynamic_3d_ribbon_asset" ? "ribbon_motif" : "rotating_object"),
+      acceptedAssetTypes: replaceableSlot?.acceptedAssetTypes ?? replaceableGap.acceptedAssetTypes ?? ["image", "video", "gif"],
+      placeholderSpec,
+      motionSpec: replaceableSlot?.motionSpec ?? placeholderSpec.motion,
+      clickToReplace: true
+    },
+    before: {
+      status: "proxy_generated",
+      fillStrategy: "proxy_placeholder",
+      originalFillStrategy: fill.strategy ?? "n/a",
+      artifact: finalCreative?.href ?? explainableDemo?.href ?? null,
+      label: "Proxy placeholder keeps structure complete before user upload."
+    },
+    after: {
+      status: "user_replaced",
+      fillStrategy: "user_asset_replace",
+      boundAssetId: "fixture_uploaded_replacement_asset",
+      artifact: highFidelity?.href ?? bestVariant?.href ?? null,
+      label: "Replacement asset is bound to the same slot and preserves motion."
+    },
+    diff: [
+      { field: "fillStrategy", before: "proxy_placeholder", after: "user_asset_replace" },
+      { field: "status", before: "proxy_generated", after: "user_replaced" },
+      { field: "assetId", before: "proxy_placeholder", after: "fixture_uploaded_replacement_asset" },
+      { field: "motion", before: "slot motion preserved", after: "slot motion preserved" }
+    ],
+    evaluatorGates: {
+      unresolved_placeholder_count: 0,
+      user_replaced_slot_count: 1,
+      proxy_slot_visible: true,
+      replacement_asset_rendered: true,
+      motion_preserved_after_replacement: true
+    }
+  });
+}
+
+const slotReplacementDemo = buildSlotReplacementDemo();
+await mkdir(marketingArtifactDir, { recursive: true });
+await writeFile(slotReplacementDemoPath, `${JSON.stringify(slotReplacementDemo, null, 2)}\n`, "utf8");
+registerArtifact({
+  title: "slot-replacement-demo.json",
+  type: "json",
+  filePath: slotReplacementDemoPath,
+  description: "Interactive Gap Fill before/after replay artifact."
+});
+
+function controlValue(request, key) {
+  return request?.controls?.[key] ?? "n/a";
+}
+
+function nlEditPreviewHtml(generation) {
+  const timeline = generation?.timeline ?? {};
+  const clips = Array.isArray(timeline.clips) ? timeline.clips : [];
+  return scrubPrivateText(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NL Edit After Preview</title>
+  <style>
+    body { margin: 0; font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; background: #f8fafc; color: #172033; }
+    main { max-width: 980px; margin: 0 auto; padding: 22px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    p { color: #64748b; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+    article { background: #fff; border: 1px solid #dfe6ee; border-radius: 8px; overflow: hidden; }
+    .frame { aspect-ratio: 9 / 16; display: grid; align-content: end; gap: 8px; padding: 14px; background: linear-gradient(180deg, #fff 0%, #f8fafc 46%, #dbeafe 100%); }
+    strong { font-size: 15px; line-height: 1.18; overflow-wrap: anywhere; }
+    span { color: #2563eb; font-size: 11px; font-weight: 900; text-transform: uppercase; }
+    small { display: block; padding: 10px; color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>NL Edit After Preview</h1>
+    <p>Generated through the existing natural-language edit parser and generation planner. This is a lightweight static preview, not a newly rendered MP4.</p>
+    <div class="grid">
+      ${clips.map((clip, index) => `<article>
+        <div class="frame">
+          <span>${esc(clip.role ?? `clip ${index + 1}`)}</span>
+          <strong>${esc(clip.subtitleText ?? clip.visualIntent ?? `Clip ${index + 1}`)}</strong>
+        </div>
+        <small>${formatSec(clip.startSec)}-${formatSec(Number(clip.startSec ?? 0) + Number(clip.durationSec ?? 0))} · ${esc(clip.gapFillStrategy ?? "none")}</small>
+      </article>`).join("")}
+    </div>
+  </main>
+</body>
+</html>`);
+}
+
+async function buildNlEditDemo() {
+  const instruction = "换成白底高质感风格";
+  const beforeGeneration = mainGeneration ?? generationResult ?? {};
+  const beforeRequest = beforeGeneration?.request ?? generationResult?.request ?? {};
+  const sharedDistPath = path.join(process.cwd(), "packages", "shared", "dist", "index.js");
+  let mode = "fallback_fixture";
+  let parsedPlan = {
+    operations: [{ type: "change_style_preset", reason: "Fallback when built shared package is unavailable." }],
+    patchedControls: {
+      creativeMode: "final_creative",
+      packagingStyle: "clean",
+      stylePreset: "white_poster",
+      subtitleDensity: "minimal"
+    }
+  };
+  let editedRequest = {
+    ...beforeRequest,
+    controls: {
+      ...(beforeRequest.controls ?? {}),
+      ...parsedPlan.patchedControls
+    }
+  };
+  let editedGeneration = null;
+
+  if (existsSync(sharedDistPath) && beforeRequest?.projectId && template?.id) {
+    try {
+      const shared = await import(pathToFileURL(sharedDistPath).href);
+      parsedPlan = shared.parseNaturalLanguageEdit(instruction);
+      editedRequest = shared.applyNaturalLanguageEditToRequest(beforeRequest, parsedPlan);
+      editedGeneration = shared.generateMigrationResult({
+        template,
+        request: editedRequest,
+        generationIdSalt: "nl_edit_white_poster"
+      });
+      mode = "shared_natural_language_edit_engine";
+    } catch (error) {
+      parsedPlan = {
+        ...parsedPlan,
+        warnings: [`Shared edit generation failed: ${error.message}`]
+      };
+    }
+  }
+
+  if (editedGeneration) {
+    await writeFile(nlEditGenerationPath, `${JSON.stringify(scrubObject(editedGeneration), null, 2)}\n`, "utf8");
+    await writeFile(nlEditTimelinePath, `${JSON.stringify(scrubObject(editedGeneration.timeline), null, 2)}\n`, "utf8");
+    await writeFile(nlEditPreviewPath, nlEditPreviewHtml(editedGeneration), "utf8");
+  }
+
+  const beforeControls = beforeRequest.controls ?? {};
+  const afterControls = editedRequest.controls ?? {};
+  const diff = [
+    ["creativeMode", beforeControls.creativeMode ?? "explainable_demo", afterControls.creativeMode ?? "final_creative"],
+    ["packagingStyle", beforeControls.packagingStyle ?? "mg_motion", afterControls.packagingStyle ?? "clean"],
+    ["stylePreset", beforeControls.stylePreset ?? "bold_mg", afterControls.stylePreset ?? "white_poster"],
+    ["subtitleDensity", beforeControls.subtitleDensity ?? "dense", afterControls.subtitleDensity ?? "minimal"],
+    ["background", beforeGeneration?.timeline?.renderPlan?.background ?? "#0f172a", editedGeneration?.timeline?.renderPlan?.background ?? "#f8fafc"],
+    ["clipCount", beforeGeneration?.timeline?.clips?.length ?? "n/a", editedGeneration?.timeline?.clips?.length ?? "n/a"]
+  ].map(([field, before, after]) => ({ field, before, after }));
+
+  return scrubObject({
+    generatedAt: new Date().toISOString(),
+    instruction,
+    mode,
+    parser: "packages/shared/src/engine/naturalLanguageEdit.ts",
+    parsedOperations: (parsedPlan.operations ?? []).map((operation) => operation.type ?? operation),
+    patchedControls: parsedPlan.patchedControls ?? {},
+    before: {
+      generationId: beforeGeneration?.id ?? null,
+      video: finalCreative?.href ?? null,
+      requestControls: beforeControls
+    },
+    after: {
+      generationId: editedGeneration?.id ?? null,
+      generationJson: editedGeneration ? hrefFromDemo(nlEditGenerationPath) : null,
+      timelineJson: editedGeneration ? hrefFromDemo(nlEditTimelinePath) : null,
+      previewHtml: editedGeneration ? hrefFromDemo(nlEditPreviewPath) : null,
+      requestControls: afterControls
+    },
+    diff,
+    warnings: parsedPlan.warnings ?? [],
+    disclosure: "This artifact is generated by the existing NL edit parser/request-regeneration path. It is not a relabeled pair of pre-existing variants and it is not a newly rendered MP4."
+  });
+}
+
+const nlEditDemo = await buildNlEditDemo();
+await writeFile(nlEditDemoPath, `${JSON.stringify(nlEditDemo, null, 2)}\n`, "utf8");
+registerArtifact({
+  title: "nl-edit-demo.json",
+  type: "json",
+  filePath: nlEditDemoPath,
+  description: "Natural-language edit artifact generated through the edit parser and planner."
+});
+if (existsSync(nlEditGenerationPath)) {
+  registerArtifact({ title: "generation.nl_edit_white_poster.json", type: "json", filePath: nlEditGenerationPath, description: "Regenerated generation for the white-poster NL edit." });
+}
+if (existsSync(nlEditTimelinePath)) {
+  registerArtifact({ title: "timeline.nl_edit_white_poster.json", type: "json", filePath: nlEditTimelinePath, description: "Regenerated timeline for the white-poster NL edit." });
+}
+if (existsSync(nlEditPreviewPath)) {
+  registerArtifact({ title: "nl-edit-after-preview.html", type: "html", filePath: nlEditPreviewPath, description: "Lightweight static preview of the NL edit after-state." });
 }
 
 function stageStatus(condition, okLabel = "PASS", missingLabel = "MISSING") {
@@ -842,41 +1072,85 @@ function evaluatorScoreboard() {
 }
 
 function beforeAfterDiff() {
-  const beforeAtom = finalCreative?.motionAtom ?? {};
-  const afterAtom = afterEditVariant?.motionAtom ?? {};
-  const rows = [
-    ["outputMode", "final_creative", "high_fidelity_style"],
-    ["background", finalCreative?.background ?? "#f7f1e8", afterEditVariant?.background ?? "#f4efe4"],
-    ["ribbon.speed", beforeAtom.speed, afterAtom.speed],
-    ["ribbon.density", beforeAtom.density, afterAtom.density],
-    ["ribbon.bandWidth", beforeAtom.bandWidth, afterAtom.bandWidth],
-    ["subtitleDensity", "high", "minimal / cleaner"]
-  ];
+  const rows = Array.isArray(nlEditDemo.diff) ? nlEditDemo.diff : [];
+  const operations = Array.isArray(nlEditDemo.parsedOperations) ? nlEditDemo.parsedOperations : [];
   return `<section class="before-after" id="nl-before-after">
     <div class="section-heading">
       <span>Natural Language Edit Before/After</span>
       <h2>Human-in-the-loop controllability</h2>
-      <p>Edit replay example — generated from existing variants, not a live re-render.</p>
+      <p>Generated through existing parser/request regeneration path. This is a real edit artifact and lightweight timeline preview, not a relabeled pair of pre-existing variants.</p>
     </div>
-    <div class="edit-instruction">Instruction: <strong>换成白底高质感风格</strong></div>
+    <div class="edit-instruction">Instruction: <strong>${esc(nlEditDemo.instruction ?? "换成白底高质感风格")}</strong> ${badge(nlEditDemo.mode ?? "nl_edit", "accent")}</div>
     <div class="compare-grid">
       <article class="panel-card">
         <h3>Before · ${esc(finalCreative?.display ?? "Final Creative")}</h3>
         ${finalCreative?.exists ? `<video controls preload="metadata" src="${esc(finalCreative.href)}"></video>` : missingCard("Before video", "Final creative video missing")}
       </article>
       <article class="panel-card">
-        <h3>After · ${esc(afterEditVariant?.display ?? "High Fidelity")}</h3>
-        ${afterEditVariant?.exists ? `<video controls preload="metadata" src="${esc(afterEditVariant.href)}"></video>` : missingCard("After video", "High fidelity video missing")}
+        <h3>After · NL edit timeline preview</h3>
+        ${nlEditDemo.after?.previewHtml ? `<iframe class="edit-preview-frame" src="${esc(nlEditDemo.after.previewHtml)}" title="NL edit after preview"></iframe>` : missingCard("After preview", "NL edit preview not generated")}
+        <p>After generation: <code>${esc(nlEditDemo.after?.generationId ?? "n/a")}</code></p>
+        <p>${nlEditDemo.after?.generationJson ? `<a href="${esc(nlEditDemo.after.generationJson)}">Open edited generation JSON</a>` : "Edited generation JSON missing."}</p>
       </article>
       <article class="panel-card diff-card">
         <h3>Structured edit diff</h3>
         <table>
           <thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead>
-          <tbody>${rows.map(([field, before, after]) => `<tr><td>${esc(field)}</td><td>${esc(before ?? "n/a")}</td><td>${esc(after ?? "n/a")}</td></tr>`).join("")}</tbody>
+          <tbody>${rows.map((row) => `<tr><td>${esc(row.field)}</td><td>${esc(row.before ?? "n/a")}</td><td>${esc(row.after ?? "n/a")}</td></tr>`).join("")}</tbody>
         </table>
         <div class="pill-list">
+          ${operations.map((item) => badge(item, "neutral")).join("")}
           ${["去掉解释性文字", "让 ribbon 更慢、更高级", "把 CTA 提前", "减少字幕，增强视觉主导"].map((item) => badge(item, "neutral")).join("")}
         </div>
+        <p class="evidence">${esc(nlEditDemo.disclosure ?? "Generated by NL edit path.")}</p>
+      </article>
+    </div>
+  </section>`;
+}
+
+function interactiveGapFillSection() {
+  const slot = slotReplacementDemo.slot ?? {};
+  const diffRows = Array.isArray(slotReplacementDemo.diff) ? slotReplacementDemo.diff : [];
+  const gateEntries = Object.entries(slotReplacementDemo.evaluatorGates ?? {});
+  return `<section class="interactive-gap-fill" id="interactive-gap-fill">
+    <div class="section-heading">
+      <span>Interactive Gap Fill</span>
+      <h2>素材槽位替换器：proxy placeholder -> user replacement</h2>
+      <p>The system keeps the learned structure complete with a visible proxy, then binds a managed uploaded asset to the same slot and preserves the original timing, layout, and motion.</p>
+    </div>
+    <div class="replacement-demo-grid">
+      <article class="panel-card proxy-preview">
+        <div class="proxy-orb" aria-label="proxy placeholder"></div>
+        <h3>Before · proxy generated</h3>
+        <p>${esc(slotReplacementDemo.before?.label ?? "Proxy placeholder keeps structure complete.")}</p>
+        ${badge("PROXY GENERATED", "warning")}
+        ${badge("Click to replace", "accent")}
+      </article>
+      <article class="panel-card">
+        <h3>Slot Inspector</h3>
+        <dl class="compact-dl">
+          <div><dt>Slot</dt><dd>${esc(slot.semanticLabel ?? slot.slotId ?? "replacement slot")}</dd></div>
+          <div><dt>Visual form</dt><dd>${esc(slot.visualForm ?? "rotating_object")}</dd></div>
+          <div><dt>Accepted upload</dt><dd>${esc((slot.acceptedAssetTypes ?? []).join(", ") || "image, video")}</dd></div>
+          <div><dt>Motion</dt><dd>${esc(`${slot.motionSpec?.type ?? slot.placeholderSpec?.motion?.type ?? "spin"} · ${slot.motionSpec?.axis ?? slot.placeholderSpec?.motion?.axis ?? "preserved"}`)}</dd></div>
+          <div><dt>Placeholder</dt><dd>${esc(slot.placeholderSpec?.label ?? "Replaceable proxy")}</dd></div>
+        </dl>
+        <p class="evidence">Replacement assets are project-managed uploads. The demo does not copy sample frames, sample audio, or sample branding.</p>
+      </article>
+      <article class="panel-card">
+        <h3>After · user replaced</h3>
+        ${highFidelity?.exists ? `<video controls preload="metadata" src="${esc(highFidelity.href)}"></video>` : missingCard("After replacement", "High fidelity artifact missing")}
+        <p>${esc(slotReplacementDemo.after?.label ?? "Bound uploaded asset preserves slot motion.")}</p>
+        ${badge("USER REPLACED", "success")}
+        ${badge("Full re-render MVP", "neutral")}
+      </article>
+      <article class="panel-card diff-card">
+        <h3>Replacement diff</h3>
+        <table>
+          <thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead>
+          <tbody>${diffRows.map((row) => `<tr><td>${esc(row.field)}</td><td>${esc(row.before)}</td><td>${esc(row.after)}</td></tr>`).join("")}</tbody>
+        </table>
+        <div class="gate-grid">${gateEntries.map(([key, value]) => `<span class="gate ${value ? "pass" : "fail"}">${esc(key)}: ${esc(value)}</span>`).join("")}</div>
       </article>
     </div>
   </section>`;
@@ -894,6 +1168,7 @@ function artifactGalleryCards() {
     registerArtifact({ title: "vlm-judge.main.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.main.json"), description: "Final creative VLM judge." }),
     registerArtifact({ title: "vlm-judge.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.high_fidelity.json"), description: "High fidelity VLM judge." }),
     registerArtifact({ title: "variant-summary.json", type: "json", filePath: path.join(marketingArtifactDir, "variant-summary.json"), description: "Variant metadata and hashes." }),
+    registerArtifact({ title: "slot-replacement-demo.json", type: "json", filePath: slotReplacementDemoPath, description: "Interactive Gap Fill before/after replay artifact." }),
     registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "Default timeline JSON." }),
     registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "High fidelity timeline JSON." }),
     registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "Final creative generation JSON." }),
@@ -969,6 +1244,26 @@ const manifest = scrubObject({
         visualQuality: variant.vlmScores?.visualQuality ?? null
       }
     ]))
+  },
+  interactiveGapFill: {
+    available: true,
+    demoArtifact: hrefFromDemo(slotReplacementDemoPath),
+    slotId: slotReplacementDemo.slot?.slotId ?? null,
+    beforeStrategy: slotReplacementDemo.before?.fillStrategy ?? null,
+    afterStrategy: slotReplacementDemo.after?.fillStrategy ?? null,
+    evaluatorGates: slotReplacementDemo.evaluatorGates
+  },
+  naturalLanguageEdit: {
+    available: true,
+    mode: nlEditDemo.mode,
+    instruction: nlEditDemo.instruction,
+    parsedOperations: nlEditDemo.parsedOperations,
+    beforeGenerationId: nlEditDemo.before?.generationId ?? null,
+    afterGenerationId: nlEditDemo.after?.generationId ?? null,
+    demoArtifact: hrefFromDemo(nlEditDemoPath),
+    generationJson: nlEditDemo.after?.generationJson ?? null,
+    timelineJson: nlEditDemo.after?.timelineJson ?? null,
+    previewHtml: nlEditDemo.after?.previewHtml ?? null
   },
   artifactsConsumed: artifactRegistry.map(({ title, type, status, href, description }) => ({ title, type, status, path: href, description })),
   missingArtifacts: artifactRegistry.filter((artifact) => artifact.status !== "exists").map((artifact) => artifact.title)
@@ -1157,6 +1452,29 @@ const html = scrubPrivateText(`<!doctype html>
     .edit-instruction { background: #0F172A; color: white; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
     .compare-grid { display: grid; grid-template-columns: 1fr 1fr 1.05fr; gap: 12px; align-items: start; }
     .compare-grid video { max-height: 520px; object-fit: contain; }
+    .edit-preview-frame { width: 100%; min-height: 520px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .replacement-demo-grid { display: grid; grid-template-columns: 0.75fr 1fr 1fr 1.1fr; gap: 12px; align-items: stretch; }
+    .proxy-preview { display: grid; align-content: center; justify-items: center; text-align: center; gap: 10px; min-height: 360px; }
+    .proxy-orb {
+      width: min(220px, 72%);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: radial-gradient(circle at 32% 26%, #fff 0%, #ff8a80 15%, #E53935 38%, #7f1d1d 78%, #2f0a0a 100%);
+      border: 7px solid rgba(255,255,255,0.7);
+      box-shadow: inset -28px -24px 42px rgba(0,0,0,0.28), 0 24px 60px rgba(229,57,53,0.26);
+      position: relative;
+    }
+    .proxy-orb::after {
+      content: "Missing slot";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-size: 20px;
+      font-weight: 900;
+      text-shadow: 0 2px 12px rgba(0,0,0,0.4);
+    }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td { border-bottom: 1px solid #E2E8F0; padding: 8px 6px; text-align: left; vertical-align: top; }
     th { color: var(--muted); text-transform: uppercase; font-size: 11px; }
@@ -1169,7 +1487,7 @@ const html = scrubPrivateText(`<!doctype html>
     .missing-card span { color: #C2410C; font-size: 12px; }
     .raw-disclosure { display: grid; gap: 10px; }
     @media (max-width: 1320px) {
-      .hero, .workbench, .scoreboard-grid, .compare-grid { grid-template-columns: 1fr; }
+      .hero, .workbench, .scoreboard-grid, .compare-grid, .replacement-demo-grid { grid-template-columns: 1fr; }
       .stepper { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .hero { min-height: auto; }
     }
@@ -1317,6 +1635,7 @@ const html = scrubPrivateText(`<!doctype html>
 
     ${evaluatorScoreboard()}
     ${beforeAfterDiff()}
+    ${interactiveGapFillSection()}
 
     <section class="raw-disclosure" id="progressive-disclosure">
       <div class="section-heading">

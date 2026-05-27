@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildFallbackTemplate,
+  buildTimeline,
   buildMockVideoAnalysis,
   createFillPlan,
   generateGapReport,
@@ -410,6 +411,73 @@ describe("v1.2 mock pipeline", () => {
       request()
     );
     expect(fillPlan.find((action) => action.slotId === "slot_subtitle_text")?.strategy).toBe("reorder_structure");
+  });
+
+  it("creates proxy replacement slots for missing visual material", () => {
+    const missingHero = {
+      slotId: "slot_missing_hero",
+      slotRole: "hook" as const,
+      slotType: "hook_visual" as const,
+      status: "missing" as const,
+      candidateShotIds: [],
+      assetAvailability: "no_user_asset_available" as const,
+      confidence: 0,
+      reason: "hero object missing",
+      risks: []
+    };
+    const source = { summary: "", candidates: [], warnings: [] };
+    const fillPlan = createFillPlan([missingHero], source, request());
+    const gaps = generateGapReport([missingHero], { source });
+    const proxyAction = fillPlan.find((action) => action.slotId === "slot_missing_hero");
+    const proxyGap = gaps.find((gap) => gap.slotId === "slot_missing_hero");
+
+    expect(proxyAction?.strategy).toBe("proxy_placeholder");
+    expect(proxyAction?.rendererInstructions).toMatchObject({
+      fulfilledBy: "proxy_placeholder",
+      replacementSlotId: "slot_missing_hero",
+      clickToReplace: true
+    });
+    expect(proxyGap?.placeholderSpec?.type).toBe("proxy_shape");
+    expect(proxyGap?.acceptedAssetTypes).toEqual(expect.arrayContaining(["image", "video"]));
+  });
+
+  it("binds uploaded replacements and preserves slot motion in the timeline", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const source = understandSourceVideo(undefined, undefined, {
+      ...request(),
+      inputMode: "prompt_only",
+      sourceVideo: undefined
+    });
+    const baseRequest: GenerationRequest = {
+      ...request(),
+      inputMode: "prompt_only",
+      sourceVideo: undefined,
+      targetAssets: [{ id: "uploaded_hero_asset", kind: "image", role: "replacement hero object", tags: ["slot_replacement"] }],
+      replacementBindings: [{ slotId: "slot_hook_visual", assetId: "uploaded_hero_asset", applyMotionFromSlot: true }]
+    };
+    const mappings = matchSlots(template, source, baseRequest);
+    const fillPlan = createFillPlan(mappings, source, baseRequest, template);
+    const replacementAction = fillPlan.find((action) => action.slotId === "slot_hook_visual");
+    const { timeline } = buildTimeline({
+      template,
+      request: baseRequest,
+      source,
+      mappings,
+      fillPlan,
+      generationId: "generation_replacement"
+    });
+    const replacementClip = timeline.clips.find((clip) => clip.replacementSlotId === "slot_hook_visual");
+    const replacementLayer = replacementClip?.layers.find((layer) => layer.assetId === "uploaded_hero_asset");
+
+    expect(replacementAction?.strategy).toBe("user_asset_replace");
+    expect(replacementAction?.rendererInstructions).toMatchObject({
+      boundAssetId: "uploaded_hero_asset",
+      applyMotionFromSlot: true
+    });
+    expect(replacementClip?.gapFillStrategy).toBe("user_asset_replace");
+    expect(replacementLayer?.timing?.motionSpec).toMatchObject({ preserveFromSlot: true });
+    expect(validateTimeline(timeline).valid).toBe(true);
   });
 
   it("generates a valid v1.2 timeline with rendererTarget and no empty layers", () => {
