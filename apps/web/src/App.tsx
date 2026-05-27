@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useState } from "react";
 import type {
   Asset,
   ExampleAnalysis,
@@ -130,14 +130,28 @@ function renderOutputUrl(render: RenderResponse["render"] | null): string | null
   return filename ? `/generated/${filename}` : null;
 }
 
-function percent(value: number): string {
-  return `${Math.round(value * 100)}%`;
+function safeArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function safeNumber(value: unknown, fallback = 0): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function fixed(value: unknown, digits = 1): string {
+  return safeNumber(value).toFixed(digits);
+}
+
+function percent(value: unknown): string {
+  return `${Math.round(safeNumber(value) * 100)}%`;
 }
 
 function clipLabel(generation: GenerationResult, clipId: string): string {
-  const clip = generation.timeline.clips.find((item) => item.id === clipId);
+  const clip = safeArray(generation.timeline?.clips).find((item) => item.id === clipId);
   if (!clip) return clipId;
-  return `${clip.role} ${clip.startSec.toFixed(1)}-${(clip.startSec + clip.durationSec).toFixed(1)}s`;
+  const start = safeNumber(clip.startSec);
+  return `${clip.role} ${fixed(start)}-${fixed(start + safeNumber(clip.durationSec))}s`;
 }
 
 function visualStyleLine(template: StructureTemplate | null): string {
@@ -156,7 +170,34 @@ function JsonPreview({ value }: { value: unknown }) {
   return <pre className="json-preview">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-export default function App() {
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("VVST web UI render error", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="app-shell">
+          <section className="panel error-panel">
+            <h1>UI render error</h1>
+            <p>{this.state.error}</p>
+            <button onClick={() => window.location.reload()}>Reload</button>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppContent() {
   const [apiState, setApiState] = useState<ApiState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -190,6 +231,24 @@ export default function App() {
   const replacementSlots = generation?.replacementSlots ?? [];
   const selectedReplacementSlot =
     replacementSlots.find((slot) => slot.slotId === selectedReplacementSlotId) ?? replacementSlots[0] ?? null;
+  const sampleVideo = sampleAnalysis?.video;
+  const sampleMetadata = sampleVideo?.metadata;
+  const sampleShots = safeArray(sampleVideo?.shots);
+  const sampleKeyframes = safeArray(sampleVideo?.keyframes);
+  const sampleTranscript = safeArray(sampleVideo?.transcript);
+  const sampleOcr = safeArray(sampleVideo?.ocr);
+  const sourceShots = safeArray(sourceAnalysis?.video?.shots);
+  const templateSegments = safeArray(selectedTemplate?.segments);
+  const templateExcludeSegments = safeArray(selectedTemplate?.excludeSegments);
+  const knowledgeAtoms = safeArray(knowledgeBase?.atoms);
+  const generationSlotMapping = safeArray(generation?.slotMapping);
+  const generationFillPlan = safeArray(generation?.fillPlan);
+  const generationGapReport = safeArray(generation?.gapReport);
+  const generationTimelineMappings = safeArray(generation?.timeline?.mapping);
+  const generationSelectedAtoms = safeArray(generation?.selectedAtoms);
+  const generationCandidates = safeArray(generation?.sourceUnderstanding?.candidates);
+  const generationStoryboard = safeArray(generation?.storyboard);
+  const generationClips = safeArray(generation?.timeline?.clips);
 
   async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
     setApiState("loading");
@@ -547,19 +606,19 @@ export default function App() {
             {sampleAnalysis && (
               <div className="analysis-summary">
                 <article>
-                  <strong>{sampleAnalysis.video.metadata.durationSec.toFixed(1)}s</strong>
-                  <span>{sampleAnalysis.video.metadata.width ?? "-"}×{sampleAnalysis.video.metadata.height ?? "-"} · {sampleAnalysis.video.analyzerMode}</span>
+                  <strong>{fixed(sampleMetadata?.durationSec)}s</strong>
+                  <span>{sampleMetadata?.width ?? "-"}×{sampleMetadata?.height ?? "-"} · {sampleVideo?.analyzerMode ?? "analyzer"}</span>
                 </article>
                 <article>
-                  <strong>{sampleAnalysis.video.shots.length}</strong>
-                  <span>shots / {sampleAnalysis.video.keyframes.length} keyframes</span>
+                  <strong>{sampleShots.length}</strong>
+                  <span>shots / {sampleKeyframes.length} keyframes</span>
                 </article>
                 <article>
-                  <strong>{sampleAnalysis.video.transcript?.length ?? 0}</strong>
+                  <strong>{sampleTranscript.length}</strong>
                   <span>ASR cues</span>
                 </article>
                 <article>
-                  <strong>{sampleAnalysis.video.ocr?.length ?? 0}</strong>
+                  <strong>{sampleOcr.length}</strong>
                   <span>OCR rows</span>
                 </article>
               </div>
@@ -585,7 +644,7 @@ export default function App() {
                   <span>Atoms</span>
                 </div>
                 <div>
-                  <strong>{selectedTemplate?.segments.length ?? 0}</strong>
+                  <strong>{templateSegments.length}</strong>
                   <span>Segments</span>
                 </div>
                 <div>
@@ -608,10 +667,10 @@ export default function App() {
                   </article>
                   <article>
                     <strong>Exclude Segments</strong>
-                    {(selectedTemplate.excludeSegments ?? []).length ? (
-                      selectedTemplate.excludeSegments?.map((segment) => (
+                    {templateExcludeSegments.length ? (
+                      templateExcludeSegments.map((segment) => (
                         <span key={`${segment.startSec}-${segment.endSec}`}>
-                          {segment.startSec.toFixed(1)}–{segment.endSec.toFixed(1)}s · {segment.reason}
+                          {fixed(segment.startSec)}–{fixed(segment.endSec)}s · {segment.reason}
                         </span>
                       ))
                     ) : (
@@ -621,7 +680,7 @@ export default function App() {
                 </div>
               )}
               <div className="segment-row">
-                {selectedTemplate?.segments.map((segment) => (
+                {templateSegments.map((segment) => (
                   <article key={segment.id}>
                     <strong>{segment.role}</strong>
                     <span>{segment.intent}</span>
@@ -631,10 +690,10 @@ export default function App() {
               </div>
               {sampleAnalysis && (
                 <div className="segment-row vertical">
-                  {sampleAnalysis.video.keyframes.slice(0, 4).map((frame) => (
+                  {sampleKeyframes.slice(0, 4).map((frame) => (
                     <article key={frame.id}>
-                      <strong>{frame.id} · {frame.timeSec.toFixed(1)}s</strong>
-                      <span>{frame.description ?? frame.path ?? "keyframe"} · {(frame.tags ?? []).join(", ") || "no tags"}</span>
+                      <strong>{frame.id} · {fixed(frame.timeSec)}s</strong>
+                      <span>{frame.description ?? frame.path ?? "keyframe"} · {safeArray(frame.tags).join(", ") || "no tags"}</span>
                     </article>
                   ))}
                 </div>
@@ -665,13 +724,13 @@ export default function App() {
               {knowledgeBase && <button onClick={() => downloadJson("knowledge-base.json", knowledgeBase)}>Export KB</button>}
             </div>
             <div className="asset-list">
-              {knowledgeBase?.atoms.map((atom) => (
+              {knowledgeAtoms.map((atom) => (
                 <article key={`${atom.templateId}-${atom.id}`}>
                   <strong>{atom.role} · {atom.category}: {atom.name}</strong>
                   <span>{atom.description}</span>
                 </article>
               ))}
-              {!knowledgeBase?.atoms.length && <p className="empty">Template atoms appear here after sample learning.</p>}
+              {!knowledgeAtoms.length && <p className="empty">Template atoms appear here after sample learning.</p>}
             </div>
           </section>
 
@@ -738,7 +797,7 @@ export default function App() {
               </label>
               <label>
                 Source shots
-                <input readOnly value={sourceAnalysis?.video.shots.length ? `${sourceAnalysis.video.shots.length} candidates` : "auto-mock on generate"} />
+                <input readOnly value={sourceShots.length ? `${sourceShots.length} candidates` : "auto-mock on generate"} />
               </label>
               <label className="wide">
                 Prompt
@@ -771,7 +830,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {generation.slotMapping.map((mapping) => (
+                        {generationSlotMapping.map((mapping) => (
                           <tr key={mapping.slotId}>
                             <td>{mapping.slotType}</td>
                             <td><span className={`pill ${mapping.status}`}>{mapping.status}</span></td>
@@ -784,19 +843,19 @@ export default function App() {
                   <div>
                     <h3>Gap Fill</h3>
                     <div className="gap-list">
-                      {generation.fillPlan.map((action) => (
+                      {generationFillPlan.map((action) => (
                         <article key={action.targetClipId}>
                           <strong>{action.strategy}</strong>
                           <span>{action.reason}</span>
                         </article>
                       ))}
-                      {!generation.fillPlan.length && <p className="empty">No gaps detected.</p>}
+                      {!generationFillPlan.length && <p className="empty">No gaps detected.</p>}
                     </div>
                   </div>
                 </div>
                 <h3 style={{ marginTop: 18 }}>Gap Report</h3>
                 <div className="gap-list">
-                  {generation.gapReport.map((gap) => (
+                  {generationGapReport.map((gap) => (
                     <article key={`${gap.slotId}-${gap.gapType ?? gap.status}`}>
                       <strong>
                         {gap.gapLabelZh ?? gap.gapLabel ?? gap.slotId}
@@ -806,7 +865,7 @@ export default function App() {
                       <small>{gap.recommendedFillStrategies?.join(", ") ?? "no strategy"}</small>
                     </article>
                   ))}
-                  {!generation.gapReport.length && <p className="empty">No material gaps detected.</p>}
+                  {!generationGapReport.length && <p className="empty">No material gaps detected.</p>}
                 </div>
                 <h3 style={{ marginTop: 18 }}>Interactive Gap Fill</h3>
                 <div className="replacement-workbench">
@@ -925,29 +984,29 @@ export default function App() {
                 <div>
                   <h3>Sample Template Segments</h3>
                   <div className="segment-row vertical">
-                    {selectedTemplate?.segments.map((segment) => {
-                      const mapping = generation.timeline.mapping.find((item) => item.templateSegmentId === segment.id);
+                    {templateSegments.map((segment) => {
+                      const mapping = generationTimelineMappings.find((item) => item.templateSegmentId === segment.id);
                       return (
                         <article key={segment.id} className="segment-diff-card">
                           <strong>{segment.role} · {percent(segment.startRatio)}–{percent(segment.endRatio)}</strong>
                           <span>{segment.intent}</span>
                           <small>
-                            Mapped to: {mapping?.targetClipIds.length
-                              ? mapping.targetClipIds.map((clipId) => clipLabel(generation, clipId)).join(" / ")
+                            Mapped to: {safeArray(mapping?.targetClipIds).length
+                              ? safeArray(mapping?.targetClipIds).map((clipId) => clipLabel(generation, clipId)).join(" / ")
                               : "no generated clip"}
                           </small>
                         </article>
                       );
                     })}
-                    {!selectedTemplate?.segments.length && <p className="empty">No sample template selected.</p>}
+                    {!templateSegments.length && <p className="empty">No sample template selected.</p>}
                   </div>
-                  {(selectedTemplate?.excludeSegments ?? []).length > 0 && (
+                  {templateExcludeSegments.length > 0 && (
                     <>
                       <h3 style={{ marginTop: 16 }}>Excluded Sample Segments</h3>
                       <div className="segment-row vertical">
-                        {selectedTemplate?.excludeSegments?.map((segment) => (
+                        {templateExcludeSegments.map((segment) => (
                           <article key={`${segment.startSec}-${segment.endSec}`}>
-                            <strong>{segment.startSec.toFixed(1)}–{segment.endSec.toFixed(1)}s</strong>
+                            <strong>{fixed(segment.startSec)}–{fixed(segment.endSec)}s</strong>
                             <span>{segment.reason}</span>
                             <small>Not transferred into the generated timeline.</small>
                           </article>
@@ -957,22 +1016,22 @@ export default function App() {
                   )}
                   <h3 style={{ marginTop: 16 }}>Selected Atoms</h3>
                   <div className="segment-row vertical">
-                    {generation.selectedAtoms.map((atom) => (
+                    {generationSelectedAtoms.map((atom) => (
                       <article key={atom.id}>
                         <strong>{atom.role}: {atom.name}</strong>
                         <span>{atom.description}</span>
                       </article>
                     ))}
                   </div>
-                  <h3 style={{ marginTop: 16 }}>Source Shot Candidates ({generation.sourceUnderstanding.candidates.length})</h3>
+                  <h3 style={{ marginTop: 16 }}>Source Shot Candidates ({generationCandidates.length})</h3>
                   <div className="segment-row vertical">
-                    {generation.sourceUnderstanding.candidates.map((shot) => (
+                    {generationCandidates.map((shot) => (
                       <article key={shot.id}>
-                        <strong>{shot.id} · {shot.startSec.toFixed(1)}–{shot.endSec.toFixed(1)}s</strong>
-                        <span>{shot.tags.join(", ") || "no tags"}</span>
+                        <strong>{shot.id} · {fixed(shot.startSec)}–{fixed(shot.endSec)}s</strong>
+                        <span>{safeArray(shot.tags).join(", ") || "no tags"}</span>
                       </article>
                     ))}
-                    {generation.sourceUnderstanding.candidates.length === 0 && (
+                    {generationCandidates.length === 0 && (
                       <p className="empty">No source shot candidates (prompt-only fallback).</p>
                     )}
                   </div>
@@ -980,7 +1039,7 @@ export default function App() {
                 <div>
                   <h3>Storyboard</h3>
                   <div className="story-list">
-                    {generation.storyboard.map((item) => (
+                    {generationStoryboard.map((item) => (
                       <article key={item.clipId}>
                         <strong>{item.timeRange}: {item.subtitle}</strong>
                         <span>{item.shotDescription} · {item.assetUsage}</span>
@@ -995,7 +1054,7 @@ export default function App() {
                           <article key={variant.generationId}>
                             <strong>{variant.displayName} · {variant.label}</strong>
                             <span>{variant.strategy}</span>
-                            <small>{variant.generation.timeline.clips.length} clips · {variant.generation.timeline.renderPlan?.background}</small>
+                            <small>{safeArray(variant.generation.timeline?.clips).length} clips · {variant.generation.timeline?.renderPlan?.background}</small>
                           </article>
                         ))}
                       </div>
@@ -1024,13 +1083,19 @@ export default function App() {
                 <div className="timeline-column">
                   <h3>Timeline Preview</h3>
                   <div className="timeline-strip">
-                    {generation.timeline.clips.map((clip, index) => {
-                      const subtitle = clip.subtitleText ?? clip.layers.find((layer) => layer.kind === "subtitle")?.text ?? clip.visualIntent ?? `Clip ${index + 1}`;
+                    {generationClips.map((clip, index) => {
+                      const subtitle = clip.subtitleText ?? safeArray(clip.layers).find((layer) => layer.kind === "subtitle")?.text ?? clip.visualIntent ?? `Clip ${index + 1}`;
+                      const previewFrame = String((clip as { previewFrame?: string; thumbnailPath?: string }).previewFrame ?? (clip as { previewFrame?: string; thumbnailPath?: string }).thumbnailPath ?? "");
+                      const proxyLayer = safeArray(clip.layers).find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
+                      const isProxy = clip.gapFillStrategy === "proxy_placeholder" || Boolean(proxyLayer);
                       return (
-                        <article key={clip.id} className="phone-frame">
-                          <span>Clip {index + 1} · {clip.role}</span>
-                          <strong>{subtitle}</strong>
-                          <small>{clip.gapFillStrategy ?? "none"}</small>
+                        <article key={clip.id} className={`phone-frame${isProxy ? " proxy" : ""}${previewFrame ? " has-preview" : ""}`}>
+                          {previewFrame ? <img src={previewFrame} alt={`Clip ${index + 1} preview`} /> : null}
+                          <div className="phone-frame-overlay">
+                            <span>Clip {index + 1} · {clip.role}</span>
+                            <strong>{isProxy ? proxyLayer?.text ?? subtitle : subtitle}</strong>
+                            <small>{clip.gapFillStrategy ?? "none"}</small>
+                          </div>
                         </article>
                       );
                     })}
@@ -1044,5 +1109,13 @@ export default function App() {
         </div>
       </section>
     </main>
+  );
+}
+
+export default function App() {
+  return (
+    <AppErrorBoundary>
+      <AppContent />
+    </AppErrorBoundary>
   );
 }

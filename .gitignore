@@ -29,3 +29,4 @@ storage/
 test_videos/manual/
 marketing_demo/
 CURRENT_PROJECT_GUIDE.md
+.claude/commands/review-reference-material.md

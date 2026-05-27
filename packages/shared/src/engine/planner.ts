@@ -464,6 +464,158 @@ function buildRequiredSlots(): RequiredSlot[] {
   }));
 }
 
+function editingMotifEvidenceHaystack(analysis: VideoAnalysisResult | undefined, vlm: VLMVideoAnalysis | undefined): string {
+  return [
+    vlm?.videoSummary,
+    vlm?.videoType,
+    vlm?.structure?.hook,
+    vlm?.structure?.setup,
+    vlm?.structure?.climax,
+    vlm?.structure?.cta,
+    ...(vlm?.structure?.sellingPoints ?? []),
+    vlm?.packaging?.coverStyle,
+    vlm?.packaging?.colorStyle,
+    ...(vlm?.packaging?.titleCards ?? []),
+    ...(vlm?.packaging?.stickers ?? []),
+    ...(vlm?.reusablePatterns ?? []),
+    ...(vlm?.materialGapsForNewVideo ?? []),
+    ...(vlm?.shots ?? []).flatMap((shot) => [shot.visual, shot.purpose, shot.transition]),
+    analysis?.primaryMotif?.motif,
+    ...(analysis?.motifCandidates ?? []).map((candidate) => candidate.motif),
+    ...(analysis?.keyframes ?? []).flatMap((frame) => [frame.description, ...(frame.tags ?? [])]),
+    ...(analysis?.shots ?? []).flatMap((shot) => [shot.notes, ...(shot.tags ?? [])])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function inferRotatingSemanticLabel(haystack: string): string {
+  if (/helmet|头盔/.test(haystack)) return "helmet";
+  if (/(?:\bhead\b|face|avatar|头像|人头|头部)/.test(haystack)) return "head";
+  if (/(?:\blogo\b|brand|标识|品牌)/.test(haystack)) return "logo";
+  if (/(?:object|product|hero|主体|主视觉|物体)/.test(haystack)) return "hero_object";
+  return "unknown_object";
+}
+
+function motifSlotsFromEvidence(analysis: VideoAnalysisResult | undefined, vlm: VLMVideoAnalysis | undefined): RequiredSlot[] {
+  const haystack = editingMotifEvidenceHaystack(analysis, vlm);
+  const hasRotatingHero =
+    /(rotat|spin|orbit|3d|three[-\s]?d|logo intro|visual logo|opening logo|hero object|helmet|head|avatar|旋转|三维|3d|头盔|头像|开头.*(?:logo|标识|主视觉))/.test(haystack) &&
+    /(intro|opening|hook|logo|head|helmet|object|hero|开头|片头|主视觉|主体|物体|标识)/.test(haystack);
+  const hasKineticText = /(kinetic|dynamic text|text[_\s-]*card|typography|subtitle|caption|bold text|字幕|文字|动效字|标题卡|黑底强字幕)/.test(haystack);
+  const hasBeatMontage = /(beat|sync|montage|action|cinematic|movie|gunshot|punch|卡点|混剪|动作|电影|节奏|鼓点)/.test(haystack);
+  const hasMatchCut = /(match[_\s-]*cut|seamless action|action matching|transition motif|转场|匹配剪辑|动作匹配|无缝)/.test(haystack);
+  const hasCtaEndSlate = /(cta|call[-\s]*to[-\s]*action|end slate|closing|结尾|引导|关注|练习|行动号召)/.test(haystack);
+
+  const slots: RequiredSlot[] = [];
+  if (hasRotatingHero) {
+    slots.push({
+      id: "slot_rotating_hero_object_intro",
+      role: "hook",
+      slotType: "hook_visual",
+      required: true,
+      description: "Opening rotating 3D hero object/logo/head-like visual motif",
+      preferredTags: ["rotating_object_candidate", "hook_candidate"],
+      fallbackStrategies: ["proxy_placeholder", "user_asset_replace", "aigc_placeholder"],
+      visualForm: "rotating_3d_object",
+      semanticLabel: inferRotatingSemanticLabel(haystack),
+      motionSpec: { type: "spin", axis: "screen_y", speed: 0.8, preserveFromSlot: true },
+      clickToReplace: true
+    });
+  }
+  if (hasKineticText) {
+    slots.push({
+      id: "slot_kinetic_text_card_sequence",
+      role: "body",
+      slotType: "title_card",
+      required: true,
+      description: "Kinetic bold text-card sequence synchronized to the edit rhythm",
+      preferredTags: ["text_card_candidate"],
+      fallbackStrategies: ["text_card", "packaging_overlay"],
+      visualForm: "kinetic_text_card",
+      semanticLabel: "kinetic_text",
+      motionSpec: { type: "scale", speed: 0.5, preserveFromSlot: true },
+      clickToReplace: false
+    });
+  }
+  if (hasBeatMontage) {
+    slots.push({
+      id: "slot_beat_sync_action_montage",
+      role: "body",
+      slotType: "usage_scene",
+      required: true,
+      description: "Beat-synced action or cinematic montage clip sequence",
+      preferredTags: ["action_montage_candidate", "usage_scene"],
+      fallbackStrategies: ["proxy_placeholder", "aigc_placeholder", "text_card"],
+      visualForm: "action_montage_sequence",
+      semanticLabel: "action_montage",
+      motionSpec: { type: "crop_zoom", speed: 0.95, preserveFromSlot: true },
+      clickToReplace: true
+    });
+  }
+  if (hasMatchCut) {
+    slots.push({
+      id: "slot_cinematic_match_cut_sequence",
+      role: "proof",
+      slotType: "comparison",
+      required: true,
+      description: "Cinematic match-cut proof sequence with aligned action beats",
+      preferredTags: ["match_cut_candidate", "comparison_candidate"],
+      fallbackStrategies: ["proxy_placeholder", "text_card", "packaging_overlay"],
+      visualForm: "match_cut_sequence",
+      semanticLabel: "match_cut_sequence",
+      motionSpec: { type: "crop_zoom", speed: 0.9, preserveFromSlot: true },
+      clickToReplace: true
+    });
+  }
+  if (hasCtaEndSlate) {
+    slots.push({
+      id: "slot_cta_end_slate",
+      role: "cta",
+      slotType: "cta_visual",
+      required: true,
+      description: "CTA end-slate visual/card adapted to the new target",
+      preferredTags: ["cta_candidate"],
+      fallbackStrategies: ["packaging_overlay", "text_card"],
+      visualForm: "cta",
+      semanticLabel: "cta_end_slate",
+      motionSpec: { type: "scale", speed: 0.35, preserveFromSlot: true },
+      clickToReplace: true
+    });
+  }
+  return slots;
+}
+
+function addSlotToSegment(segments: StructureSegment[], segmentId: string, slotId: string): StructureSegment[] {
+  return segments.map((segment) => {
+    if (segment.id !== segmentId || segment.slots.includes(slotId)) return segment;
+    return { ...segment, slots: [...segment.slots, slotId] };
+  });
+}
+
+function augmentTemplateWithEditingMotifs(template: StructureTemplate, analysis: VideoAnalysisResult, vlm?: VLMVideoAnalysis): StructureTemplate {
+  const motifSlots = motifSlotsFromEvidence(analysis, vlm);
+  if (!motifSlots.length) return template;
+  const existing = new Set(template.requiredSlots.map((slot) => slot.id));
+  const slotsToAdd = motifSlots.filter((slot) => !existing.has(slot.id));
+  if (!slotsToAdd.length) return template;
+  let segments = template.segments;
+  for (const slot of slotsToAdd) {
+    if (slot.id === "slot_rotating_hero_object_intro") segments = addSlotToSegment(segments, "seg_hook", slot.id);
+    if (slot.id === "slot_kinetic_text_card_sequence") segments = addSlotToSegment(segments, "seg_body", slot.id);
+    if (slot.id === "slot_beat_sync_action_montage") segments = addSlotToSegment(segments, "seg_body", slot.id);
+    if (slot.id === "slot_cinematic_match_cut_sequence") segments = addSlotToSegment(segments, "seg_proof", slot.id);
+    if (slot.id === "slot_cta_end_slate") segments = addSlotToSegment(segments, "seg_cta", slot.id);
+  }
+  return {
+    ...template,
+    segments,
+    requiredSlots: [...template.requiredSlots, ...slotsToAdd],
+    qualityRationale: `${template.qualityRationale} Motif slots extracted: ${slotsToAdd.map((slot) => slot.id).join(", ")}.`
+  };
+}
+
 function buildPackaging(vlm?: VLMVideoAnalysis): PackagingSpec {
   const subtitleStyle = vlm?.packaging?.subtitleDensity
     ? `${vlm.packaging.subtitleDensity} density · ${vlm.packaging.titleCards?.[0] ?? "lower-third bold sans-serif"}`
@@ -680,7 +832,7 @@ export function buildFallbackTemplate(
   const owningProject = projectId ?? analysis.projectId;
   const createdAt = nowIso();
   const defaultName = "B2B MG Promo Structure: Hook Body Proof CTA";
-  return {
+  const template: StructureTemplate = {
     id: templateId,
     projectId: owningProject,
     name: nameFromVlm(vlm, defaultName),
@@ -706,6 +858,7 @@ export function buildFallbackTemplate(
     createdAt,
     updatedAt: createdAt
   };
+  return augmentTemplateWithEditingMotifs(template, analysis, vlm);
 }
 
 export interface ParsedBrief {
@@ -795,12 +948,69 @@ function analyzeTranscriptQuality(transcript: TranscriptSegment[], totalDuration
   };
 }
 
+function hasRenderableAssetPath(asset: Asset | undefined): boolean {
+  return Boolean(asset?.path && asset.path.trim().length > 0);
+}
+
+function materialPolicyForSourceAsset(
+  sourceAsset: Asset | undefined,
+  request: GenerationRequest
+): Pick<SourceVideoUnderstanding, "materialRole" | "renderable" | "sourcePolicy" | "reusableAsMaterial" | "materialBlockReason"> {
+  if (!sourceAsset) {
+    return {
+      materialRole: "unusable",
+      renderable: false,
+      reusableAsMaterial: false,
+      materialBlockReason: "No source material asset was provided."
+    };
+  }
+  const renderable = hasRenderableAssetPath(sourceAsset);
+  const sourcePolicy = sourceAsset.sourcePolicy;
+  const sampleReuseAuthorized = request.constraints?.sampleAssetReuse === "authorized";
+  if (sourceAsset.metadata?.mock === true) {
+    return {
+      materialRole: "mock",
+      renderable,
+      sourcePolicy,
+      reusableAsMaterial: false,
+      materialBlockReason: renderable
+        ? "Mock source assets are evidence fixtures and cannot satisfy required visual slots."
+        : "Mock source assets without renderable paths cannot satisfy required visual slots."
+    };
+  }
+  if (!renderable) {
+    return {
+      materialRole: "unusable",
+      renderable: false,
+      sourcePolicy,
+      reusableAsMaterial: false,
+      materialBlockReason: "Source asset has no renderable path and cannot satisfy required visual slots."
+    };
+  }
+  if (sourcePolicy === "demo_only" && !sampleReuseAuthorized) {
+    return {
+      materialRole: "sample_reference",
+      renderable,
+      sourcePolicy,
+      reusableAsMaterial: false,
+      materialBlockReason: "Demo/sample reference footage is structure evidence only unless sampleAssetReuse is authorized."
+    };
+  }
+  return {
+    materialRole: sourcePolicy === "demo_only" ? "sample_reference" : "target_material",
+    renderable,
+    sourcePolicy,
+    reusableAsMaterial: true
+  };
+}
+
 export function understandSourceVideo(
   analysis: VideoAnalysisResult | undefined,
   sourceAsset: Asset | undefined,
   request: GenerationRequest,
   vlm?: VLMVideoAnalysis
 ): SourceVideoUnderstanding {
+  const materialPolicy = materialPolicyForSourceAsset(sourceAsset, request);
   if (!analysis || !sourceAsset) {
     const targetAssetCount = targetAssetsForRequest(request).length;
     return {
@@ -814,7 +1024,8 @@ export function understandSourceVideo(
           : "No source video provided. Preview is storyboard/text-card based."
       ],
       transcript: [],
-      ocrText: []
+      ocrText: [],
+      ...materialPolicy
     };
   }
   const promptLower = request.prompt.toLowerCase();
@@ -858,10 +1069,13 @@ export function understandSourceVideo(
     }),
     warnings: [
       ...(analysis.analyzerMode === "mock" ? ["Using deterministic mock source-video analysis."] : []),
+      ...(materialPolicy.reusableAsMaterial ? [] : [materialPolicy.materialBlockReason ?? "Source material is blocked by policy."]),
       ...(vlm?.materialGapsForNewVideo?.length ? [`VLM flagged gaps: ${vlm.materialGapsForNewVideo.join(", ")}`] : [])
     ],
     transcript,
-    ocrText
+    ocrText,
+    ...materialPolicy,
+    blockedCandidateShotIds: materialPolicy.reusableAsMaterial ? [] : analysis.shots.map((shot) => shot.id)
   };
 }
 
@@ -952,6 +1166,9 @@ function isReplaceableVisualSlot(slotType: SlotType | undefined): boolean {
 
 function visualFormForSlot(slotType: SlotType | undefined, gapType?: GapCategory): ReplacementSlot["visualForm"] {
   if (gapType === "dynamic_3d_ribbon_asset") return "ribbon_motif";
+  if (gapType === "rotating_hero_object_missing") return "rotating_3d_object";
+  if (gapType === "action_montage_missing") return "action_montage_sequence";
+  if (gapType === "match_cut_sequence_missing") return "match_cut_sequence";
   if (slotType === "product_closeup" || slotType === "hook_visual" || slotType === "usage_scene") return "rotating_object";
   if (slotType === "background") return "background";
   if (slotType === "cta_visual") return "cta";
@@ -961,6 +1178,8 @@ function visualFormForSlot(slotType: SlotType | undefined, gapType?: GapCategory
 
 function acceptedAssetTypesForSlot(slotType: SlotType | undefined, gapType?: GapCategory): ReplacementSlot["acceptedAssetTypes"] {
   if (gapType === "dynamic_3d_ribbon_asset") return ["image", "video", "gif"];
+  if (gapType === "rotating_hero_object_missing") return ["image", "video", "gif", "glb", "lottie"];
+  if (gapType === "action_montage_missing" || gapType === "match_cut_sequence_missing") return ["video", "gif", "image"];
   if (slotType === "cta_visual") return ["image", "logo", "copy"];
   if (slotType === "subtitle_text" || slotType === "title_card") return ["copy", "image"];
   if (slotType === "background") return ["image", "video"];
@@ -970,6 +1189,12 @@ function acceptedAssetTypesForSlot(slotType: SlotType | undefined, gapType?: Gap
 function motionSpecForSlot(slotType: SlotType | undefined, gapType?: GapCategory): MotionSpec {
   if (gapType === "dynamic_3d_ribbon_asset") {
     return { type: "ribbon_follow", axis: "screen_y", speed: 0.92, preserveFromSlot: true };
+  }
+  if (gapType === "rotating_hero_object_missing") {
+    return { type: "spin", axis: "screen_y", speed: 0.8, preserveFromSlot: true };
+  }
+  if (gapType === "action_montage_missing" || gapType === "match_cut_sequence_missing") {
+    return { type: "crop_zoom", speed: 0.95, preserveFromSlot: true };
   }
   if (slotType === "product_closeup" || slotType === "hook_visual" || slotType === "usage_scene") {
     return { type: "spin", axis: "y", speed: 0.8, preserveFromSlot: true };
@@ -988,6 +1213,24 @@ function placeholderSpecForSlot(slotType: SlotType | undefined, label: string, g
       shape: "ribbon",
       color: "#7C3AED",
       label: "Dynamic ribbon placeholder",
+      motion
+    };
+  }
+  if (gapType === "rotating_hero_object_missing") {
+    return {
+      type: "proxy_shape",
+      shape: "sphere",
+      color: "#E53935",
+      label: "Rotating hero object placeholder",
+      motion
+    };
+  }
+  if (gapType === "action_montage_missing" || gapType === "match_cut_sequence_missing") {
+    return {
+      type: "proxy_card",
+      shape: "plane",
+      color: "#2563EB",
+      label,
       motion
     };
   }
@@ -1010,6 +1253,8 @@ function placeholderSpecForSlot(slotType: SlotType | undefined, label: string, g
 }
 
 function shouldExposeReplacementSlot(mapping: SlotMapping): boolean {
+  if (mapping.clickToReplace === false) return false;
+  if (mapping.clickToReplace === true) return mapping.status !== "matched";
   return mapping.status !== "matched" && isReplaceableVisualSlot(mapping.slotType);
 }
 
@@ -1029,6 +1274,14 @@ function targetAssetKindsForSlot(slotType: SlotType): TargetAssetKind[] {
   return map[slotType];
 }
 
+function targetAssetCanRenderForSlot(asset: TargetAssetInput, slotType: SlotType): boolean {
+  const hasPathOrUrl = Boolean(asset.path || asset.url);
+  const hasText = Boolean(asset.text && asset.text.trim().length > 0);
+  if (slotType === "subtitle_text" || slotType === "title_card") return hasText || hasPathOrUrl || asset.kind === "copy";
+  if (slotType === "cta_visual" && (asset.kind === "copy" || asset.kind === "cta_info")) return hasText || hasPathOrUrl;
+  return hasPathOrUrl;
+}
+
 function targetAssetScore(asset: TargetAssetInput, slotType: SlotType): number {
   const kinds = targetAssetKindsForSlot(slotType);
   let score = kinds.includes(asset.kind) ? 0.64 : 0.22;
@@ -1039,6 +1292,7 @@ function targetAssetScore(asset: TargetAssetInput, slotType: SlotType): number {
   if (/compare|proof|case|对比|证明|案例/.test(haystack) && (slotType === "comparison" || slotType === "proof_visual")) score += 0.22;
   if (/cta|action|logo|brand|引导|行动|结尾|品牌/.test(haystack) && slotType === "cta_visual") score += 0.22;
   if (/copy|title|headline|text|文案|标题/.test(haystack) && (slotType === "subtitle_text" || slotType === "title_card")) score += 0.2;
+  if (!targetAssetCanRenderForSlot(asset, slotType)) score = Math.min(score, 0.36);
   return clamp(score, 0, 0.96);
 }
 
@@ -1060,14 +1314,37 @@ function isExcludedSampleShot(template: StructureTemplate, source: SourceVideoUn
   return (template.excludeSegments ?? []).some((segment) => overlapsExcludeSegment(shot, segment));
 }
 
+function sourceMaterialBlockReason(template: StructureTemplate, source: SourceVideoUnderstanding, request: GenerationRequest): string | undefined {
+  if (!source.assetId || source.candidates.length === 0) return undefined;
+  if (source.materialBlockReason && !source.reusableAsMaterial) return source.materialBlockReason;
+  if (template.sourceSampleIds.includes(source.assetId) && request.constraints?.sampleAssetReuse !== "authorized") {
+    return `Source shots from sample/reference asset ${source.assetId} are evidence only; set sampleAssetReuse="authorized" to reuse them as material.`;
+  }
+  if (source.reusableAsMaterial === false) return "Source candidates are blocked by material-pool policy.";
+  return undefined;
+}
+
+function candidateMatchesSlot(shot: ShotCandidate, slot: RequiredSlot): boolean {
+  const preferredTags = slot.preferredTags?.length ? slot.preferredTags : [preferredTagForSlot(slot.slotType)];
+  return preferredTags.some((tag) => shot.tags.includes(tag)) || shot.tags.includes(preferredTagForSlot(slot.slotType));
+}
+
 export function matchSlots(
   template: StructureTemplate,
   source: SourceVideoUnderstanding,
   request: GenerationRequest
 ): SlotMapping[] {
   const targetAssets = targetAssetsForRequest(request);
+  const sourceBlockedReason = sourceMaterialBlockReason(template, source, request);
+  const sourceCanProvideMaterial = Boolean(source.assetId && source.reusableAsMaterial !== false && !sourceBlockedReason);
   return template.requiredSlots.map((slot) => {
     const preferred = preferredTagForSlot(slot.slotType);
+    const slotMetadata = {
+      visualForm: slot.visualForm,
+      semanticLabel: slot.semanticLabel,
+      motionSpec: slot.motionSpec,
+      clickToReplace: slot.clickToReplace
+    };
     const targetAssetCandidates = targetAssets
       .filter((asset) => targetAssetScore(asset, slot.slotType) >= 0.38)
       .sort((a, b) => targetAssetScore(b, slot.slotType) - targetAssetScore(a, slot.slotType));
@@ -1084,12 +1361,16 @@ export function matchSlots(
         selectedTargetAssetKind: bestTargetAsset.asset.kind,
         targetAssetCandidateIds: targetAssetCandidates.map((asset) => asset.id),
         assetAvailability: "target_asset_mapped",
+        ...slotMetadata,
         confidence: bestTargetAsset.score,
         reason: `Mapped ${slot.slotType} to target ${bestTargetAsset.asset.kind} asset ${bestTargetAsset.asset.id}.`,
         risks: bestTargetAsset.asset.path || bestTargetAsset.asset.url || bestTargetAsset.asset.text ? [] : ["Target asset has metadata only; renderer may need a fallback."]
       };
     }
-    const candidateShots = source.candidates.filter((shot) => shot.tags.includes(preferred) && !isExcludedSampleShot(template, source, shot, request));
+    const evidenceCandidateShots = source.candidates.filter((shot) => candidateMatchesSlot(shot, slot));
+    const candidateShots = sourceCanProvideMaterial
+      ? evidenceCandidateShots.filter((shot) => !isExcludedSampleShot(template, source, shot, request))
+      : [];
     if (candidateShots.length > 0) {
       const best = candidateShots[0];
       return {
@@ -1102,6 +1383,7 @@ export function matchSlots(
         selectedAssetId: source.assetId,
         targetAssetCandidateIds: targetAssetCandidates.map((asset) => asset.id),
         assetAvailability: "source_video_mapped",
+        ...slotMetadata,
         confidence: clamp(0.7 + (best.confidence ?? 0.7) * 0.2, 0.7, 0.95),
         reason: `Matched ${slot.slotType} to source shot ${best.id} via tag ${preferred}.`,
         risks: []
@@ -1119,6 +1401,7 @@ export function matchSlots(
         selectedTargetAssetKind: bestTargetAsset.asset.kind,
         targetAssetCandidateIds: targetAssetCandidates.map((asset) => asset.id),
         assetAvailability: "target_asset_weak_match",
+        ...slotMetadata,
         confidence: bestTargetAsset.score,
         reason: `Target asset ${bestTargetAsset.asset.id} exists for ${slot.slotType}, but the role/kind match is weak.`,
         risks: ["Weak target-asset fit; fill plan should reinforce with copy, packaging, or procedural generation."]
@@ -1138,6 +1421,7 @@ export function matchSlots(
         candidateShotIds: [],
         targetAssetCandidateIds: [],
         assetAvailability: targetAssets.length > 0 ? "target_asset_weak_match" : "no_user_asset_available",
+        ...slotMetadata,
         confidence: 0.45,
         reason: "No source shot matched; prompt copy can drive a card or overlay.",
         risks: ["Weak visual support; rely on packaging fill."]
@@ -1148,12 +1432,18 @@ export function matchSlots(
       slotRole: slot.role,
       slotType: slot.slotType,
       status: "missing",
-      candidateShotIds: [],
+      candidateShotIds: evidenceCandidateShots.map((shot) => shot.id),
       targetAssetCandidateIds: [],
       assetAvailability: "no_user_asset_available",
+      ...slotMetadata,
       confidence: 0,
-      reason: `No source candidate with tag ${preferred} for ${slot.slotType}.`,
-      risks: ["Required slot missing; fill plan must supply replacement."]
+      reason: sourceBlockedReason
+        ? `Blocked source evidence for ${slot.slotType}: ${sourceBlockedReason}`
+        : `No source candidate with tag ${preferred} for ${slot.slotType}.`,
+      risks: [
+        "Required slot missing; fill plan must supply replacement.",
+        ...(sourceBlockedReason && evidenceCandidateShots.length ? [sourceBlockedReason] : [])
+      ]
     };
   });
 }
@@ -1221,6 +1511,34 @@ const SLOT_GAP_LABELS: Record<SlotType, { category: GapCategory; en: string; zh:
   }
 };
 
+function gapMetaForMapping(mapping: SlotMapping): { category: GapCategory; en: string; zh: string; strategies: FillStrategy[] } {
+  if (mapping.slotId === "slot_rotating_hero_object_intro" || mapping.visualForm === "rotating_3d_object") {
+    return {
+      category: "rotating_hero_object_missing",
+      en: "Rotating hero object intro is missing",
+      zh: "缺少旋转主视觉素材",
+      strategies: ["proxy_placeholder", "user_asset_replace", "aigc_placeholder"]
+    };
+  }
+  if (mapping.slotId === "slot_beat_sync_action_montage" || mapping.visualForm === "action_montage_sequence") {
+    return {
+      category: "action_montage_missing",
+      en: "Beat-sync action montage clips are missing",
+      zh: "缺少卡点动作混剪素材",
+      strategies: ["proxy_placeholder", "aigc_placeholder", "text_card"]
+    };
+  }
+  if (mapping.slotId === "slot_cinematic_match_cut_sequence" || mapping.visualForm === "match_cut_sequence") {
+    return {
+      category: "match_cut_sequence_missing",
+      en: "Cinematic match-cut proof clips are missing",
+      zh: "缺少动作匹配/对比证明镜头",
+      strategies: ["proxy_placeholder", "text_card", "packaging_overlay"]
+    };
+  }
+  return SLOT_GAP_LABELS[mapping.slotType];
+}
+
 export interface GapReportContext {
   source?: SourceVideoUnderstanding;
   template?: StructureTemplate;
@@ -1261,7 +1579,7 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
   const slotGaps: GapReportItem[] = mappings
     .filter((mapping) => mapping.status !== "matched")
     .map((mapping) => {
-      const meta = SLOT_GAP_LABELS[mapping.slotType] ?? null;
+      const meta = gapMetaForMapping(mapping);
       const severity: GapReportItem["severity"] = mapping.status === "missing" ? "high" : "medium";
       return {
         slotId: mapping.slotId,
@@ -1384,7 +1702,7 @@ export function createFillPlan(
   request: GenerationRequest,
   template?: StructureTemplate
 ): FillAction[] {
-  const hasReusableVisual = source.candidates.length > 0;
+  const hasReusableVisual = Boolean(source.reusableAsMaterial && source.candidates.length > 0);
   const brief = parsePromptToBrief(request);
   const ribbonAtom = ribbonAtomTypeForRequest(request, template);
   const ribbonMotion = ribbonMotionForTemplate(template) ?? DEFAULT_PARAMETRIC_RIBBON;
@@ -1400,11 +1718,11 @@ export function createFillPlan(
       const siblings = mappingsBySegment.get(mapping.slotRole) ?? [];
       const matchedSiblings = siblings.filter((sib) => sib.slotId !== mapping.slotId && sib.status === "matched");
       const unmatchedInSegment = siblings.filter((sib) => sib.status !== "matched").length;
-      const gapMeta = SLOT_GAP_LABELS[mapping.slotType];
+      const gapMeta = gapMetaForMapping(mapping);
       const replacementBinding = replacementBindingFor(request, mapping.slotId, gapMeta?.category);
       const replacementAsset = targetAssetForId(request, replacementBinding?.assetId);
       const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${gapMeta?.en ?? mapping.slotType} placeholder`, gapMeta?.category);
-      const motionSpec = motionSpecForSlot(mapping.slotType, gapMeta?.category);
+      const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, gapMeta?.category);
       const strategy = chooseStrategy({
         mapping,
         hasReusableVisual,
@@ -1483,10 +1801,10 @@ export function createFillPlan(
     .flatMap((binding): FillAction[] => {
       const mapping = mappings.find((item) => item.slotId === binding.slotId);
       if (!mapping) return [];
-      const gapMeta = SLOT_GAP_LABELS[mapping.slotType];
+      const gapMeta = gapMetaForMapping(mapping);
       const replacementAsset = targetAssetForId(request, binding.assetId);
       const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${gapMeta?.en ?? mapping.slotType} placeholder`, gapMeta?.category);
-      const motionSpec = motionSpecForSlot(mapping.slotType, gapMeta?.category);
+      const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, gapMeta?.category);
       return [{
         slotId: binding.slotId,
         strategy: "user_asset_replace",
@@ -1735,7 +2053,7 @@ function replacementSlotsFromGapReport(gapReport: GapReportItem[], fillPlan: Fil
         visualForm: "product_card" as const,
         status: "user_replaced" as const,
         placeholderSpec: instructions.placeholderSpec as PlaceholderSpec | undefined,
-        acceptedAssetTypes: ["image", "video", "gif", "logo", "copy"] as ReplacementSlot["acceptedAssetTypes"],
+        acceptedAssetTypes: ["image", "video", "gif", "logo", "copy", "glb", "lottie"] as ReplacementSlot["acceptedAssetTypes"],
         boundAssetId: typeof instructions.boundAssetId === "string" ? instructions.boundAssetId : undefined,
         motionSpec: instructions.motionSpec as MotionSpec | undefined,
         applyMotionFromSlot: instructions.applyMotionFromSlot === false ? false : true,

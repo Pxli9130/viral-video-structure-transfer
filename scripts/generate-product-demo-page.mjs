@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { artifactRoot, corpusRegressionDir, marketingArtifactDir, rel } from "./artifact-paths.mjs";
 
 const demoDir = path.join(artifactRoot, "product_demo");
+const editingCaseDir = path.join(artifactRoot, "editing_case");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const htmlPath = path.join(demoDir, "index.html");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
@@ -296,6 +297,12 @@ const corpusArtifact = await readJsonArtifact({
   description: "Corpus regression pass/fail report.",
   fallback: {}
 });
+const editingCaseArtifact = await readJsonArtifact({
+  title: "editing_case/generation-result.json",
+  filePath: path.join(editingCaseDir, "generation-result.json"),
+  description: "Editing.mov reference-vs-target material case with proxy gap-fill evidence.",
+  fallback: {}
+});
 
 const generationByArtifactKey = {};
 const evaluationByArtifactKey = {};
@@ -336,6 +343,7 @@ const template = templateArtifact.data ?? {};
 const generationResult = generationResultArtifact.data ?? {};
 const variantSummary = variantSummaryArtifact.data ?? [];
 const corpus = corpusArtifact.data ?? {};
+const editingCase = editingCaseArtifact.data ?? {};
 const primaryGeneration =
   generationByArtifactKey.high_fidelity?.data ??
   generationByArtifactKey.main?.data ??
@@ -1507,6 +1515,10 @@ function artifactGalleryCards() {
     registerArtifact({ title: "interactive_gap_fill_proxy.mp4", type: "video", filePath: slotReplacementProxyVideoPath, description: "Rendered proxy placeholder fixture." }),
     registerArtifact({ title: "interactive_gap_fill_user_replacement.mp4", type: "video", filePath: slotReplacementUserVideoPath, description: "Rendered managed replacement asset fixture." }),
     registerArtifact({ title: "generation.interactive_gap_fill_user_replacement.json", type: "json", filePath: slotReplacementUserGenerationPath, description: "Generation JSON for rendered replacement fixture." }),
+    registerArtifact({ title: "editing_case/index.html", type: "html", filePath: path.join(editingCaseDir, "index.html"), description: "Editing.mov reference-vs-target material gap case with visible proxy output." }),
+    registerArtifact({ title: "editing_case/render.mp4", type: "video", filePath: path.join(editingCaseDir, "render.mp4"), description: "Rendered editing-case proxy placeholder output." }),
+    registerArtifact({ title: "editing_case/contact_sheet.png", type: "image", filePath: path.join(editingCaseDir, "contact_sheet.png"), description: "Editing-case proxy contact sheet." }),
+    registerArtifact({ title: "editing_case/replacement-slots.json", type: "json", filePath: path.join(editingCaseDir, "replacement-slots.json"), description: "Editing-case Interactive Gap Fill slots." }),
     registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "Default timeline JSON." }),
     registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "High fidelity timeline JSON." }),
     registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "Final creative generation JSON." }),
@@ -1605,6 +1617,14 @@ const manifest = scrubObject({
     generationJson: nlEditDemo.after?.generationJson ?? null,
     timelineJson: nlEditDemo.after?.timelineJson ?? null,
     previewHtml: nlEditDemo.after?.previewHtml ?? null
+  },
+  editingCase: {
+    available: editingCaseArtifact.exists,
+    index: hrefFromDemo(path.join(editingCaseDir, "index.html")),
+    render: hrefFromDemo(path.join(editingCaseDir, "render.mp4")),
+    contactSheet: hrefFromDemo(path.join(editingCaseDir, "contact_sheet.png")),
+    replacementSlots: Array.isArray(editingCase.replacementSlots) ? editingCase.replacementSlots.map((slot) => slot.slotId) : [],
+    evaluatorGates: editingCase.editingCaseGates ?? []
   },
   artifactsConsumed: artifactRegistry.map(({ title, type, status, href, description }) => ({ title, type, status, path: href, description })),
   missingArtifacts: artifactRegistry.filter((artifact) => artifact.status !== "exists").map((artifact) => artifact.title)

@@ -7,6 +7,7 @@ const demoDir = path.join(artifactRoot, "product_demo");
 const htmlPath = path.join(demoDir, "index.html");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
+const editingCaseDir = path.join(artifactRoot, "editing_case");
 
 const failures = [];
 
@@ -59,7 +60,8 @@ const requiredText = [
   "素材槽位替换器",
   "proxy placeholder -> user replacement",
   "interactive_gap_fill_proxy.mp4",
-  "interactive_gap_fill_user_replacement.mp4"
+  "interactive_gap_fill_user_replacement.mp4",
+  "editing_case/index.html"
 ];
 
 for (const text of requiredText) {
@@ -123,7 +125,9 @@ const requiredManifestFields = [
   ["interactiveGapFill.demoArtifact", manifest.interactiveGapFill?.demoArtifact],
   ["naturalLanguageEdit.available", manifest.naturalLanguageEdit?.available],
   ["naturalLanguageEdit.demoArtifact", manifest.naturalLanguageEdit?.demoArtifact],
-  ["naturalLanguageEdit.parsedOperations", manifest.naturalLanguageEdit?.parsedOperations]
+  ["naturalLanguageEdit.parsedOperations", manifest.naturalLanguageEdit?.parsedOperations],
+  ["editingCase.available", manifest.editingCase?.available],
+  ["editingCase.render", manifest.editingCase?.render]
 ];
 
 for (const [field, value] of requiredManifestFields) {
@@ -142,6 +146,14 @@ if (!Array.isArray(manifest.videos?.found) || !Array.isArray(manifest.videos?.mi
 
 if (manifest.interactiveGapFill?.available !== true) {
   failures.push("Manifest does not mark Interactive Gap Fill as available.");
+}
+
+if (existsSync(path.join(editingCaseDir, "index.html")) && !html.includes("editing_case/index.html")) {
+  failures.push("Editing case artifact exists but product demo gallery does not link it.");
+}
+
+if (existsSync(path.join(editingCaseDir, "index.html")) && manifest.editingCase?.available !== true) {
+  failures.push("Manifest does not mark editing_case as available while editing_case artifacts exist.");
 }
 
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {

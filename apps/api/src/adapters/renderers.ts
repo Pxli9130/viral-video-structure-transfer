@@ -214,6 +214,30 @@ function mgMotionDecorationFilters(timeline: Timeline, width: number, height: nu
   ];
 }
 
+function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: number, style: DrawTextStyle): string[] {
+  const proxyLayer = clip.layers.find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
+  if (clip.gapFillStrategy !== "proxy_placeholder" && !proxyLayer) return [];
+  const placeholder = (clip.placeholderSpec ?? proxyLayer?.style?.placeholderSpec ?? {}) as {
+    label?: string;
+    color?: string;
+    shape?: string;
+  };
+  const proxyColor = ffmpegColor(placeholder.color, "0xE53935");
+  const size = Math.round(Math.min(width, height) * 0.34);
+  const x = Math.round((width - size) / 2);
+  const y = Math.round(height * 0.27);
+  const badgeY = Math.round(y + size + height * 0.05);
+  const label = escapeDrawText(placeholder.label ?? "Rotating hero object placeholder");
+  const shapeLabel = escapeDrawText(`PROXY PLACEHOLDER · ${placeholder.shape ?? "shape"}`);
+  return [
+    `drawbox=x=${x - 18}:y=${y - 18}:w=${size + 36}:h=${size + 36}:color=white@0.16:t=fill`,
+    `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=${proxyColor}@0.92:t=fill`,
+    `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=white@0.86:t=8`,
+    drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.55", fontColor: "white" }, 30, String(Math.max(24, y - 76))),
+    drawTextFilter(label, { ...style, boxColor: "black@0.62", fontColor: "white" }, 34, String(badgeY))
+  ];
+}
+
 export interface FFmpegRendererOptions {
   generatedDir: string;
   assetResolver: AssetPathResolver;
@@ -327,10 +351,13 @@ export class FFmpegRenderer implements RendererAdapter {
   ): Promise<boolean> {
     const color = backgroundFor(clip, options.timeline);
     const decorations = mgMotionDecorationFilters(options.timeline, options.width, options.height);
+    const proxyFilters = proxyPlaceholderFilters(clip, options.width, options.height, options.textStyle);
     const filter = `color=c=${color}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)},format=yuv420p${
       decorations.length ? `,${decorations.join(",")}` : ""
     }${
-      options.subtitle
+      proxyFilters.length ? `,${proxyFilters.join(",")}` : ""
+    }${
+      options.subtitle && !proxyFilters.length
         ? `,${drawTextFilter(options.subtitle, options.textStyle, options.textStyle.cardFontSize, "(h-text_h)/2")}`
         : ""
     }`;

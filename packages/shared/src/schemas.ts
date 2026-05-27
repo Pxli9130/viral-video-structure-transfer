@@ -595,7 +595,7 @@ export const timelineSchema = {
           semanticLabel: { type: "string" },
           visualForm: { type: "string" },
           status: { enum: ["missing", "proxy_generated", "user_replaced", "rendered"] },
-          acceptedAssetTypes: { type: "array", items: { enum: ["image", "video", "gif", "logo", "copy"] } },
+          acceptedAssetTypes: { type: "array", items: { enum: ["image", "video", "gif", "logo", "copy", "glb", "lottie"] } },
           boundAssetId: { type: "string" },
           placeholderSpec: { type: "object", additionalProperties: true },
           motionSpec: { type: "object", additionalProperties: true },

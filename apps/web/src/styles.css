@@ -204,6 +204,23 @@ dd {
   padding: 18px;
 }
 
+.error-panel {
+  display: grid;
+  gap: 12px;
+  margin: 64px auto;
+  max-width: 720px;
+}
+
+.error-panel p {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+  color: #be123c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow-wrap: anywhere;
+  padding: 12px;
+}
+
 .panel-heading {
   align-items: center;
   display: flex;
@@ -593,6 +610,40 @@ th {
   gap: 8px;
   min-width: 0;
   padding: 12px;
+  overflow: hidden;
+  position: relative;
+}
+
+.phone-frame img {
+  height: 100%;
+  inset: 0;
+  object-fit: cover;
+  position: absolute;
+  width: 100%;
+}
+
+.phone-frame.has-preview {
+  background: #111827;
+}
+
+.phone-frame.proxy {
+  background:
+    radial-gradient(circle at 50% 36%, rgba(229, 57, 53, 0.95) 0 22%, transparent 23%),
+    linear-gradient(180deg, #111827, #1f2937);
+}
+
+.phone-frame-overlay {
+  align-self: end;
+  display: grid;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+}
+
+.phone-frame.has-preview .phone-frame-overlay {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.88));
+  margin: auto -12px -12px;
+  padding: 44px 12px 12px;
 }
 
 .phone-frame span,

@@ -17,7 +17,7 @@ export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remot
 export type RendererBackend = "remotion_mg" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
 export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
 export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
-export type AcceptedReplacementAssetType = "image" | "video" | "gif" | "logo" | "copy";
+export type AcceptedReplacementAssetType = "image" | "video" | "gif" | "logo" | "copy" | "glb" | "lottie";
 export type ReplacementSlotStatus = "missing" | "proxy_generated" | "user_replaced" | "rendered";
 export type ReplacementVisualForm =
   | "rotating_object"
@@ -26,7 +26,11 @@ export type ReplacementVisualForm =
   | "logo"
   | "cta"
   | "text_card"
-  | "ribbon_motif";
+  | "ribbon_motif"
+  | "rotating_3d_object"
+  | "kinetic_text_card"
+  | "action_montage_sequence"
+  | "match_cut_sequence";
 export type RibbonSurfaceType = "thin_line" | "wide_band" | "textured_band" | "particle_trail";
 export type RibbonPathFamily = "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
 export type RibbonAxis = "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
@@ -98,7 +102,7 @@ export interface MotionSpec {
 
 export interface PlaceholderSpec {
   type: "proxy_shape" | "proxy_card" | "aigc_draft" | "procedural_object";
-  shape?: "sphere" | "circle" | "cube" | "plane" | "ribbon" | "generic_product";
+  shape?: "sphere" | "circle" | "cube" | "plane" | "ribbon" | "generic_product" | "helmet_silhouette";
   color?: string;
   label?: string;
   motion?: MotionSpec;
@@ -251,6 +255,10 @@ export interface RequiredSlot {
   description: string;
   preferredTags?: string[];
   fallbackStrategies?: FillStrategy[];
+  visualForm?: ReplacementVisualForm;
+  semanticLabel?: string;
+  motionSpec?: MotionSpec;
+  clickToReplace?: boolean;
 }
 
 export interface StructureSegment {
@@ -450,6 +458,12 @@ export interface SourceVideoUnderstanding {
   warnings: string[];
   transcript?: TranscriptSegment[];
   ocrText?: string[];
+  materialRole?: "target_material" | "sample_reference" | "mock" | "unusable";
+  renderable?: boolean;
+  sourcePolicy?: SourcePolicy;
+  reusableAsMaterial?: boolean;
+  materialBlockReason?: string;
+  blockedCandidateShotIds?: string[];
 }
 
 export type SlotMatchStatus = "matched" | "weak_match" | "missing";
@@ -466,6 +480,10 @@ export interface SlotMapping {
   selectedTargetAssetKind?: TargetAssetKind;
   targetAssetCandidateIds?: string[];
   assetAvailability?: "target_asset_mapped" | "target_asset_weak_match" | "no_user_asset_available" | "source_video_mapped";
+  visualForm?: ReplacementVisualForm;
+  semanticLabel?: string;
+  motionSpec?: MotionSpec;
+  clickToReplace?: boolean;
   confidence: number;
   reason: string;
   risks: string[];
@@ -483,7 +501,10 @@ export type GapCategory =
   | "background_missing"
   | "voiceover_or_script_missing"
   | "subtitle_density_low"
-  | "dynamic_3d_ribbon_asset";
+  | "dynamic_3d_ribbon_asset"
+  | "rotating_hero_object_missing"
+  | "action_montage_missing"
+  | "match_cut_sequence_missing";
 
 export interface GapReportItem {
   slotId: string;

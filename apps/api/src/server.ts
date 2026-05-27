@@ -1296,6 +1296,11 @@ function replacementEvaluatorGates(generation: GenerationResult): EvaluatorGateO
   const slots = generation.replacementSlots ?? [];
   const unresolved = slots.filter((slot) => slot.status === "missing" || slot.status === "proxy_generated").length;
   const userReplaced = slots.filter((slot) => slot.status === "user_replaced" || slot.status === "rendered").length;
+  const targetAssetCount = generation.request.targetAssets?.length ?? 0;
+  const visualGaps = generation.gapReport.filter((gap) => gap.slotType && gap.slotType !== "subtitle_text" && gap.slotType !== "title_card");
+  const sourceMapped = generation.slotMapping.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length;
+  const sampleReuseAuthorized = generation.request.constraints?.sampleAssetReuse === "authorized";
+  const sourceIsMock = generation.sourceUnderstanding.materialRole === "mock";
   const proxyVisible = generation.timeline.clips.some(
     (clip) =>
       clip.gapFillStrategy === "proxy_placeholder" ||
@@ -1309,6 +1314,30 @@ function replacementEvaluatorGates(generation: GenerationResult): EvaluatorGateO
     .filter((slot) => slot.boundAssetId)
     .every((slot) => slot.applyMotionFromSlot !== false && Boolean(slot.motionSpec));
   return [
+    {
+      id: "gap_detected_when_no_target_assets",
+      passed: targetAssetCount > 0 || visualGaps.length > 0,
+      value: visualGaps.length,
+      comment: "When no target material is supplied, required visual slots should surface gaps instead of false matches."
+    },
+    {
+      id: "sample_visual_not_reused_without_authorization",
+      passed: sampleReuseAuthorized || sourceMapped === 0 || generation.sourceUnderstanding.reusableAsMaterial === true,
+      value: sourceMapped,
+      comment: "Reference/sample footage should not satisfy target visual slots unless reuse is explicitly authorized."
+    },
+    {
+      id: "mock_asset_not_counted_as_match",
+      passed: !sourceIsMock || sourceMapped === 0,
+      value: sourceMapped,
+      comment: "Mock assets and assets without renderable paths are evidence only."
+    },
+    {
+      id: "interactive_gap_fill_non_empty",
+      passed: visualGaps.length === 0 || slots.length > 0,
+      value: slots.length,
+      comment: "Visual/material gaps should produce click-to-replace replacement slots."
+    },
     {
       id: "unresolved_placeholder_count",
       passed: unresolved === 0 || userReplaced === 0,

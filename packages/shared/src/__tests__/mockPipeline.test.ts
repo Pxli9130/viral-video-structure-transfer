@@ -62,6 +62,7 @@ function sourceAsset(): Asset {
     role: "source_video",
     type: "video",
     filename: "humidifier-source.mp4",
+    path: "fixtures/humidifier-source.mp4",
     mimeType: "video/mp4",
     sourcePolicy: "user_authorized",
     tags: ["product_like"],
@@ -142,6 +143,58 @@ describe("v1.2 mock pipeline", () => {
     const mappings = matchSlots(template, source, request());
 
     expect(mappings.some((mapping) => mapping.status === "matched")).toBe(true);
+  });
+
+  it("blocks sample/reference shots from satisfying visual slots unless sample reuse is authorized", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sourceAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
+    const sampleReferenceAsset: Asset = {
+      ...sourceAsset(),
+      id: "sample_video",
+      role: "example_video",
+      filename: "editing.mov",
+      path: "fixtures/editing.mov",
+      sourcePolicy: "demo_only"
+    };
+
+    const disabledSource = understandSourceVideo(sourceAnalysis, sampleReferenceAsset, request("sample_video"));
+    const disabledMappings = matchSlots(template, disabledSource, request("sample_video"));
+    expect(disabledSource.reusableAsMaterial).toBe(false);
+    expect(disabledMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped")).toHaveLength(0);
+    expect(disabledMappings.find((mapping) => mapping.slotType === "hook_visual")?.status).toBe("missing");
+
+    const authorizedRequest: GenerationRequest = {
+      ...request("sample_video"),
+      constraints: { ...request("sample_video").constraints, sampleAssetReuse: "authorized" }
+    };
+    const authorizedSource = understandSourceVideo(sourceAnalysis, sampleReferenceAsset, authorizedRequest);
+    const authorizedMappings = matchSlots(template, authorizedSource, authorizedRequest);
+    expect(authorizedSource.reusableAsMaterial).toBe(true);
+    expect(authorizedMappings.some((mapping) => mapping.assetAvailability === "source_video_mapped")).toBe(true);
+  });
+
+  it("does not let mock or pathless assets satisfy required visual slots", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const sourceAnalysis = buildMockVideoAnalysis({ assetId: "demo_source_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
+    const mockAsset: Asset = {
+      ...sourceAsset(),
+      id: "demo_source_video",
+      path: undefined,
+      metadata: { mock: true }
+    };
+    const mockSource = understandSourceVideo(sourceAnalysis, mockAsset, request("demo_source_video"));
+    const mockMappings = matchSlots(template, mockSource, request("demo_source_video"));
+    expect(mockSource.materialRole).toBe("mock");
+    expect(mockMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped")).toHaveLength(0);
+
+    const pathlessAsset: Asset = { ...sourceAsset(), id: "pathless_video", path: undefined };
+    const pathlessAnalysis = { ...sourceAnalysis, assetId: "pathless_video" };
+    const pathlessSource = understandSourceVideo(pathlessAnalysis, pathlessAsset, request("pathless_video"));
+    const pathlessMappings = matchSlots(template, pathlessSource, request("pathless_video"));
+    expect(pathlessSource.renderable).toBe(false);
+    expect(pathlessMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped")).toHaveLength(0);
   });
 
   it("does not match an unrelated source shot when a required preferred tag is absent", () => {
@@ -281,6 +334,66 @@ describe("v1.2 mock pipeline", () => {
       expect(new Set(atom.applicableVerticals).size).toBe(atom.applicableVerticals.length);
     }
     expect(validateStructureTemplate(enriched).valid).toBe(true);
+  });
+
+  it("extracts editing-style motif slots and creates proxy IGF gaps with no target assets", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "editing_sample", projectId: "project_demo", purpose: "sample", durationSec: 118 });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", {
+      videoSummary: "High-energy editing tutorial with opening rotating helmet/logo object, kinetic text cards, beat-sync cinematic action montage and match cuts.",
+      shots: [
+        { start: 0, end: 1.5, visual: "Rotating 3D helmet/logo intro", purpose: "hook" },
+        { start: 1.5, end: 8, visual: "Black kinetic text cards", purpose: "setup" },
+        { start: 8, end: 15, visual: "Beat-sync action montage", purpose: "proof", transition: "match_cut" }
+      ],
+      structure: {
+        hook: "Visual logo intro with rotating 3D head/helmet object",
+        setup: "Dynamic kinetic text explains the edit sequence",
+        sellingPoints: ["beat-sync montage", "seamless cinematic match cuts"],
+        climax: "High-speed action clips match punches and gunshots",
+        cta: "Practice to master the edit"
+      },
+      rhythm: { avgShotLength: 1.2, peakTimeRatio: 0.72, fastSections: ["0-8s"], peakMoments: ["8-15s"] },
+      packaging: { subtitleDensity: "high", titleCards: ["Black kinetic typography"], coverStyle: "bold black title card" },
+      reusablePatterns: ["rotating_3d_object_intro", "text_card_beat_sync_sequence", "cinematic_match_cut_montage"],
+      materialGapsForNewVideo: ["rotating hero object", "action montage clips", "proof/action sequence"]
+    });
+    const motifSlotIds = template.requiredSlots.map((slot) => slot.id);
+    expect(motifSlotIds).toEqual(expect.arrayContaining(["slot_rotating_hero_object_intro", "slot_beat_sync_action_montage"]));
+
+    const mockSourceAsset: Asset = {
+      ...sourceAsset(),
+      id: "demo_source_video",
+      path: undefined,
+      metadata: { mock: true }
+    };
+    const sourceAnalysis = buildMockVideoAnalysis({ assetId: "demo_source_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
+    const source = understandSourceVideo(sourceAnalysis, mockSourceAsset, request("demo_source_video"));
+    const mappings = matchSlots(template, source, request("demo_source_video"));
+    const gaps = generateGapReport(mappings, { source, template, request: request("demo_source_video") });
+    const fillPlan = createFillPlan(mappings, source, request("demo_source_video"), template);
+    const rotatingGap = gaps.find((gap) => gap.gapType === "rotating_hero_object_missing");
+    const rotatingFill = fillPlan.find((action) => action.slotId === "slot_rotating_hero_object_intro");
+
+    expect(mappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped")).toHaveLength(0);
+    expect(rotatingGap).toMatchObject({
+      clickToReplace: true,
+      replacementSlotId: "slot_rotating_hero_object_intro"
+    });
+    expect(rotatingGap?.acceptedAssetTypes).toEqual(expect.arrayContaining(["image", "video", "glb", "lottie"]));
+    expect(rotatingFill?.strategy).toBe("proxy_placeholder");
+
+    const { timeline } = buildTimeline({
+      template,
+      request: request("demo_source_video"),
+      source,
+      mappings,
+      fillPlan,
+      generationId: "generation_editing_igf"
+    });
+    const proxyClip = timeline.clips.find((clip) => clip.replacementSlotId === "slot_rotating_hero_object_intro");
+    expect(proxyClip?.gapFillStrategy).toBe("proxy_placeholder");
+    expect(proxyClip?.layers.some((layer) => layer.style?.fillStrategy === "proxy_placeholder")).toBe(true);
+    expect(timeline.replacementSlots?.some((slot) => slot.slotId === "slot_rotating_hero_object_intro" && slot.status === "proxy_generated")).toBe(true);
   });
 
   it("tags slot-missing gaps with Chinese label + recommended fill strategies (FR-008)", () => {
