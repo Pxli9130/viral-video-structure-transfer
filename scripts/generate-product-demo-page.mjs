@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { artifactRoot, corpusRegressionDir, marketingArtifactDir, rel } from "./artifact-paths.mjs";
@@ -9,6 +9,12 @@ const demoDir = path.join(artifactRoot, "product_demo");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const htmlPath = path.join(demoDir, "index.html");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
+const slotReplacementProxyVideoPath = path.join(marketingArtifactDir, "interactive_gap_fill_proxy.mp4");
+const slotReplacementUserVideoPath = path.join(marketingArtifactDir, "interactive_gap_fill_user_replacement.mp4");
+const slotReplacementProxyTimelinePath = path.join(marketingArtifactDir, "timeline.interactive_gap_fill_proxy.json");
+const slotReplacementUserTimelinePath = path.join(marketingArtifactDir, "timeline.interactive_gap_fill_user_replacement.json");
+const slotReplacementUserGenerationPath = path.join(marketingArtifactDir, "generation.interactive_gap_fill_user_replacement.json");
+const slotReplacementAssetPath = path.join(marketingArtifactDir, "fixture_uploaded_replacement_asset.svg");
 const nlEditDemoPath = path.join(marketingArtifactDir, "nl-edit-demo.json");
 const nlEditGenerationPath = path.join(marketingArtifactDir, "generation.nl_edit_white_poster.json");
 const nlEditTimelinePath = path.join(marketingArtifactDir, "timeline.nl_edit_white_poster.json");
@@ -440,7 +446,286 @@ function fillActionForGap(gap) {
   );
 }
 
-function buildSlotReplacementDemo() {
+function slotReplacementEvaluatorGates(generation, options = {}) {
+  const slots = Array.isArray(generation?.replacementSlots) ? generation.replacementSlots : [];
+  const clips = Array.isArray(generation?.timeline?.clips) ? generation.timeline.clips : [];
+  const proxyClips = Array.isArray(options.proxyTimeline?.clips) ? options.proxyTimeline.clips : [];
+  const allClips = [...clips, ...proxyClips];
+  const unresolved = slots.filter((slot) => slot.status === "missing" || slot.status === "proxy_generated").length;
+  const userReplaced = slots.filter((slot) => slot.status === "user_replaced" || slot.status === "rendered").length;
+  const proxyVisible = allClips.some(
+    (clip) =>
+      clip.gapFillStrategy === "proxy_placeholder" ||
+      (clip.layers ?? []).some((layer) => layer.style?.fillStrategy === "proxy_placeholder")
+  );
+  const replacementAssetIds = new Set(slots.map((slot) => slot.boundAssetId).filter(Boolean));
+  const replacementRendered = clips.some((clip) =>
+    (clip.layers ?? []).some((layer) => layer.assetId && replacementAssetIds.has(layer.assetId))
+  );
+  const motionPreserved = slots
+    .filter((slot) => slot.boundAssetId)
+    .every((slot) => slot.applyMotionFromSlot !== false && Boolean(slot.motionSpec));
+
+  return [
+    {
+      id: "unresolved_placeholder_count",
+      value: unresolved,
+      passed: unresolved === 0,
+      comment: unresolved === 0 ? "No unresolved proxy remains after replacement." : `${unresolved} proxy slot(s) still unresolved.`
+    },
+    {
+      id: "user_replaced_slot_count",
+      value: userReplaced,
+      passed: userReplaced > 0,
+      comment: `${userReplaced} slot(s) bound to managed user replacement assets.`
+    },
+    {
+      id: "proxy_slot_visible",
+      value: proxyVisible,
+      passed: proxyVisible || userReplaced > 0 || slots.length === 0,
+      comment: proxyVisible ? "Before fixture exposes a visible proxy placeholder." : "No proxy placeholder layer found in the fixture pair."
+    },
+    {
+      id: "replacement_asset_rendered",
+      value: replacementRendered,
+      passed: replacementRendered,
+      comment: replacementRendered ? "Replacement asset is referenced by a rendered timeline layer." : "No replacement asset layer found."
+    },
+    {
+      id: "motion_preserved_after_replacement",
+      value: motionPreserved,
+      passed: motionPreserved,
+      comment: motionPreserved ? "Replacement keeps slot timing/layout/motion metadata." : "Replacement binding did not preserve slot motion."
+    }
+  ];
+}
+
+function slotReplacementFixtureTimelines({ slotId, placeholderSpec, semanticLabel, visualForm, acceptedAssetTypes }) {
+  const generatedAt = new Date().toISOString();
+  const motionSpec = placeholderSpec.motion ?? { type: "spin", axis: "y", speed: 0.8, durationSec: 4, preserveFromSlot: true };
+  const baseSlot = {
+    slotId,
+    semanticLabel,
+    visualForm,
+    placeholderSpec,
+    acceptedAssetTypes,
+    motionSpec,
+    applyMotionFromSlot: true,
+    gapType: "dynamic_3d_ribbon_asset",
+    rendererBackend: "remotion_mg",
+    targetClipId: "igf_demo_clip"
+  };
+  const baseTimeline = {
+    id: "timeline_interactive_gap_fill_fixture",
+    projectId: "marketing_case_demo",
+    generationId: "generation_interactive_gap_fill_fixture",
+    durationSec: 4,
+    aspectRatio: "9:16",
+    rendererTarget: "remotion",
+    mapping: [],
+    gapReport: [
+      {
+        slotId,
+        replacementSlotId: slotId,
+        gapType: "dynamic_3d_ribbon_asset",
+        gapLabel: "Missing replaceable hero/motif visual",
+        gapLabelZh: "缺少可替换主视觉/动效素材",
+        severity: "high",
+        reason: "No managed target asset was available for this required visual slot.",
+        recommendedStrategies: ["proxy_placeholder", "user_asset_replace"],
+        placeholderSpec,
+        acceptedAssetTypes,
+        clickToReplace: true
+      }
+    ],
+    renderPlan: {
+      width: 720,
+      height: 1280,
+      fps: 30,
+      background: "#f8fafc",
+      rendererBackend: "remotion_mg",
+      adapterOptions: {
+        creativeMode: "final_creative",
+        packagingStyle: "clean",
+        subtitleDensity: "minimal",
+        debugLabelsInVideo: false,
+        noSampleVisualCopy: true
+      },
+      motionAtoms: []
+    },
+    warnings: [],
+    createdAt: generatedAt
+  };
+  const proxyClip = {
+    id: "igf_demo_proxy_clip",
+    role: "body",
+    startSec: 0,
+    durationSec: 4,
+    type: "placeholder",
+    visualIntent: "Visible proxy placeholder preserves the missing slot motion until the user uploads a replacement.",
+    scriptText: "Interactive Gap Fill proxy fixture",
+    subtitleText: "Proxy keeps structure complete",
+    transitionIn: "none",
+    transitionOut: "hard_cut",
+    replacementSlotId: slotId,
+    placeholderSpec,
+    gapFillStrategy: "proxy_placeholder",
+    layers: [
+      {
+        id: "layer_igf_proxy",
+        kind: "sticker",
+        style: {
+          fillStrategy: "proxy_placeholder",
+          replacementSlotId: slotId,
+          placeholderSpec
+        },
+        timing: { motionSpec }
+      }
+    ]
+  };
+  const replacementClip = {
+    ...proxyClip,
+    id: "igf_demo_user_replacement_clip",
+    type: "image",
+    visualIntent: "Managed uploaded replacement asset is rendered in the same slot with preserved motion.",
+    scriptText: "Interactive Gap Fill user replacement fixture",
+    subtitleText: "User asset replaces proxy",
+    gapFillStrategy: "user_asset_replace",
+    layers: [
+      {
+        id: "layer_igf_replacement_asset",
+        kind: "base_visual",
+        assetId: "fixture_uploaded_replacement_asset",
+        style: {
+          fillStrategy: "user_asset_replace",
+          replacementSlotId: slotId,
+          placeholderSpec
+        },
+        timing: { motionSpec }
+      }
+    ]
+  };
+  const proxyTimeline = {
+    ...baseTimeline,
+    id: "timeline_interactive_gap_fill_proxy",
+    generationId: "generation_interactive_gap_fill_proxy",
+    clips: [proxyClip],
+    fillPlan: [
+      {
+        slotId,
+        strategy: "proxy_placeholder",
+        rationale: "No user asset bound yet, so a visible proxy preserves structure and motion.",
+        rendererInstructions: {
+          renderer: "remotion_mg",
+          atom: "proxy_shape",
+          strategy: "proxy_placeholder",
+          fulfilledBy: "proxy_placeholder",
+          placeholderSpec,
+          motionSpec
+        }
+      }
+    ],
+    replacementSlots: [{ ...baseSlot, status: "proxy_generated" }]
+  };
+  const replacementTimeline = {
+    ...baseTimeline,
+    id: "timeline_interactive_gap_fill_user_replacement",
+    generationId: "generation_interactive_gap_fill_user_replacement",
+    clips: [replacementClip],
+    fillPlan: [
+      {
+        slotId,
+        strategy: "user_asset_replace",
+        rationale: "A managed replacement asset is bound to the slot and rendered with preserved slot motion.",
+        rendererInstructions: {
+          renderer: "remotion_mg",
+          atom: "managed_asset_layer",
+          strategy: "user_asset_replace",
+          fulfilledBy: "user_asset_replace",
+          boundAssetId: "fixture_uploaded_replacement_asset",
+          applyMotionFromSlot: true,
+          motionSpec
+        }
+      }
+    ],
+    replacementSlots: [{ ...baseSlot, status: "user_replaced", boundAssetId: "fixture_uploaded_replacement_asset" }]
+  };
+
+  const replacementGeneration = {
+    id: "generation_interactive_gap_fill_user_replacement",
+    projectId: "marketing_case_demo",
+    request: {
+      projectId: "marketing_case_demo",
+      templateId: template?.id ?? "marketing_case_template",
+      brief: "Interactive Gap Fill rendered replacement fixture.",
+      replacementBindings: [{ slotId, assetId: "fixture_uploaded_replacement_asset", applyMotionFromSlot: true }]
+    },
+    timeline: replacementTimeline,
+    slotMapping: [],
+    gapReport: replacementTimeline.gapReport,
+    fillPlan: replacementTimeline.fillPlan,
+    replacementSlots: replacementTimeline.replacementSlots,
+    createdAt: generatedAt
+  };
+
+  return { proxyTimeline, replacementTimeline, replacementGeneration };
+}
+
+async function ensureFixtureReplacementAsset() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="0.52" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="28" stdDeviation="22" flood-color="#0f172a" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="720" height="720" rx="72" fill="#f8fafc"/>
+  <g filter="url(#shadow)">
+    <rect x="118" y="116" width="484" height="488" rx="56" fill="url(#g)"/>
+    <circle cx="360" cy="292" r="118" fill="#ffffff" opacity="0.9"/>
+    <path d="M272 420c52 42 124 42 176 0 18-14 44-2 44 20v36c0 31-25 56-56 56H284c-31 0-56-25-56-56v-36c0-22 26-34 44-20z" fill="#ffffff" opacity="0.88"/>
+  </g>
+  <text x="360" y="646" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="800" fill="#172033">Managed Upload Fixture</text>
+</svg>`;
+  await writeFile(slotReplacementAssetPath, svg, "utf8");
+}
+
+async function renderSlotReplacementFixture(timeline, stableOutputPath, renderId) {
+  if (process.env.VVST_REUSE_IGF_FIXTURE === "1" && existsSync(stableOutputPath)) {
+    return { rendered: true, path: stableOutputPath, reused: true };
+  }
+  const rendererDistPath = path.join(process.cwd(), "apps", "api", "dist", "adapters", "renderers.js");
+  if (!existsSync(rendererDistPath)) {
+    return { rendered: false, path: stableOutputPath, error: "apps/api/dist/adapters/renderers.js missing; run npm run build before demo generation." };
+  }
+  try {
+    const { RemotionRenderer } = await import(pathToFileURL(rendererDistPath).href);
+    const renderer = new RemotionRenderer({
+      generatedDir: marketingArtifactDir,
+      entryPoint: path.join(process.cwd(), "apps", "api", "remotion", "index.tsx"),
+      compositionId: "ViralReconstruction",
+      assetResolver: {
+        resolve(assetId) {
+          return assetId === "fixture_uploaded_replacement_asset" ? slotReplacementAssetPath : undefined;
+        }
+      }
+    });
+    const output = await renderer.render(timeline, renderId);
+    if (output.status !== "completed" || !output.outputPath || !existsSync(output.outputPath)) {
+      return { rendered: false, path: stableOutputPath, error: output.error ?? "Remotion renderer did not produce an output path." };
+    }
+    await copyFile(output.outputPath, stableOutputPath);
+    return { rendered: true, path: stableOutputPath, renderId: output.renderId };
+  } catch (error) {
+    return { rendered: false, path: stableOutputPath, error: error.message };
+  }
+}
+
+async function buildSlotReplacementDemo() {
   const replaceableSlot =
     replacementSlots.find((slot) => slot.status === "proxy_generated" || slot.placeholderSpec || slot.boundAssetId) ??
     replacementSlots[0] ??
@@ -463,15 +748,41 @@ function buildSlotReplacementDemo() {
       label: "Replaceable proxy",
       motion: { type: "spin", axis: "y", speed: 0.8, preserveFromSlot: true }
     };
+  const semanticLabel = replaceableSlot?.semanticLabel ?? replaceableGap.gapLabelZh ?? replaceableGap.gapLabel ?? "Replaceable missing visual slot";
+  const visualForm = replaceableSlot?.visualForm ?? (replaceableGap.gapType === "dynamic_3d_ribbon_asset" ? "ribbon_motif" : "rotating_object");
+  const acceptedAssetTypes = replaceableSlot?.acceptedAssetTypes ?? replaceableGap.acceptedAssetTypes ?? ["image", "video", "gif"];
+  const { proxyTimeline, replacementTimeline, replacementGeneration } = slotReplacementFixtureTimelines({
+    slotId,
+    placeholderSpec,
+    semanticLabel,
+    visualForm,
+    acceptedAssetTypes
+  });
+  await ensureFixtureReplacementAsset();
+  await writeFile(slotReplacementProxyTimelinePath, `${JSON.stringify(scrubObject(proxyTimeline), null, 2)}\n`, "utf8");
+  await writeFile(slotReplacementUserTimelinePath, `${JSON.stringify(scrubObject(replacementTimeline), null, 2)}\n`, "utf8");
+  await writeFile(slotReplacementUserGenerationPath, `${JSON.stringify(scrubObject(replacementGeneration), null, 2)}\n`, "utf8");
+  const proxyRender = await renderSlotReplacementFixture(proxyTimeline, slotReplacementProxyVideoPath, "interactive_gap_fill_proxy");
+  const replacementRender = await renderSlotReplacementFixture(replacementTimeline, slotReplacementUserVideoPath, "interactive_gap_fill_user_replacement");
+  const rendered = proxyRender.rendered === true && replacementRender.rendered === true;
+  const evaluatorGates = slotReplacementEvaluatorGates(replacementGeneration, { proxyTimeline });
+
   return scrubObject({
     generatedAt: new Date().toISOString(),
     demoType: "interactive_gap_fill",
-    disclosure: "Deterministic artifact replay for product demo UI. It demonstrates the implemented replacement contract; web/API binding performs real managed-asset replacement and full regeneration.",
+    disclosure: rendered
+      ? "Rendered fixture pair generated through the existing Remotion path. It demonstrates proxy_placeholder -> user_asset_replace without copying sample frames/audio/branding."
+      : "Replacement fixture metadata was generated, but MP4 rendering did not complete. Run npm run build and demo generation in an environment where Remotion can launch Chromium.",
+    rendered,
+    renderStatus: {
+      proxy: { rendered: proxyRender.rendered, error: proxyRender.error ?? null },
+      replacement: { rendered: replacementRender.rendered, error: replacementRender.error ?? null }
+    },
     slot: {
       slotId,
-      semanticLabel: replaceableSlot?.semanticLabel ?? replaceableGap.gapLabelZh ?? replaceableGap.gapLabel ?? "Replaceable missing visual slot",
-      visualForm: replaceableSlot?.visualForm ?? (replaceableGap.gapType === "dynamic_3d_ribbon_asset" ? "ribbon_motif" : "rotating_object"),
-      acceptedAssetTypes: replaceableSlot?.acceptedAssetTypes ?? replaceableGap.acceptedAssetTypes ?? ["image", "video", "gif"],
+      semanticLabel,
+      visualForm,
+      acceptedAssetTypes,
       placeholderSpec,
       motionSpec: replaceableSlot?.motionSpec ?? placeholderSpec.motion,
       clickToReplace: true
@@ -480,15 +791,20 @@ function buildSlotReplacementDemo() {
       status: "proxy_generated",
       fillStrategy: "proxy_placeholder",
       originalFillStrategy: fill.strategy ?? "n/a",
-      artifact: finalCreative?.href ?? explainableDemo?.href ?? null,
-      label: "Proxy placeholder keeps structure complete before user upload."
+      artifact: proxyRender.rendered ? hrefFromDemo(slotReplacementProxyVideoPath) : null,
+      timelineJson: hrefFromDemo(slotReplacementProxyTimelinePath),
+      rendered: proxyRender.rendered,
+      label: "Rendered proxy placeholder keeps structure complete before user upload."
     },
     after: {
       status: "user_replaced",
       fillStrategy: "user_asset_replace",
       boundAssetId: "fixture_uploaded_replacement_asset",
-      artifact: highFidelity?.href ?? bestVariant?.href ?? null,
-      label: "Replacement asset is bound to the same slot and preserves motion."
+      artifact: replacementRender.rendered ? hrefFromDemo(slotReplacementUserVideoPath) : null,
+      timelineJson: hrefFromDemo(slotReplacementUserTimelinePath),
+      generationJson: hrefFromDemo(slotReplacementUserGenerationPath),
+      rendered: replacementRender.rendered,
+      label: "Rendered managed replacement asset is bound to the same slot and preserves motion."
     },
     diff: [
       { field: "fillStrategy", before: "proxy_placeholder", after: "user_asset_replace" },
@@ -496,24 +812,39 @@ function buildSlotReplacementDemo() {
       { field: "assetId", before: "proxy_placeholder", after: "fixture_uploaded_replacement_asset" },
       { field: "motion", before: "slot motion preserved", after: "slot motion preserved" }
     ],
-    evaluatorGates: {
-      unresolved_placeholder_count: 0,
-      user_replaced_slot_count: 1,
-      proxy_slot_visible: true,
-      replacement_asset_rendered: true,
-      motion_preserved_after_replacement: true
-    }
+    evaluatorGates,
+    fixtureAsset: hrefFromDemo(slotReplacementAssetPath),
+    artifactDiscrepancyNote:
+      "The five flagship marketing generation.*.json files may predate this rendered fixture. Current proxy_placeholder/user_asset_replace evidence is stored in the interactive_gap_fill timeline and generation artifacts."
   });
 }
 
-const slotReplacementDemo = buildSlotReplacementDemo();
 await mkdir(marketingArtifactDir, { recursive: true });
+const slotReplacementDemo = await buildSlotReplacementDemo();
 await writeFile(slotReplacementDemoPath, `${JSON.stringify(slotReplacementDemo, null, 2)}\n`, "utf8");
 registerArtifact({
   title: "slot-replacement-demo.json",
   type: "json",
   filePath: slotReplacementDemoPath,
   description: "Interactive Gap Fill before/after replay artifact."
+});
+registerArtifact({
+  title: "interactive_gap_fill_proxy.mp4",
+  type: "video",
+  filePath: slotReplacementProxyVideoPath,
+  description: "Rendered proxy placeholder fixture."
+});
+registerArtifact({
+  title: "interactive_gap_fill_user_replacement.mp4",
+  type: "video",
+  filePath: slotReplacementUserVideoPath,
+  description: "Rendered managed replacement asset fixture."
+});
+registerArtifact({
+  title: "generation.interactive_gap_fill_user_replacement.json",
+  type: "json",
+  filePath: slotReplacementUserGenerationPath,
+  description: "Generation JSON for the rendered replacement fixture."
 });
 
 function controlValue(request, key) {
@@ -1111,7 +1442,8 @@ function beforeAfterDiff() {
 function interactiveGapFillSection() {
   const slot = slotReplacementDemo.slot ?? {};
   const diffRows = Array.isArray(slotReplacementDemo.diff) ? slotReplacementDemo.diff : [];
-  const gateEntries = Object.entries(slotReplacementDemo.evaluatorGates ?? {});
+  const gateEntries = Array.isArray(slotReplacementDemo.evaluatorGates) ? slotReplacementDemo.evaluatorGates : [];
+  const renderBadge = slotReplacementDemo.rendered ? badge("RENDERED FIXTURE", "success") : badge("RENDER PENDING", "warning");
   return `<section class="interactive-gap-fill" id="interactive-gap-fill">
     <div class="section-heading">
       <span>Interactive Gap Fill</span>
@@ -1119,11 +1451,12 @@ function interactiveGapFillSection() {
       <p>The system keeps the learned structure complete with a visible proxy, then binds a managed uploaded asset to the same slot and preserves the original timing, layout, and motion.</p>
     </div>
     <div class="replacement-demo-grid">
-      <article class="panel-card proxy-preview">
-        <div class="proxy-orb" aria-label="proxy placeholder"></div>
+      <article class="panel-card">
+        ${slotReplacementDemo.before?.artifact ? `<video controls preload="metadata" src="${esc(slotReplacementDemo.before.artifact)}"></video>` : missingCard("Proxy fixture", "Rendered proxy MP4 missing")}
         <h3>Before · proxy generated</h3>
         <p>${esc(slotReplacementDemo.before?.label ?? "Proxy placeholder keeps structure complete.")}</p>
         ${badge("PROXY GENERATED", "warning")}
+        ${badge("PROXY MP4", "neutral")}
         ${badge("Click to replace", "accent")}
       </article>
       <article class="panel-card">
@@ -1139,9 +1472,10 @@ function interactiveGapFillSection() {
       </article>
       <article class="panel-card">
         <h3>After · user replaced</h3>
-        ${highFidelity?.exists ? `<video controls preload="metadata" src="${esc(highFidelity.href)}"></video>` : missingCard("After replacement", "High fidelity artifact missing")}
+        ${slotReplacementDemo.after?.artifact ? `<video controls preload="metadata" src="${esc(slotReplacementDemo.after.artifact)}"></video>` : missingCard("After replacement", "Rendered replacement MP4 missing")}
         <p>${esc(slotReplacementDemo.after?.label ?? "Bound uploaded asset preserves slot motion.")}</p>
         ${badge("USER REPLACED", "success")}
+        ${badge("USER ASSET MP4", "neutral")}
         ${badge("Full re-render MVP", "neutral")}
       </article>
       <article class="panel-card diff-card">
@@ -1150,7 +1484,8 @@ function interactiveGapFillSection() {
           <thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead>
           <tbody>${diffRows.map((row) => `<tr><td>${esc(row.field)}</td><td>${esc(row.before)}</td><td>${esc(row.after)}</td></tr>`).join("")}</tbody>
         </table>
-        <div class="gate-grid">${gateEntries.map(([key, value]) => `<span class="gate ${value ? "pass" : "fail"}">${esc(key)}: ${esc(value)}</span>`).join("")}</div>
+        <div class="gate-grid">${gateEntries.map((gate) => `<span class="gate ${gate.passed ? "pass" : "fail"}" title="${esc(gate.comment ?? "")}">${esc(gate.id)}: ${esc(gate.value)}</span>`).join("")}</div>
+        <p class="evidence">${renderBadge} ${esc(slotReplacementDemo.disclosure ?? "Rendered replacement evidence.")}</p>
       </article>
     </div>
   </section>`;
@@ -1169,6 +1504,9 @@ function artifactGalleryCards() {
     registerArtifact({ title: "vlm-judge.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.high_fidelity.json"), description: "High fidelity VLM judge." }),
     registerArtifact({ title: "variant-summary.json", type: "json", filePath: path.join(marketingArtifactDir, "variant-summary.json"), description: "Variant metadata and hashes." }),
     registerArtifact({ title: "slot-replacement-demo.json", type: "json", filePath: slotReplacementDemoPath, description: "Interactive Gap Fill before/after replay artifact." }),
+    registerArtifact({ title: "interactive_gap_fill_proxy.mp4", type: "video", filePath: slotReplacementProxyVideoPath, description: "Rendered proxy placeholder fixture." }),
+    registerArtifact({ title: "interactive_gap_fill_user_replacement.mp4", type: "video", filePath: slotReplacementUserVideoPath, description: "Rendered managed replacement asset fixture." }),
+    registerArtifact({ title: "generation.interactive_gap_fill_user_replacement.json", type: "json", filePath: slotReplacementUserGenerationPath, description: "Generation JSON for rendered replacement fixture." }),
     registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "Default timeline JSON." }),
     registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "High fidelity timeline JSON." }),
     registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "Final creative generation JSON." }),
@@ -1248,9 +1586,12 @@ const manifest = scrubObject({
   interactiveGapFill: {
     available: true,
     demoArtifact: hrefFromDemo(slotReplacementDemoPath),
+    rendered: slotReplacementDemo.rendered === true,
     slotId: slotReplacementDemo.slot?.slotId ?? null,
     beforeStrategy: slotReplacementDemo.before?.fillStrategy ?? null,
+    beforeArtifact: slotReplacementDemo.before?.artifact ?? null,
     afterStrategy: slotReplacementDemo.after?.fillStrategy ?? null,
+    afterArtifact: slotReplacementDemo.after?.artifact ?? null,
     evaluatorGates: slotReplacementDemo.evaluatorGates
   },
   naturalLanguageEdit: {

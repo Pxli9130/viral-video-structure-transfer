@@ -69,6 +69,32 @@ function escapeFontFilePath(value: string): string {
 
 const FONT_FILE_ARG = CJK_FONT_FILE ? `fontfile=${escapeFontFilePath(CJK_FONT_FILE)}:` : "";
 
+function mimeForAssetExt(ext: string): string | undefined {
+  switch (ext.toLowerCase()) {
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    default:
+      return undefined;
+  }
+}
+
+async function remotionAssetSrc(filePath: string): Promise<string> {
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = mimeForAssetExt(ext);
+  if (!mime) return pathToFileURL(filePath).href;
+  const encoded = await fs.readFile(filePath, "base64");
+  return `data:${mime};base64,${encoded}`;
+}
+
 export interface AssetPathResolver {
   resolve(assetId: string): string | undefined;
 }
@@ -383,13 +409,14 @@ export class RemotionRenderer implements RendererAdapter {
           ]).filter((assetId): assetId is string => Boolean(assetId))
         )
       );
-      const assetMap = Object.fromEntries(
-        assetIds.flatMap((assetId) => {
+      const assetEntries = await Promise.all(
+        assetIds.flatMap(async (assetId) => {
           const resolved = this.opts.assetResolver?.resolve(assetId);
           if (!resolved || !existsSync(resolved)) return [];
-          return [[assetId, { src: pathToFileURL(resolved).href, ext: path.extname(resolved).toLowerCase() }]];
+          return [[assetId, { src: await remotionAssetSrc(resolved), ext: path.extname(resolved).toLowerCase() }]];
         })
       );
+      const assetMap = Object.fromEntries(assetEntries.flat());
       const inputProps = { timeline, assetMap };
       const browserExecutable = this.opts.browserExecutable ?? resolveRemotionBrowserExecutable();
       const composition = await selectComposition({

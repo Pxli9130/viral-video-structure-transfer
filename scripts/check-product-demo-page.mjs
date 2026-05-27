@@ -57,7 +57,9 @@ const requiredText = [
   "Motif Gap:",
   "Interactive Gap Fill",
   "素材槽位替换器",
-  "proxy placeholder -> user replacement"
+  "proxy placeholder -> user replacement",
+  "interactive_gap_fill_proxy.mp4",
+  "interactive_gap_fill_user_replacement.mp4"
 ];
 
 for (const text of requiredText) {
@@ -144,6 +146,47 @@ if (manifest.interactiveGapFill?.available !== true) {
 
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {
   failures.push("slot-replacement-demo.json must show user_asset_replace after state.");
+}
+
+if (slotReplacementDemo?.rendered !== true) {
+  failures.push("slot-replacement-demo.json must mark the replacement fixture pair as rendered.");
+}
+
+for (const [label, record] of [
+  ["before", slotReplacementDemo?.before],
+  ["after", slotReplacementDemo?.after]
+]) {
+  if (record?.rendered !== true) {
+    failures.push(`slot-replacement-demo.json ${label} state must be rendered.`);
+  }
+  if (!record?.artifact || !record.artifact.endsWith(".mp4")) {
+    failures.push(`slot-replacement-demo.json ${label} artifact must point to an MP4.`);
+  } else {
+    const artifactPath = path.resolve(demoDir, record.artifact);
+    if (!artifactPath.startsWith(artifactRoot) || !existsSync(artifactPath)) {
+      failures.push(`slot-replacement-demo.json ${label} MP4 does not exist: ${record.artifact}`);
+    }
+  }
+}
+
+const evaluatorGates = slotReplacementDemo?.evaluatorGates;
+if (!Array.isArray(evaluatorGates) || evaluatorGates.length === 0) {
+  failures.push("slot-replacement-demo.json evaluatorGates must be a non-empty array.");
+} else {
+  for (const gate of evaluatorGates) {
+    if (typeof gate.id !== "string" || typeof gate.passed !== "boolean") {
+      failures.push("slot-replacement-demo.json evaluator gates must include id and boolean passed.");
+      break;
+    }
+  }
+  const unresolvedGate = evaluatorGates.find((gate) => gate.id === "unresolved_placeholder_count");
+  if (!unresolvedGate || unresolvedGate.value !== 0 || unresolvedGate.passed !== true) {
+    failures.push("unresolved_placeholder_count gate must have value 0 and passed true.");
+  }
+}
+
+if (!/unresolved_placeholder_count:\s*0/.test(html) || !/gate pass[^>]*>unresolved_placeholder_count:\s*0/.test(html)) {
+  failures.push("HTML must render unresolved_placeholder_count: 0 as a passing gate.");
 }
 
 if (manifest.naturalLanguageEdit?.available !== true) {
