@@ -216,18 +216,35 @@ function mgMotionDecorationFilters(timeline: Timeline, width: number, height: nu
 
 function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: number, style: DrawTextStyle): string[] {
   const proxyLayer = clip.layers.find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
-  if (clip.gapFillStrategy !== "proxy_placeholder" && !proxyLayer) return [];
+  const visualForm = String(proxyLayer?.style?.visualForm ?? "");
+  const visualFormFamily = String(proxyLayer?.style?.visualFormFamily ?? clip.visualFormFamily ?? "");
+  // Render the family-specific proxy whenever a clip carries a rich visual-form family,
+  // not only when the gap-fill strategy is proxy_placeholder. Otherwise ui_showcase /
+  // kinetic_typography / geometric_mg clips silently degrade to plain drawtext text cards.
+  const richFamilies = new Set([
+    "media_cards", "ui_showcase", "kinetic_typography",
+    "geometric_mg", "brand_cta", "live_action_montage", "object_motion"
+  ]);
+  const familyDriven = richFamilies.has(visualFormFamily);
+  if (clip.gapFillStrategy !== "proxy_placeholder" && !proxyLayer && !familyDriven) return [];
   const placeholder = (clip.placeholderSpec ?? proxyLayer?.style?.placeholderSpec ?? {}) as {
     label?: string;
     color?: string;
     shape?: string;
   };
   const replacementSlotId = String(clip.replacementSlotId ?? proxyLayer?.style?.replacementSlotId ?? "");
-  const visualForm = String(proxyLayer?.style?.visualForm ?? "");
-  const visualFormFamily = String(proxyLayer?.style?.visualFormFamily ?? clip.visualFormFamily ?? "");
-  const labelRaw = String(placeholder.label ?? "Rotating hero object placeholder");
+  const familyLabels: Record<string, string> = {
+    media_cards: "Card stack proxy",
+    ui_showcase: "Feature list / UI showcase",
+    kinetic_typography: "Kinetic typography",
+    geometric_mg: "Neon geometry",
+    brand_cta: "Logo / CTA",
+    live_action_montage: "Action montage"
+  };
+  const labelRaw = String(placeholder.label ?? familyLabels[visualFormFamily] ?? "Rotating hero object placeholder");
   const isMediaCards = visualFormFamily === "media_cards" || visualForm === "stacked_media_cards" || /card stack|media card|collage/i.test(labelRaw);
   const isUiShowcase = visualFormFamily === "ui_showcase" || visualForm === "feature_list_ui" || /feature list|ui|tool list/i.test(labelRaw);
+  const isKinetic = visualFormFamily === "kinetic_typography" || visualForm === "kinetic_text_card" || /kinetic|typography|bold text/i.test(labelRaw);
   const isGeometric = visualFormFamily === "geometric_mg" || visualForm === "neon_geometry_frame" || /neon|geometry|shape/i.test(labelRaw);
   const isBrandCta = visualFormFamily === "brand_cta" || visualForm === "logo_hold" || /logo|cta|brand/i.test(labelRaw);
   const isRotatingHero =
@@ -284,6 +301,23 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       }),
       drawTextFilter(escapeDrawText("FEATURE LIST PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  if (isKinetic) {
+    const bandY = Math.round(height * 0.32);
+    const bandH = Math.round(height * 0.3);
+    const barW = Math.round(width * 0.52);
+    const barX = Math.round((width - barW) / 2);
+    const midY = Math.round(height * 0.46);
+    const scale = "1+0.16*sin(2*PI*t*1.6)";
+    return [
+      `drawbox=x=0:y=${bandY}:w=${width}:h=${bandH}:color=0x111827@0.5:t=fill`,
+      `drawbox=x='${barX}':y=${midY - 64}:w='${barW}*${scale}':h=12:color=0xf472b6@0.88:t=fill`,
+      `drawbox=x='${barX}':y=${midY + 70}:w='${barW}*${scale}':h=12:color=0x38bdf8@0.88:t=fill`,
+      `drawbox=x='mod(t*${Math.round(width * 1.1)},iw)':y=${bandY}:w=26:h=${bandH}:color=white@0.1:t=fill`,
+      drawTextFilter(escapeDrawText("KINETIC TYPOGRAPHY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, midY - 150))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.0", fontColor: "0xf8fafc" }, 52, String(midY - 30))
     ];
   }
 
