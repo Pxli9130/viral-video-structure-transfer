@@ -7,6 +7,7 @@ import { artifactRoot, corpusRegressionDir, marketingArtifactDir, rel } from "./
 
 const demoDir = path.join(artifactRoot, "product_demo");
 const editingCaseDir = path.join(artifactRoot, "editing_case");
+const motionGraphCaseDir = path.join(artifactRoot, "motion_graph_case");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const htmlPath = path.join(demoDir, "index.html");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
@@ -377,6 +378,12 @@ const editingCaseArtifact = await readJsonArtifact({
   description: "editing.mov 参考视频与目标素材分离案例，包含代理缺口补全证据。",
   fallback: {}
 });
+const motionGraphCaseArtifact = await readJsonArtifact({
+  title: "motion_graph_case/generation-result.json",
+  filePath: path.join(motionGraphCaseDir, "generation-result.json"),
+  description: "motion_graph_1.mov 开放世界槽位归纳案例，包含 family-specific proxy 证据。",
+  fallback: {}
+});
 
 const generationByArtifactKey = {};
 const evaluationByArtifactKey = {};
@@ -418,6 +425,7 @@ const generationResult = generationResultArtifact.data ?? {};
 const variantSummary = variantSummaryArtifact.data ?? [];
 const corpus = corpusArtifact.data ?? {};
 const editingCase = editingCaseArtifact.data ?? {};
+const motionGraphCase = motionGraphCaseArtifact.data ?? {};
 const primaryGeneration =
   generationByArtifactKey.high_fidelity?.data ??
   generationByArtifactKey.main?.data ??
@@ -1599,6 +1607,10 @@ function artifactGalleryCards() {
     registerArtifact({ title: "editing_case/render.mp4", type: "video", filePath: path.join(editingCaseDir, "render.mp4"), description: "剪辑案例代理占位渲染输出。" }),
     registerArtifact({ title: "editing_case/contact_sheet.png", type: "image", filePath: path.join(editingCaseDir, "contact_sheet.png"), description: "剪辑案例代理联系表。" }),
     registerArtifact({ title: "editing_case/replacement-slots.json", type: "json", filePath: path.join(editingCaseDir, "replacement-slots.json"), description: "剪辑案例交互式缺口补全槽位。" }),
+    registerArtifact({ title: "motion_graph_case/index.html", type: "html", filePath: path.join(motionGraphCaseDir, "index.html"), description: "开放世界槽位归纳案例，展示动态图形样例的通用槽位 family。" }),
+    registerArtifact({ title: "motion_graph_case/render.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render.mp4"), description: "动态图形案例 family-specific proxy 渲染输出。" }),
+    registerArtifact({ title: "motion_graph_case/contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "contact_sheet.png"), description: "动态图形案例联系表。" }),
+    registerArtifact({ title: "motion_graph_case/induced-slots.json", type: "json", filePath: path.join(motionGraphCaseDir, "induced-slots.json"), description: "开放世界归纳槽位清单。" }),
     registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "默认时间线 JSON。" }),
     registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "高保真时间线 JSON。" }),
     registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "最终创意生成 JSON。" }),
@@ -1705,6 +1717,15 @@ const manifest = scrubObject({
     contactSheet: hrefFromDemo(path.join(editingCaseDir, "contact_sheet.png")),
     replacementSlots: Array.isArray(editingCase.replacementSlots) ? editingCase.replacementSlots.map((slot) => slot.slotId) : [],
     evaluatorGates: editingCase.editingCaseGates ?? []
+  },
+  motionGraphCase: {
+    available: motionGraphCaseArtifact.exists,
+    index: hrefFromDemo(path.join(motionGraphCaseDir, "index.html")),
+    render: hrefFromDemo(path.join(motionGraphCaseDir, "render.mp4")),
+    contactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "contact_sheet.png")),
+    inducedSlots: Array.isArray(motionGraphCase.inducedSlots) ? motionGraphCase.inducedSlots.map((slot) => ({ id: slot.id, family: slot.visualFormFamily, status: slot.status })) : [],
+    selectedTemplateReason: motionGraphCase.selectedTemplateReason ?? null,
+    evaluatorGates: motionGraphCase.motionGraphCaseGates ?? []
   },
   artifactsConsumed: artifactRegistry.map(({ title, type, status, href, description }) => ({ title, type, status, path: href, description })),
   missingArtifacts: artifactRegistry.filter((artifact) => artifact.status !== "exists").map((artifact) => artifact.title)

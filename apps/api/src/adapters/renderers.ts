@@ -224,12 +224,19 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
   };
   const replacementSlotId = String(clip.replacementSlotId ?? proxyLayer?.style?.replacementSlotId ?? "");
   const visualForm = String(proxyLayer?.style?.visualForm ?? "");
+  const visualFormFamily = String(proxyLayer?.style?.visualFormFamily ?? clip.visualFormFamily ?? "");
   const labelRaw = String(placeholder.label ?? "Rotating hero object placeholder");
+  const isMediaCards = visualFormFamily === "media_cards" || visualForm === "stacked_media_cards" || /card stack|media card|collage/i.test(labelRaw);
+  const isUiShowcase = visualFormFamily === "ui_showcase" || visualForm === "feature_list_ui" || /feature list|ui|tool list/i.test(labelRaw);
+  const isGeometric = visualFormFamily === "geometric_mg" || visualForm === "neon_geometry_frame" || /neon|geometry|shape/i.test(labelRaw);
+  const isBrandCta = visualFormFamily === "brand_cta" || visualForm === "logo_hold" || /logo|cta|brand/i.test(labelRaw);
   const isRotatingHero =
+    visualFormFamily === "object_motion" ||
     replacementSlotId.includes("rotating_hero") ||
     visualForm === "rotating_3d_object" ||
     /rotating|hero object|helmet|head|logo/i.test(labelRaw);
   const isMontage =
+    visualFormFamily === "live_action_montage" ||
     replacementSlotId.includes("beat_sync") ||
     replacementSlotId.includes("match_cut") ||
     visualForm === "action_montage_sequence" ||
@@ -242,6 +249,71 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
   const badgeY = Math.round(y + size + height * 0.05);
   const label = escapeDrawText(labelRaw);
   const shapeLabel = escapeDrawText(`PROXY PLACEHOLDER · ${placeholder.shape ?? "shape"}`);
+
+  if (isMediaCards) {
+    const cardW = Math.round(width * 0.46);
+    const cardH = Math.round(height * 0.18);
+    const cx = Math.round(width * 0.5);
+    const startY = Math.round(height * 0.24);
+    const spread = `22*sin(2*PI*t*0.7)`;
+    return [
+      `drawbox=x='${cx - Math.round(cardW * 0.72)}-${spread}':y=${startY + 74}:w=${cardW}:h=${cardH}:color=0x111827@0.86:t=fill`,
+      `drawbox=x='${cx - Math.round(cardW * 0.5)}':y=${startY + 24}:w=${cardW}:h=${cardH}:color=${proxyColor}@0.86:t=fill`,
+      `drawbox=x='${cx - Math.round(cardW * 0.25)}+${spread}':y=${startY + 120}:w=${cardW}:h=${cardH}:color=0x38bdf8@0.78:t=fill`,
+      `drawbox=x=${cx - Math.round(cardW * 0.5)}:y=${startY + 24}:w=${cardW}:h=10:color=white@0.72:t=fill`,
+      `drawbox=x=${cx - Math.round(cardW * 0.38)}:y=${startY + 82}:w=${Math.round(cardW * 0.62)}:h=8:color=white@0.42:t=fill`,
+      drawTextFilter(escapeDrawText("CARD STACK PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  if (isUiShowcase) {
+    const panelW = Math.round(width * 0.66);
+    const panelH = Math.round(height * 0.44);
+    const panelX = Math.round((width - panelW) / 2);
+    const panelY = Math.round(height * 0.22);
+    return [
+      `drawbox=x=${panelX}:y=${panelY}:w=${panelW}:h=${panelH}:color=0x0f172a@0.88:t=fill`,
+      `drawbox=x=${panelX}:y=${panelY}:w=${panelW}:h=${panelH}:color=0x14b8a6@0.82:t=5`,
+      ...Array.from({ length: 5 }).flatMap((_, index) => {
+        const rowY = panelY + 52 + index * 72;
+        return [
+          `drawbox=x=${panelX + 38}:y=${rowY}:w=${panelW - 76}:h=42:color=white@0.1:t=fill`,
+          `drawbox=x=${panelX + 52}:y=${rowY + 12}:w='${Math.round(panelW * (0.34 + index * 0.06))}+${Math.round(panelW * 0.08)}*gt(sin(2*PI*t*0.8+${index}),0)':h=12:color=0x14b8a6@0.74:t=fill`
+        ];
+      }),
+      drawTextFilter(escapeDrawText("FEATURE LIST PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  if (isGeometric) {
+    const box = Math.round(Math.min(width, height) * 0.42);
+    const gx = Math.round((width - box) / 2);
+    const gy = Math.round(height * 0.24);
+    return [
+      `drawbox=x=${gx}:y=${gy}:w=${box}:h=${box}:color=0xa855f7@0.18:t=8`,
+      `drawbox=x='${gx}+${Math.round(box * 0.16)}*sin(2*PI*t*0.8)':y=${gy + Math.round(box * 0.14)}:w=${Math.round(box * 0.68)}:h=8:color=0x22d3ee@0.88:t=fill`,
+      `drawbox=x=${gx + Math.round(box * 0.1)}:y='${gy}+${Math.round(box * 0.16)}*cos(2*PI*t*0.8)':w=8:h=${Math.round(box * 0.78)}:color=0xf97316@0.72:t=fill`,
+      `drawbox=x=${gx + Math.round(box * 0.24)}:y=${gy + Math.round(box * 0.24)}:w=${Math.round(box * 0.52)}:h=${Math.round(box * 0.52)}:color=0xffffff@0.08:t=fill`,
+      drawTextFilter(escapeDrawText("NEON GEOMETRY PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  if (isBrandCta) {
+    const logo = Math.round(Math.min(width, height) * 0.24);
+    const lx = Math.round((width - logo) / 2);
+    const ly = Math.round(height * 0.28);
+    return [
+      `drawbox=x=${lx}:y=${ly}:w=${logo}:h=${logo}:color=white@0.92:t=fill`,
+      `drawbox=x=${lx}:y=${ly}:w=${logo}:h=${logo}:color=${proxyColor}@0.8:t=8`,
+      `drawbox=x=${lx + Math.round(logo * 0.22)}:y=${ly + Math.round(logo * 0.44)}:w=${Math.round(logo * 0.56)}:h=${Math.round(logo * 0.13)}:color=${proxyColor}@0.9:t=fill`,
+      `drawbox=x=${Math.round(width * 0.2)}:y=${ly + logo + 78}:w=${Math.round(width * 0.6)}:h=48:color=${proxyColor}@0.72:t=fill`,
+      drawTextFilter(escapeDrawText("LOGO / CTA PLACEHOLDER"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
 
   if (isRotatingHero) {
     const orbitX = `(iw-${size})/2+${Math.round(size * 0.28)}*sin(2*PI*t*0.72)`;

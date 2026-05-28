@@ -488,14 +488,48 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
   return { job, analysis, templateRecord, vlm: vlmResult };
 }
 
-function selectTemplateForGeneration(db: Database, request: GenerationRequest): TemplateRecord {
+function templateMatchesSample(record: TemplateRecord, sampleAssetId: string | undefined): boolean {
+  if (!sampleAssetId) return false;
+  return record.sourceAssetId === sampleAssetId || record.template.sourceSampleIds.includes(sampleAssetId);
+}
+
+function isSeedTemplate(record: TemplateRecord): boolean {
+  return record.sourceAssetId.startsWith("demo_") || /seed|fallback/i.test(record.name);
+}
+
+function selectTemplateForGeneration(db: Database, request: GenerationRequest): { record: TemplateRecord; reason: string } {
   const projectTemplates = db.templates.filter((template) => template.projectId === request.projectId);
   const selectedId = request.selectedTemplateIds?.[0];
   if (selectedId) {
-    return assertFound(projectTemplates.find((template) => template.id === selectedId), "Selected template");
+    const record = assertFound(projectTemplates.find((template) => template.id === selectedId), "Selected template");
+    return {
+      record,
+      reason: `explicit selectedTemplateIds picked ${record.id}; sourceAssetId=${record.sourceAssetId}; sourceSampleIds=${record.template.sourceSampleIds.join(",") || "none"}.`
+    };
   }
+
+  const sampleMatch = [...projectTemplates].reverse().find((template) => templateMatchesSample(template, request.sampleReferenceAssetId));
+  if (sampleMatch) {
+    return {
+      record: sampleMatch,
+      reason: `current sample match picked ${sampleMatch.id}; sampleReferenceAssetId=${request.sampleReferenceAssetId}; matched sourceAssetId/sourceSampleIds=${sampleMatch.sourceAssetId}/${sampleMatch.template.sourceSampleIds.join(",")}; seed B2B fallback was not primary because a learned template matches the active sample.`
+    };
+  }
+
+  const latestNonSeed = [...projectTemplates].reverse().find((template) => template.vertical === request.target.vertical && !isSeedTemplate(template));
+  if (latestNonSeed) {
+    return {
+      record: latestNonSeed,
+      reason: `latest non-seed learned template picked ${latestNonSeed.id}; sourceAssetId=${latestNonSeed.sourceAssetId}; no explicit template and no current-sample template matched.`
+    };
+  }
+
   const verticalCandidate = [...projectTemplates].reverse().find((template) => template.vertical === request.target.vertical);
-  return assertFound(verticalCandidate ?? projectTemplates.at(-1), "Template for project");
+  const record = assertFound(verticalCandidate ?? projectTemplates.at(-1), "Template for project");
+  return {
+    record,
+    reason: `seed B2B fallback picked ${record.id}; no explicit, current-sample, or non-seed learned template was available.`
+  };
 }
 
 function buildAssetResolver(db: Database): AssetPathResolver {
@@ -915,7 +949,8 @@ async function runGeneration(
   options: { variantLabel?: string; analyzerMode?: AnalyzerMode | "auto" } = {}
 ): Promise<RunGenerationOutcome> {
   assertFound(db.projects.find((project) => project.id === request.projectId), "Project");
-  const templateRecord = selectTemplateForGeneration(db, request);
+  const templateSelection = selectTemplateForGeneration(db, request);
+  const templateRecord = templateSelection.record;
   const sourceAsset = request.sourceVideo
     ? assertFound(db.assets.find((asset) => asset.id === request.sourceVideo?.assetId), "Source video")
     : undefined;
@@ -969,7 +1004,8 @@ async function runGeneration(
       sourceAsset,
       sourceAnalysis,
       sourceVlm,
-      generationIdSalt: options.variantLabel
+      generationIdSalt: options.variantLabel,
+      selectedTemplateReason: templateSelection.reason
     });
     if (options.variantLabel) {
       generation = {

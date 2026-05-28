@@ -7,3 +7,4 @@ export * from "./fillPlanner.js";
 export * from "./timelineBuilder.js";
 export * from "./variantPlanner.js";
 export * from "./naturalLanguageEdit.js";
+export * from "./slotInduction.js";

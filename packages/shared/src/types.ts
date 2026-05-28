@@ -19,7 +19,30 @@ export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_f
 export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
 export type AcceptedReplacementAssetType = "image" | "video" | "gif" | "logo" | "copy" | "glb" | "lottie";
 export type ReplacementSlotStatus = "missing" | "proxy_generated" | "user_replaced" | "rendered";
-export type ReplacementVisualForm =
+export type VisualFormFamily =
+  | "media_cards"
+  | "kinetic_typography"
+  | "ui_showcase"
+  | "geometric_mg"
+  | "object_motion"
+  | "live_action_montage"
+  | "brand_cta"
+  | "unknown";
+export type SlotModality =
+  | "text"
+  | "copy_list"
+  | "image"
+  | "image_set"
+  | "video_clip"
+  | "video_set"
+  | "image_or_video_set"
+  | "logo"
+  | "ui_list"
+  | "shape"
+  | "audio"
+  | "image_or_video_or_3d_model";
+export type InducedSlotStatus = "required" | "suggested" | "evidence_only";
+export type KnownReplacementVisualForm =
   | "rotating_object"
   | "product_card"
   | "background"
@@ -30,7 +53,15 @@ export type ReplacementVisualForm =
   | "rotating_3d_object"
   | "kinetic_text_card"
   | "action_montage_sequence"
-  | "match_cut_sequence";
+  | "match_cut_sequence"
+  | "stacked_media_cards"
+  | "image_collage_grid"
+  | "feature_list_ui"
+  | "neon_geometry_frame"
+  | "cinematic_hero_montage"
+  | "logo_hold"
+  | "generic_visual_proxy";
+export type ReplacementVisualForm = KnownReplacementVisualForm | (string & {});
 export type RibbonSurfaceType = "thin_line" | "wide_band" | "textured_band" | "particle_trail";
 export type RibbonPathFamily = "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
 export type RibbonAxis = "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
@@ -91,7 +122,7 @@ export type FillStrategy =
   | "user_asset_replace";
 
 export interface MotionSpec {
-  type: "spin" | "scale" | "crop_zoom" | "ribbon_follow" | "none";
+  type: "spin" | "scale" | "crop_zoom" | "ribbon_follow" | "pulse" | "slide" | "cascade" | "none";
   axis?: "x" | "y" | "z" | "screen_x" | "screen_y" | "screen_z";
   speed?: number;
   durationSec?: number;
@@ -116,10 +147,59 @@ export interface SlotReplacementBinding {
   createdAt?: string;
 }
 
+export interface SlotAssetRequirement {
+  required: boolean;
+  type: string;
+  minCount?: number;
+  preferredAspect?: string;
+}
+
+export interface SlotSourceEvidence {
+  timeRange?: [number, number];
+  frameIds?: string[];
+  textEvidence?: string[];
+  confidence: number;
+  summary?: string;
+}
+
+export interface SlotReplacementPolicy {
+  clickToReplace: boolean;
+  acceptedAssetTypes: AcceptedReplacementAssetType[];
+}
+
+export interface RendererCapability {
+  id: string;
+  handles: VisualFormFamily[];
+  requiredAssetTypes: string[];
+  minCount?: number;
+  proceduralOnly?: boolean;
+  proceduralPossible?: boolean;
+  fallbackRenderer: string;
+}
+
+export interface InducedVisualSlot {
+  id: string;
+  role: SegmentRole;
+  modality: SlotModality;
+  visualForm: ReplacementVisualForm;
+  visualFormFamily: VisualFormFamily;
+  motionPattern: string;
+  layoutRelation: string;
+  assetRequirement: SlotAssetRequirement;
+  sourceEvidence: SlotSourceEvidence;
+  rendererCandidates: string[];
+  fallbackStrategies: FillStrategy[];
+  replacementPolicy: SlotReplacementPolicy;
+  confidence: number;
+  status: InducedSlotStatus;
+}
+
 export interface ReplacementSlot {
   slotId: string;
   semanticLabel: string;
   visualForm: ReplacementVisualForm;
+  visualFormFamily?: VisualFormFamily;
+  modality?: SlotModality;
   status: ReplacementSlotStatus;
   placeholderSpec?: PlaceholderSpec;
   acceptedAssetTypes: AcceptedReplacementAssetType[];
@@ -256,6 +336,13 @@ export interface RequiredSlot {
   preferredTags?: string[];
   fallbackStrategies?: FillStrategy[];
   visualForm?: ReplacementVisualForm;
+  visualFormFamily?: VisualFormFamily;
+  modality?: SlotModality;
+  inducedSlotId?: string;
+  assetRequirement?: SlotAssetRequirement;
+  rendererCandidates?: string[];
+  sourceEvidence?: SlotSourceEvidence;
+  confidence?: number;
   semanticLabel?: string;
   motionSpec?: MotionSpec;
   clickToReplace?: boolean;
@@ -348,6 +435,7 @@ export interface StructureTemplate {
   targetDurationSec?: number;
   segments: StructureSegment[];
   requiredSlots: RequiredSlot[];
+  inducedSlots?: InducedVisualSlot[];
   rhythm: RhythmSpec;
   packaging: PackagingSpec;
   structureAtoms: KnowledgeAtom[];
@@ -439,6 +527,7 @@ export interface GenerationRequest {
   projectId: string;
   inputMode: "video_plus_prompt" | "brief_assets" | "prompt_only";
   sourceVideo?: GenerationRequestSourceVideo;
+  sampleReferenceAssetId?: string;
   selectedTemplateIds?: string[];
   selectedAtomIds?: string[];
   assets?: GenerationRequestAsset[];
@@ -481,6 +570,12 @@ export interface SlotMapping {
   targetAssetCandidateIds?: string[];
   assetAvailability?: "target_asset_mapped" | "target_asset_weak_match" | "no_user_asset_available" | "source_video_mapped";
   visualForm?: ReplacementVisualForm;
+  visualFormFamily?: VisualFormFamily;
+  modality?: SlotModality;
+  inducedSlotId?: string;
+  assetRequirement?: SlotAssetRequirement;
+  rendererCandidates?: string[];
+  sourceEvidence?: SlotSourceEvidence;
   semanticLabel?: string;
   motionSpec?: MotionSpec;
   clickToReplace?: boolean;
@@ -504,7 +599,12 @@ export type GapCategory =
   | "dynamic_3d_ribbon_asset"
   | "rotating_hero_object_missing"
   | "action_montage_missing"
-  | "match_cut_sequence_missing";
+  | "match_cut_sequence_missing"
+  | "media_cards_missing"
+  | "ui_showcase_missing"
+  | "geometric_mg_missing"
+  | "brand_cta_missing"
+  | "induced_visual_slot_missing";
 
 export interface GapReportItem {
   slotId: string;
@@ -522,6 +622,13 @@ export interface GapReportItem {
   replacementSlotId?: string;
   slotType?: SlotType;
   slotRole?: SegmentRole;
+  visualForm?: ReplacementVisualForm;
+  visualFormFamily?: VisualFormFamily;
+  modality?: SlotModality;
+  inducedSlotId?: string;
+  rendererCandidates?: string[];
+  sourceEvidence?: SlotSourceEvidence;
+  assetRequirement?: SlotAssetRequirement;
   assetAvailability?: SlotMapping["assetAvailability"];
   mappedAssetId?: string;
   fillSource?: "target_asset" | "source_video" | "procedural_generation" | "text_or_copy" | "proxy_placeholder" | "user_asset" | "none";
@@ -595,6 +702,7 @@ export interface TimelineClip {
   gapFillStrategy?: "none" | FillStrategy;
   previewFrame?: string;
   sourceEvidenceFrame?: string;
+  visualFormFamily?: VisualFormFamily;
 }
 
 export interface TimelineMappingItem {
@@ -704,6 +812,7 @@ export interface GenerationResult {
   projectId: string;
   request: GenerationRequest;
   selectedTemplateIds: string[];
+  selectedTemplateReason?: string;
   selectedAtoms: KnowledgeAtom[];
   sourceUnderstanding: SourceVideoUnderstanding;
   slotMapping: SlotMapping[];

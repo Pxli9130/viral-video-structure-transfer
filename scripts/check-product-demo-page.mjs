@@ -8,6 +8,7 @@ const htmlPath = path.join(demoDir, "index.html");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
 const editingCaseDir = path.join(artifactRoot, "editing_case");
+const motionGraphCaseDir = path.join(artifactRoot, "motion_graph_case");
 
 const failures = [];
 
@@ -61,7 +62,8 @@ const requiredText = [
   "代理占位 -> 用户素材替换",
   "interactive_gap_fill_proxy.mp4",
   "interactive_gap_fill_user_replacement.mp4",
-  "editing_case/index.html"
+  "editing_case/index.html",
+  "motion_graph_case/index.html"
 ];
 
 for (const text of requiredText) {
@@ -145,7 +147,9 @@ const requiredManifestFields = [
   ["naturalLanguageEdit.demoArtifact", manifest.naturalLanguageEdit?.demoArtifact],
   ["naturalLanguageEdit.parsedOperations", manifest.naturalLanguageEdit?.parsedOperations],
   ["editingCase.available", manifest.editingCase?.available],
-  ["editingCase.render", manifest.editingCase?.render]
+  ["editingCase.render", manifest.editingCase?.render],
+  ["motionGraphCase.available", manifest.motionGraphCase?.available],
+  ["motionGraphCase.index", manifest.motionGraphCase?.index]
 ];
 
 for (const [field, value] of requiredManifestFields) {
@@ -172,6 +176,14 @@ if (existsSync(path.join(editingCaseDir, "index.html")) && !html.includes("editi
 
 if (existsSync(path.join(editingCaseDir, "index.html")) && manifest.editingCase?.available !== true) {
   failures.push("Manifest does not mark editing_case as available while editing_case artifacts exist.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "index.html")) && !html.includes("motion_graph_case/index.html")) {
+  failures.push("Motion graph case artifact exists but product demo gallery does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "index.html")) && manifest.motionGraphCase?.available !== true) {
+  failures.push("Manifest does not mark motion_graph_case as available while motion_graph_case artifacts exist.");
 }
 
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {

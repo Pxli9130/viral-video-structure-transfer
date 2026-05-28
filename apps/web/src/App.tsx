@@ -295,6 +295,7 @@ function AppContent() {
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBaseResponse | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [sampleDescription, setSampleDescription] = useState("B2B MG 宣传片：强钩子、产品价值、证明卡片、CTA。");
+  const [sampleAssetId, setSampleAssetId] = useState<string>("");
   const [sampleAnalysis, setSampleAnalysis] = useState<ExampleAnalysis | null>(null);
   const [sourceAssetId, setSourceAssetId] = useState<string>("");
   const [sourceAnalysis, setSourceAnalysis] = useState<ExampleAnalysis | null>(null);
@@ -423,6 +424,8 @@ function AppContent() {
       setProject(created);
       setProjects((current) => [created, ...current]);
       setSelectedTemplateId("");
+      setSampleAssetId("");
+      setSampleAnalysis(null);
       setGeneration(null);
       setRenderResult(null);
       await refreshProject(created.id);
@@ -445,6 +448,7 @@ function AppContent() {
         })
       });
       if (response.template) setSelectedTemplateId(response.template.id);
+      setSampleAssetId(response.asset.id);
       setSampleAnalysis(response.analysis);
       await refreshProject(project.id);
     });
@@ -467,6 +471,7 @@ function AppContent() {
         setSourceAssetId(asset.id);
         setSourceAnalysis(analysis.analysis);
       } else {
+        setSampleAssetId(asset.id);
         setSampleAnalysis(analysis.analysis);
       }
       if (analysis.template) setSelectedTemplateId(analysis.template.id);
@@ -504,6 +509,7 @@ function AppContent() {
         projectId: project.id,
         inputMode: sourceAssetId ? "video_plus_prompt" : "prompt_only",
         selectedTemplateIds: selectedTemplateId ? [selectedTemplateId] : undefined,
+        sampleReferenceAssetId: sampleAssetId || sampleAnalysis?.assetId,
         sourceVideo: sourceAssetId ? { assetId: sourceAssetId } : undefined,
         prompt,
         target: {
