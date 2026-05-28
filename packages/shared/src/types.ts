@@ -658,6 +658,13 @@ export interface FillAction {
   reason: string;
   targetClipId: string;
   rendererInstructions?: RendererInstruction;
+  capabilityId?: string;
+  backend?: RendererBackend;
+  fallbackUsed?: boolean;
+  fallbackReason?: string;
+  visualFormFamily?: VisualFormFamily;
+  selectedStrategy?: FillStrategy;
+  fulfilledBy?: RendererInstruction["fulfilledBy"];
 }
 
 export interface StoryboardItem {

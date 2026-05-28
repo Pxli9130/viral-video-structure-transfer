@@ -576,6 +576,82 @@ function checkNegative(fixture, analysis) {
   };
 }
 
+function readJsonIfExists(filePath) {
+  if (!existsSync(filePath)) return null;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function motionGraphArtifactGates() {
+  const mgDir = path.join(repoRoot, "docs", "artifacts", "motion_graph_case");
+  const visualEvidence = readJsonIfExists(path.join(mgDir, "visual-evidence.json"));
+  const inducedSlots = readJsonIfExists(path.join(mgDir, "induced-slots.json"));
+  const selectedTemplate = readJsonIfExists(path.join(mgDir, "selected-template.json"));
+  const fillPlan = readJsonIfExists(path.join(mgDir, "fill-plan.json"));
+  const timeline = readJsonIfExists(path.join(mgDir, "timeline.json"));
+  const previewManifest = readJsonIfExists(path.join(mgDir, "preview_frames", "manifest.json"));
+  const evaluation = readJsonIfExists(path.join(mgDir, "evaluation.motion_graph.json"));
+  const slotFamilies = new Set((Array.isArray(inducedSlots) ? inducedSlots : []).map((slot) => slot.visualFormFamily));
+  const evalGate = (id) => (evaluation?.gates ?? []).find((gate) => gate.id === id)?.passed === true;
+  const capabilityIds = new Set((Array.isArray(fillPlan) ? fillPlan : []).map((action) => action.capabilityId ?? action.rendererInstructions?.capabilityId).filter(Boolean));
+  const textCards = (timeline?.clips ?? []).filter((clip) => clip.type === "text_card" || clip.gapFillStrategy === "text_card").length;
+  const totalClips = timeline?.clips?.length ?? 0;
+  const previewFilesExist = Array.isArray(previewManifest?.pairs) && previewManifest.pairs.length > 0 && previewManifest.pairs.every((pair) => {
+    const generated = pair.generatedProxyFrame ? path.join(mgDir, pair.generatedProxyFrame) : null;
+    const source = pair.sourceEvidenceFrame ? path.join(mgDir, pair.sourceEvidenceFrame) : null;
+    return generated && source && existsSync(generated) && existsSync(source);
+  });
+  const sampleVisualCopied = (timeline?.clips ?? []).some((clip) =>
+    clip.sourceAssetId === "motion_graph_sample" ||
+    (clip.layers ?? []).some((layer) => layer.assetId === "motion_graph_sample")
+  );
+  const genericName = /B2B MG Promo Structure:\s*Hook Body Proof CTA/i.test(String(selectedTemplate?.name ?? ""));
+  return [
+    {
+      id: "visual_evidence_generated",
+      passed: visualEvidence?.schemaVersion === "visual-evidence-v1" && (visualEvidence?.shots?.length ?? 0) > 0,
+      detail: visualEvidence ? `${visualEvidence.schemaVersion}; shots=${visualEvidence.shots?.length ?? 0}` : "missing visual-evidence.json"
+    },
+    {
+      id: "induced_slots_non_empty",
+      passed: Array.isArray(inducedSlots) && inducedSlots.length > 0,
+      detail: Array.isArray(inducedSlots) ? `${inducedSlots.length} induced slots` : "missing induced-slots.json"
+    },
+    { id: "media_cards_detected", passed: slotFamilies.has("media_cards"), detail: Array.from(slotFamilies).join("|") },
+    { id: "ui_showcase_detected", passed: slotFamilies.has("ui_showcase"), detail: Array.from(slotFamilies).join("|") },
+    { id: "geometric_mg_detected", passed: slotFamilies.has("geometric_mg"), detail: Array.from(slotFamilies).join("|") },
+    { id: "brand_cta_detected", passed: slotFamilies.has("brand_cta"), detail: Array.from(slotFamilies).join("|") },
+    {
+      id: "selected_template_not_seed_b2b",
+      passed: selectedTemplate?.seedB2bNotPrimary === true && !genericName,
+      detail: selectedTemplate ? `${selectedTemplate.name ?? selectedTemplate.id}` : "missing selected-template.json"
+    },
+    {
+      id: "renderer_capability_selected",
+      passed: evalGate("renderer_capability_selected") || ["card_stack_motion", "feature_list_scroller", "neon_geometry_typography", "kinetic_text_card", "logo_cta_hold"].every((id) => capabilityIds.has(id)),
+      detail: `capabilities=${Array.from(capabilityIds).join("|") || "(none)"}`
+    },
+    {
+      id: "not_only_text_cards",
+      passed: totalClips > 0 && textCards / totalClips <= 0.3,
+      detail: `${textCards}/${totalClips} text-card clips`
+    },
+    {
+      id: "preview_frames_exist",
+      passed: previewFilesExist,
+      detail: `pairs=${previewManifest?.pairs?.length ?? 0}`
+    },
+    {
+      id: "no_sample_visual_copy",
+      passed: !sampleVisualCopied,
+      detail: sampleVisualCopied ? "timeline uses motion_graph_sample as material" : "sample only appears as evidence"
+    }
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 — render variants and evaluate
 // ---------------------------------------------------------------------------
@@ -985,6 +1061,9 @@ async function runFixture(entry, args) {
   gates.push({ id: "analyzer_band_width", ...checkBandWidth(entry.fixture.expectations, analysis) });
   gates.push({ id: "analyzer_ribbon_motion", ...checkRibbonMotion(entry.fixture.expectations, analysis) });
   gates.push({ id: "negative_expectations", ...checkNegative(entry.fixture, analysis) });
+  if (entry.fixture.expectations?.motionGraphCaseGates === true) {
+    gates.push(...motionGraphArtifactGates());
+  }
 
   // Expected-vs-actual JSON for the report.
   const compare = {

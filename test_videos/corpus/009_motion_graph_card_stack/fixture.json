@@ -1,0 +1,21 @@
+{
+  "id": "009_motion_graph_card_stack",
+  "title": "Motion graph open-world card stack fixture",
+  "input": {
+    "filename": "../../motion_graph_1.mov",
+    "sha256": "e73be8be5c5dc80feeb9bd22d00b7ba3bd07c1ff22137986d86a6d888c07a04d",
+    "durationSecRange": [30, 33],
+    "license": "demo_only",
+    "originUrl": null,
+    "videoIsReference": true
+  },
+  "expectations": {
+    "motionGraphCaseGates": true
+  },
+  "negativeExpectations": {
+    "primaryMotifNotAnyOf": ["static_poster"]
+  },
+  "skipIf": {
+    "missingVideo": true
+  }
+}

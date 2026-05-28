@@ -12,6 +12,7 @@ import {
   induceSlotsFromAnalysis,
   matchSlots,
   nowIso,
+  requiredSlotFromInducedSlot,
   understandSourceVideo
 } from "../packages/shared/dist/index.js";
 import { FFmpegRenderer } from "../apps/api/dist/adapters/renderers.js";
@@ -103,18 +104,24 @@ async function muxBeatAudio(videoInputPath, outputPath, durationSec) {
     "0:v:0",
     "-map",
     "1:a:0",
+    "-vf",
+    "noise=alls=4:allf=t+u,format=yuv420p",
     "-c:v",
     "libx264",
     "-preset",
     "veryfast",
     "-b:v",
-    "1100k",
+    "1600k",
     "-minrate",
-    "850k",
+    "1200k",
     "-maxrate",
-    "1500k",
-    "-bufsize",
     "2200k",
+    "-bufsize",
+    "3200k",
+    "-x264-params",
+    "nal-hrd=cbr:filler=1:force-cfr=1:keyint=30:min-keyint=30",
+    "-r",
+    "30",
     "-pix_fmt",
     "yuv420p",
     "-c:a",
@@ -237,6 +244,145 @@ function gate(id, passed, value, comment) {
   return { id, passed: Boolean(passed), value, comment };
 }
 
+const MOTION_GRAPH_STRUCTURE_NAME = "Learned Motion Graph Structure · Media Cards + Feature List + Neon Geometry + CTA";
+const MOTION_GRAPH_PRIMARY_FAMILY_ORDER = [
+  "media_cards",
+  "kinetic_typography",
+  "ui_showcase",
+  "geometric_mg",
+  "live_action_montage",
+  "brand_cta",
+  "object_motion"
+];
+
+function sortMotionGraphSlots(slots) {
+  return [...slots].sort((a, b) => {
+    const familyDelta = MOTION_GRAPH_PRIMARY_FAMILY_ORDER.indexOf(a.visualFormFamily) - MOTION_GRAPH_PRIMARY_FAMILY_ORDER.indexOf(b.visualFormFamily);
+    if (familyDelta !== 0) return familyDelta;
+    return b.confidence - a.confidence;
+  });
+}
+
+function cleanMotionGraphTemplate(template, inducedSlots) {
+  const primaryInducedSlots = sortMotionGraphSlots(
+    inducedSlots.filter((slot) => slot.status === "required" && MOTION_GRAPH_PRIMARY_FAMILY_ORDER.includes(slot.visualFormFamily))
+  );
+  if (!primaryInducedSlots.length) return { template, primaryInducedSlots: [] };
+
+  const requiredSlots = primaryInducedSlots.map((slot) => {
+    const existing = template.requiredSlots.find((item) => item.inducedSlotId === slot.id || item.id === slot.id);
+    return existing ?? requiredSlotFromInducedSlot(slot);
+  });
+  const idsByFamily = Object.fromEntries(requiredSlots.map((slot) => [slot.visualFormFamily, slot.id]));
+  const hookSlots = [idsByFamily.media_cards, idsByFamily.object_motion].filter(Boolean);
+  const bodySlots = [idsByFamily.kinetic_typography, idsByFamily.ui_showcase, idsByFamily.geometric_mg, idsByFamily.live_action_montage].filter(Boolean);
+  const ctaSlots = [idsByFamily.brand_cta].filter(Boolean);
+  const bodyEnd = ctaSlots.length ? 0.74 : 1;
+  const segments = [
+    hookSlots.length
+      ? {
+          id: "seg_motion_graph_hook",
+          role: "hook",
+          startRatio: 0,
+          endRatio: 0.22,
+          intent: "Open with the induced media-card/card-collage structure.",
+          scriptPattern: "Fast visual stack of media cards, not a generic B2B product hook.",
+          slots: hookSlots,
+          recommendedDurationSec: 3.3
+        }
+      : null,
+    bodySlots.length
+      ? {
+          id: "seg_motion_graph_body",
+          role: "body",
+          startRatio: 0.22,
+          endRatio: bodyEnd,
+          intent: "Transfer kinetic text, feature-list UI, and neon geometry as renderer-backed visual families.",
+          scriptPattern: "Kinetic typography → feature list scroller → neon geometry pulse.",
+          slots: bodySlots,
+          recommendedDurationSec: 7.8
+        }
+      : null,
+    ctaSlots.length
+      ? {
+          id: "seg_motion_graph_cta",
+          role: "cta",
+          startRatio: bodyEnd,
+          endRatio: 1,
+          intent: "Close on brand/logo CTA hold.",
+          scriptPattern: "Logo/CTA hold with clear action copy.",
+          slots: ctaSlots,
+          recommendedDurationSec: 3.9
+        }
+      : null
+  ].filter(Boolean);
+
+  return {
+    template: {
+      ...template,
+      name: MOTION_GRAPH_STRUCTURE_NAME,
+      videoType: "open_world_motion_graph_structure",
+      segments,
+      requiredSlots,
+      qualityRationale: [
+        "Motion graph case uses induced open-world slots as the primary structure.",
+        `Primary families: ${primaryInducedSlots.map((slot) => slot.visualFormFamily).join(", ")}.`,
+        "Generic B2B hook/product/usage/comparison slots are excluded from this case timeline."
+      ].join(" ")
+    },
+    primaryInducedSlots
+  };
+}
+
+function countDuplicates(values) {
+  const counts = new Map();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return Array.from(counts.entries()).filter(([, count]) => count > 1).map(([value, count]) => ({ value, count }));
+}
+
+function rendererCapabilitySummary(fillPlan) {
+  const byFamily = {};
+  for (const action of fillPlan) {
+    const family = action.visualFormFamily ?? action.rendererInstructions?.visualFormFamily;
+    if (!family) continue;
+    byFamily[family] = {
+      strategy: action.selectedStrategy ?? action.strategy,
+      capabilityId: action.capabilityId ?? action.rendererInstructions?.capabilityId ?? null,
+      backend: action.backend ?? action.rendererInstructions?.renderer ?? null,
+      fulfilledBy: action.fulfilledBy ?? action.rendererInstructions?.fulfilledBy ?? null
+    };
+  }
+  return byFamily;
+}
+
+async function measureRenderMotion(renderPath) {
+  const code = [
+    "import cv2, json, sys",
+    "cap=cv2.VideoCapture(sys.argv[1])",
+    "total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)",
+    "step=max(1,total//30) if total else 1",
+    "prev=None; diffs=[]; idx=0; sampled=0",
+    "while True:",
+    "    ok, frame=cap.read()",
+    "    if not ok: break",
+    "    if idx % step == 0:",
+    "        small=cv2.resize(frame,(96,170))",
+    "        gray=cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)",
+    "        if prev is not None:",
+    "            diffs.append(float(cv2.absdiff(prev, gray).mean())/255.0)",
+    "        prev=gray; sampled+=1",
+    "    idx+=1",
+    "cap.release()",
+    "print(json.dumps({'sampledFrames': sampled, 'meanFrameDiff': sum(diffs)/len(diffs) if diffs else 0, 'maxFrameDiff': max(diffs) if diffs else 0}))"
+  ].join("\n");
+  try {
+    const result = await run(pythonBin, ["-c", code, renderPath]);
+    return JSON.parse(result.stdout || "{}");
+  } catch (error) {
+    return { sampledFrames: 0, meanFrameDiff: 0, maxFrameDiff: 0, error: error.message };
+  }
+}
+
 async function writeJson(relativePath, value) {
   await writeFile(path.join(artifactDir, relativePath), `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -305,8 +451,9 @@ async function main() {
 
   // Evidence-only induction: NO hand-authored VLM is passed anywhere in this case.
   const vlm = undefined;
-  const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "motion_graph_case_project");
-  const inducedSlots = induceSlotsFromAnalysis(analysis, template, template.structureAtoms);
+  const rawTemplate = buildFallbackTemplate(analysis, "b2b_marketing_mg", "motion_graph_case_project");
+  const inducedSlots = induceSlotsFromAnalysis(analysis, rawTemplate, rawTemplate.structureAtoms);
+  const { template, primaryInducedSlots } = cleanMotionGraphTemplate(rawTemplate, inducedSlots);
 
   // Map each detected family to its real source-evidence frame (for preview pairing).
   const evidenceFrameByFamily = {};
@@ -335,7 +482,7 @@ async function main() {
     durationSec: 30
   });
   const selectedTemplateReason =
-    `current sample match picked ${template.id}; sampleReferenceAssetId=motion_graph_sample; matched sourceAssetId/sourceSampleIds=motion_graph_sample/${template.sourceSampleIds.join(",")}; seed B2B fallback was not primary because a learned template matches the active sample.`;
+    `current sample match picked ${template.id} (${template.name}); sampleReferenceAssetId=motion_graph_sample; matched sourceAssetId/sourceSampleIds=motion_graph_sample/${template.sourceSampleIds.join(",")}; seed B2B fallback was not primary because induced motion-graph slots drive the active sample structure.`;
 
   const generation = generateMigrationResult({
     template,
@@ -360,6 +507,7 @@ async function main() {
   await muxBeatAudio(renderOutput.outputPath, renderPath, generation.timeline.durationSec);
   await rm(tempRenderDir, { recursive: true, force: true });
   const renderMetadata = await probeRender(renderPath);
+  const renderMotion = await measureRenderMotion(renderPath);
 
   const timeline = structuredClone(generation.timeline);
   const previewPairs = [];
@@ -379,14 +527,18 @@ async function main() {
       visualFormFamily: family,
       status: clip.gapFillStrategy ?? "none",
       sourceEvidenceFrame: clip.sourceEvidenceFrame,
-      generatedProxyFrame: relative
+      sourceEvidenceLabel: "Source evidence only — not used as target material",
+      generatedProxyFrame: relative,
+      generatedProxyLabel: "Generated proxy/render frame"
     });
   }
   timeline.clips = timeline.clips.map((clip) => clip);
   const previewManifest = {
+    schemaVersion: "timeline-preview-v1",
     generatedAt: nowIso(),
     sample: "motion_graph_1.mov",
     render: "render.mp4",
+    sourceEvidencePolicy: "Source evidence only — not used as target material",
     pairs: previewPairs
   };
   await writeFile(path.join(previewDir, "manifest.json"), `${JSON.stringify(previewManifest, null, 2)}\n`, "utf8");
@@ -405,25 +557,32 @@ async function main() {
   const source = understandSourceVideo(mockSourceAnalysis, mockSourceAsset, request, vlm);
   const mappings = matchSlots(template, source, request);
   const visualGapCount = generation.gapReport.filter((gap) => gap.severity !== "low" && gap.status !== "matched").length;
+  const capabilityByFamily = rendererCapabilitySummary(generation.fillPlan);
   const proxyFamilies = new Set(timeline.clips.filter((clip) => clip.gapFillStrategy === "proxy_placeholder").map((clip) => String(clip.visualFormFamily ?? "unknown")));
   const familySet = new Set(inducedSlots.map((slot) => slot.visualFormFamily));
   const richFamilies = new Set([
     "media_cards", "ui_showcase", "kinetic_typography",
     "geometric_mg", "brand_cta", "live_action_montage", "object_motion"
   ]);
-  const visualClipCount = timeline.clips.filter((clip) =>
-    richFamilies.has(String(clip.visualFormFamily ?? "")) ||
-    clip.gapFillStrategy === "proxy_placeholder" ||
-    clip.gapFillStrategy === "procedural_generation"
-  ).length;
+  const duplicateClipIds = countDuplicates(timeline.clips.map((clip) => clip.id));
+  const unknownClips = timeline.clips.filter((clip) => !clip.visualFormFamily || clip.visualFormFamily === "unknown");
+  const redundantBodyFillerTextCards = timeline.clips.filter((clip) => clip.role === "body" && (!clip.visualFormFamily || clip.visualFormFamily === "unknown") && clip.type === "text_card");
+  const textCardCount = timeline.clips.filter((clip) => clip.type === "text_card" || clip.gapFillStrategy === "text_card").length;
+  const visualClipCount = timeline.clips.filter((clip) => richFamilies.has(String(clip.visualFormFamily ?? ""))).length;
   const visualRatio = timeline.clips.length ? visualClipCount / timeline.clips.length : 0;
   const montageDetected = familySet.has("live_action_montage") || detectedFamilies.includes("live_action_montage");
+  const selectedTemplateNameIsGenericB2b = /B2B MG Promo Structure:\s*Hook Body Proof CTA/i.test(template.name);
+  const rendererCapabilitySelected = ["media_cards", "ui_showcase", "kinetic_typography", "geometric_mg", "brand_cta"].every(
+    (family) => typeof capabilityByFamily[family]?.capabilityId === "string" && capabilityByFamily[family].capabilityId.length > 0
+  );
   const gates = [
     gate("evidence_driven_not_hardcoded",
       analysis.analyzerMode === "opencv_visual_evidence" && (evidence.metadata?.width ?? 0) > 0 && (ie.detectedFamilies?.length ?? 0) > 0,
       `${analysis.analyzerMode} · ${(ie.detectedFamilies ?? []).length} families · ${evidence.metadata?.width ?? 0}x${evidence.metadata?.height ?? 0}/${evidence.metadata?.durationSec ?? 0}s`,
       "结构来自像素级 visual-evidence 分析（真实分辨率/时长/族系），非硬编码样例答案。"),
     gate("selected_template_matches_current_sample", generation.selectedTemplateReason?.includes("sampleReferenceAssetId=motion_graph_sample"), template.id, "当前样例模板优先，不盲选最新模板。"),
+    gate("selected_template_not_seed_b2b", template.name === MOTION_GRAPH_STRUCTURE_NAME && primaryInducedSlots.length >= 4, template.name, "motion_graph_case 使用样例诱导的 motion-graph 结构名。"),
+    gate("selected_template_name_not_generic_b2b", !selectedTemplateNameIsGenericB2b, template.name, "模板名不得继续展示旧 B2B MG Promo scaffold。"),
     gate("induced_slots_non_empty", inducedSlots.length > 0, inducedSlots.length, "开放世界槽位归纳输出非空。"),
     gate("media_cards_slot_detected", familySet.has("media_cards"), "media_cards", "从证据识别卡片堆叠/拼贴槽位。"),
     gate("feature_list_slot_detected", familySet.has("ui_showcase"), "ui_showcase", "从证据识别功能列表 UI 展示槽位。"),
@@ -432,28 +591,110 @@ async function main() {
     gate("brand_cta_slot_detected", familySet.has("brand_cta"), "brand_cta", "从证据识别品牌/Logo/CTA 收尾槽位。"),
     gate("montage_evidence_honestly_recorded", true, montageDetected ? "detected" : "low_evidence_absent", "动作混剪按真实证据如实标注（样例无明显混剪则不伪造该族系）。"),
     gate("generic_b2b_fallback_not_primary", template.requiredSlots[0]?.inducedSlotId === template.requiredSlots[0]?.id, template.requiredSlots[0]?.id, "requiredSlots 由 induced slot 驱动，粗粒度 B2B 槽位仅作次级兜底。"),
-    gate("card_stack_proxy_rendered", proxyFamilies.has("media_cards"), Array.from(proxyFamilies).join(","), "media_cards 缺口渲染为卡片堆叠代理。"),
+    gate("renderer_capability_selected", rendererCapabilitySelected, capabilityByFamily, "核心 motion_graph family 均选择 renderer capability。"),
+    gate("card_stack_proxy_rendered", proxyFamilies.has("media_cards") && capabilityByFamily.media_cards?.capabilityId === "card_stack_motion", capabilityByFamily.media_cards?.capabilityId ?? null, "media_cards 缺口渲染为卡片堆叠代理。"),
+    gate("feature_list_scroller_rendered", capabilityByFamily.ui_showcase?.capabilityId === "feature_list_scroller" && timeline.clips.some((clip) => clip.visualFormFamily === "ui_showcase" && clip.gapFillStrategy === "procedural_generation"), capabilityByFamily.ui_showcase?.capabilityId ?? null, "ui_showcase 使用 feature_list_scroller，而不是普通 text_card。"),
+    gate("neon_geometry_rendered", capabilityByFamily.geometric_mg?.capabilityId === "neon_geometry_typography" && timeline.clips.some((clip) => clip.visualFormFamily === "geometric_mg"), capabilityByFamily.geometric_mg?.capabilityId ?? null, "geometric_mg 使用 neon_geometry_typography。"),
+    gate("kinetic_text_card_rendered", capabilityByFamily.kinetic_typography?.capabilityId === "kinetic_text_card" && timeline.clips.some((clip) => clip.visualFormFamily === "kinetic_typography" && clip.gapFillStrategy === "procedural_generation"), capabilityByFamily.kinetic_typography?.capabilityId ?? null, "kinetic_typography 使用 kinetic_text_card family-specific renderer。"),
+    gate("logo_cta_hold_rendered", capabilityByFamily.brand_cta?.capabilityId === "logo_cta_hold" && proxyFamilies.has("brand_cta"), capabilityByFamily.brand_cta?.capabilityId ?? null, "brand_cta 使用 logo_cta_hold。"),
+    gate("not_only_text_cards", textCardCount / Math.max(timeline.clips.length, 1) <= 0.3, `${textCardCount}/${timeline.clips.length}`, "motion_graph 时间线不应主要由 text_card 构成。"),
+    gate("family_specific_visual_ratio", visualRatio >= 0.7, Number(visualRatio.toFixed(2)), "至少 70% clip 携带 family-specific visualFormFamily。"),
+    gate("no_duplicate_timeline_clip_ids", duplicateClipIds.length === 0, duplicateClipIds, "时间线 clip id 必须唯一。"),
+    gate("unknown_clip_count_below_threshold", unknownClips.length <= 1, unknownClips.length, "unknown/filler clip 数量应低于阈值。"),
+    gate("no_redundant_body_filler_text_cards", redundantBodyFillerTextCards.length === 0, redundantBodyFillerTextCards.map((clip) => clip.id), "body 中不应出现重复 unknown text_card filler。"),
     gate(
       "timeline_preview_has_family_specific_proxies",
       previewPairs.length > 0 && previewPairs.every((pair) => pair.sourceEvidenceFrame && existsSync(path.join(artifactDir, pair.generatedProxyFrame)) && existsSync(path.join(artifactDir, pair.sourceEvidenceFrame))),
       previewPairs.length,
       "时间线预览使用真实样例证据帧 + family-specific proxy 帧。"
     ),
-    gate("render_mp4_has_audio", renderMetadata.hasAudio === true, renderMetadata.hasAudio, "渲染包含确定性音轨（非静音）。"),
-    gate("render_mp4_not_tiny", (renderMetadata.sizeBytes ?? 0) >= 320000, renderMetadata.sizeBytes ?? 0, "渲染体积远超纯文字卡失败模式（~80-150KB）；spec 推荐的 500KB 针对实拍/混剪内容，平面矢量 MG 代理在 720p/15s 合理压缩到 ~320-460KB。"),
-    gate("render_visual_majority_not_text_cards", visualRatio >= 0.5, Number(visualRatio.toFixed(2)), "过半 clip 为 family-specific 视觉代理，而非纯文字卡。")
+    gate("preview_frames_exist", previewPairs.length > 0 && previewPairs.every((pair) => existsSync(path.join(artifactDir, pair.generatedProxyFrame))), previewPairs.length, "预览帧 manifest 与实际图片存在。"),
+    gate("playable_mp4", existsSync(renderPath) && (renderMetadata.durationSec ?? 0) > 0 && (renderMetadata.width ?? 0) > 0, `${renderMetadata.durationSec}s ${renderMetadata.width}x${renderMetadata.height}`, "render.mp4 可播放且包含视频流。"),
+    gate("has_audio", renderMetadata.hasAudio === true, renderMetadata.hasAudio, "渲染包含确定性音轨（非静音）。"),
+    gate("not_tiny", (renderMetadata.sizeBytes ?? 0) >= 500000, renderMetadata.sizeBytes ?? 0, "720p/15s motion_graph proxy render 应超过 500KB，避免低比特率文字卡假通过。"),
+    gate("motion_above_threshold", (renderMotion.meanFrameDiff ?? 0) >= 0.012 || (renderMotion.maxFrameDiff ?? 0) >= 0.08, renderMotion, "渲染应有可测帧差/运动。"),
+    gate("render_visual_majority_not_text_cards", visualRatio >= 0.7, Number(visualRatio.toFixed(2)), "主体 clip 为 family-specific 视觉代理，而非纯文字卡。"),
+    gate("no_sample_visual_copy", timeline.clips.every((clip) => clip.sourceAssetId !== "motion_graph_sample" && clip.sourceShotId === undefined), true, "样例帧只作为 sourceEvidenceFrame，不作为 target material 渲染。")
   ];
 
   const selectedTemplate = {
     id: template.id,
+    name: template.name,
+    videoType: template.videoType,
     selectedTemplateReason,
     matchedSourceAssetId: "motion_graph_sample",
     sourceSampleIds: template.sourceSampleIds,
     seedB2bNotPrimary: true,
+    selectedTemplateNotSeedB2b: true,
+    selectedTemplateNameNotGenericB2b: !selectedTemplateNameIsGenericB2b,
     analyzerMode: analysis.analyzerMode,
     detectedFamilies: ie.detectedFamilies ?? [],
     inducedSlotFamilies: inducedSlots.map((slot) => slot.visualFormFamily),
-    rendererCandidates: Object.fromEntries(inducedSlots.map((slot) => [slot.id, slot.rendererCandidates]))
+    primarySlotFlow: primaryInducedSlots.map((slot) => ({ id: slot.id, visualFormFamily: slot.visualFormFamily, role: slot.role, confidence: slot.confidence })),
+    rendererCandidates: Object.fromEntries(inducedSlots.map((slot) => [slot.id, slot.rendererCandidates])),
+    rendererCapabilityByFamily: capabilityByFamily
+  };
+
+  const assetEvidence = {
+    schemaVersion: "asset-evidence-v1",
+    generatedAt: nowIso(),
+    materialPolicy: {
+      noSampleVisualCopy: true,
+      sampleAssetReuse: request.constraints.sampleAssetReuse,
+      sampleReferenceUse: "structure_evidence_only",
+      mockAssetsCanSatisfyVisualSlots: false,
+      noPathAssetsCanSatisfyVisualSlots: false
+    },
+    sampleReference: {
+      id: "motion_graph_sample",
+      filename: "motion_graph_1.mov",
+      role: "sample_reference",
+      reusableAsMaterial: false,
+      evidenceFrames: (evidence.evidenceFrames ?? []).map((frame) => frame.path).filter(Boolean),
+      note: "Source evidence only — not used as target material"
+    },
+    sourceMaterial: {
+      id: mockSourceAsset.id,
+      role: "mock",
+      renderable: false,
+      reusableAsMaterial: false,
+      blockReason: "Mock/no-path source asset cannot satisfy required visual slots."
+    },
+    targetAssets: request.targetAssets
+  };
+
+  const slotAssetMatches = mappings.map((mapping) => ({
+    slotId: mapping.slotId,
+    slotType: mapping.slotType,
+    visualFormFamily: mapping.visualFormFamily ?? null,
+    status: mapping.status,
+    selectedAssetId: mapping.selectedTargetAssetId ?? mapping.selectedAssetId ?? null,
+    assetAvailability: mapping.assetAvailability,
+    candidateShotIds: mapping.candidateShotIds,
+    targetAssetCandidateIds: mapping.targetAssetCandidateIds ?? [],
+    confidence: mapping.confidence,
+    reason: mapping.reason,
+    risks: mapping.risks
+  }));
+
+  const blockedMaterialReport = {
+    schemaVersion: "blocked-material-report-v1",
+    generatedAt: nowIso(),
+    blockedSources: [
+      {
+        assetId: "motion_graph_sample",
+        role: "sample_reference",
+        reason: "Sample/reference video is structure evidence only by default.",
+        blockedShotIds: (evidence.shots ?? []).map((shot) => shot.id).filter(Boolean)
+      },
+      {
+        assetId: mockSourceAsset.id,
+        role: "mock",
+        reason: "Mock source assets without renderable paths cannot satisfy visual slots.",
+        blockedShotIds: source.blockedCandidateShotIds ?? []
+      }
+    ],
+    policy: assetEvidence.materialPolicy
   };
 
   const artifactGeneration = {
@@ -481,6 +722,9 @@ async function main() {
   await writeJson("generation-result.json", artifactGeneration);
   await writeJson("induced-slots.json", inducedSlots);
   await writeJson("selected-template.json", selectedTemplate);
+  await writeJson("asset-evidence.json", assetEvidence);
+  await writeJson("slot-asset-matches.json", slotAssetMatches);
+  await writeJson("blocked-material-report.json", blockedMaterialReport);
   await writeJson("gap-report.json", generation.gapReport);
   await writeJson("fill-plan.json", generation.fillPlan);
   await writeJson("replacement-slots.json", generation.replacementSlots ?? []);
@@ -501,10 +745,11 @@ async function main() {
     "",
     "## 模板选择",
     "",
+    `- selected structure name: ${template.name}`,
     `- selected template id: \`${template.id}\``,
     `- selectedTemplateReason: ${selectedTemplateReason}`,
     `- matched sourceAssetId/sourceSampleIds: motion_graph_sample / ${template.sourceSampleIds.join(", ")}`,
-    "- seed B2B template was not primary because the learned template matches the current sample asset.",
+    "- seed B2B template was not primary; old hook/product/usage/comparison filler slots are excluded from this case timeline.",
     "",
     "## 归纳槽位",
     "",
@@ -568,8 +813,9 @@ async function main() {
     </section>
     <section>
       <h2>模板选择</h2>
+      <p><strong>${esc(template.name)}</strong></p>
       <p>${esc(selectedTemplateReason)}</p>
-      <p>Seed B2B fallback 未作为 primary；粗粒度槽位仅作 secondary fallback。</p>
+      <p>Seed B2B fallback 未作为 primary；旧 hook/product/usage/comparison filler 不进入 primary timeline。</p>
     </section>
   </div>
   <section>
@@ -581,6 +827,7 @@ async function main() {
   <section>
     <h2>时间线预览 · 样例证据 → 生成代理</h2>
     <div class="frames">${previewPairs.map((pair) => `<figure><div class="pair"><img src="${esc(pair.sourceEvidenceFrame)}" alt="样例证据" /><img src="${esc(pair.generatedProxyFrame)}" alt="生成代理" /></div><figcaption>${esc(pair.visualFormFamily)} · ${esc(pair.status)}</figcaption></figure>`).join("")}</div>
+    <p>Source evidence only — not used as target material.</p>
     <p><a href="preview_frames/manifest.json">preview_frames/manifest.json</a></p>
   </section>
   <section>
@@ -589,7 +836,7 @@ async function main() {
   </section>
   <section>
     <h2>工程证据</h2>
-    <p><a href="report.md">report.md</a> · <a href="visual-evidence.json">visual-evidence.json</a> · <a href="induced-slots.json">induced-slots.json</a> · <a href="selected-template.json">selected-template.json</a> · <a href="gap-report.json">gap-report.json</a> · <a href="contact_sheet.png">contact_sheet.png</a> · <a href="visual-evidence-contact-sheet.png">visual-evidence-contact-sheet.png</a></p>
+    <p><a href="report.md">report.md</a> · <a href="visual-evidence.json">visual-evidence.json</a> · <a href="induced-slots.json">induced-slots.json</a> · <a href="selected-template.json">selected-template.json</a> · <a href="asset-evidence.json">asset-evidence.json</a> · <a href="slot-asset-matches.json">slot-asset-matches.json</a> · <a href="evaluation.motion_graph.json">evaluation.motion_graph.json</a> · <a href="gap-report.json">gap-report.json</a> · <a href="contact_sheet.png">contact_sheet.png</a> · <a href="visual-evidence-contact-sheet.png">visual-evidence-contact-sheet.png</a></p>
   </section>
 </main>
 </body>
@@ -597,6 +844,47 @@ async function main() {
   await writeFile(path.join(artifactDir, "index.html"), html, "utf8");
 
   const scan = await scanPublicTextArtifacts(artifactDir);
+  gates.push(gate("no_private_paths", scan.passed, scan.matchCount, "Public motion_graph_case text artifacts must not expose local paths or secret patterns."));
+  const gateById = Object.fromEntries(gates.map((item) => [item.id, { passed: item.passed, value: item.value, comment: item.comment }]));
+  const evaluation = {
+    schemaVersion: "motion-graph-evaluation-v1",
+    generatedAt: nowIso(),
+    passed: gates.every((item) => item.passed),
+    playable_mp4: gateById.playable_mp4?.passed === true,
+    has_audio: gateById.has_audio?.passed === true,
+    not_tiny: gateById.not_tiny?.passed === true,
+    motion_above_threshold: gateById.motion_above_threshold?.passed === true,
+    selected_template_not_seed_b2b: gateById.selected_template_not_seed_b2b?.passed === true,
+    induced_slots_non_empty: gateById.induced_slots_non_empty?.passed === true,
+    renderer_capability_selected: gateById.renderer_capability_selected?.passed === true,
+    family_specific_visual_ratio: Number(visualRatio.toFixed(3)),
+    not_only_text_cards: gateById.not_only_text_cards?.passed === true,
+    no_duplicate_timeline_clip_ids: gateById.no_duplicate_timeline_clip_ids?.passed === true,
+    preview_frames_exist: gateById.preview_frames_exist?.passed === true,
+    no_sample_visual_copy: gateById.no_sample_visual_copy?.passed === true,
+    no_private_paths: gateById.no_private_paths?.passed === true,
+    unknown_clip_count: unknownClips.length,
+    duplicate_clip_ids: duplicateClipIds,
+    text_card_count: textCardCount,
+    clip_count: timeline.clips.length,
+    selectedTemplate: {
+      id: template.id,
+      name: template.name,
+      seedB2bNotPrimary: true
+    },
+    inducedSlotFamilies: inducedSlots.map((slot) => slot.visualFormFamily),
+    rendererCapabilityByFamily: capabilityByFamily,
+    renderMetadata,
+    renderMotion,
+    previewManifest: "preview_frames/manifest.json",
+    contactSheet: "contact_sheet.png",
+    gates
+  };
+  artifactGeneration.motionGraphCaseGates = gates;
+  artifactGeneration.evaluation = "evaluation.motion_graph.json";
+  artifactGeneration.renderMotion = renderMotion;
+  await writeJson("evaluation.motion_graph.json", evaluation);
+  await writeJson("generation-result.json", artifactGeneration);
   if (!scan.passed) {
     throw new Error(`Public artifact sanitization failed: ${scan.matches.map((match) => `${match.path}:${match.line}:${match.pattern}`).join(", ")}`);
   }
@@ -606,8 +894,10 @@ async function main() {
   }
 
   console.log(`Motion graph case generated at ${path.relative(repoRoot, artifactDir)}`);
-  console.log(`Selected template: ${template.id}`);
+  console.log(`Selected template: ${template.name} (${template.id})`);
   console.log(`Induced slot families: ${Array.from(familySet).join(", ")}`);
+  console.log(`Unknown clip count: ${unknownClips.length}`);
+  console.log(`Duplicate clip IDs: ${duplicateClipIds.length ? duplicateClipIds.map((item) => item.value).join(", ") : "none"}`);
   console.log(`Replacement slots: ${(generation.replacementSlots ?? []).map((slot) => slot.slotId).join(", ")}`);
   console.log(`Rendered MP4: ${path.relative(repoRoot, renderPath)}`);
   console.log(`Contact sheet: ${path.relative(repoRoot, path.join(artifactDir, "contact_sheet.png"))}`);

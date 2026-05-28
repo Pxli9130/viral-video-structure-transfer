@@ -17,6 +17,7 @@ import type {
   MotionSpec,
   PackagingSpec,
   PlaceholderSpec,
+  RendererBackend,
   RequiredSlot,
   ReplacementSlot,
   SlotReplacementBinding,
@@ -1818,7 +1819,8 @@ function chooseStrategy(ctx: StrategyContext): FillStrategy {
   const allowReorder = ctx.mapping.status !== "matched" && ctx.segmentMatchedSiblings.length > 0;
   const slotType = ctx.mapping.slotType;
   if (ctx.mapping.visualFormFamily === "geometric_mg") return "procedural_generation";
-  if (ctx.mapping.visualFormFamily === "ui_showcase" || ctx.mapping.visualFormFamily === "kinetic_typography") return "text_card";
+  if (ctx.mapping.visualFormFamily === "ui_showcase" || ctx.mapping.visualFormFamily === "kinetic_typography") return "procedural_generation";
+  if (ctx.mapping.visualFormFamily === "unknown" && ctx.mapping.status !== "matched") return "proxy_placeholder";
   if (
     ctx.mapping.status !== "matched" &&
     (ctx.mapping.visualFormFamily === "media_cards" ||
@@ -1869,6 +1871,10 @@ export function createFillPlan(
       const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${gapMeta?.en ?? mapping.slotType} placeholder`, gapMeta?.category, mapping.visualFormFamily);
       const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, gapMeta?.category, mapping.visualFormFamily);
       const rendererCapability = mapping.visualFormFamily ? primaryRendererCapabilityForFamily(mapping.visualFormFamily) : undefined;
+      const proceduralAtom =
+        mapping.visualFormFamily === "geometric_mg"
+          ? "neon_geometry_typography"
+          : rendererCapability?.id ?? ribbonAtom;
       const strategy = chooseStrategy({
         mapping,
         hasReusableVisual,
@@ -1946,9 +1952,16 @@ export function createFillPlan(
                       renderer: "remotion_mg",
                       fallbackRenderer: "ffmpeg_compose",
                       strategy,
-                      atom: mapping.visualFormFamily === "geometric_mg" ? "neon_geometry_typography" : ribbonAtom,
+                      atom: proceduralAtom,
                       fulfilledBy: "procedural_generation",
-                      requiredInputs: mapping.visualFormFamily === "geometric_mg" ? ["procedural_shape_motif"] : ["template_motion_geometry"],
+                      requiredInputs:
+                        mapping.visualFormFamily === "geometric_mg"
+                          ? ["procedural_shape_motif"]
+                          : mapping.visualFormFamily === "ui_showcase"
+                            ? ["prompt_copy", "feature_list"]
+                            : mapping.visualFormFamily === "kinetic_typography"
+                              ? ["prompt_copy", "typography_timing"]
+                              : ["template_motion_geometry"],
                       ribbonMotion,
                       visualFormFamily: mapping.visualFormFamily,
                       rendererCandidates: mapping.rendererCandidates,
@@ -1959,9 +1972,19 @@ export function createFillPlan(
                     }
                 : strategy === "aigc_placeholder"
                   ? { renderer: "aigc_video_fill_stub", fallbackRenderer: "image_card", strategy, fulfilledBy: "aigc_stub", requiredInputs: ["prompt", "slot_intent"], aigcPrompt: `Clean vertical MG background for ${brief.productName}` }
-                  : { renderer: "remotion_mg", fallbackRenderer: "image_card", strategy, fulfilledBy: "text_or_copy", requiredInputs: ["matched_sibling_slot"], mergeIntoSlotId: mergeIntoClipId, note: "Merge this slot's copy into adjacent matched sibling at render time." }
+                : { renderer: "remotion_mg", fallbackRenderer: "image_card", strategy, fulfilledBy: "text_or_copy", requiredInputs: ["matched_sibling_slot"], mergeIntoSlotId: mergeIntoClipId, note: "Merge this slot's copy into adjacent matched sibling at render time." }
       };
-      return action;
+      const instructions = action.rendererInstructions ?? {};
+      return {
+        ...action,
+        capabilityId: typeof instructions.capabilityId === "string" ? instructions.capabilityId : rendererCapability?.id,
+        backend: instructions.renderer as RendererBackend | undefined,
+        fallbackUsed: Boolean(mapping.visualFormFamily && !rendererCapability),
+        fallbackReason: mapping.visualFormFamily && !rendererCapability ? `No registered renderer capability for ${mapping.visualFormFamily}; using strategy ${strategy}.` : undefined,
+        visualFormFamily: mapping.visualFormFamily,
+        selectedStrategy: strategy,
+        fulfilledBy: instructions.fulfilledBy as FillAction["fulfilledBy"]
+      };
     });
 
   const boundSlotFillPlan: FillAction[] = replacementBindingsForRequest(request)
@@ -1974,7 +1997,7 @@ export function createFillPlan(
       const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${gapMeta?.en ?? mapping.slotType} placeholder`, gapMeta?.category, mapping.visualFormFamily);
       const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, gapMeta?.category, mapping.visualFormFamily);
       const rendererCapability = mapping.visualFormFamily ? primaryRendererCapabilityForFamily(mapping.visualFormFamily) : undefined;
-      return [{
+      const action: FillAction = {
         slotId: binding.slotId,
         strategy: "user_asset_replace",
         reason: `Bind uploaded replacement asset ${binding.assetId} to ${mapping.slotType} and preserve the slot motion.`,
@@ -1996,6 +2019,15 @@ export function createFillPlan(
           rendererCapability,
           capabilityId: rendererCapability?.id
         }
+      };
+      return [{
+        ...action,
+        capabilityId: rendererCapability?.id,
+        backend: action.rendererInstructions?.renderer as RendererBackend | undefined,
+        fallbackUsed: false,
+        visualFormFamily: mapping.visualFormFamily,
+        selectedStrategy: "user_asset_replace",
+        fulfilledBy: "user_asset"
       }];
     });
 

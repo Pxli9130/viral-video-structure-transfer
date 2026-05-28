@@ -300,6 +300,23 @@ function normalizeVlmScores(vlmJson) {
   return Object.values(normalized).some((value) => value !== null && value !== undefined) ? normalized : null;
 }
 
+function hasNumericVlmScore(vlmScores) {
+  return Boolean(
+    vlmScores &&
+    [vlmScores.overall, vlmScores.structure, vlmScores.style, vlmScores.noDirectCopy, vlmScores.visualQuality]
+      .some((value) => typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function vlmRunStatus(vlmArtifact, vlmScores) {
+  if (!vlmArtifact?.exists) return "missing";
+  if (hasNumericVlmScore(vlmScores)) return "ok";
+  const status = String(vlmArtifact.data?.status ?? "").toLowerCase();
+  const reason = String(vlmArtifact.data?.reason ?? "").toLowerCase();
+  if (/skip|skipped/.test(status) || /skip|not set|not run|disabled|not configured/.test(reason)) return "skipped_infra";
+  return "not_run";
+}
+
 function localStyleScore(evaluation) {
   return firstNumber(evaluation?.styleFidelity?.overall, evaluation?.style_fidelity_to_sample?.overall);
 }
@@ -453,6 +470,8 @@ const resolvedVariants = videoVariants.map((config) => {
   const evaluation = evaluationArtifact?.data ?? {};
   const vlm = vlmArtifact?.data ?? null;
   const vlmScores = vlmArtifact?.exists ? normalizeVlmScores(vlm) : null;
+  const vlmStatus = vlmRunStatus(vlmArtifact, vlmScores);
+  const vlmScoreAvailable = hasNumericVlmScore(vlmScores);
   const style = localStyleScore(evaluation);
   const timelineArtifact = timelineByArtifactKey[config.artifactKey];
   return {
@@ -470,6 +489,8 @@ const resolvedVariants = videoVariants.map((config) => {
     evaluationExists: evaluationArtifact?.exists ?? false,
     vlm,
     vlmExists: vlmArtifact?.exists ?? false,
+    vlmStatus,
+    vlmAvailable: vlmScoreAvailable,
     vlmScores,
     style,
     localPassed: evaluation?.passed === true,
@@ -510,7 +531,7 @@ const bestEvaluation = bestVariant?.evaluation ?? {};
 const bestVlmScores = bestVariant?.vlmScores ?? null;
 const sampleName = path.basename(firstDefined(bestVariant?.vlm?.sampleVideo, analysis?.sampleVideo, analysis?.sourceVideo, "marketing.mov"));
 const extractedStructureName = toTitle(firstDefined(template?.videoType, analysis?.videoType, analysis?.primaryMotif?.motif, "motion_graphic_marketing_poster"));
-const vlmAvailable = resolvedVariants.some((variant) => variant.vlmExists);
+const vlmAvailable = resolvedVariants.some((variant) => variant.vlmAvailable);
 const evaluatorAvailable = resolvedVariants.some((variant) => variant.evaluationExists);
 const videosFound = resolvedVariants.filter((variant) => variant.exists).length;
 const highSeverityGaps = gapReport.filter((gap) => String(gap.severity).toLowerCase() === "high").length;
@@ -1485,7 +1506,7 @@ function evaluatorScoreboard() {
           ${scoreBlock("视觉质量", formatPercentScore(bestVlmScores?.visualQuality), "neutral")}
         </div>
         <p>${esc(bestVlmScores?.rationale ?? "VLM 没有提供 rationale。")}</p>
-        <p class="evidence">外部服务说明：VLM 评审是来自已配置 judge adapter 的可选评估证据；它不作为渲染器使用，本页面不会暴露 API key。</p>` : `<p>该 artifact 集未运行 VLM。</p>`}
+        <p class="evidence">外部服务说明：VLM 评审是来自已配置 judge adapter 的可选评估证据；它不作为渲染器使用，本页面不会暴露 API key。</p>` : `<p>该 artifact 集未运行 VLM。</p><p class="evidence">外部服务说明：VLM 评审是可选评估证据；未运行时记录为 skipped_infra/not_run，不计作通过或失败。</p>`}
       </article>
       <article class="panel-card trust-card">
         <h3>可信策略</h3>
@@ -1650,7 +1671,8 @@ const manifest = scrubObject({
         path: variant.href,
         source: variant.summary ? "variant-summary.json" : "known filename fallback",
         localEvaluator: variant.evaluationExists,
-        vlmJudge: variant.vlmExists,
+        vlmJudge: variant.vlmAvailable,
+        vlmStatus: variant.vlmStatus,
         vlmOverall: variant.vlmScores?.overall ?? null,
         localStyleFidelity: variant.style ?? null
       }
@@ -1678,7 +1700,8 @@ const manifest = scrubObject({
     byVariant: Object.fromEntries(resolvedVariants.map((variant) => [
       variant.key,
       {
-        available: variant.vlmExists,
+        available: variant.vlmAvailable,
+        status: variant.vlmStatus,
         overall: variant.vlmScores?.overall ?? null,
         structure: variant.vlmScores?.structure ?? null,
         style: variant.vlmScores?.style ?? null,

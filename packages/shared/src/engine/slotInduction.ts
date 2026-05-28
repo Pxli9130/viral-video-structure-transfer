@@ -72,6 +72,14 @@ export const RENDERER_CAPABILITIES: RendererCapability[] = [
     fallbackRenderer: "text_card"
   },
   {
+    id: "generic_asset_proxy",
+    handles: ["unknown"],
+    requiredAssetTypes: ["image", "video"],
+    minCount: 1,
+    proceduralPossible: false,
+    fallbackRenderer: "text_card"
+  },
+  {
     id: "rotating_object_proxy",
     handles: ["object_motion"],
     requiredAssetTypes: ["image", "video", "gif", "glb", "lottie"],
@@ -302,9 +310,9 @@ function fallbackStrategiesForFamily(family: VisualFormFamily): FillStrategy[] {
     case "geometric_mg":
       return ["procedural_generation", "packaging_overlay"];
     case "ui_showcase":
-      return ["text_card", "packaging_overlay", "procedural_generation"];
+      return ["procedural_generation", "packaging_overlay", "text_card"];
     case "kinetic_typography":
-      return ["text_card", "packaging_overlay"];
+      return ["procedural_generation", "packaging_overlay", "text_card"];
     default:
       return ["proxy_placeholder", "text_card"];
   }

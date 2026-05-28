@@ -496,6 +496,38 @@ describe("v1.2 mock pipeline", () => {
     expect(geoAction?.strategy).toBe("procedural_generation");
   });
 
+  it("feature_list_scroller_rendered", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "feature_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Feature list UI with tool list highlight and menu scroller.",
+      reusablePatterns: ["feature_list_scroller"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const uiAction = fillPlan.find((action) => action.visualFormFamily === "ui_showcase");
+
+    expect(uiAction?.strategy).toBe("procedural_generation");
+    expect(uiAction?.capabilityId).toBe("feature_list_scroller");
+    expect(uiAction?.rendererInstructions?.atom).toBe("feature_list_scroller");
+  });
+
+  it("kinetic_text_card_rendered", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "kinetic_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Split kinetic typography and dynamic text card sequence.",
+      reusablePatterns: ["split_kinetic_typography"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const kineticAction = fillPlan.find((action) => action.visualFormFamily === "kinetic_typography");
+
+    expect(kineticAction?.strategy).toBe("procedural_generation");
+    expect(kineticAction?.capabilityId).toBe("kinetic_text_card");
+    expect(kineticAction?.rendererInstructions?.atom).toBe("kinetic_text_card");
+  });
+
   it("static_poster_must_not_induce_media_cards", () => {
     const analysis = buildMockVideoAnalysis({ assetId: "poster_sample", projectId: "project_demo", purpose: "sample" });
     const slots = induceSlotsFromAnalysis(analysis, undefined, [], minimalVlm({
