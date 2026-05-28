@@ -593,6 +593,8 @@ export interface TimelineClip {
   replacementSlotId?: string;
   placeholderSpec?: PlaceholderSpec;
   gapFillStrategy?: "none" | FillStrategy;
+  previewFrame?: string;
+  sourceEvidenceFrame?: string;
 }
 
 export interface TimelineMappingItem {

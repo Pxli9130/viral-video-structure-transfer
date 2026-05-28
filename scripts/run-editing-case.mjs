@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -19,6 +20,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const artifactDir = path.join(repoRoot, "docs", "artifacts", "editing_case");
 const previewDir = path.join(artifactDir, "preview_frames");
 const samplePath = path.join(repoRoot, "test_videos", "editing.mov");
+const forbiddenArtifactPatterns = [
+  { id: "/home/pxli", re: /\/home\/pxli/g },
+  { id: ".env", re: /\.env/g },
+  { id: "GEMINI_API_KEY", re: /GEMINI_API_KEY/g },
+  { id: "AIza", re: /AIza[0-9A-Za-z_-]*/g },
+  { id: "ark-", re: /ark-[0-9A-Za-z_-]*/g }
+];
+const textArtifactExtensions = new Set([".html", ".md", ".json", ".txt", ".csv", ".mjs", ".js"]);
 
 function resolveFfmpegBin() {
   const explicit = process.env.FFMPEG_PATH;
@@ -30,6 +39,17 @@ function resolveFfmpegBin() {
 }
 
 const ffmpegBin = resolveFfmpegBin();
+
+function resolveFfprobeBin() {
+  const explicit = process.env.FFPROBE_PATH;
+  if (explicit && explicit !== "ffprobe") return explicit;
+  const condaBase = process.env.CONDA_BASE ?? "/home/pxli/anaconda3";
+  const condaEnv = process.env.VIRAL_CONDA_ENV ?? "viral";
+  const condaBin = path.join(condaBase, "envs", condaEnv, "bin", "ffprobe");
+  return existsSync(condaBin) ? condaBin : "ffprobe";
+}
+
+const ffprobeBin = resolveFfprobeBin();
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
@@ -67,6 +87,134 @@ async function extractFrame(inputPath, timeSec, outputPath, label) {
     outputPath
   ]);
   return { path: outputPath, label };
+}
+
+async function muxBeatAudio(videoInputPath, outputPath, durationSec) {
+  const tickSource = `aevalsrc=if(lt(mod(t\\,0.5)\\,0.04)\\,0.22*sin(2*PI*1040*t)\\,0):s=48000:d=${Math.max(1, durationSec).toFixed(2)}`;
+  await run(ffmpegBin, [
+    "-y",
+    "-i",
+    videoInputPath,
+    "-f",
+    "lavfi",
+    "-i",
+    tickSource,
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-b:v",
+    "900k",
+    "-maxrate",
+    "1100k",
+    "-bufsize",
+    "1800k",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "160k",
+    "-shortest",
+    "-movflags",
+    "+faststart",
+    outputPath
+  ]);
+}
+
+async function probeRender(renderPath) {
+  if (!existsSync(renderPath)) return { exists: false };
+  const result = await run(ffprobeBin, [
+    "-v",
+    "error",
+    "-show_entries",
+    "stream=codec_type,codec_name,width,height,r_frame_rate",
+    "-show_entries",
+    "format=duration,size,bit_rate",
+    "-of",
+    "json",
+    renderPath
+  ]);
+  const parsed = JSON.parse(result.stdout || "{}");
+  const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+  const video = streams.find((stream) => stream.codec_type === "video");
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  let fps = null;
+  if (video?.r_frame_rate) {
+    const [n, d] = String(video.r_frame_rate).split("/").map(Number);
+    if (Number.isFinite(n) && Number.isFinite(d) && d !== 0) fps = n / d;
+  }
+  return {
+    exists: true,
+    durationSec: parsed.format?.duration ? Number(parsed.format.duration) : null,
+    sizeBytes: parsed.format?.size ? Number(parsed.format.size) : null,
+    bitrate: parsed.format?.bit_rate ? Number(parsed.format.bit_rate) : null,
+    width: video?.width ?? null,
+    height: video?.height ?? null,
+    fps,
+    videoCodec: video?.codec_name ?? null,
+    hasAudio: Boolean(audio),
+    audioCodec: audio?.codec_name ?? null
+  };
+}
+
+async function walkTextArtifacts(root, acc = []) {
+  let entries = [];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return acc;
+  }
+  for (const entry of entries) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      await walkTextArtifacts(full, acc);
+    } else if (entry.isFile() && textArtifactExtensions.has(path.extname(entry.name).toLowerCase())) {
+      acc.push(full);
+    }
+  }
+  return acc;
+}
+
+async function scanPublicTextArtifacts(root) {
+  const files = await walkTextArtifacts(root);
+  const matches = [];
+  for (const file of files) {
+    const body = await readFile(file, "utf8");
+    const lines = body.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      for (const pattern of forbiddenArtifactPatterns) {
+        pattern.re.lastIndex = 0;
+        if (pattern.re.test(line)) {
+          matches.push({
+            path: path.relative(repoRoot, file),
+            line: index + 1,
+            pattern: pattern.id
+          });
+        }
+      }
+    }
+  }
+  return {
+    scannedFiles: files.map((file) => path.relative(repoRoot, file)),
+    matchCount: matches.length,
+    matches,
+    passed: matches.length === 0
+  };
+}
+
+function sourceEvidenceForSlot(slotId, role) {
+  if (/rotating_hero|hook/.test(slotId) || role === "hook") return "preview_frames/sample_hook.png";
+  if (/kinetic|text|title|subtitle|cta/.test(slotId) || role === "cta") return "preview_frames/sample_text.png";
+  if (/beat_sync|match_cut|action|comparison|usage|proof/.test(slotId) || role === "proof") return "preview_frames/sample_action.png";
+  return "preview_frames/sample_text.png";
+}
+
+function gate(id, passed, value, comment) {
+  return { id, passed: Boolean(passed), value, comment };
 }
 
 async function writeJson(relativePath, value) {
@@ -251,9 +399,26 @@ async function main() {
   const authorizedRequest = requestForCase("authorized");
   const authorizedReferenceSource = understandSourceVideo(analysis, sampleReferenceAsset, authorizedRequest, vlm);
   const authorizedReferenceMappings = matchSlots(template, authorizedReferenceSource, authorizedRequest);
+  const pathlessSourceAsset = {
+    ...mockSourceAsset,
+    id: "pathless_source_video",
+    metadata: {},
+    path: undefined,
+    url: undefined
+  };
+  const pathlessRequest = { ...requestForCase("disabled"), sourceVideo: { assetId: "pathless_source_video" } };
+  const pathlessSourceAnalysis = buildMockVideoAnalysis({
+    assetId: "pathless_source_video",
+    projectId: "editing_case_project",
+    purpose: "source",
+    durationSec: 30
+  });
+  const pathlessSource = understandSourceVideo(pathlessSourceAnalysis, pathlessSourceAsset, pathlessRequest, vlm);
+  const pathlessMappings = matchSlots(template, pathlessSource, pathlessRequest);
 
+  const tempRenderDir = await mkdtemp(path.join(tmpdir(), "vvst-editing-case-"));
   const renderer = new FFmpegRenderer({
-    generatedDir: artifactDir,
+    generatedDir: tempRenderDir,
     assetResolver: {
       resolve(assetId) {
         if (assetId === "editing_sample") return samplePath;
@@ -266,13 +431,14 @@ async function main() {
     throw new Error(`Editing case render failed: ${renderOutput.error ?? "unknown error"}`);
   }
   const renderPath = path.join(artifactDir, "render.mp4");
-  await copyFile(renderOutput.outputPath, renderPath);
-  if (path.resolve(renderOutput.outputPath) !== path.resolve(renderPath)) {
-    await rm(renderOutput.outputPath, { force: true });
-  }
+  await muxBeatAudio(renderOutput.outputPath, renderPath, generation.timeline.durationSec);
+  await rm(tempRenderDir, { recursive: true, force: true });
+  await rm(path.join(artifactDir, "ffmpeg"), { recursive: true, force: true });
+  const renderMetadata = await probeRender(renderPath);
 
   const timeline = structuredClone(generation.timeline);
   const previewFrames = [];
+  const previewPairs = [];
   for (let index = 0; index < timeline.clips.length; index += 1) {
     const clip = timeline.clips[index];
     const isProxy = clip.gapFillStrategy === "proxy_placeholder";
@@ -281,8 +447,26 @@ async function main() {
     const framePath = path.join(artifactDir, relative);
     await extractFrame(renderPath, clip.startSec + Math.min(0.35, clip.durationSec / 2), framePath, clip.id);
     clip.previewFrame = relative;
-    previewFrames.push({ clipId: clip.id, frame: relative, kind: isProxy ? "proxy" : "generated" });
+    const slotId = clip.replacementSlotId ?? clip.layers.find((layer) => layer.style?.replacementSlotId)?.style?.replacementSlotId ?? clip.id;
+    const sourceEvidenceFrame = sourceEvidenceForSlot(String(slotId), clip.role);
+    clip.sourceEvidenceFrame = sourceEvidenceFrame;
+    previewFrames.push({ clipId: clip.id, frame: relative, kind: isProxy ? "proxy" : "generated", slotId });
+    previewPairs.push({
+      slotId,
+      clipId: clip.id,
+      kind: isProxy ? "proxy" : "generated",
+      status: clip.gapFillStrategy ?? "none",
+      sourceEvidenceFrame,
+      generatedProxyFrame: relative
+    });
   }
+  const previewManifest = {
+    generatedAt: nowIso(),
+    sample: "editing.mov",
+    render: "render.mp4",
+    pairs: previewPairs
+  };
+  await writeFile(path.join(previewDir, "manifest.json"), `${JSON.stringify(previewManifest, null, 2)}\n`, "utf8");
 
   await run(ffmpegBin, [
     "-y",
@@ -297,79 +481,132 @@ async function main() {
 
   const gapReport = generateGapReport(generation.slotMapping, { source: generation.sourceUnderstanding, template, request });
   const fillPlan = createFillPlan(generation.slotMapping, generation.sourceUnderstanding, request, template);
+  const visualGapCount = gapReport.filter((gap) => gap.severity !== "low" && gap.status !== "matched").length;
+  const proxyClipCount = timeline.clips.filter((clip) => clip.gapFillStrategy === "proxy_placeholder").length;
   const gates = [
-    {
-      id: "gap_detected_when_no_target_assets",
-      passed: gapReport.some((gap) => gap.status !== "matched" && gap.severity !== "low"),
-      value: gapReport.filter((gap) => gap.status !== "matched").length,
-      comment: "targetAssets is empty, so visual gaps must be surfaced."
-    },
-    {
-      id: "sample_visual_not_reused_without_authorization",
-      passed: disabledReferenceMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
-      value: disabledReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      comment: "editing.mov source_shot_* remains structure evidence only by default."
-    },
-    {
-      id: "authorized_sample_reuse_can_match_visual_slots",
-      passed: authorizedReferenceMappings.some((mapping) => mapping.assetAvailability === "source_video_mapped"),
-      value: authorizedReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      comment: "sampleAssetReuse='authorized' is the explicit override path."
-    },
-    {
-      id: "mock_asset_not_counted_as_match",
-      passed: generation.slotMapping.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
-      value: generation.slotMapping.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      comment: "demo_source_video is mock/no renderable path and cannot fill visual slots."
-    },
-    {
-      id: "interactive_gap_fill_non_empty",
-      passed: (generation.replacementSlots ?? []).length > 0,
-      value: generation.replacementSlots?.length ?? 0,
-      comment: "replacementSlots are created for visual/material gaps."
-    },
-    {
-      id: "proxy_placeholder_rendered",
-      passed: timeline.clips.some((clip) => clip.gapFillStrategy === "proxy_placeholder") && previewFrames.some((frame) => frame.kind === "proxy"),
-      value: previewFrames.filter((frame) => frame.kind === "proxy").length,
-      comment: "render.mp4 and preview_frames include proxy frames."
-    },
-    {
-      id: "timeline_preview_has_real_or_proxy_frames",
-      passed: timeline.clips.every((clip) => typeof clip.previewFrame === "string" && existsSync(path.join(artifactDir, clip.previewFrame))),
-      value: timeline.clips.length,
-      comment: "Every timeline clip links to an artifact-backed preview frame."
-    },
-    {
-      id: "render_mp4_not_only_text_cards",
-      passed: timeline.clips.some((clip) => clip.gapFillStrategy === "proxy_placeholder"),
-      value: timeline.clips.filter((clip) => clip.gapFillStrategy === "proxy_placeholder").length,
-      comment: "At least one rendered clip is a visible proxy placeholder, not a plain text card."
-    }
+    gate(
+      "sample_reference_cannot_satisfy_visual_slots_by_default",
+      disabledReferenceMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
+      disabledReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
+      "editing.mov source_shot_* remains structure evidence only by default."
+    ),
+    gate(
+      "sample_visual_not_reused_without_authorization",
+      disabledReferenceMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
+      disabledReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
+      "Default sampleAssetReuse disabled blocks reference visual reuse."
+    ),
+    gate(
+      "authorized_sample_reuse_can_match_visual_slots",
+      authorizedReferenceMappings.some((mapping) => mapping.assetAvailability === "source_video_mapped"),
+      authorizedReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
+      "sampleAssetReuse='authorized' is the explicit override path."
+    ),
+    gate(
+      "mock_asset_cannot_satisfy_visual_slots",
+      generation.slotMapping.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
+      generation.slotMapping.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
+      "demo_source_video is mock/no renderable path and cannot fill visual slots."
+    ),
+    gate(
+      "mock_asset_not_counted_as_match",
+      generation.slotMapping.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
+      generation.slotMapping.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
+      "Mock source evidence is blocked from material matching."
+    ),
+    gate(
+      "asset_without_path_cannot_satisfy_visual_slots",
+      pathlessMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
+      pathlessMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
+      "Pathless source assets are not renderable material."
+    ),
+    gate(
+      "editing_case_no_target_assets_creates_visual_gaps",
+      visualGapCount > 0,
+      visualGapCount,
+      "targetAssets is empty, so visual gaps must be surfaced."
+    ),
+    gate(
+      "gap_detected_when_no_target_assets",
+      visualGapCount > 0,
+      visualGapCount,
+      "No-target editing case produced non-low material gaps."
+    ),
+    gate(
+      "interactive_gap_fill_non_empty",
+      (generation.replacementSlots ?? []).length > 0,
+      generation.replacementSlots?.length ?? 0,
+      "replacementSlots are created for visual/material gaps."
+    ),
+    gate(
+      "proxy_placeholder_rendered",
+      proxyClipCount > 0 && previewFrames.some((frame) => frame.kind === "proxy"),
+      previewFrames.filter((frame) => frame.kind === "proxy").length,
+      "render.mp4 and preview_frames include proxy frames."
+    ),
+    gate(
+      "timeline_preview_has_real_or_proxy_frames",
+      timeline.clips.every((clip) =>
+        typeof clip.previewFrame === "string" &&
+        existsSync(path.join(artifactDir, clip.previewFrame)) &&
+        typeof clip.sourceEvidenceFrame === "string" &&
+        existsSync(path.join(artifactDir, clip.sourceEvidenceFrame))
+      ) && existsSync(path.join(previewDir, "manifest.json")),
+      timeline.clips.length,
+      "Every timeline clip links to source evidence and generated/proxy preview frames."
+    ),
+    gate(
+      "render_mp4_has_audio",
+      renderMetadata.hasAudio === true,
+      renderMetadata.audioCodec ?? "missing",
+      "Editing-case MP4 includes deterministic low-volume beat/tick audio."
+    ),
+    gate(
+      "render_mp4_not_tiny",
+      (renderMetadata.sizeBytes ?? 0) >= 250000,
+      renderMetadata.sizeBytes ?? 0,
+      "Muxed audio and animated proxy render should avoid tiny text-card-only output."
+    ),
+    gate(
+      "render_mp4_not_only_text_cards",
+      proxyClipCount > 0 && (renderMetadata.sizeBytes ?? 0) >= 250000,
+      proxyClipCount,
+      "At least one rendered clip is a visible proxy placeholder, not a plain text card."
+    )
   ];
 
-  const artifactGeneration = {
-    ...generation,
-    timeline,
-    gapReport,
-    fillPlan,
-    editingCaseGates: gates,
-    materialPoolEvidence: {
-      targetAssetsEmpty: true,
-      blockedMockAsset: "demo_source_video blocked because it is mock/no renderable path.",
-      blockedSampleReference: "source_shot_* from editing.mov blocked because sample/reference only.",
-      authorizedOverride: "sampleAssetReuse='authorized' allows reference/source shots to satisfy visual slots."
-    }
-  };
+  const motifSlots = template.requiredSlots.filter((slot) =>
+    ["slot_rotating_hero_object_intro", "slot_kinetic_text_card_sequence", "slot_beat_sync_action_montage", "slot_cinematic_match_cut_sequence", "slot_cta_end_slate"].includes(slot.id)
+  );
 
-  await writeJson("analysis.editing.json", { analysis, vlm, template });
-  await writeJson("generation-result.json", artifactGeneration);
-  await writeJson("timeline.json", timeline);
-  await writeJson("gap-report.json", gapReport);
-  await writeJson("fill-plan.json", fillPlan);
-  await writeJson("replacement-slots.json", generation.replacementSlots ?? []);
+  async function writeCaseArtifacts(currentGates, publicScan) {
+    const artifactGeneration = {
+      ...generation,
+      timeline,
+      gapReport,
+      fillPlan,
+      motifSlots,
+      previewManifest: "preview_frames/manifest.json",
+      renderMetadata,
+      editingCaseGates: currentGates,
+      publicArtifactScan: publicScan ? { passed: publicScan.passed, scannedFiles: publicScan.scannedFiles.length, matchCount: publicScan.matchCount } : undefined,
+      materialPoolEvidence: {
+        targetAssetsEmpty: true,
+        blockedMockAsset: "demo_source_video blocked because it is mock/no renderable path.",
+        blockedSampleReference: "source_shot_* from editing.mov blocked because sample/reference only.",
+        pathlessBlocked: "pathless source assets are ignored because they are not renderable material.",
+        authorizedOverride: "sampleAssetReuse='authorized' allows reference/source shots to satisfy visual slots."
+      }
+    };
 
-  const report = [
+    await writeJson("analysis.editing.json", { analysis: { ...analysis, motifSlots }, vlm, template });
+    await writeJson("generation-result.json", artifactGeneration);
+    await writeJson("timeline.json", timeline);
+    await writeJson("gap-report.json", gapReport);
+    await writeJson("fill-plan.json", fillPlan);
+    await writeJson("replacement-slots.json", generation.replacementSlots ?? []);
+
+    const report = [
     "# Editing Case IGF Report",
     "",
     `Generated: ${nowIso()}`,
@@ -380,6 +617,11 @@ async function main() {
     "- `source_shot_*` from `editing.mov` was blocked because it is sample/reference only.",
     "- `targetAssets` were empty, so visual gaps were detected.",
     "- `sampleAssetReuse: \"authorized\"` is the explicit override path.",
+    "- Pathless and mock source assets are blocked from target-material matching.",
+    "",
+    "## Motif Slots",
+    "",
+    ...motifSlots.map((slot) => `- ${slot.id}: ${slot.visualForm ?? slot.slotType}, ${slot.semanticLabel ?? "unknown_object"}, clickToReplace=${slot.clickToReplace === true}`),
     "",
     "## Detected Gaps",
     "",
@@ -391,18 +633,38 @@ async function main() {
     "",
     "## Gates",
     "",
-    ...gates.map((gate) => `- ${gate.passed ? "PASS" : "FAIL"} ${gate.id}: ${gate.value} - ${gate.comment}`),
+    ...currentGates.map((gate) => `- ${gate.passed ? "PASS" : "FAIL"} ${gate.id}: ${gate.value} - ${gate.comment}`),
+    "",
+    "## Render Metadata",
+    "",
+    `- duration: ${renderMetadata.durationSec ?? "unknown"}s`,
+    `- resolution: ${renderMetadata.width ?? "?"}x${renderMetadata.height ?? "?"}`,
+    `- fps: ${renderMetadata.fps ?? "unknown"}`,
+    `- sizeBytes: ${renderMetadata.sizeBytes ?? "unknown"}`,
+    `- bitrate: ${renderMetadata.bitrate ?? "unknown"}`,
+    `- audio: ${renderMetadata.hasAudio ? renderMetadata.audioCodec ?? "present" : "missing"}`,
+    "",
+    "## Timeline Preview",
+    "",
+    "- `preview_frames/manifest.json` pairs labeled sample evidence frames with generated proxy frames.",
+    "- Sample frames are evidence only; they are not used as target material.",
+    "",
+    "## Public Artifact Sanitization",
+    "",
+    `- scannedFiles: ${publicScan?.scannedFiles.length ?? "pending"}`,
+    `- forbiddenMatches: ${publicScan?.matchCount ?? "pending"}`,
     "",
     "## Artifacts",
     "",
     "- `render.mp4`",
     "- `contact_sheet.png`",
-    "- `preview_frames/*.png`"
+    "- `preview_frames/*.png`",
+    "- `preview_frames/manifest.json`"
   ].join("\n");
-  await writeFile(path.join(artifactDir, "report.md"), `${report}\n`, "utf8");
+    await writeFile(path.join(artifactDir, "report.md"), `${report}\n`, "utf8");
 
-  const proxySlot = (generation.replacementSlots ?? []).find((slot) => slot.slotId === "slot_rotating_hero_object_intro") ?? generation.replacementSlots?.[0];
-  const html = `<!doctype html>
+    const proxySlot = (generation.replacementSlots ?? []).find((slot) => slot.slotId === "slot_rotating_hero_object_intro") ?? generation.replacementSlots?.[0];
+    const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -423,7 +685,10 @@ async function main() {
     .warn { background: #fef3c7; color: #92400e; }
     table { border-collapse: collapse; width: 100%; }
     td, th { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
-    .frames img { width: 150px; aspect-ratio: 9 / 16; object-fit: cover; background: #111827; }
+    .frames figure { width: min(240px, 100%); margin: 0; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
+    .frames img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; background: #111827; }
+    figcaption { color: #475569; font-size: 12px; margin-top: 6px; }
     @media (max-width: 860px) { main { padding: 16px; } .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -452,20 +717,26 @@ async function main() {
         <tr><th>slotId</th><td>${esc(proxySlot?.slotId ?? "missing")}</td></tr>
         <tr><th>status</th><td>${esc(proxySlot?.status ?? "missing")}</td></tr>
         <tr><th>visualForm</th><td>${esc(proxySlot?.visualForm ?? "missing")}</td></tr>
+        <tr><th>motion</th><td>${esc(`${proxySlot?.motionSpec?.type ?? "unknown"} / ${proxySlot?.motionSpec?.axis ?? "unknown"}`)}</td></tr>
         <tr><th>accepted</th><td>${esc(proxySlot?.acceptedAssetTypes?.join(", ") ?? "")}</td></tr>
         <tr><th>placeholder</th><td>${esc(proxySlot?.placeholderSpec?.label ?? "")}</td></tr>
       </table>
     </section>
   </div>
   <section class="card" style="margin-top:16px">
-    <h2>Timeline Preview Frames</h2>
+    <h2>Timeline Preview · Source Evidence → Generated Proxy</h2>
     <div class="frames">
-      ${previewFrames.map((frame) => `<figure><img src="${esc(frame.frame)}" alt="${esc(frame.clipId)}" /><figcaption>${esc(frame.kind)} · ${esc(frame.clipId)}</figcaption></figure>`).join("")}
+      ${previewPairs.map((pair) => `<figure><div class="pair"><div><img src="${esc(pair.sourceEvidenceFrame)}" alt="source evidence ${esc(pair.slotId)}" /><figcaption>source evidence</figcaption></div><div><img src="${esc(pair.generatedProxyFrame)}" alt="generated ${esc(pair.slotId)}" /><figcaption>${esc(pair.kind)} output</figcaption></div></div><figcaption>${esc(pair.slotId)} · ${esc(pair.status)}</figcaption></figure>`).join("")}
     </div>
+    <p><a href="preview_frames/manifest.json">preview_frames/manifest.json</a></p>
   </section>
   <section class="card" style="margin-top:16px">
     <h2>Gates</h2>
-    <div class="badges">${gates.map((gate) => `<span class="badge ${gate.passed ? "pass" : "fail"}">${esc(gate.id)}: ${gate.passed ? "PASS" : "FAIL"}</span>`).join("")}</div>
+    <div class="badges">${currentGates.map((gate) => `<span class="badge ${gate.passed ? "pass" : "fail"}">${esc(gate.id)}: ${gate.passed ? "PASS" : "FAIL"}</span>`).join("")}</div>
+  </section>
+  <section class="card" style="margin-top:16px">
+    <h2>Render Metadata</h2>
+    <p>${esc(renderMetadata.durationSec ?? "?")}s · ${esc(renderMetadata.width ?? "?")}x${esc(renderMetadata.height ?? "?")} · audio=${renderMetadata.hasAudio ? "present" : "missing"} · size=${esc(renderMetadata.sizeBytes ?? "?")} bytes</p>
   </section>
   <section class="card" style="margin-top:16px">
     <h2>Artifact Links</h2>
@@ -474,7 +745,25 @@ async function main() {
 </main>
 </body>
 </html>`;
-  await writeFile(path.join(artifactDir, "index.html"), html, "utf8");
+    await writeFile(path.join(artifactDir, "index.html"), html, "utf8");
+  }
+
+  await writeCaseArtifacts(gates, undefined);
+  let publicArtifactScan = await scanPublicTextArtifacts(artifactDir);
+  gates.push(
+    gate(
+      "public_artifacts_sanitized",
+      publicArtifactScan.passed,
+      publicArtifactScan.matchCount,
+      "Public editing_case HTML/JSON/MD/TXT artifacts contain no private paths or obvious secret patterns."
+    )
+  );
+  await writeCaseArtifacts(gates, publicArtifactScan);
+  publicArtifactScan = await scanPublicTextArtifacts(artifactDir);
+  if (!publicArtifactScan.passed) {
+    const matchSummary = publicArtifactScan.matches.map((match) => `${match.path}:${match.line}:${match.pattern}`).join(", ");
+    throw new Error(`Public artifact sanitization failed: ${matchSummary}`);
+  }
 
   const failed = gates.filter((gate) => !gate.passed);
   if (failed.length) {

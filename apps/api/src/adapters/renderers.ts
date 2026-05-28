@@ -222,13 +222,64 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     color?: string;
     shape?: string;
   };
+  const replacementSlotId = String(clip.replacementSlotId ?? proxyLayer?.style?.replacementSlotId ?? "");
+  const visualForm = String(proxyLayer?.style?.visualForm ?? "");
+  const labelRaw = String(placeholder.label ?? "Rotating hero object placeholder");
+  const isRotatingHero =
+    replacementSlotId.includes("rotating_hero") ||
+    visualForm === "rotating_3d_object" ||
+    /rotating|hero object|helmet|head|logo/i.test(labelRaw);
+  const isMontage =
+    replacementSlotId.includes("beat_sync") ||
+    replacementSlotId.includes("match_cut") ||
+    visualForm === "action_montage_sequence" ||
+    visualForm === "match_cut_sequence" ||
+    /montage|match|action|beat/i.test(labelRaw);
   const proxyColor = ffmpegColor(placeholder.color, "0xE53935");
   const size = Math.round(Math.min(width, height) * 0.34);
   const x = Math.round((width - size) / 2);
   const y = Math.round(height * 0.27);
   const badgeY = Math.round(y + size + height * 0.05);
-  const label = escapeDrawText(placeholder.label ?? "Rotating hero object placeholder");
+  const label = escapeDrawText(labelRaw);
   const shapeLabel = escapeDrawText(`PROXY PLACEHOLDER · ${placeholder.shape ?? "shape"}`);
+
+  if (isRotatingHero) {
+    const orbitX = `(iw-${size})/2+${Math.round(size * 0.28)}*sin(2*PI*t*0.72)`;
+    const orbitY = `${y}+${Math.round(size * 0.11)}*cos(2*PI*t*0.72)`;
+    const visorY = `${y + Math.round(size * 0.32)}+${Math.round(size * 0.05)}*cos(2*PI*t*0.72)`;
+    const shineX = `(iw-${size})/2+${Math.round(size * 0.63)}+${Math.round(size * 0.22)}*sin(2*PI*t*0.72)`;
+    return [
+      `drawbox=x=${x - 48}:y=${y - 54}:w=${size + 96}:h=${size + 108}:color=white@0.08:t=fill`,
+      `drawbox=x=${orbitX}:y=${orbitY}:w=${size}:h=${size}:color=${proxyColor}@0.88:t=fill`,
+      `drawbox=x=${orbitX}:y=${orbitY}:w=${size}:h=${size}:color=white@0.88:t=10`,
+      `drawbox=x=(iw-${size})/2+${Math.round(size * 0.17)}:y=${visorY}:w=${Math.round(size * 0.66)}:h=${Math.round(size * 0.16)}:color=black@0.42:t=fill`,
+      `drawbox=x=${shineX}:y=${y + Math.round(size * 0.12)}:w=${Math.round(size * 0.12)}:h=${Math.round(size * 0.58)}:color=white@0.32:t=fill`,
+      `drawbox=x=0:y=${Math.round(height * 0.12)}:w='${Math.round(width * 0.36)}+${Math.round(width * 0.18)}*sin(2*PI*t*2)':h=8:color=${proxyColor}@0.52:t=fill`,
+      `drawbox=x=iw-${Math.round(width * 0.46)}:y=${Math.round(height * 0.82)}:w='${Math.round(width * 0.32)}+${Math.round(width * 0.14)}*cos(2*PI*t*2)':h=10:color=0x38bdf8@0.46:t=fill`,
+      drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  if (isMontage) {
+    const cardW = Math.round(width * 0.68);
+    const cardH = Math.round(height * 0.16);
+    const cardX = Math.round((width - cardW) / 2);
+    const cardY = Math.round(height * 0.28);
+    const pulse = `1+0.08*sin(2*PI*t*2)`;
+    return [
+      `drawbox=x=${cardX}:y=${cardY}:w=${cardW}:h=${cardH}:color=${proxyColor}@0.78:t=fill`,
+      `drawbox=x=${cardX - 20}:y=${cardY + cardH + 28}:w=${Math.round(cardW * 0.7)}:h=${cardH}:color=0x111827@0.82:t=fill`,
+      `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w=${Math.round(cardW * 0.62)}:h=${cardH}:color=0xf97316@0.72:t=fill`,
+      `drawbox=x=${cardX}:y=${cardY}:w='${cardW}*${pulse}':h=8:color=white@0.72:t=fill`,
+      `drawbox=x=${cardX}:y=${cardY + cardH + 28}:w='${Math.round(cardW * 0.7)}*${pulse}':h=8:color=0x38bdf8@0.78:t=fill`,
+      `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w='${Math.round(cardW * 0.62)}*${pulse}':h=8:color=white@0.78:t=fill`,
+      `drawbox=x='mod(t*${Math.round(width * 1.8)},iw)':y=${Math.round(height * 0.2)}:w=34:h=${Math.round(height * 0.66)}:color=white@0.14:t=fill`,
+      drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 76))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
   return [
     `drawbox=x=${x - 18}:y=${y - 18}:w=${size + 36}:h=${size + 36}:color=white@0.16:t=fill`,
     `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=${proxyColor}@0.92:t=fill`,

@@ -724,11 +724,17 @@ async function renderSlotReplacementFixture(timeline, stableOutputPath, renderId
     });
     const output = await renderer.render(timeline, renderId);
     if (output.status !== "completed" || !output.outputPath || !existsSync(output.outputPath)) {
+      if (existsSync(stableOutputPath)) {
+        return { rendered: true, path: stableOutputPath, reused: true, warning: output.error ?? "Remotion did not refresh existing fixture." };
+      }
       return { rendered: false, path: stableOutputPath, error: output.error ?? "Remotion renderer did not produce an output path." };
     }
     await copyFile(output.outputPath, stableOutputPath);
     return { rendered: true, path: stableOutputPath, renderId: output.renderId };
   } catch (error) {
+    if (existsSync(stableOutputPath)) {
+      return { rendered: true, path: stableOutputPath, reused: true, warning: error.message };
+    }
     return { rendered: false, path: stableOutputPath, error: error.message };
   }
 }

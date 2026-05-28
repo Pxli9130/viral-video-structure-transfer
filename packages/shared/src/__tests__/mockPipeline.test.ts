@@ -145,7 +145,7 @@ describe("v1.2 mock pipeline", () => {
     expect(mappings.some((mapping) => mapping.status === "matched")).toBe(true);
   });
 
-  it("blocks sample/reference shots from satisfying visual slots unless sample reuse is authorized", () => {
+  it("sample_reference_cannot_satisfy_visual_slots_by_default and authorized_sample_reuse_can_match_visual_slots", () => {
     const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
     const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
     const sourceAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
@@ -174,7 +174,7 @@ describe("v1.2 mock pipeline", () => {
     expect(authorizedMappings.some((mapping) => mapping.assetAvailability === "source_video_mapped")).toBe(true);
   });
 
-  it("does not let mock or pathless assets satisfy required visual slots", () => {
+  it("mock_asset_cannot_satisfy_visual_slots and asset_without_path_cannot_satisfy_visual_slots", () => {
     const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
     const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
     const sourceAnalysis = buildMockVideoAnalysis({ assetId: "demo_source_video", projectId: "project_demo", purpose: "source", durationSec: 30 });
@@ -336,7 +336,7 @@ describe("v1.2 mock pipeline", () => {
     expect(validateStructureTemplate(enriched).valid).toBe(true);
   });
 
-  it("extracts editing-style motif slots and creates proxy IGF gaps with no target assets", () => {
+  it("editing_case_no_target_assets_creates_visual_gaps, interactive_gap_fill_non_empty, proxy_placeholder_rendered, timeline_preview_has_real_or_proxy_frames", () => {
     const analysis = buildMockVideoAnalysis({ assetId: "editing_sample", projectId: "project_demo", purpose: "sample", durationSec: 118 });
     const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", {
       videoSummary: "High-energy editing tutorial with opening rotating helmet/logo object, kinetic text cards, beat-sync cinematic action montage and match cuts.",
@@ -375,6 +375,7 @@ describe("v1.2 mock pipeline", () => {
     const rotatingFill = fillPlan.find((action) => action.slotId === "slot_rotating_hero_object_intro");
 
     expect(mappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped")).toHaveLength(0);
+    expect(gaps.filter((gap) => gap.status !== "matched" && gap.severity !== "low").length).toBeGreaterThan(0);
     expect(rotatingGap).toMatchObject({
       clickToReplace: true,
       replacementSlotId: "slot_rotating_hero_object_intro"
@@ -394,6 +395,7 @@ describe("v1.2 mock pipeline", () => {
     expect(proxyClip?.gapFillStrategy).toBe("proxy_placeholder");
     expect(proxyClip?.layers.some((layer) => layer.style?.fillStrategy === "proxy_placeholder")).toBe(true);
     expect(timeline.replacementSlots?.some((slot) => slot.slotId === "slot_rotating_hero_object_intro" && slot.status === "proxy_generated")).toBe(true);
+    expect(timeline.clips.some((clip) => clip.gapFillStrategy === "proxy_placeholder")).toBe(true);
   });
 
   it("tags slot-missing gaps with Chinese label + recommended fill strategies (FR-008)", () => {

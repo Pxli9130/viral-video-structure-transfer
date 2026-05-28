@@ -498,6 +498,8 @@ export const timelineSchema = {
           subtitleText: { type: "string" },
           transitionIn: { type: "string" },
           transitionOut: { type: "string" },
+          previewFrame: { type: "string" },
+          sourceEvidenceFrame: { type: "string" },
           layers: {
             type: "array",
             items: {

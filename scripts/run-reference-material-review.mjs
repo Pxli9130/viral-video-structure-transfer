@@ -30,6 +30,7 @@ const ARTIFACT_FILES = [
   { name: "render.mp4", required: true },
   { name: "contact_sheet.png", required: true },
   { name: "preview_frames", required: true, kind: "dir" },
+  { name: "preview_frames/manifest.json", required: true },
   { name: "report.md", required: true },
   { name: "index.html", required: true },
   { name: "evaluation.editing.json", required: false },
@@ -60,6 +61,7 @@ const TEST_FILE_PATTERNS = [
   /replacement/i,
   /sample.*reuse/i,
   /reference.*material/i,
+  /pipeline/i,
   /slot.*map/i,
   /proxy/i
 ];
@@ -71,6 +73,7 @@ const SECRET_PATTERNS = [
   "AIza",
   "ark-"
 ];
+const TEXT_ARTIFACT_EXTENSIONS = new Set([".html", ".md", ".json", ".txt", ".csv"]);
 
 function nowStamp() {
   const d = new Date();
@@ -280,56 +283,62 @@ async function probePreviewFrames() {
   return { exists: true, count: entries.length, samples };
 }
 
-function secretGrepArgs(rootDirs) {
-  const orPattern = SECRET_PATTERNS.map((p) =>
-    p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  ).join("|");
-  return [
-    "grep",
-    "-RIn",
-    "--binary-files=without-match",
-    "-E",
-    orPattern,
-    ...rootDirs
-  ];
-}
-
 async function runSecretGrep() {
   const dirs = [editingDir, productDemoDir].filter((d) => existsSync(d));
   if (dirs.length === 0) {
-    return { ran: false, reason: "No artifact directories to scan", matches: [] };
-  }
-  const argv = secretGrepArgs(dirs);
-  const result = await runCommand({ argv, timeoutMs: 60_000 });
-  // grep exits 1 when no matches — that's success for us.
-  const ok = result.exitCode === 0 || result.exitCode === 1;
-  if (!ok) {
     return {
-      ran: true,
-      ok: false,
-      argv,
-      exitCode: result.exitCode,
-      stderrTail: result.stderrTail,
-      matches: []
+      ran: false,
+      reason: "No artifact directories to scan",
+      matches: [],
+      securityFail: false
     };
   }
-  const lines = result.stdoutTail.split("\n").filter(Boolean).slice(0, 200);
-  const matches = lines.map((line) => {
-    const m = line.match(/^([^:]+):(\d+):(.*)$/);
-    if (!m) return { raw: line };
-    return {
-      path: path.relative(repoRoot, m[1]),
-      line: Number(m[2]),
-      snippet: m[3].slice(0, 240)
-    };
-  });
+  const files = [];
+  for (const dir of dirs) {
+    await walkDir(
+      dir,
+      (name) => TEXT_ARTIFACT_EXTENSIONS.has(path.extname(name).toLowerCase()),
+      files
+    );
+  }
+  const patternMatchers = SECRET_PATTERNS.map((pattern) => ({
+    pattern,
+    re: new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")
+  }));
+  const matches = [];
+  for (const relFile of files) {
+    const full = path.join(repoRoot, relFile);
+    let body = "";
+    try {
+      body = await readFile(full, "utf8");
+    } catch (err) {
+      matches.push({ path: relFile, line: null, snippet: `read error: ${String(err?.message ?? err)}` });
+      continue;
+    }
+    const lines = body.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      for (const matcher of patternMatchers) {
+        matcher.re.lastIndex = 0;
+        if (matcher.re.test(line)) {
+          matches.push({
+            path: relFile,
+            line: index + 1,
+            pattern: matcher.pattern,
+            snippet: line.slice(0, 240)
+          });
+        }
+      }
+    }
+  }
   return {
     ran: true,
     ok: true,
-    argv,
-    matchCount: lines.length,
-    truncated: lines.length === 200,
-    matches
+    scannedFiles: files.length,
+    matchCount: matches.length,
+    truncated: matches.length > 200,
+    matches: matches.slice(0, 200),
+    securityFail: matches.length > 0
   };
 }
 
@@ -369,22 +378,29 @@ async function inventoryTests() {
   // Also do a coarse content grep inside the test roots for the expected gate names,
   // so the agent can spot whether tests exist by name but the assertions don't.
   const gateNames = [
+    "sample_reference_cannot_satisfy_visual_slots_by_default",
     "sample_reference_cannot_satisfy_visual_slots",
     "mock_asset_cannot_satisfy_visual_slots",
     "asset_without_path_cannot_satisfy_visual_slots",
     "authorized_sample_reuse_can_match_visual_slots",
+    "editing_case_no_target_assets_creates_visual_gaps",
     "gap_detected_when_no_target_assets",
     "sample_visual_not_reused_without_authorization",
     "mock_asset_not_counted_as_match",
     "interactive_gap_fill_non_empty",
     "proxy_placeholder_rendered",
     "timeline_preview_has_real_or_proxy_frames",
+    "public_artifacts_sanitized",
+    "render_mp4_has_audio",
+    "render_mp4_not_tiny",
+    "render_mp4_not_only_text_cards",
     "unresolved_visual_slots_count"
   ];
   const gateHits = {};
   const testSearchRoots = [
     "packages/shared/src/__tests__",
-    "apps/api/tests"
+    "apps/api/tests",
+    "scripts"
   ].filter((rel) => existsSync(path.join(repoRoot, rel)));
   for (const gate of gateNames) {
     if (testSearchRoots.length === 0) {
@@ -439,6 +455,16 @@ function summariseForStdout(report) {
   lines.push(`runId        : ${report.runId}`);
   lines.push(`timestamp    : ${report.timestamp}`);
   lines.push(`git          : ${report.git.branch ?? "?"}@${(report.git.sha ?? "").slice(0, 8)}`);
+  if (report.securityFail) {
+    const n = report.phaseM?.matchCount ?? 0;
+    lines.push("");
+    lines.push("!!============================================================!!");
+    lines.push(`!! SECURITY FAIL: ${n} secret/path match${n === 1 ? "" : "es"} — verdict cannot be READY !!`);
+    lines.push("!!============================================================!!");
+  } else if (report.phaseM?.ran && report.phaseM.ok === false) {
+    lines.push("");
+    lines.push(`-- WARNING: secret grep itself errored (exit=${report.phaseM.exitCode}); securityFail signal unreliable --`);
+  }
   lines.push("");
   lines.push("-- Phase A (commands) --");
   for (const cmd of report.phaseA.commands) {
@@ -495,6 +521,7 @@ async function main() {
   const { iso, compact } = nowStamp();
   const runId = `refmat-${compact}-${Math.random().toString(36).slice(2, 6)}`;
   const skipPhaseA = process.argv.includes("--skip-phase-a");
+  const strict = process.argv.includes("--strict");
 
   await mkdir(reviewDir, { recursive: true });
 
@@ -527,6 +554,8 @@ async function main() {
   const phaseM = await runSecretGrep();
   const phaseL = await inventoryTests();
 
+  const securityFail = Boolean(phaseM?.securityFail);
+
   const report = {
     runId,
     timestamp: iso,
@@ -534,6 +563,8 @@ async function main() {
     scriptVersion: SCRIPT_VERSION,
     cwd: repoRoot,
     git,
+    strict,
+    securityFail,
     promptPath: path.relative(
       repoRoot,
       path.join(repoRoot, "docs", "review-prompts", "reference-material-fix.md")
@@ -556,6 +587,13 @@ async function main() {
 
   await writeFile(latestRunPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log(summariseForStdout(report));
+
+  if (strict && securityFail) {
+    console.error(
+      `\n[run-reference-material-review] --strict: exiting 1 because securityFail is true (${phaseM.matchCount ?? 0} secret/path matches).`
+    );
+    process.exitCode = 1;
+  }
 }
 
 export { SCRIPT_VERSION };

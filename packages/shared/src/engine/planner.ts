@@ -2145,7 +2145,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             fillStrategy: "user_asset_replace",
             replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
             placeholderSpec: fillForSlot?.rendererInstructions?.placeholderSpec,
-            targetAssetKind: fillForSlot?.rendererInstructions?.replacementAssetKind
+            targetAssetKind: fillForSlot?.rendererInstructions?.replacementAssetKind,
+            visualForm: slot?.visualForm,
+            semanticLabel: slot?.semanticLabel
           }
         });
       } else if (matched && sourceAssetId) {
@@ -2172,7 +2174,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
             placeholderSpec,
             acceptedAssetTypes: fillForSlot?.rendererInstructions?.acceptedAssetTypes,
-            clickToReplace: true
+            clickToReplace: true,
+            visualForm: slot?.visualForm,
+            semanticLabel: slot?.semanticLabel
           }
         });
       } else {
