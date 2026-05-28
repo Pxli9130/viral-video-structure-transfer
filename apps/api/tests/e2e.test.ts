@@ -96,6 +96,66 @@ describe("E2E pipeline (mock adapters)", () => {
     generationId = generateRes.body.data.generationId as string;
     expect(generateRes.body.data.generation.timeline.clips.length).toBeGreaterThan(0);
     expect(generateRes.body.data.generation.gapReport.every((g: { reason: string }) => Boolean(g.reason))).toBe(true);
+    expect(Array.isArray(generateRes.body.data.generation.replacementSlots)).toBe(true);
+  });
+
+  it("binds an uploaded replacement asset to a gap slot and regenerates", async () => {
+    const replacementUploadRes = await api
+      .post(`/api/projects/${projectId}/assets`)
+      .send({
+        role: "user_image",
+        type: "image",
+        originalName: "replacement-hero.png",
+        tags: "slot_replacement,hero",
+        sourcePolicy: "user_authorized"
+      })
+      .expect(201);
+    const assetId = replacementUploadRes.body.data.id as string;
+
+    const generationRes = await api.get(`/api/generations/${generationId}`).expect(200);
+    const slotId = (generationRes.body.data.replacementSlots[0]?.slotId ?? generationRes.body.data.slotMapping[0].slotId) as string;
+    const replacementRes = await api
+      .post(`/api/generations/${generationId}/replacements`)
+      .send({ slotId, assetId, applyMotionFromSlot: true })
+      .expect(201);
+
+    generationId = replacementRes.body.data.generationId as string;
+    expect(replacementRes.body.data.previousGenerationId).not.toBe(generationId);
+    expect(replacementRes.body.data.replacementSlot).toMatchObject({
+      slotId,
+      status: "user_replaced",
+      boundAssetId: assetId
+    });
+    expect(
+      replacementRes.body.data.generation.fillPlan.some(
+        (action: { strategy: string; rendererInstructions?: { boundAssetId?: string } }) =>
+          action.strategy === "user_asset_replace" && action.rendererInstructions?.boundAssetId === assetId
+      )
+    ).toBe(true);
+  });
+
+  it("rejects replacement assets from another project", async () => {
+    const otherProjectRes = await api
+      .post("/api/projects")
+      .send({ name: "Other", vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15 })
+      .expect(201);
+    const otherAssetRes = await api
+      .post(`/api/projects/${otherProjectRes.body.data.id}/assets`)
+      .send({
+        role: "user_image",
+        type: "image",
+        originalName: "foreign.png",
+        tags: "slot_replacement",
+        sourcePolicy: "user_authorized"
+      })
+      .expect(201);
+    const generationRes = await api.get(`/api/generations/${generationId}`).expect(200);
+    const slotId = (generationRes.body.data.replacementSlots[0]?.slotId ?? generationRes.body.data.slotMapping[0].slotId) as string;
+
+    await api
+      .post(`/api/generations/${generationId}/replacements`)
+      .send({ slotId, assetId: otherAssetRes.body.data.id, applyMotionFromSlot: true })
+      .expect(403);
   });
 
   it("renders previews and exports timeline/report artifacts", async () => {
@@ -157,5 +217,6 @@ describe("E2E pipeline (mock adapters)", () => {
     expect(scorecardRes.body.data.overall).toBeGreaterThanOrEqual(0);
     expect(scorecardRes.body.data.overall).toBeLessThanOrEqual(100);
     expect(scorecardRes.body.data.dimensions).toHaveLength(5);
+    expect(scorecardRes.body.data.gates.some((gate: { id: string }) => gate.id === "replacement_asset_rendered")).toBe(true);
   });
 });

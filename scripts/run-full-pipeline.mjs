@@ -22,13 +22,15 @@ if (!allowVlmJudge) {
 }
 
 console.log(`Artifact root: ${rel(artifactRoot)}`);
-console.log("Step 1/4: unit/e2e test suite");
+console.log("Step 1/5: unit/e2e test suite");
 run("npm", ["test"]);
-console.log("Step 2/4: schema validation");
+console.log("Step 2/5: schema validation");
 run("npm", ["run", "validate:schemas"]);
-console.log("Step 3/4: corpus regression");
+console.log("Step 3/5: corpus regression");
 run("node", ["scripts/run-corpus-regression.mjs", "--strict"]);
-console.log(`Step 4/4: marketing poster case${allowVlmJudge ? " with VLM judge" : " with VLM judge skipped"}`);
+console.log(`Step 4/5: marketing poster case${allowVlmJudge ? " with VLM judge" : " with VLM judge skipped"}`);
 run("node", marketingArgs, { env: marketingEnv });
+console.log("Step 5/5: product demo page");
+run("node", ["scripts/generate-product-demo-page.mjs"]);
 
 console.log(`Full local pipeline completed. Artifacts are under ${rel(artifactRoot)}/`);

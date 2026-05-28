@@ -274,7 +274,16 @@ export const structureTemplateSchema = {
           fallbackStrategies: {
             type: "array",
             items: {
-              enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"]
+              enum: [
+                "reuse_with_crop_zoom",
+                "text_card",
+                "packaging_overlay",
+                "reorder_structure",
+                "procedural_generation",
+                "aigc_placeholder",
+                "proxy_placeholder",
+                "user_asset_replace"
+              ]
             }
           }
         }
@@ -374,6 +383,40 @@ export const generationRequestSchema = {
         }
       }
     },
+    targetAssets: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "kind"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          kind: { enum: ["image", "video", "logo", "copy", "cta_info", "background_image"] },
+          role: { type: "string" },
+          path: { type: "string" },
+          url: { type: "string" },
+          text: { type: "string" },
+          filename: { type: "string" },
+          mimeType: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          metadata: { type: "object", additionalProperties: true }
+        }
+      }
+    },
+    replacementBindings: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["slotId", "assetId"],
+        additionalProperties: true,
+        properties: {
+          slotId: { type: "string" },
+          assetId: { type: "string" },
+          applyMotionFromSlot: { type: "boolean" },
+          createdAt: { type: "string" }
+        }
+      }
+    },
     prompt: { type: "string", minLength: 1 },
     target: {
       type: "object",
@@ -395,7 +438,11 @@ export const generationRequestSchema = {
         packagingStyle: { enum: ["clean", "bold", "mg_motion"] },
         ctaStyle: { enum: ["soft", "direct"] },
         allowAigcPlaceholder: { type: "boolean" },
-        creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] }
+        creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] },
+        subtitleDensity: { enum: ["minimal", "medium", "dense"] },
+        stylePreset: { enum: ["sample_like", "clean_premium", "white_poster", "bold_mg"] },
+        ctaTiming: { enum: ["early", "default", "late"] },
+        ribbon: { type: "object", additionalProperties: true }
       }
     },
     constraints: {
@@ -451,6 +498,8 @@ export const timelineSchema = {
           subtitleText: { type: "string" },
           transitionIn: { type: "string" },
           transitionOut: { type: "string" },
+          previewFrame: { type: "string" },
+          sourceEvidenceFrame: { type: "string" },
           layers: {
             type: "array",
             items: {
@@ -467,7 +516,17 @@ export const timelineSchema = {
             }
           },
           gapFillStrategy: {
-            enum: ["none", "reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"]
+            enum: [
+              "none",
+              "reuse_with_crop_zoom",
+              "text_card",
+              "packaging_overlay",
+              "reorder_structure",
+              "procedural_generation",
+              "aigc_placeholder",
+              "proxy_placeholder",
+              "user_asset_replace"
+            ]
           }
         }
       }
@@ -509,10 +568,42 @@ export const timelineSchema = {
         additionalProperties: true,
         properties: {
           slotId: { type: "string" },
-          strategy: { enum: ["reuse_with_crop_zoom", "text_card", "packaging_overlay", "reorder_structure", "procedural_generation", "aigc_placeholder"] },
+          strategy: {
+            enum: [
+              "reuse_with_crop_zoom",
+              "text_card",
+              "packaging_overlay",
+              "reorder_structure",
+              "procedural_generation",
+              "aigc_placeholder",
+              "proxy_placeholder",
+              "user_asset_replace"
+            ]
+          },
           reason: { type: "string" },
           targetClipId: { type: "string" },
           rendererInstructions: { type: "object", additionalProperties: true }
+        }
+      }
+    },
+    replacementSlots: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["slotId", "semanticLabel", "visualForm", "status", "acceptedAssetTypes"],
+        additionalProperties: true,
+        properties: {
+          slotId: { type: "string" },
+          semanticLabel: { type: "string" },
+          visualForm: { type: "string" },
+          status: { enum: ["missing", "proxy_generated", "user_replaced", "rendered"] },
+          acceptedAssetTypes: { type: "array", items: { enum: ["image", "video", "gif", "logo", "copy", "glb", "lottie"] } },
+          boundAssetId: { type: "string" },
+          placeholderSpec: { type: "object", additionalProperties: true },
+          motionSpec: { type: "object", additionalProperties: true },
+          applyMotionFromSlot: { type: "boolean" },
+          rendererBackend: { type: "string" },
+          targetClipId: { type: "string" }
         }
       }
     },

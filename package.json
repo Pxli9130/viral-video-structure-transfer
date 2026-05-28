@@ -23,6 +23,7 @@
     "test:unit": "npm run test --workspace @vvst/shared",
     "test:e2e": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run test --workspace @vvst/api",
     "pipeline:full": "node scripts/run-full-pipeline.mjs",
+    "demo:product": "node scripts/generate-product-demo-page.mjs",
     "regression:corpus": "node scripts/run-corpus-regression.mjs",
     "regression:corpus:refresh": "node scripts/run-corpus-regression.mjs --refresh-corpus",
     "regression:corpus:strict": "node scripts/run-corpus-regression.mjs --strict",

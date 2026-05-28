@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { HtmlPreviewRenderer, MockRenderer } from "@vvst/renderer";
 import {
@@ -8,6 +9,7 @@ import {
   stableId,
   type RenderOutput,
   type RendererAdapter,
+  type RendererBackend,
   type RendererTarget,
   type Timeline,
   type TimelineClip
@@ -66,6 +68,32 @@ function escapeFontFilePath(value: string): string {
 }
 
 const FONT_FILE_ARG = CJK_FONT_FILE ? `fontfile=${escapeFontFilePath(CJK_FONT_FILE)}:` : "";
+
+function mimeForAssetExt(ext: string): string | undefined {
+  switch (ext.toLowerCase()) {
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    default:
+      return undefined;
+  }
+}
+
+async function remotionAssetSrc(filePath: string): Promise<string> {
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = mimeForAssetExt(ext);
+  if (!mime) return pathToFileURL(filePath).href;
+  const encoded = await fs.readFile(filePath, "base64");
+  return `data:${mime};base64,${encoded}`;
+}
 
 export interface AssetPathResolver {
   resolve(assetId: string): string | undefined;
@@ -186,6 +214,81 @@ function mgMotionDecorationFilters(timeline: Timeline, width: number, height: nu
   ];
 }
 
+function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: number, style: DrawTextStyle): string[] {
+  const proxyLayer = clip.layers.find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
+  if (clip.gapFillStrategy !== "proxy_placeholder" && !proxyLayer) return [];
+  const placeholder = (clip.placeholderSpec ?? proxyLayer?.style?.placeholderSpec ?? {}) as {
+    label?: string;
+    color?: string;
+    shape?: string;
+  };
+  const replacementSlotId = String(clip.replacementSlotId ?? proxyLayer?.style?.replacementSlotId ?? "");
+  const visualForm = String(proxyLayer?.style?.visualForm ?? "");
+  const labelRaw = String(placeholder.label ?? "Rotating hero object placeholder");
+  const isRotatingHero =
+    replacementSlotId.includes("rotating_hero") ||
+    visualForm === "rotating_3d_object" ||
+    /rotating|hero object|helmet|head|logo/i.test(labelRaw);
+  const isMontage =
+    replacementSlotId.includes("beat_sync") ||
+    replacementSlotId.includes("match_cut") ||
+    visualForm === "action_montage_sequence" ||
+    visualForm === "match_cut_sequence" ||
+    /montage|match|action|beat/i.test(labelRaw);
+  const proxyColor = ffmpegColor(placeholder.color, "0xE53935");
+  const size = Math.round(Math.min(width, height) * 0.34);
+  const x = Math.round((width - size) / 2);
+  const y = Math.round(height * 0.27);
+  const badgeY = Math.round(y + size + height * 0.05);
+  const label = escapeDrawText(labelRaw);
+  const shapeLabel = escapeDrawText(`PROXY PLACEHOLDER · ${placeholder.shape ?? "shape"}`);
+
+  if (isRotatingHero) {
+    const orbitX = `(iw-${size})/2+${Math.round(size * 0.28)}*sin(2*PI*t*0.72)`;
+    const orbitY = `${y}+${Math.round(size * 0.11)}*cos(2*PI*t*0.72)`;
+    const visorY = `${y + Math.round(size * 0.32)}+${Math.round(size * 0.05)}*cos(2*PI*t*0.72)`;
+    const shineX = `(iw-${size})/2+${Math.round(size * 0.63)}+${Math.round(size * 0.22)}*sin(2*PI*t*0.72)`;
+    return [
+      `drawbox=x=${x - 48}:y=${y - 54}:w=${size + 96}:h=${size + 108}:color=white@0.08:t=fill`,
+      `drawbox=x=${orbitX}:y=${orbitY}:w=${size}:h=${size}:color=${proxyColor}@0.88:t=fill`,
+      `drawbox=x=${orbitX}:y=${orbitY}:w=${size}:h=${size}:color=white@0.88:t=10`,
+      `drawbox=x=(iw-${size})/2+${Math.round(size * 0.17)}:y=${visorY}:w=${Math.round(size * 0.66)}:h=${Math.round(size * 0.16)}:color=black@0.42:t=fill`,
+      `drawbox=x=${shineX}:y=${y + Math.round(size * 0.12)}:w=${Math.round(size * 0.12)}:h=${Math.round(size * 0.58)}:color=white@0.32:t=fill`,
+      `drawbox=x=0:y=${Math.round(height * 0.12)}:w='${Math.round(width * 0.36)}+${Math.round(width * 0.18)}*sin(2*PI*t*2)':h=8:color=${proxyColor}@0.52:t=fill`,
+      `drawbox=x=iw-${Math.round(width * 0.46)}:y=${Math.round(height * 0.82)}:w='${Math.round(width * 0.32)}+${Math.round(width * 0.14)}*cos(2*PI*t*2)':h=10:color=0x38bdf8@0.46:t=fill`,
+      drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  if (isMontage) {
+    const cardW = Math.round(width * 0.68);
+    const cardH = Math.round(height * 0.16);
+    const cardX = Math.round((width - cardW) / 2);
+    const cardY = Math.round(height * 0.28);
+    const pulse = `1+0.08*sin(2*PI*t*2)`;
+    return [
+      `drawbox=x=${cardX}:y=${cardY}:w=${cardW}:h=${cardH}:color=${proxyColor}@0.78:t=fill`,
+      `drawbox=x=${cardX - 20}:y=${cardY + cardH + 28}:w=${Math.round(cardW * 0.7)}:h=${cardH}:color=0x111827@0.82:t=fill`,
+      `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w=${Math.round(cardW * 0.62)}:h=${cardH}:color=0xf97316@0.72:t=fill`,
+      `drawbox=x=${cardX}:y=${cardY}:w='${cardW}*${pulse}':h=8:color=white@0.72:t=fill`,
+      `drawbox=x=${cardX}:y=${cardY + cardH + 28}:w='${Math.round(cardW * 0.7)}*${pulse}':h=8:color=0x38bdf8@0.78:t=fill`,
+      `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w='${Math.round(cardW * 0.62)}*${pulse}':h=8:color=white@0.78:t=fill`,
+      `drawbox=x='mod(t*${Math.round(width * 1.8)},iw)':y=${Math.round(height * 0.2)}:w=34:h=${Math.round(height * 0.66)}:color=white@0.14:t=fill`,
+      drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 76))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+    ];
+  }
+
+  return [
+    `drawbox=x=${x - 18}:y=${y - 18}:w=${size + 36}:h=${size + 36}:color=white@0.16:t=fill`,
+    `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=${proxyColor}@0.92:t=fill`,
+    `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=white@0.86:t=8`,
+    drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.55", fontColor: "white" }, 30, String(Math.max(24, y - 76))),
+    drawTextFilter(label, { ...style, boxColor: "black@0.62", fontColor: "white" }, 34, String(badgeY))
+  ];
+}
+
 export interface FFmpegRendererOptions {
   generatedDir: string;
   assetResolver: AssetPathResolver;
@@ -299,10 +402,13 @@ export class FFmpegRenderer implements RendererAdapter {
   ): Promise<boolean> {
     const color = backgroundFor(clip, options.timeline);
     const decorations = mgMotionDecorationFilters(options.timeline, options.width, options.height);
+    const proxyFilters = proxyPlaceholderFilters(clip, options.width, options.height, options.textStyle);
     const filter = `color=c=${color}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)},format=yuv420p${
       decorations.length ? `,${decorations.join(",")}` : ""
     }${
-      options.subtitle
+      proxyFilters.length ? `,${proxyFilters.join(",")}` : ""
+    }${
+      options.subtitle && !proxyFilters.length
         ? `,${drawTextFilter(options.subtitle, options.textStyle, options.textStyle.cardFontSize, "(h-text_h)/2")}`
         : ""
     }`;
@@ -335,6 +441,7 @@ export interface RemotionRendererOptions {
   entryPoint?: string;
   compositionId?: string;
   browserExecutable?: string;
+  assetResolver?: AssetPathResolver;
 }
 
 export class RemotionRenderer implements RendererAdapter {
@@ -372,7 +479,23 @@ export class RemotionRenderer implements RendererAdapter {
         this.bundleLocation = await bundle({ entryPoint });
       }
 
-      const inputProps = { timeline };
+      const assetIds = Array.from(
+        new Set(
+          timeline.clips.flatMap((clip) => [
+            clip.sourceAssetId,
+            ...clip.layers.map((layer) => layer.assetId)
+          ]).filter((assetId): assetId is string => Boolean(assetId))
+        )
+      );
+      const assetEntries = await Promise.all(
+        assetIds.flatMap(async (assetId) => {
+          const resolved = this.opts.assetResolver?.resolve(assetId);
+          if (!resolved || !existsSync(resolved)) return [];
+          return [[assetId, { src: await remotionAssetSrc(resolved), ext: path.extname(resolved).toLowerCase() }]];
+        })
+      );
+      const assetMap = Object.fromEntries(assetEntries.flat());
+      const inputProps = { timeline, assetMap };
       const browserExecutable = this.opts.browserExecutable ?? resolveRemotionBrowserExecutable();
       const composition = await selectComposition({
         serveUrl: this.bundleLocation,
@@ -489,20 +612,123 @@ export interface RendererSelectOptions extends FFmpegRendererOptions {
   remotionCompositionId?: string;
 }
 
+export class ImageCardRenderer implements RendererAdapter {
+  readonly target: RendererTarget = "html_preview";
+
+  async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
+    const renderId = stableId("render_image_card", generationId, timeline.id);
+    const cards = timeline.clips.map((clip) => `<article><strong>${clip.role}</strong><p>${clip.subtitleText ?? clip.visualIntent ?? ""}</p></article>`).join("");
+    return {
+      renderId,
+      generationId,
+      rendererTarget: this.target,
+      status: "completed",
+      previewHtml: `<section class="image-card-renderer">${cards}</section>`,
+      createdAt: nowIso()
+    };
+  }
+}
+
+export class AigcVideoFillStubRenderer implements RendererAdapter {
+  readonly target: RendererTarget = "hyperframes";
+  private readonly opts: { generatedDir: string };
+
+  constructor(opts: { generatedDir: string }) {
+    this.opts = opts;
+  }
+
+  async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
+    const renderId = stableId("render_aigc_stub", generationId, timeline.id);
+    const manifestDir = path.join(this.opts.generatedDir, "aigc_video_fill_stub", renderId);
+    await fs.mkdir(manifestDir, { recursive: true });
+    const manifestPath = path.join(manifestDir, "manifest.json");
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify(
+        {
+          renderer: "aigc_video_fill_stub",
+          generationId,
+          timelineId: timeline.id,
+          note: "Stub only. No paid or external video-generation API was called.",
+          fillPlan: timeline.fillPlan.map((action) => ({
+            slotId: action.slotId,
+            strategy: action.strategy,
+            renderer: action.rendererInstructions?.renderer,
+            fallbackRenderer: action.rendererInstructions?.fallbackRenderer,
+            requiredInputs: action.rendererInstructions?.requiredInputs ?? []
+          }))
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    return {
+      renderId,
+      generationId,
+      rendererTarget: this.target,
+      status: "completed",
+      outputPath: manifestPath,
+      previewHtml: `<p>AIGC video fill stub manifest written to ${path.basename(manifestPath)}. No external model call was made.</p>`,
+      createdAt: nowIso()
+    };
+  }
+}
+
+export interface RendererRegistryEntry {
+  backend: RendererBackend;
+  target: RendererTarget;
+  label: string;
+  create(opts: RendererSelectOptions): RendererAdapter;
+}
+
+export const RendererRegistry: Record<RendererBackend, RendererRegistryEntry> = {
+  remotion_mg: {
+    backend: "remotion_mg",
+    target: "remotion",
+    label: "Remotion MG/dynamic poster renderer",
+    create: (opts) =>
+      new RemotionRenderer({
+        generatedDir: opts.generatedDir,
+        entryPoint: opts.remotionEntryPoint,
+        compositionId: opts.remotionCompositionId,
+        assetResolver: opts.assetResolver
+      })
+  },
+  ffmpeg_compose: {
+    backend: "ffmpeg_compose",
+    target: "ffmpeg",
+    label: "FFmpeg source compose renderer",
+    create: (opts) => new FFmpegRenderer(opts)
+  },
+  image_card: {
+    backend: "image_card",
+    target: "html_preview",
+    label: "Deterministic text/image card renderer",
+    create: () => new ImageCardRenderer()
+  },
+  aigc_video_fill_stub: {
+    backend: "aigc_video_fill_stub",
+    target: "hyperframes",
+    label: "AIGC video fill stub manifest renderer",
+    create: (opts) => new AigcVideoFillStubRenderer({ generatedDir: opts.generatedDir })
+  }
+};
+
+export function selectRendererBackend(backend: RendererBackend, opts: RendererSelectOptions): RendererAdapter {
+  return RendererRegistry[backend].create(opts);
+}
+
 export function selectRenderer(target: RendererTarget, opts: RendererSelectOptions): RendererAdapter {
   switch (target) {
     case "ffmpeg":
-      return new FFmpegRenderer(opts);
-    case "mock_preview":
-      return new MockRenderer();
+      return selectRendererBackend("ffmpeg_compose", opts);
     case "remotion":
-      return new RemotionRenderer({
-        generatedDir: opts.generatedDir,
-        entryPoint: opts.remotionEntryPoint,
-        compositionId: opts.remotionCompositionId
-      });
+      return selectRendererBackend("remotion_mg", opts);
     case "hyperframes":
       return new HyperFramesRenderer({ generatedDir: opts.generatedDir });
+    case "mock_preview":
+      return new MockRenderer();
     case "html_preview":
     default:
       return new HtmlPreviewRenderer();

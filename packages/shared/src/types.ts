@@ -14,7 +14,23 @@ export type SourcePolicy = "user_authorized" | "open_download_or_user_uploaded" 
 export type AnalysisPurpose = "sample" | "source";
 export type AnalyzerMode = "mock" | "ffmpeg" | "ffmpeg_opencv" | "ffmpeg_vlm_asr";
 export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+export type RendererBackend = "remotion_mg" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
 export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
+export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
+export type AcceptedReplacementAssetType = "image" | "video" | "gif" | "logo" | "copy" | "glb" | "lottie";
+export type ReplacementSlotStatus = "missing" | "proxy_generated" | "user_replaced" | "rendered";
+export type ReplacementVisualForm =
+  | "rotating_object"
+  | "product_card"
+  | "background"
+  | "logo"
+  | "cta"
+  | "text_card"
+  | "ribbon_motif"
+  | "rotating_3d_object"
+  | "kinetic_text_card"
+  | "action_montage_sequence"
+  | "match_cut_sequence";
 export type RibbonSurfaceType = "thin_line" | "wide_band" | "textured_band" | "particle_trail";
 export type RibbonPathFamily = "vertical_helix" | "planar_orbit" | "diagonal_sweep" | "horizontal_wave" | "spiral_in" | "wave_loop" | "unknown";
 export type RibbonAxis = "screen_y" | "screen_z" | "screen_x" | "diagonal" | "unknown";
@@ -70,7 +86,50 @@ export type FillStrategy =
   | "packaging_overlay"
   | "reorder_structure"
   | "procedural_generation"
-  | "aigc_placeholder";
+  | "aigc_placeholder"
+  | "proxy_placeholder"
+  | "user_asset_replace";
+
+export interface MotionSpec {
+  type: "spin" | "scale" | "crop_zoom" | "ribbon_follow" | "none";
+  axis?: "x" | "y" | "z" | "screen_x" | "screen_y" | "screen_z";
+  speed?: number;
+  durationSec?: number;
+  easing?: string;
+  preserveFromSlot?: boolean;
+  [key: string]: unknown;
+}
+
+export interface PlaceholderSpec {
+  type: "proxy_shape" | "proxy_card" | "aigc_draft" | "procedural_object";
+  shape?: "sphere" | "circle" | "cube" | "plane" | "ribbon" | "generic_product" | "helmet_silhouette";
+  color?: string;
+  label?: string;
+  motion?: MotionSpec;
+  [key: string]: unknown;
+}
+
+export interface SlotReplacementBinding {
+  slotId: string;
+  assetId: string;
+  applyMotionFromSlot?: boolean;
+  createdAt?: string;
+}
+
+export interface ReplacementSlot {
+  slotId: string;
+  semanticLabel: string;
+  visualForm: ReplacementVisualForm;
+  status: ReplacementSlotStatus;
+  placeholderSpec?: PlaceholderSpec;
+  acceptedAssetTypes: AcceptedReplacementAssetType[];
+  boundAssetId?: string;
+  motionSpec?: MotionSpec;
+  applyMotionFromSlot?: boolean;
+  gapType?: GapCategory;
+  rendererBackend?: RendererBackend;
+  targetClipId?: string;
+}
 
 export type SourceTag =
   | "hook_candidate"
@@ -196,6 +255,10 @@ export interface RequiredSlot {
   description: string;
   preferredTags?: string[];
   fallbackStrategies?: FillStrategy[];
+  visualForm?: ReplacementVisualForm;
+  semanticLabel?: string;
+  motionSpec?: MotionSpec;
+  clickToReplace?: boolean;
 }
 
 export interface StructureSegment {
@@ -328,6 +391,19 @@ export interface GenerationRequestAsset {
   role?: string;
 }
 
+export interface TargetAssetInput {
+  id: string;
+  kind: TargetAssetKind;
+  role?: string;
+  path?: string;
+  url?: string;
+  text?: string;
+  filename?: string;
+  mimeType?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+}
+
 export interface GenerationTarget {
   vertical: Vertical;
   aspectRatio: AspectRatio;
@@ -342,6 +418,14 @@ export interface GenerationControls {
   ctaStyle?: "soft" | "direct";
   allowAigcPlaceholder?: boolean;
   creativeMode?: CreativeOutputMode;
+  subtitleDensity?: "minimal" | "medium" | "dense";
+  stylePreset?: "sample_like" | "clean_premium" | "white_poster" | "bold_mg";
+  ctaTiming?: "early" | "default" | "late";
+  ribbon?: Partial<RibbonMotionGeometry> & {
+    speedMultiplier?: number;
+    densityMultiplier?: number;
+    premiumFinish?: boolean;
+  };
 }
 
 export interface GenerationConstraints {
@@ -358,6 +442,8 @@ export interface GenerationRequest {
   selectedTemplateIds?: string[];
   selectedAtomIds?: string[];
   assets?: GenerationRequestAsset[];
+  targetAssets?: TargetAssetInput[];
+  replacementBindings?: SlotReplacementBinding[];
   prompt: string;
   target: GenerationTarget;
   controls?: GenerationControls;
@@ -372,6 +458,12 @@ export interface SourceVideoUnderstanding {
   warnings: string[];
   transcript?: TranscriptSegment[];
   ocrText?: string[];
+  materialRole?: "target_material" | "sample_reference" | "mock" | "unusable";
+  renderable?: boolean;
+  sourcePolicy?: SourcePolicy;
+  reusableAsMaterial?: boolean;
+  materialBlockReason?: string;
+  blockedCandidateShotIds?: string[];
 }
 
 export type SlotMatchStatus = "matched" | "weak_match" | "missing";
@@ -384,6 +476,14 @@ export interface SlotMapping {
   candidateShotIds: string[];
   selectedShotId?: string;
   selectedAssetId?: string;
+  selectedTargetAssetId?: string;
+  selectedTargetAssetKind?: TargetAssetKind;
+  targetAssetCandidateIds?: string[];
+  assetAvailability?: "target_asset_mapped" | "target_asset_weak_match" | "no_user_asset_available" | "source_video_mapped";
+  visualForm?: ReplacementVisualForm;
+  semanticLabel?: string;
+  motionSpec?: MotionSpec;
+  clickToReplace?: boolean;
   confidence: number;
   reason: string;
   risks: string[];
@@ -401,7 +501,10 @@ export type GapCategory =
   | "background_missing"
   | "voiceover_or_script_missing"
   | "subtitle_density_low"
-  | "dynamic_3d_ribbon_asset";
+  | "dynamic_3d_ribbon_asset"
+  | "rotating_hero_object_missing"
+  | "action_montage_missing"
+  | "match_cut_sequence_missing";
 
 export interface GapReportItem {
   slotId: string;
@@ -413,8 +516,33 @@ export interface GapReportItem {
   gapLabel?: string;
   gapLabelZh?: string;
   recommendedFillStrategies?: FillStrategy[];
+  placeholderSpec?: PlaceholderSpec;
+  acceptedAssetTypes?: AcceptedReplacementAssetType[];
+  clickToReplace?: boolean;
+  replacementSlotId?: string;
   slotType?: SlotType;
   slotRole?: SegmentRole;
+  assetAvailability?: SlotMapping["assetAvailability"];
+  mappedAssetId?: string;
+  fillSource?: "target_asset" | "source_video" | "procedural_generation" | "text_or_copy" | "proxy_placeholder" | "user_asset" | "none";
+  fulfilledByBackend?: RendererBackend;
+}
+
+export interface RendererInstruction {
+  renderer?: RendererBackend;
+  fallbackRenderer?: RendererBackend;
+  atom?: MotionAtomSpec["type"] | string;
+  strategy?: FillStrategy;
+  requiredInputs?: string[];
+  fulfilledBy?: "target_asset" | "source_video" | "procedural_generation" | "aigc_stub" | "text_or_copy" | "proxy_placeholder" | "user_asset";
+  ribbonMotion?: RibbonMotionGeometry;
+  placeholderSpec?: PlaceholderSpec;
+  replacementSlotId?: string;
+  boundAssetId?: string;
+  replacementAssetKind?: TargetAssetKind;
+  motionSpec?: MotionSpec;
+  applyMotionFromSlot?: boolean;
+  [key: string]: unknown;
 }
 
 export interface FillAction {
@@ -422,7 +550,7 @@ export interface FillAction {
   strategy: FillStrategy;
   reason: string;
   targetClipId: string;
-  rendererInstructions?: Record<string, unknown>;
+  rendererInstructions?: RendererInstruction;
 }
 
 export interface StoryboardItem {
@@ -462,7 +590,11 @@ export interface TimelineClip {
   transitionIn?: string;
   transitionOut?: string;
   layers: TimelineLayer[];
+  replacementSlotId?: string;
+  placeholderSpec?: PlaceholderSpec;
   gapFillStrategy?: "none" | FillStrategy;
+  previewFrame?: string;
+  sourceEvidenceFrame?: string;
 }
 
 export interface TimelineMappingItem {
@@ -524,7 +656,30 @@ export interface RenderPlan {
   motionAtoms?: MotionAtomSpec[];
   notes?: string;
   rendererTarget?: RendererTarget;
+  rendererBackend?: RendererBackend;
   adapterOptions?: Record<string, unknown>;
+}
+
+export type EditOperationType =
+  | "change_output_mode"
+  | "remove_debug_labels"
+  | "adjust_ribbon"
+  | "adjust_cta_timing"
+  | "change_style_preset"
+  | "reduce_subtitle_density";
+
+export interface EditOperation {
+  type: EditOperationType;
+  value?: string | number | boolean | Record<string, unknown>;
+  reason: string;
+}
+
+export interface NaturalLanguageEditPlan {
+  instruction: string;
+  operations: EditOperation[];
+  patchedControls: Partial<GenerationControls>;
+  promptAddendum?: string;
+  summary: string;
 }
 
 export interface Timeline {
@@ -538,6 +693,7 @@ export interface Timeline {
   mapping: TimelineMappingItem[];
   gapReport: GapReportItem[];
   fillPlan: FillAction[];
+  replacementSlots?: ReplacementSlot[];
   renderPlan?: RenderPlan;
   warnings?: string[];
   createdAt: string;
@@ -553,6 +709,7 @@ export interface GenerationResult {
   slotMapping: SlotMapping[];
   gapReport: GapReportItem[];
   fillPlan: FillAction[];
+  replacementSlots?: ReplacementSlot[];
   storyboard: StoryboardItem[];
   timeline: Timeline;
   validation: {

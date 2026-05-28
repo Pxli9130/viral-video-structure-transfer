@@ -230,6 +230,15 @@ def detect_debug_text(generation_payload: dict | None) -> list[str]:
     return [term for term in debug_terms if term in blob]
 
 
+def detect_explainable_overlay(generation_payload: dict | None) -> bool:
+    if not generation_payload:
+        return False
+    for clip in (generation_payload.get("timeline") or {}).get("clips", []):
+        if clip.get("phaseLabel") or clip.get("phaseSubtitle") or clip.get("mappingPairs"):
+            return True
+    return bool(detect_debug_text(generation_payload))
+
+
 def evaluate_style_fidelity(sample_video: str | None, output_video: str, generation_payload: dict | None, creative_mode: str) -> dict:
     if not sample_video or not Path(sample_video).exists():
         return {"overall": 0.0, "reason": "sample video missing"}
@@ -547,6 +556,26 @@ def evaluate(
         "passed": float(style_fidelity.get("overall", 0.0) or 0.0) >= style_target,
         "detail": f"score={style_fidelity.get('overall')} target={style_target} mode={creative_mode}",
     })
+
+    debug_hits = style_fidelity.get("debugTextHits", []) if isinstance(style_fidelity, dict) else []
+    if creative_mode == "final_creative":
+        gates.append({
+            "id": "final_creative_no_debug_labels",
+            "passed": len(debug_hits) == 0,
+            "detail": f"debug hits: {debug_hits}",
+        })
+    elif creative_mode == "high_fidelity_style":
+        gates.append({
+            "id": "high_fidelity_no_debug_labels",
+            "passed": len(debug_hits) == 0,
+            "detail": f"debug hits: {debug_hits}",
+        })
+    elif creative_mode == "explainable_demo":
+        gates.append({
+            "id": "explainable_demo_has_mapping_or_phase_labels",
+            "passed": detect_explainable_overlay(generation_payload),
+            "detail": "phase labels/mapping metadata present" if detect_explainable_overlay(generation_payload) else "no explainable phase/mapping evidence found",
+        })
 
     summary = {
         "video": str(video),

@@ -23,7 +23,7 @@ const requiredFiles = [
   path.join(artifactDir, "timeline.json"),
   path.join(artifactDir, "generation-result.json"),
   path.join(repoRoot, "apps", "api", "remotion", "ReconstructionRoot.tsx"),
-  path.join(repoRoot, "packages", "shared", "src", "mockPipeline.ts")
+  path.join(repoRoot, "packages", "shared", "src", "engine", "planner.ts")
 ];
 
 function run(command, args, label) {
@@ -172,7 +172,7 @@ const [timeline, generation, remotionSource, pipelineSource] = await Promise.all
   readJson(path.join(artifactDir, "timeline.json")),
   readJson(path.join(artifactDir, "generation-result.json")),
   readFile(path.join(repoRoot, "apps", "api", "remotion", "ReconstructionRoot.tsx"), "utf8"),
-  readFile(path.join(repoRoot, "packages", "shared", "src", "mockPipeline.ts"), "utf8")
+  readFile(path.join(repoRoot, "packages", "shared", "src", "engine", "planner.ts"), "utf8")
 ]);
 
 const rendererScan = scanRenderer(remotionSource);
