@@ -26,51 +26,51 @@ const videoVariants = [
     key: "final_creative",
     summaryLabels: ["main", "final_creative"],
     artifactKey: "main",
-    display: "Final Creative",
-    shortLabel: "Final",
+    display: "最终创意",
+    shortLabel: "最终",
     knownFiles: ["ai_challenge_poster_final_creative.mp4", "ai_challenge_poster_main.mp4"],
     frameFiles: ["main_t1.png", "main_t7.png", "main_t13.png"],
-    description: "Clean creative output for judges to watch without process overlays."
+    description: "隐藏过程覆盖层的干净创意输出，适合评审直接观看最终效果。"
   },
   {
     key: "high_fidelity",
     summaryLabels: ["high_fidelity"],
     artifactKey: "high_fidelity",
-    display: "High Fidelity",
-    shortLabel: "Fidelity",
+    display: "高保真",
+    shortLabel: "保真",
     knownFiles: ["ai_challenge_poster_high_fidelity.mp4"],
     frameFiles: ["high_fidelity_t1.png", "high_fidelity_t7.png", "high_fidelity_t13.png"],
-    description: "Best style-match creative output; preserves layout grammar and ribbon geometry."
+    description: "风格匹配最强的创意输出，保留版式语法与彩带几何。"
   },
   {
     key: "explainable_demo",
     summaryLabels: ["explainable_demo"],
     artifactKey: "explainable_demo",
-    display: "Explainable Demo",
-    shortLabel: "Explain",
+    display: "可解释演示",
+    shortLabel: "解释",
     knownFiles: ["ai_challenge_poster_explainable_demo.mp4"],
     frameFiles: ["explainable_demo_t1.png", "explainable_demo_t7.png", "explainable_demo_t13.png"],
-    description: "Walkthrough/debug output with visible phase, mapping, and gap-fill explanation."
+    description: "带阶段、映射和缺口补全说明的走查/调试输出。"
   },
   {
     key: "high_ctr",
     summaryLabels: ["high_ctr"],
     artifactKey: "high_ctr",
-    display: "High CTR",
+    display: "高点击",
     shortLabel: "CTR",
     knownFiles: ["ai_challenge_poster_high_ctr.mp4"],
     frameFiles: ["high_ctr_t1.png", "high_ctr_t7.png", "high_ctr_t13.png"],
-    description: "Higher-density, faster motion variant for click-through emphasis."
+    description: "信息密度更高、运动更快的点击导向版本。"
   },
   {
     key: "high_quality",
     summaryLabels: ["high_quality"],
     artifactKey: "high_quality",
-    display: "High Quality",
-    shortLabel: "Quality",
+    display: "高质感",
+    shortLabel: "质感",
     knownFiles: ["ai_challenge_poster_high_quality.mp4"],
     frameFiles: ["high_quality_t1.png", "high_quality_t7.png", "high_quality_t13.png"],
-    description: "Cleaner, slower, premium-feel variant for visual polish."
+    description: "更干净、更慢、更高级的视觉打磨版本。"
   }
 ];
 
@@ -190,14 +190,88 @@ function badge(label, tone = "neutral") {
   return `<span class="badge badge-${esc(tone)}">${esc(label)}</span>`;
 }
 
-function missingCard(title, message = "Not generated yet") {
+const statusDisplay = {
+  PASS: "通过",
+  CHECK: "待检查",
+  WARNING: "警告",
+  MISSING: "缺失",
+  GENERATED: "已生成",
+  FILLED: "已补全",
+  PROCEDURAL: "程序化",
+  MAPPED: "已映射",
+  "WEAK MATCH": "弱匹配",
+  SKIPPED: "已跳过",
+  pass: "通过",
+  matched: "已匹配",
+  mapped: "已映射",
+  missing: "缺失",
+  weak_match: "弱匹配",
+  proxy_generated: "代理占位",
+  user_replaced: "用户已替换",
+  rendered: "已渲染",
+  source_video_mapped: "目标素材已匹配",
+  target_asset_mapped: "目标素材已匹配",
+  target_asset_weak_match: "目标素材弱匹配",
+  no_user_asset_available: "缺少用户素材",
+  high: "高",
+  medium: "中",
+  low: "低",
+  none: "无"
+};
+
+const strategyDisplay = {
+  proxy_placeholder: "代理占位",
+  user_asset_replace: "用户素材替换",
+  procedural_generation: "程序化生成",
+  text_card: "文字卡片",
+  packaging_overlay: "包装补全",
+  aigc_placeholder: "AIGC 占位",
+  reuse_with_crop_zoom: "裁切缩放复用",
+  remotion_mg: "Remotion MG",
+  ffmpeg_compose: "FFmpeg 合成",
+  image_card: "图片卡片",
+  rendered: "已渲染"
+};
+
+const roleDisplay = {
+  hook: "钩子",
+  body: "主体",
+  proof: "证明",
+  cta: "行动召唤"
+};
+
+function displayLabel(map, value, fallback = "n/a") {
+  const key = String(value ?? "");
+  if (!key) return fallback;
+  return map[key] ?? key.replace(/_/g, " ");
+}
+
+function statusLabel(value) {
+  return displayLabel(statusDisplay, value);
+}
+
+function strategyLabel(value) {
+  return displayLabel(strategyDisplay, value);
+}
+
+function roleLabel(value) {
+  return displayLabel(roleDisplay, value);
+}
+
+function statusBadge(status) {
+  const raw = String(status ?? "n/a");
+  const translated = statusLabel(raw);
+  return translated === raw ? raw : `${translated} · ${raw}`;
+}
+
+function missingCard(title, message = "尚未生成") {
   return `<article class="missing-card"><strong>${esc(title)}</strong><span>${esc(message)}</span></article>`;
 }
 
 function imageCard(fileName, label) {
   const filePath = path.join(marketingArtifactDir, fileName);
   if (!existsSync(filePath)) {
-    return missingCard(label, "Frame artifact missing");
+    return missingCard(label, "缺少帧 artifact");
   }
   return `<figure class="frame-card"><img src="${esc(hrefFromDemo(filePath))}" alt="${esc(label)}" loading="lazy" /><figcaption>${esc(label)}</figcaption></figure>`;
 }
@@ -263,9 +337,9 @@ function resolveVariantFile(config, summary) {
   return config.knownFiles.find((fileName) => existsSync(path.join(marketingArtifactDir, fileName))) ?? path.basename(summaryFile ?? config.knownFiles[0] ?? "");
 }
 
-function artifactLink(record, label = "Open artifact") {
+function artifactLink(record, label = "打开 artifact") {
   if (record.status !== "exists" || !record.href) {
-    return `<span class="artifact-missing">Missing</span>`;
+    return `<span class="artifact-missing">缺失</span>`;
   }
   return `<a href="${esc(record.href)}">${esc(label)}</a>`;
 }
@@ -273,34 +347,34 @@ function artifactLink(record, label = "Open artifact") {
 const analysisArtifact = await readJsonArtifact({
   title: "analysis.marketing.json",
   filePath: path.join(marketingArtifactDir, "analysis.marketing.json"),
-  description: "Sample video understanding and motion geometry."
+  description: "样例视频理解与运动几何。"
 });
 const templateArtifact = await readJsonArtifact({
   title: "structure-template.json",
   filePath: path.join(marketingArtifactDir, "structure-template.json"),
-  description: "Reusable structure template and atoms."
+  description: "可复用结构模板与结构原子。"
 });
 const generationResultArtifact = await readJsonArtifact({
   title: "generation-result.json",
   filePath: path.join(marketingArtifactDir, "generation-result.json"),
-  description: "Default generation result with slot mapping, gaps, fill plan, and timeline."
+  description: "默认生成结果，包含槽位映射、缺口、补全计划与时间线。"
 });
 const variantSummaryArtifact = await readJsonArtifact({
   title: "variant-summary.json",
   filePath: path.join(marketingArtifactDir, "variant-summary.json"),
-  description: "Generated MP4 variant summary with hashes and metadata.",
+  description: "生成 MP4 多版本摘要、哈希与元数据。",
   fallback: []
 });
 const corpusArtifact = await readJsonArtifact({
   title: "corpus-regression-report.json",
   filePath: path.join(corpusRegressionDir, "corpus-regression-report.json"),
-  description: "Corpus regression pass/fail report.",
+  description: "语料回归通过/失败报告。",
   fallback: {}
 });
 const editingCaseArtifact = await readJsonArtifact({
   title: "editing_case/generation-result.json",
   filePath: path.join(editingCaseDir, "generation-result.json"),
-  description: "Editing.mov reference-vs-target material case with proxy gap-fill evidence.",
+  description: "editing.mov 参考视频与目标素材分离案例，包含代理缺口补全证据。",
   fallback: {}
 });
 
@@ -313,29 +387,29 @@ for (const config of videoVariants) {
   generationByArtifactKey[config.artifactKey] = await readJsonArtifact({
     title: `generation.${config.artifactKey}.json`,
     filePath: path.join(marketingArtifactDir, `generation.${config.artifactKey}.json`),
-    description: `${config.display} generation payload.`
+    description: `${config.display} 生成载荷。`
   });
   evaluationByArtifactKey[config.artifactKey] = await readJsonArtifact({
     title: `evaluation.${config.artifactKey}.json`,
     filePath: path.join(marketingArtifactDir, `evaluation.${config.artifactKey}.json`),
-    description: `${config.display} local evaluator result.`
+    description: `${config.display} 本地评估结果。`
   });
   vlmByArtifactKey[config.artifactKey] = await readJsonArtifact({
     title: `vlm-judge.${config.artifactKey}.json`,
     filePath: path.join(marketingArtifactDir, `vlm-judge.${config.artifactKey}.json`),
-    description: `${config.display} VLM-as-judge result.`
+    description: `${config.display} VLM 评审结果。`
   });
 }
 
 timelineByArtifactKey.main = await readJsonArtifact({
   title: "timeline.json",
   filePath: path.join(marketingArtifactDir, "timeline.json"),
-  description: "Default renderable timeline."
+  description: "默认可渲染时间线。"
 });
 timelineByArtifactKey.high_fidelity = await readJsonArtifact({
   title: "timeline.high_fidelity.json",
   filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"),
-  description: "High fidelity renderable timeline."
+  description: "高保真可渲染时间线。"
 });
 
 const analysis = analysisArtifact.data ?? {};
@@ -403,8 +477,8 @@ const bestVariant =
     .sort((a, b) => (b.bestScore ?? 0) - (a.bestScore ?? 0))[0] ?? resolvedVariants[0];
 const bestVariantReason =
   bestVariant?.vlmScores?.overall !== null && bestVariant?.vlmScores?.overall !== undefined
-    ? `Selected by VLM overall ${formatPercentScore(bestVariant.vlmScores.overall)}; local style fidelity fallback was ${formatPercentScore(bestVariant.style)}.`
-    : `Selected by local style fidelity fallback ${formatPercentScore(bestVariant?.style)} because VLM overall was unavailable.`;
+    ? `按 VLM overall ${formatPercentScore(bestVariant.vlmScores.overall)} 选择；本地风格保真兜底分为 ${formatPercentScore(bestVariant.style)}。`
+    : `VLM overall 不可用，因此按本地风格保真兜底分 ${formatPercentScore(bestVariant?.style)} 选择。`;
 const finalCreative = resolvedVariants.find((variant) => variant.key === "final_creative");
 const highFidelity = resolvedVariants.find((variant) => variant.key === "high_fidelity");
 const explainableDemo = resolvedVariants.find((variant) => variant.key === "explainable_demo");
@@ -485,13 +559,13 @@ function slotReplacementEvaluatorGates(generation, options = {}) {
       id: "user_replaced_slot_count",
       value: userReplaced,
       passed: userReplaced > 0,
-      comment: `${userReplaced} slot(s) bound to managed user replacement assets.`
+      comment: `${userReplaced} 个槽位已绑定托管用户替换素材。`
     },
     {
       id: "proxy_slot_visible",
       value: proxyVisible,
       passed: proxyVisible || userReplaced > 0 || slots.length === 0,
-      comment: proxyVisible ? "Before fixture exposes a visible proxy placeholder." : "No proxy placeholder layer found in the fixture pair."
+      comment: proxyVisible ? "替换前夹具展示可见代理占位。" : "夹具对中未找到代理占位层。"
     },
     {
       id: "replacement_asset_rendered",
@@ -536,7 +610,7 @@ function slotReplacementFixtureTimelines({ slotId, placeholderSpec, semanticLabe
         slotId,
         replacementSlotId: slotId,
         gapType: "dynamic_3d_ribbon_asset",
-        gapLabel: "Missing replaceable hero/motif visual",
+      gapLabel: "缺少可替换主视觉/动机素材",
         gapLabelZh: "缺少可替换主视觉/动效素材",
         severity: "high",
         reason: "No managed target asset was available for this required visual slot.",
@@ -570,8 +644,8 @@ function slotReplacementFixtureTimelines({ slotId, placeholderSpec, semanticLabe
     startSec: 0,
     durationSec: 4,
     type: "placeholder",
-    visualIntent: "Visible proxy placeholder preserves the missing slot motion until the user uploads a replacement.",
-    scriptText: "Interactive Gap Fill proxy fixture",
+    visualIntent: "可见代理占位在用户上传替换素材前保留缺失槽位运动。",
+    scriptText: "交互式缺口补全代理夹具",
     subtitleText: "Proxy keeps structure complete",
     transitionIn: "none",
     transitionOut: "hard_cut",
@@ -596,7 +670,7 @@ function slotReplacementFixtureTimelines({ slotId, placeholderSpec, semanticLabe
     id: "igf_demo_user_replacement_clip",
     type: "image",
     visualIntent: "Managed uploaded replacement asset is rendered in the same slot with preserved motion.",
-    scriptText: "Interactive Gap Fill user replacement fixture",
+    scriptText: "交互式缺口补全用户替换夹具",
     subtitleText: "User asset replaces proxy",
     gapFillStrategy: "user_asset_replace",
     layers: [
@@ -665,7 +739,7 @@ function slotReplacementFixtureTimelines({ slotId, placeholderSpec, semanticLabe
     request: {
       projectId: "marketing_case_demo",
       templateId: template?.id ?? "marketing_case_template",
-      brief: "Interactive Gap Fill rendered replacement fixture.",
+      brief: "交互式缺口补全已渲染替换夹具。",
       replacementBindings: [{ slotId, assetId: "fixture_uploaded_replacement_asset", applyMotionFromSlot: true }]
     },
     timeline: replacementTimeline,
@@ -762,7 +836,7 @@ async function buildSlotReplacementDemo() {
       label: "Replaceable proxy",
       motion: { type: "spin", axis: "y", speed: 0.8, preserveFromSlot: true }
     };
-  const semanticLabel = replaceableSlot?.semanticLabel ?? replaceableGap.gapLabelZh ?? replaceableGap.gapLabel ?? "Replaceable missing visual slot";
+  const semanticLabel = replaceableSlot?.semanticLabel ?? replaceableGap.gapLabelZh ?? replaceableGap.gapLabel ?? "可替换缺失视觉槽位";
   const visualForm = replaceableSlot?.visualForm ?? (replaceableGap.gapType === "dynamic_3d_ribbon_asset" ? "ribbon_motif" : "rotating_object");
   const acceptedAssetTypes = replaceableSlot?.acceptedAssetTypes ?? replaceableGap.acceptedAssetTypes ?? ["image", "video", "gif"];
   const { proxyTimeline, replacementTimeline, replacementGeneration } = slotReplacementFixtureTimelines({
@@ -808,7 +882,7 @@ async function buildSlotReplacementDemo() {
       artifact: proxyRender.rendered ? hrefFromDemo(slotReplacementProxyVideoPath) : null,
       timelineJson: hrefFromDemo(slotReplacementProxyTimelinePath),
       rendered: proxyRender.rendered,
-      label: "Rendered proxy placeholder keeps structure complete before user upload."
+      label: "已渲染代理占位，在用户上传前保持结构完整。"
     },
     after: {
       status: "user_replaced",
@@ -818,18 +892,18 @@ async function buildSlotReplacementDemo() {
       timelineJson: hrefFromDemo(slotReplacementUserTimelinePath),
       generationJson: hrefFromDemo(slotReplacementUserGenerationPath),
       rendered: replacementRender.rendered,
-      label: "Rendered managed replacement asset is bound to the same slot and preserves motion."
+      label: "已渲染托管替换素材绑定到同一槽位，并保留运动。"
     },
     diff: [
       { field: "fillStrategy", before: "proxy_placeholder", after: "user_asset_replace" },
       { field: "status", before: "proxy_generated", after: "user_replaced" },
       { field: "assetId", before: "proxy_placeholder", after: "fixture_uploaded_replacement_asset" },
-      { field: "motion", before: "slot motion preserved", after: "slot motion preserved" }
+      { field: "motion", before: "保留槽位运动", after: "保留槽位运动" }
     ],
     evaluatorGates,
     fixtureAsset: hrefFromDemo(slotReplacementAssetPath),
     artifactDiscrepancyNote:
-      "The five flagship marketing generation.*.json files may predate this rendered fixture. Current proxy_placeholder/user_asset_replace evidence is stored in the interactive_gap_fill timeline and generation artifacts."
+      "五个旗舰营销 generation.*.json 文件可能早于该已渲染夹具。当前 proxy_placeholder/user_asset_replace 证据存放在 interactive_gap_fill 时间线与生成 artifact 中。"
   });
 }
 
@@ -840,25 +914,25 @@ registerArtifact({
   title: "slot-replacement-demo.json",
   type: "json",
   filePath: slotReplacementDemoPath,
-  description: "Interactive Gap Fill before/after replay artifact."
+  description: "交互式缺口补全前后对比 artifact。"
 });
 registerArtifact({
   title: "interactive_gap_fill_proxy.mp4",
   type: "video",
   filePath: slotReplacementProxyVideoPath,
-  description: "Rendered proxy placeholder fixture."
+  description: "已渲染代理占位夹具。"
 });
 registerArtifact({
   title: "interactive_gap_fill_user_replacement.mp4",
   type: "video",
   filePath: slotReplacementUserVideoPath,
-  description: "Rendered managed replacement asset fixture."
+  description: "已渲染托管替换素材夹具。"
 });
 registerArtifact({
   title: "generation.interactive_gap_fill_user_replacement.json",
   type: "json",
   filePath: slotReplacementUserGenerationPath,
-  description: "Generation JSON for the rendered replacement fixture."
+  description: "已渲染替换夹具的生成 JSON。"
 });
 
 function controlValue(request, key) {
@@ -873,7 +947,7 @@ function nlEditPreviewHtml(generation) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NL Edit After Preview</title>
+  <title>NL 编辑后预览</title>
   <style>
     body { margin: 0; font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; background: #f8fafc; color: #172033; }
     main { max-width: 980px; margin: 0 auto; padding: 22px; }
@@ -889,15 +963,15 @@ function nlEditPreviewHtml(generation) {
 </head>
 <body>
   <main>
-    <h1>NL Edit After Preview</h1>
-    <p>Generated through the existing natural-language edit parser and generation planner. This is a lightweight static preview, not a newly rendered MP4.</p>
+    <h1>NL 编辑后预览</h1>
+    <p>通过现有自然语言编辑解析器和生成规划器生成。这是轻量静态预览，不是新渲染的 MP4。</p>
     <div class="grid">
       ${clips.map((clip, index) => `<article>
         <div class="frame">
-          <span>${esc(clip.role ?? `clip ${index + 1}`)}</span>
-          <strong>${esc(clip.subtitleText ?? clip.visualIntent ?? `Clip ${index + 1}`)}</strong>
+          <span>${esc(roleLabel(clip.role ?? `clip ${index + 1}`))}</span>
+          <strong>${esc(clip.subtitleText ?? clip.visualIntent ?? `片段 ${index + 1}`)}</strong>
         </div>
-        <small>${formatSec(clip.startSec)}-${formatSec(Number(clip.startSec ?? 0) + Number(clip.durationSec ?? 0))} · ${esc(clip.gapFillStrategy ?? "none")}</small>
+        <small>${formatSec(clip.startSec)}-${formatSec(Number(clip.startSec ?? 0) + Number(clip.durationSec ?? 0))} · ${esc(strategyLabel(clip.gapFillStrategy ?? "none"))}</small>
       </article>`).join("")}
     </div>
   </main>
@@ -912,7 +986,7 @@ async function buildNlEditDemo() {
   const sharedDistPath = path.join(process.cwd(), "packages", "shared", "dist", "index.js");
   let mode = "fallback_fixture";
   let parsedPlan = {
-    operations: [{ type: "change_style_preset", reason: "Fallback when built shared package is unavailable." }],
+    operations: [{ type: "change_style_preset", reason: "共享包不可用时使用兜底计划。" }],
     patchedControls: {
       creativeMode: "final_creative",
       packagingStyle: "clean",
@@ -986,7 +1060,7 @@ async function buildNlEditDemo() {
     },
     diff,
     warnings: parsedPlan.warnings ?? [],
-    disclosure: "This artifact is generated by the existing NL edit parser/request-regeneration path. It is not a relabeled pair of pre-existing variants and it is not a newly rendered MP4."
+    disclosure: "该 artifact 通过现有自然语言编辑解析器和请求重生成路径生成。它不是对既有变体的简单改名，也不是本轮新渲染的 MP4。"
   });
 }
 
@@ -996,16 +1070,16 @@ registerArtifact({
   title: "nl-edit-demo.json",
   type: "json",
   filePath: nlEditDemoPath,
-  description: "Natural-language edit artifact generated through the edit parser and planner."
+  description: "通过编辑解析器与规划器生成的自然语言编辑 artifact。"
 });
 if (existsSync(nlEditGenerationPath)) {
-  registerArtifact({ title: "generation.nl_edit_white_poster.json", type: "json", filePath: nlEditGenerationPath, description: "Regenerated generation for the white-poster NL edit." });
+  registerArtifact({ title: "generation.nl_edit_white_poster.json", type: "json", filePath: nlEditGenerationPath, description: "白底高质感自然语言编辑的重生成结果。" });
 }
 if (existsSync(nlEditTimelinePath)) {
-  registerArtifact({ title: "timeline.nl_edit_white_poster.json", type: "json", filePath: nlEditTimelinePath, description: "Regenerated timeline for the white-poster NL edit." });
+  registerArtifact({ title: "timeline.nl_edit_white_poster.json", type: "json", filePath: nlEditTimelinePath, description: "白底高质感自然语言编辑的重生成时间线。" });
 }
 if (existsSync(nlEditPreviewPath)) {
-  registerArtifact({ title: "nl-edit-after-preview.html", type: "html", filePath: nlEditPreviewPath, description: "Lightweight static preview of the NL edit after-state." });
+  registerArtifact({ title: "nl-edit-after-preview.html", type: "html", filePath: nlEditPreviewPath, description: "自然语言编辑后状态的轻量静态预览。" });
 }
 
 function stageStatus(condition, okLabel = "PASS", missingLabel = "MISSING") {
@@ -1014,38 +1088,38 @@ function stageStatus(condition, okLabel = "PASS", missingLabel = "MISSING") {
 
 const pipelineStages = [
   {
-    name: "Upload Sample",
+    name: "上传样例",
     status: stageStatus(sampleMetadata.durationSec, "PASS"),
     evidence: sampleMetadata.durationSec
       ? `${sampleName} · ${formatSec(sampleMetadata.durationSec)} · ${formatNumber(sampleMetadata.width, 0)}x${formatNumber(sampleMetadata.height, 0)}`
-      : "Sample analysis artifact missing."
+      : "缺少样例分析 artifact。"
   },
   {
-    name: "Analyze Structure",
+    name: "分析结构",
     status: stageStatus(templateArtifact.exists, "PASS"),
-    evidence: `Primary motif: ${firstDefined(ribbon.pathFamily, analysis?.primaryMotif?.motif, "unknown")} / ${firstDefined(ribbon.axis, "unknown")}`
+    evidence: `主视觉动机：${firstDefined(ribbon.pathFamily, analysis?.primaryMotif?.motif, "unknown")} / ${firstDefined(ribbon.axis, "unknown")}`
   },
   {
-    name: "Map Slots",
+    name: "映射槽位",
     status: slotMapping.length ? "PASS" : "MISSING",
-    evidence: `${slotMapping.length} slot mappings · ${slotMapping.filter((item) => item.status === "matched").length} mapped`
+    evidence: `${slotMapping.length} 个槽位映射 · ${slotMapping.filter((item) => item.status === "matched").length} 个已映射`
   },
   {
-    name: "Fill Gaps",
+    name: "补全缺口",
     status: gapReport.length && fillPlan.length ? (fillPlan.some((fill) => fill.strategy === "procedural_generation") ? "PROCEDURAL" : "FILLED") : gapReport.length ? "WARNING" : "PASS",
     evidence: primaryFill
-      ? `${primaryGap?.gapType ?? primaryGap?.slotId} filled by ${primaryFill.strategy} -> ${primaryFill.rendererInstructions?.renderer ?? "renderer"} -> ${primaryFill.rendererInstructions?.atom ?? "output"}`
-      : "No unresolved required gaps."
+      ? `${primaryGap?.gapType ?? primaryGap?.slotId} 由 ${strategyLabel(primaryFill.strategy)} -> ${primaryFill.rendererInstructions?.renderer ?? "renderer"} -> ${primaryFill.rendererInstructions?.atom ?? "output"} 补全`
+      : "没有未解决的必需缺口。"
   },
   {
-    name: "Generate Variants",
+    name: "生成多版本",
     status: videosFound ? "GENERATED" : "MISSING",
-    evidence: `${videosFound}/${resolvedVariants.length} MP4 variants available. Best: ${bestVariant?.display ?? "n/a"}`
+    evidence: `${videosFound}/${resolvedVariants.length} 个 MP4 版本可用。推荐：${bestVariant?.display ?? "n/a"}`
   },
   {
-    name: "Evaluate",
+    name: "评估",
     status: evaluatorAvailable ? (localGatePassed ? "PASS" : "WARNING") : "MISSING",
-    evidence: `${evaluatorAvailable ? "Local evaluator available" : "Local evaluator missing"} · ${vlmAvailable ? `VLM overall ${formatPercentScore(bestVlmScores?.overall)}` : "VLM not run"}`
+    evidence: `${evaluatorAvailable ? "本地评估可用" : "缺少本地评估"} · ${vlmAvailable ? `VLM overall ${formatPercentScore(bestVlmScores?.overall)}` : "VLM 未运行"}`
   }
 ];
 
@@ -1071,7 +1145,7 @@ function stageHtml(stage, index) {
     <div class="step-index">${index + 1}</div>
     <div>
       <h3>${esc(stage.name)}</h3>
-      ${badge(stage.status, statusTone(stage.status))}
+      ${badge(statusBadge(stage.status), statusTone(stage.status))}
       <p>${esc(stage.evidence)}</p>
     </div>
   </article>`;
@@ -1096,17 +1170,17 @@ function sampleStructureTrack() {
         tone: "sample"
       }))
     : [
-        { label: "Hook", start: 0, end: duration * 0.2, detail: "Immediate title hierarchy.", tone: "sample" },
-        { label: "Ribbon Entry", start: duration * 0.2, end: duration * 0.45, detail: "Visual attention enters.", tone: "sample" },
-        { label: "Keyword Memory", start: duration * 0.45, end: duration * 0.7, detail: "Keyword repetition.", tone: "sample" },
-        { label: "Color Climax", start: duration * 0.7, end: duration * 0.85, detail: "Color buildup.", tone: "sample" },
-        { label: "CTA Hold", start: duration * 0.85, end: duration, detail: "Clean final hold.", tone: "sample" }
+        { label: "钩子", start: 0, end: duration * 0.2, detail: "即时标题层级。", tone: "sample" },
+        { label: "彩带进入", start: duration * 0.2, end: duration * 0.45, detail: "视觉注意力进入。", tone: "sample" },
+        { label: "关键词记忆", start: duration * 0.45, end: duration * 0.7, detail: "关键词重复。", tone: "sample" },
+        { label: "色彩高潮", start: duration * 0.7, end: duration * 0.85, detail: "色彩递进。", tone: "sample" },
+        { label: "CTA 停留", start: duration * 0.85, end: duration, detail: "干净的结尾停留。", tone: "sample" }
       ];
   const excluded = excludeSegments.map((segment) => ({
-    label: "Excluded Tail",
+    label: "排除尾段",
     start: segment.startSec ?? duration * 0.85,
     end: segment.endSec ?? duration,
-    detail: segment.reason ?? "Platform UI tail excluded from transfer.",
+    detail: segment.reason ?? "平台 UI 尾段已从迁移结构中排除。",
     tone: "excluded"
   }));
   return [...segments, ...excluded].map((item) => {
@@ -1134,7 +1208,7 @@ function targetGapTrack() {
   const unmatchedGapItems = gapReport
     .filter((gap) => !slotMapping.some((mapping) => gap.slotId === mapping.slotId || gap.gapType?.includes(mapping.slotType)))
     .map((gap) => ({
-      label: `Motif Gap: ${gap.gapLabelZh ?? gap.gapLabel ?? gap.gapType ?? gap.slotId}`,
+      label: `主视觉缺口：${gap.gapLabelZh ?? gap.gapLabel ?? gap.gapType ?? gap.slotId}`,
       detail: gap.reason,
       status: gap.status ?? "missing",
       fill: gap.fillSource ?? gap.fulfilledByBackend
@@ -1147,10 +1221,10 @@ function targetGapTrack() {
         status: gap.status ?? "missing",
         fill: gap.fillSource
       }));
-  const source = items.length ? items : [{ label: "Target slots", detail: "Not generated yet", status: "missing", fill: "n/a" }];
+  const source = items.length ? items : [{ label: "目标槽位", detail: "尚未生成", status: "missing", fill: "n/a" }];
   return source.map((item) => `<div class="rail-segment rail-${esc(statusTone(item.status))}" style="width:${cssWidth(100 / source.length)}" title="${esc(item.detail)}">
     <strong>${esc(item.label)}</strong>
-    <span>${esc(item.status)} · ${esc(item.fill ?? "n/a")}</span>
+    <span>${esc(statusLabel(item.status))} · ${esc(strategyLabel(item.fill ?? "n/a"))}</span>
   </div>`).join("");
 }
 
@@ -1160,25 +1234,25 @@ function generatedTrack() {
   const source = clips.length
     ? clips
     : [
-        { role: "hook", startSec: 0, durationSec: 2.2, subtitleText: "Clip 1" },
-        { role: "body", startSec: 2.2, durationSec: 4, subtitleText: "Clip 2" },
-        { role: "proof", startSec: 6.2, durationSec: 4, subtitleText: "Clip 3" },
-        { role: "cta", startSec: 10.2, durationSec: 5.8, subtitleText: "Clip 4" }
+        { role: "hook", startSec: 0, durationSec: 2.2, subtitleText: "片段 1" },
+        { role: "body", startSec: 2.2, durationSec: 4, subtitleText: "片段 2" },
+        { role: "proof", startSec: 6.2, durationSec: 4, subtitleText: "片段 3" },
+        { role: "cta", startSec: 10.2, durationSec: 5.8, subtitleText: "片段 4" }
       ];
   return source.map((clip, index) => {
     const start = Number(clip.startSec ?? clip.start ?? 0);
     const clipDuration = Number(clip.durationSec ?? Math.max(0.1, Number(clip.endSec ?? duration) - start));
     const width = (clipDuration / duration) * 100;
     return `<div class="rail-segment rail-output" style="width:${cssWidth(width)}" title="${esc(clip.visualIntent ?? clip.scriptText ?? "")}">
-      <strong>Clip ${index + 1} · ${esc(clip.role ?? clip.type ?? "generated")}</strong>
-      <span>${formatSec(start)}-${formatSec(start + clipDuration)} · ${esc(clip.gapFillStrategy ?? clip.fillStrategy ?? "rendered")}</span>
+      <strong>片段 ${index + 1} · ${esc(roleLabel(clip.role ?? clip.type ?? "generated"))}</strong>
+      <span>${formatSec(start)}-${formatSec(start + clipDuration)} · ${esc(strategyLabel(clip.gapFillStrategy ?? clip.fillStrategy ?? "rendered"))}</span>
     </div>`;
   }).join("");
 }
 
 function targetAssetShelf() {
   if (!targetAssets.length) {
-    return missingCard("Target assets", "No target assets recorded in generation request.");
+    return missingCard("目标素材", "生成请求中没有记录目标素材。");
   }
   return `<div class="asset-shelf">${targetAssets.map((asset) => `<article class="asset-card">
     <span>${esc(asset.kind ?? "asset")}</span>
@@ -1190,53 +1264,53 @@ function targetAssetShelf() {
 
 function slotMappingBoard() {
   if (!slotMapping.length) {
-    return missingCard("Slot mapping", "No slot mapping artifact found.");
+    return missingCard("槽位映射", "没有找到槽位映射 artifact。");
   }
   return `<div class="mapping-board">${slotMapping.map((mapping) => {
     const state = mapping.status === "matched" ? "mapped" : mapping.status ?? "missing";
     return `<article class="mapping-row mapping-${esc(state)}">
       <div>
-        <span>Template Slot</span>
+        <span>模板槽位</span>
         <strong>${esc(mapping.slotType ?? mapping.slotId)}</strong>
-        <p>${esc(mapping.slotRole ?? "slot")}</p>
+        <p>${esc(roleLabel(mapping.slotRole ?? "slot"))}</p>
       </div>
       <div class="mapping-arrow">-&gt;</div>
       <div>
-        <span>Target / Fill</span>
+        <span>目标 / 补全</span>
         <strong>${esc(mapping.selectedTargetAssetId ?? mapping.selectedAssetId ?? mapping.selectedShotId ?? "missing")}</strong>
-        <p>${esc(mapping.assetAvailability ?? mapping.reason ?? "n/a")}</p>
+        <p>${esc(statusLabel(mapping.assetAvailability ?? mapping.reason ?? "n/a"))}</p>
       </div>
-      ${badge(state === "matched" ? "MAPPED" : state.toUpperCase(), statusTone(state))}
+      ${badge(statusBadge(state === "matched" ? "MAPPED" : state.toUpperCase()), statusTone(state))}
     </article>`;
   }).join("")}</div>`;
 }
 
 function gapCardGrid() {
   if (!gapReport.length) {
-    return `<div class="gap-grid">${missingCard("Material gaps", "No gaps detected in this run.")}</div>`;
+    return `<div class="gap-grid">${missingCard("素材缺口", "本次运行未检测到缺口。")}</div>`;
   }
   return `<div class="gap-grid">${gapReport.map((gap) => {
     const fill = fillActionForGap(gap);
     const instructions = fill.rendererInstructions ?? {};
     return `<article class="gap-card">
-      <div class="card-topline">${badge(String(gap.severity ?? "gap").toUpperCase(), statusTone(gap.severity === "high" ? "missing" : "warning"))}${badge(gap.status ?? "missing", "danger")}</div>
+      <div class="card-topline">${badge(statusLabel(gap.severity ?? "gap"), statusTone(gap.severity === "high" ? "missing" : "warning"))}${badge(statusLabel(gap.status ?? "missing"), "danger")}</div>
       <h3>${esc(gap.gapLabelZh ?? gap.gapLabel ?? gap.slotId)}</h3>
-      <p>${esc(gap.reason ?? gap.impact ?? "Material slot needs fill.")}</p>
+      <p>${esc(gap.reason ?? gap.impact ?? "素材槽位需要补全。")}</p>
       <dl class="compact-dl">
-        <div><dt>Recommended</dt><dd>${esc((gap.recommendedFillStrategies ?? []).join(", ") || "n/a")}</dd></div>
-        <div><dt>Selected</dt><dd>${esc(fill.strategy ?? gap.fillSource ?? "n/a")}</dd></div>
-        <div><dt>Backend</dt><dd>${esc(instructions.renderer ?? gap.fulfilledByBackend ?? "n/a")}</dd></div>
-        <div><dt>Atom</dt><dd>${esc(instructions.atom ?? instructions.layout ?? "n/a")}</dd></div>
-        <div><dt>Fulfilled by</dt><dd>${esc(instructions.fulfilledBy ?? gap.fillSource ?? "n/a")}</dd></div>
+        <div><dt>推荐策略</dt><dd>${esc((gap.recommendedFillStrategies ?? []).map(strategyLabel).join(", ") || "n/a")}</dd></div>
+        <div><dt>选中策略</dt><dd>${esc(strategyLabel(fill.strategy ?? gap.fillSource ?? "n/a"))}</dd></div>
+        <div><dt>后端</dt><dd>${esc(strategyLabel(instructions.renderer ?? gap.fulfilledByBackend ?? "n/a"))}</dd></div>
+        <div><dt>原子</dt><dd>${esc(instructions.atom ?? instructions.layout ?? "n/a")}</dd></div>
+        <div><dt>完成方式</dt><dd>${esc(strategyLabel(instructions.fulfilledBy ?? gap.fillSource ?? "n/a"))}</dd></div>
       </dl>
-      <p class="evidence">${esc(fill.reason ?? gap.impact ?? "Rendered into output timeline.")}</p>
+      <p class="evidence">${esc(fill.reason ?? gap.impact ?? "已进入输出时间线。")}</p>
     </article>`;
   }).join("")}</div>`;
 }
 
 function fillPlanFlow() {
   if (!fillPlan.length) {
-    return missingCard("Fill Plan Flow", "No fill actions were needed.");
+    return missingCard("补全流程", "本次不需要补全动作。");
   }
   return `<div class="flow-list">${fillPlan.map((fill) => {
     const gap =
@@ -1246,10 +1320,10 @@ function fillPlanFlow() {
     const instructions = fill.rendererInstructions ?? {};
     const nodes = [
       gap.gapLabelZh ?? gap.gapLabel ?? fill.slotId,
-      fill.strategy,
-      instructions.renderer,
+      strategyLabel(fill.strategy),
+      strategyLabel(instructions.renderer),
       instructions.atom ?? instructions.layout,
-      "rendered output"
+      "渲染输出"
     ].filter(Boolean);
     return `<article class="flow-card">${nodes.map((node, index) => `<span>${esc(node)}</span>${index < nodes.length - 1 ? "<b>-&gt;</b>" : ""}`).join("")}</article>`;
   }).join("")}</div>`;
@@ -1257,10 +1331,10 @@ function fillPlanFlow() {
 
 function structureSegmentList() {
   if (!structureSegments.length) {
-    return missingCard("Structure segments", "No segment list found.");
+    return missingCard("结构段落", "没有找到段落列表。");
   }
   return `<ol class="segment-list">${structureSegments.map((segment) => `<li>
-    <strong>${esc(toTitle(segment.role ?? segment.id))}</strong>
+    <strong>${esc(roleLabel(segment.role ?? segment.id))}</strong>
     <span>${formatNumber((segment.startRatio ?? 0) * 100, 0)}%-${formatNumber((segment.endRatio ?? 0) * 100, 0)}%</span>
     <p>${esc(segment.intent ?? segment.scriptPattern ?? "")}</p>
   </li>`).join("")}</ol>`;
@@ -1277,28 +1351,28 @@ function motifGeometryCard() {
     ["confidence", ribbon.confidence]
   ];
   return `<article class="info-card">
-    <h3>Motif Geometry</h3>
+    <h3>主视觉几何</h3>
     <dl class="compact-dl">${fields.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${esc(formatNumber(value, 3) === "n/a" ? value ?? "n/a" : formatNumber(value, 3))}</dd></div>`).join("")}</dl>
   </article>`;
 }
 
 function excludedSegmentCard() {
   if (!excludeSegments.length) {
-    return missingCard("Excluded Segment", "No excluded segment recorded.");
+    return missingCard("排除片段", "没有记录排除片段。");
   }
   return `<article class="info-card excluded-card">
-    <h3>Excluded Platform Tail</h3>
-    ${excludeSegments.map((segment) => `<p><strong>${formatSec(segment.startSec)}-${formatSec(segment.endSec)}</strong> · ${esc(segment.reason ?? "Excluded from transferable structure.")}</p>`).join("")}
+    <h3>排除平台尾段</h3>
+    ${excludeSegments.map((segment) => `<p><strong>${formatSec(segment.startSec)}-${formatSec(segment.endSec)}</strong> · ${esc(segment.reason ?? "已从可迁移结构中排除。")}</p>`).join("")}
   </article>`;
 }
 
 function videoPanel(variant) {
   if (!variant?.exists) {
-    return `<div class="tab-panel" data-tab-panel="${esc(variant?.key ?? "missing")}">${missingCard(variant?.display ?? "Video", "Video artifact missing")}</div>`;
+    return `<div class="tab-panel" data-tab-panel="${esc(variant?.key ?? "missing")}">${missingCard(variant?.display ?? "视频", "缺少视频 artifact")}</div>`;
   }
   const vlmLine = variant.vlmScores
-    ? `${badge("VLM", "accent")} <strong>${formatPercentScore(variant.vlmScores.overall)}</strong> overall · structure ${formatPercentScore(variant.vlmScores.structure)} · style ${formatPercentScore(variant.vlmScores.style)}`
-    : `${badge("VLM not run", "neutral")}`;
+    ? `${badge("VLM", "accent")} <strong>${formatPercentScore(variant.vlmScores.overall)}</strong> overall · 结构 ${formatPercentScore(variant.vlmScores.structure)} · 风格 ${formatPercentScore(variant.vlmScores.style)}`
+    : `${badge("VLM 未运行", "neutral")}`;
   return `<div class="tab-panel" data-tab-panel="${esc(variant.key)}">
     <article class="video-card">
       <video controls preload="metadata" src="${esc(variant.href)}"></video>
@@ -1306,20 +1380,20 @@ function videoPanel(variant) {
         <h3>${esc(variant.display)}</h3>
         <p>${esc(variant.description)}</p>
         <div class="score-row">
-          ${scoreBlock("Local eval", variant.localPassed ? "PASS" : variant.evaluationExists ? "CHECK" : "n/a", variant.localPassed ? "success" : "warning")}
-          ${scoreBlock("Style", formatPercentScore(variant.style), "neutral")}
-          ${scoreBlock("VLM score", formatPercentScore(variant.vlmScores?.overall), variant.vlmScores ? "accent" : "neutral")}
+          ${scoreBlock("本地评估", statusBadge(variant.localPassed ? "PASS" : variant.evaluationExists ? "CHECK" : "n/a"), variant.localPassed ? "success" : "warning")}
+          ${scoreBlock("风格分", formatPercentScore(variant.style), "neutral")}
+          ${scoreBlock("VLM 分数", formatPercentScore(variant.vlmScores?.overall), variant.vlmScores ? "accent" : "neutral")}
         </div>
         <p class="score-detail">${vlmLine}</p>
         <details>
-          <summary>Metadata and hashes</summary>
+          <summary>元数据与哈希</summary>
           <dl class="compact-dl">
-            <div><dt>Duration</dt><dd>${formatSec(variant.metadata?.durationSec)}</dd></div>
-            <div><dt>Resolution</dt><dd>${esc(`${variant.metadata?.width ?? "n/a"}x${variant.metadata?.height ?? "n/a"}`)}</dd></div>
+            <div><dt>时长</dt><dd>${formatSec(variant.metadata?.durationSec)}</dd></div>
+            <div><dt>分辨率</dt><dd>${esc(`${variant.metadata?.width ?? "n/a"}x${variant.metadata?.height ?? "n/a"}`)}</dd></div>
             <div><dt>FPS</dt><dd>${esc(variant.metadata?.fps ?? "n/a")}</dd></div>
             <div><dt>MD5</dt><dd><code>${esc(variant.hashes?.md5 ?? "n/a")}</code></dd></div>
           </dl>
-          <a href="${esc(variant.href)}">Open MP4 artifact</a>
+          <a href="${esc(variant.href)}">打开 MP4 artifact</a>
         </details>
       </div>
     </article>
@@ -1330,15 +1404,15 @@ function videoPanel(variant) {
 function contactSheetPanel() {
   const filePath = path.join(marketingArtifactDir, "contact_sheet.png");
   if (!existsSync(filePath)) {
-    return `<div class="tab-panel" data-tab-panel="contact_sheet">${missingCard("Contact Sheet", "contact_sheet.png missing")}</div>`;
+    return `<div class="tab-panel" data-tab-panel="contact_sheet">${missingCard("联系表", "缺少 contact_sheet.png")}</div>`;
   }
   return `<div class="tab-panel" data-tab-panel="contact_sheet">
     <article class="video-card">
       <img class="contact-sheet" src="${esc(hrefFromDemo(filePath))}" alt="Input and output contact sheet" loading="lazy" />
       <div class="video-copy">
-        <h3>Contact Sheet</h3>
-        <p>Single-image comparison of input sample frames and generated output frames for quick visual review.</p>
-        <a href="${esc(hrefFromDemo(filePath))}">Open contact sheet</a>
+        <h3>联系表</h3>
+        <p>用一张图快速对比输入样例帧与生成输出帧，便于视觉复核。</p>
+        <a href="${esc(hrefFromDemo(filePath))}">打开联系表</a>
       </div>
     </article>
   </div>`;
@@ -1348,7 +1422,7 @@ function outputTabs() {
   const panels = [...resolvedVariants.map(videoPanel), contactSheetPanel()].join("");
   const buttons = [
     ...resolvedVariants.map((variant) => ({ key: variant.key, label: variant.display })),
-    { key: "contact_sheet", label: "Contact Sheet" }
+    { key: "contact_sheet", label: "联系表" }
   ];
   const activeKey = highFidelity?.exists ? "high_fidelity" : bestVariant?.key ?? "final_creative";
   return `<div class="tabs" data-tab-group="outputs">
@@ -1359,58 +1433,58 @@ function outputTabs() {
 
 function creativeToggle() {
   return `<div class="mode-toggle" data-tab-group="mode">
-    <p class="callout">Final creative hides process overlays. Explainable demo shows how the transfer happened.</p>
+    <p class="callout">最终创意隐藏过程覆盖层；可解释演示展示结构迁移是如何发生的。</p>
     <div class="tab-buttons compact">
-      <button type="button" class="active" data-tab-target="creative_view">Creative View</button>
-      <button type="button" data-tab-target="explainability_view">Explainability View</button>
+      <button type="button" class="active" data-tab-target="creative_view">创意视图</button>
+      <button type="button" data-tab-target="explainability_view">解释视图</button>
     </div>
     <div class="tab-panel active" data-tab-panel="creative_view">
-      ${highFidelity?.exists ? `<video controls preload="metadata" src="${esc(highFidelity.href)}"></video>` : missingCard("Creative View", "High fidelity video missing")}
-      <p>Clean output for judging final effect, using ${esc(bestVariant?.display ?? "the best variant")} as the recommended watch path.</p>
+      ${highFidelity?.exists ? `<video controls preload="metadata" src="${esc(highFidelity.href)}"></video>` : missingCard("创意视图", "缺少高保真视频")}
+      <p>用于判断最终效果的干净输出，推荐观看路径为 ${esc(bestVariant?.display ?? "最佳版本")}。</p>
     </div>
     <div class="tab-panel" data-tab-panel="explainability_view">
-      ${explainableDemo?.exists ? `<video controls preload="metadata" src="${esc(explainableDemo.href)}"></video>` : missingCard("Explainability View", "Explainable demo video missing")}
-      <p>Walkthrough output with phase labels, mapping intent, and gap-fill context.</p>
+      ${explainableDemo?.exists ? `<video controls preload="metadata" src="${esc(explainableDemo.href)}"></video>` : missingCard("解释视图", "缺少可解释演示视频")}
+      <p>带阶段标签、映射意图和缺口补全上下文的走查输出。</p>
     </div>
   </div>`;
 }
 
 function evaluatorScoreboard() {
   const gates = localGateList(bestEvaluation);
-  return `<section class="scoreboard" id="evaluation-scoreboard">
+  return `<section class="scoreboard" id="evaluation-scoreboard" data-section="evaluation-scoreboard">
     <div class="section-heading">
-      <span>Evaluation Scoreboard</span>
-      <h2>Quality and trust evidence</h2>
-      <p>Local gates and VLM-as-judge scores are shown near the generated videos; raw reports remain in disclosure links.</p>
+      <span>评估看板</span>
+      <h2>质量与可信证据</h2>
+      <p>本地 gates 与 VLM-as-judge 分数展示在视频附近；原始报告仍放在折叠证据链接中。</p>
     </div>
     <div class="scoreboard-grid">
       <article class="panel-card">
-        <h3>Local Evaluator · ${esc(bestVariant?.display ?? "best variant")}</h3>
+        <h3>本地评估器 · ${esc(bestVariant?.display ?? "最佳版本")}</h3>
         <div class="score-row">
-          ${scoreBlock("Status", localGatePassed ? "PASS" : evaluatorAvailable ? "CHECK" : "n/a", localGatePassed ? "success" : "warning")}
-          ${scoreBlock("Style fidelity", formatPercentScore(localStyleScore(bestEvaluation)), "neutral")}
-          ${scoreBlock("Failed gates", String(failedGates.length), failedGates.length ? "danger" : "success")}
+          ${scoreBlock("状态", statusBadge(localGatePassed ? "PASS" : evaluatorAvailable ? "CHECK" : "n/a"), localGatePassed ? "success" : "warning")}
+          ${scoreBlock("风格保真", formatPercentScore(localStyleScore(bestEvaluation)), "neutral")}
+          ${scoreBlock("失败 gates", String(failedGates.length), failedGates.length ? "danger" : "success")}
         </div>
-        <div class="gate-grid">${gates.length ? gates.map((gate) => `<span class="gate ${gate.passed === false ? "fail" : "pass"}">${esc(gate.id ?? gate.name ?? "gate")}</span>`).join("") : "<span class=\"gate\">No evaluator gates generated</span>"}</div>
+        <div class="gate-grid">${gates.length ? gates.map((gate) => `<span class="gate ${gate.passed === false ? "fail" : "pass"}">${esc(gate.id ?? gate.name ?? "gate")}</span>`).join("") : "<span class=\"gate\">未生成评估 gates</span>"}</div>
       </article>
       <article class="panel-card">
-        <h3>VLM Judge</h3>
+        <h3>VLM 评审</h3>
         ${vlmAvailable ? `<div class="score-row">
-          ${scoreBlock("VLM score", formatPercentScore(bestVlmScores?.overall), "accent")}
-          ${scoreBlock("Structure", formatPercentScore(bestVlmScores?.structure), "neutral")}
-          ${scoreBlock("Style", formatPercentScore(bestVlmScores?.style), "neutral")}
-          ${scoreBlock("No direct copy", formatPercentScore(bestVlmScores?.noDirectCopy), "success")}
-          ${scoreBlock("Visual quality", formatPercentScore(bestVlmScores?.visualQuality), "neutral")}
+          ${scoreBlock("VLM 分数", formatPercentScore(bestVlmScores?.overall), "accent")}
+          ${scoreBlock("结构迁移", formatPercentScore(bestVlmScores?.structure), "neutral")}
+          ${scoreBlock("风格保真", formatPercentScore(bestVlmScores?.style), "neutral")}
+          ${scoreBlock("无直接复制", formatPercentScore(bestVlmScores?.noDirectCopy), "success")}
+          ${scoreBlock("视觉质量", formatPercentScore(bestVlmScores?.visualQuality), "neutral")}
         </div>
-        <p>${esc(bestVlmScores?.rationale ?? "VLM rationale not provided.")}</p>
-        <p class="evidence">External-service disclosure: VLM judging is optional evaluator evidence from the configured judge adapter; it is not used as a renderer and no API keys are exposed in this page.</p>` : `<p>VLM not run for this artifact set.</p>`}
+        <p>${esc(bestVlmScores?.rationale ?? "VLM 没有提供 rationale。")}</p>
+        <p class="evidence">外部服务说明：VLM 评审是来自已配置 judge adapter 的可选评估证据；它不作为渲染器使用，本页面不会暴露 API key。</p>` : `<p>该 artifact 集未运行 VLM。</p>`}
       </article>
       <article class="panel-card trust-card">
-        <h3>Trust / Policy</h3>
-        ${badge("No sample frames copied by default", "success")}
-        ${badge("No sample audio copied by default", "success")}
-        ${badge("No sample branding copied", "success")}
-        ${badge("Transferred: structure, rhythm, layout grammar, motif geometry", "accent")}
+        <h3>可信策略</h3>
+        ${badge("默认不复制样例画面", "success")}
+        ${badge("默认不复制样例音频", "success")}
+        ${badge("不复制样例品牌元素", "success")}
+        ${badge("迁移：结构、节奏、版式语法、动机几何", "accent")}
       </article>
     </div>
   </section>`;
@@ -1419,28 +1493,28 @@ function evaluatorScoreboard() {
 function beforeAfterDiff() {
   const rows = Array.isArray(nlEditDemo.diff) ? nlEditDemo.diff : [];
   const operations = Array.isArray(nlEditDemo.parsedOperations) ? nlEditDemo.parsedOperations : [];
-  return `<section class="before-after" id="nl-before-after">
+  return `<section class="before-after" id="nl-before-after" data-section="nl-before-after">
     <div class="section-heading">
-      <span>Natural Language Edit Before/After</span>
-      <h2>Human-in-the-loop controllability</h2>
-      <p>Generated through existing parser/request regeneration path. This is a real edit artifact and lightweight timeline preview, not a relabeled pair of pre-existing variants.</p>
+      <span>自然语言编辑前后对比</span>
+      <h2>人机协同可控性</h2>
+      <p>通过现有解析器和请求重生成路径生成。这是真实编辑 artifact 与轻量时间线预览，不是对既有变体的简单改名。</p>
     </div>
-    <div class="edit-instruction">Instruction: <strong>${esc(nlEditDemo.instruction ?? "换成白底高质感风格")}</strong> ${badge(nlEditDemo.mode ?? "nl_edit", "accent")}</div>
+    <div class="edit-instruction">指令：<strong>${esc(nlEditDemo.instruction ?? "换成白底高质感风格")}</strong> ${badge(nlEditDemo.mode ?? "nl_edit", "accent")}</div>
     <div class="compare-grid">
       <article class="panel-card">
-        <h3>Before · ${esc(finalCreative?.display ?? "Final Creative")}</h3>
-        ${finalCreative?.exists ? `<video controls preload="metadata" src="${esc(finalCreative.href)}"></video>` : missingCard("Before video", "Final creative video missing")}
+        <h3>修改前 · ${esc(finalCreative?.display ?? "最终创意")}</h3>
+        ${finalCreative?.exists ? `<video controls preload="metadata" src="${esc(finalCreative.href)}"></video>` : missingCard("修改前视频", "缺少最终创意视频")}
       </article>
       <article class="panel-card">
-        <h3>After · NL edit timeline preview</h3>
-        ${nlEditDemo.after?.previewHtml ? `<iframe class="edit-preview-frame" src="${esc(nlEditDemo.after.previewHtml)}" title="NL edit after preview"></iframe>` : missingCard("After preview", "NL edit preview not generated")}
-        <p>After generation: <code>${esc(nlEditDemo.after?.generationId ?? "n/a")}</code></p>
-        <p>${nlEditDemo.after?.generationJson ? `<a href="${esc(nlEditDemo.after.generationJson)}">Open edited generation JSON</a>` : "Edited generation JSON missing."}</p>
+        <h3>修改后 · NL 编辑时间线预览</h3>
+        ${nlEditDemo.after?.previewHtml ? `<iframe class="edit-preview-frame" src="${esc(nlEditDemo.after.previewHtml)}" title="NL 编辑后预览"></iframe>` : missingCard("修改后预览", "未生成 NL 编辑预览")}
+        <p>修改后生成：<code>${esc(nlEditDemo.after?.generationId ?? "n/a")}</code></p>
+        <p>${nlEditDemo.after?.generationJson ? `<a href="${esc(nlEditDemo.after.generationJson)}">打开编辑后生成 JSON</a>` : "缺少编辑后生成 JSON。"}</p>
       </article>
       <article class="panel-card diff-card">
-        <h3>Structured edit diff</h3>
+        <h3>结构化编辑差异</h3>
         <table>
-          <thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead>
+          <thead><tr><th>字段</th><th>修改前</th><th>修改后</th></tr></thead>
           <tbody>${rows.map((row) => `<tr><td>${esc(row.field)}</td><td>${esc(row.before ?? "n/a")}</td><td>${esc(row.after ?? "n/a")}</td></tr>`).join("")}</tbody>
         </table>
         <div class="pill-list">
@@ -1457,45 +1531,45 @@ function interactiveGapFillSection() {
   const slot = slotReplacementDemo.slot ?? {};
   const diffRows = Array.isArray(slotReplacementDemo.diff) ? slotReplacementDemo.diff : [];
   const gateEntries = Array.isArray(slotReplacementDemo.evaluatorGates) ? slotReplacementDemo.evaluatorGates : [];
-  const renderBadge = slotReplacementDemo.rendered ? badge("RENDERED FIXTURE", "success") : badge("RENDER PENDING", "warning");
-  return `<section class="interactive-gap-fill" id="interactive-gap-fill">
+  const renderBadge = slotReplacementDemo.rendered ? badge("已渲染夹具", "success") : badge("等待渲染", "warning");
+  return `<section class="interactive-gap-fill" id="interactive-gap-fill" data-section="interactive-gap-fill">
     <div class="section-heading">
-      <span>Interactive Gap Fill</span>
-      <h2>素材槽位替换器：proxy placeholder -> user replacement</h2>
-      <p>The system keeps the learned structure complete with a visible proxy, then binds a managed uploaded asset to the same slot and preserves the original timing, layout, and motion.</p>
+      <span>交互式缺口补全</span>
+      <h2>素材槽位替换器：代理占位 -> 用户素材替换</h2>
+      <p>系统先用可见代理占位保持已学习结构完整，再把托管上传素材绑定到同一槽位，并保留原时序、布局和运动。</p>
     </div>
     <div class="replacement-demo-grid">
       <article class="panel-card">
-        ${slotReplacementDemo.before?.artifact ? `<video controls preload="metadata" src="${esc(slotReplacementDemo.before.artifact)}"></video>` : missingCard("Proxy fixture", "Rendered proxy MP4 missing")}
-        <h3>Before · proxy generated</h3>
-        <p>${esc(slotReplacementDemo.before?.label ?? "Proxy placeholder keeps structure complete.")}</p>
-        ${badge("PROXY GENERATED", "warning")}
+        ${slotReplacementDemo.before?.artifact ? `<video controls preload="metadata" src="${esc(slotReplacementDemo.before.artifact)}"></video>` : missingCard("代理占位夹具", "缺少已渲染代理 MP4")}
+        <h3>替换前 · 代理已生成</h3>
+        <p>${esc(slotReplacementDemo.before?.label ?? "代理占位保持结构完整。")}</p>
+        ${badge("代理占位 · PROXY GENERATED", "warning")}
         ${badge("PROXY MP4", "neutral")}
-        ${badge("Click to replace", "accent")}
+        ${badge("点击替换", "accent")}
       </article>
       <article class="panel-card">
-        <h3>Slot Inspector</h3>
+        <h3>槽位检查器</h3>
         <dl class="compact-dl">
-          <div><dt>Slot</dt><dd>${esc(slot.semanticLabel ?? slot.slotId ?? "replacement slot")}</dd></div>
-          <div><dt>Visual form</dt><dd>${esc(slot.visualForm ?? "rotating_object")}</dd></div>
-          <div><dt>Accepted upload</dt><dd>${esc((slot.acceptedAssetTypes ?? []).join(", ") || "image, video")}</dd></div>
-          <div><dt>Motion</dt><dd>${esc(`${slot.motionSpec?.type ?? slot.placeholderSpec?.motion?.type ?? "spin"} · ${slot.motionSpec?.axis ?? slot.placeholderSpec?.motion?.axis ?? "preserved"}`)}</dd></div>
-          <div><dt>Placeholder</dt><dd>${esc(slot.placeholderSpec?.label ?? "Replaceable proxy")}</dd></div>
+          <div><dt>槽位</dt><dd>${esc(slot.semanticLabel ?? slot.slotId ?? "替换槽位")}</dd></div>
+          <div><dt>视觉形态</dt><dd>${esc(slot.visualForm ?? "rotating_object")}</dd></div>
+          <div><dt>可上传类型</dt><dd>${esc((slot.acceptedAssetTypes ?? []).join(", ") || "image, video")}</dd></div>
+          <div><dt>运动</dt><dd>${esc(`${slot.motionSpec?.type ?? slot.placeholderSpec?.motion?.type ?? "spin"} · ${slot.motionSpec?.axis ?? slot.placeholderSpec?.motion?.axis ?? "preserved"}`)}</dd></div>
+          <div><dt>占位</dt><dd>${esc(slot.placeholderSpec?.label ?? "可替换代理占位")}</dd></div>
         </dl>
-        <p class="evidence">Replacement assets are project-managed uploads. The demo does not copy sample frames, sample audio, or sample branding.</p>
+        <p class="evidence">替换素材是项目托管上传。该演示不会复制样例画面、样例音频或样例品牌。</p>
       </article>
       <article class="panel-card">
-        <h3>After · user replaced</h3>
-        ${slotReplacementDemo.after?.artifact ? `<video controls preload="metadata" src="${esc(slotReplacementDemo.after.artifact)}"></video>` : missingCard("After replacement", "Rendered replacement MP4 missing")}
-        <p>${esc(slotReplacementDemo.after?.label ?? "Bound uploaded asset preserves slot motion.")}</p>
-        ${badge("USER REPLACED", "success")}
+        <h3>替换后 · 用户素材已绑定</h3>
+        ${slotReplacementDemo.after?.artifact ? `<video controls preload="metadata" src="${esc(slotReplacementDemo.after.artifact)}"></video>` : missingCard("替换后视频", "缺少已渲染替换 MP4")}
+        <p>${esc(slotReplacementDemo.after?.label ?? "绑定上传素材并保留槽位运动。")}</p>
+        ${badge("用户已替换 · USER REPLACED", "success")}
         ${badge("USER ASSET MP4", "neutral")}
-        ${badge("Full re-render MVP", "neutral")}
+        ${badge("全量重渲染 MVP", "neutral")}
       </article>
       <article class="panel-card diff-card">
-        <h3>Replacement diff</h3>
+        <h3>替换差异</h3>
         <table>
-          <thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead>
+          <thead><tr><th>字段</th><th>替换前</th><th>替换后</th></tr></thead>
           <tbody>${diffRows.map((row) => `<tr><td>${esc(row.field)}</td><td>${esc(row.before)}</td><td>${esc(row.after)}</td></tr>`).join("")}</tbody>
         </table>
         <div class="gate-grid">${gateEntries.map((gate) => `<span class="gate ${gate.passed ? "pass" : "fail"}" title="${esc(gate.comment ?? "")}">${esc(gate.id)}: ${esc(gate.value)}</span>`).join("")}</div>
@@ -1507,43 +1581,43 @@ function interactiveGapFillSection() {
 
 function artifactGalleryCards() {
   const galleryRecords = [
-    registerArtifact({ title: "report.md", type: "markdown", filePath: path.join(marketingArtifactDir, "report.md"), description: "Marketing case report." }),
-    registerArtifact({ title: "marketing_case/index.html", type: "html", filePath: path.join(marketingArtifactDir, "index.html"), description: "Original marketing case page." }),
-    registerArtifact({ title: "product_demo/index.html", type: "html", filePath: htmlPath, description: "Generated product demo page.", linkWhenMissing: true }),
-    registerArtifact({ title: "product_demo/ui-manifest.json", type: "json", filePath: manifestPath, description: "UI artifact consumption manifest." }),
-    registerArtifact({ title: "contact_sheet.png", type: "image", filePath: path.join(marketingArtifactDir, "contact_sheet.png"), description: "Input/output visual comparison sheet." }),
-    registerArtifact({ title: "evaluation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "evaluation.main.json"), description: "Final creative local evaluator." }),
-    registerArtifact({ title: "evaluation.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "evaluation.high_fidelity.json"), description: "High fidelity local evaluator." }),
-    registerArtifact({ title: "vlm-judge.main.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.main.json"), description: "Final creative VLM judge." }),
-    registerArtifact({ title: "vlm-judge.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.high_fidelity.json"), description: "High fidelity VLM judge." }),
-    registerArtifact({ title: "variant-summary.json", type: "json", filePath: path.join(marketingArtifactDir, "variant-summary.json"), description: "Variant metadata and hashes." }),
-    registerArtifact({ title: "slot-replacement-demo.json", type: "json", filePath: slotReplacementDemoPath, description: "Interactive Gap Fill before/after replay artifact." }),
-    registerArtifact({ title: "interactive_gap_fill_proxy.mp4", type: "video", filePath: slotReplacementProxyVideoPath, description: "Rendered proxy placeholder fixture." }),
-    registerArtifact({ title: "interactive_gap_fill_user_replacement.mp4", type: "video", filePath: slotReplacementUserVideoPath, description: "Rendered managed replacement asset fixture." }),
-    registerArtifact({ title: "generation.interactive_gap_fill_user_replacement.json", type: "json", filePath: slotReplacementUserGenerationPath, description: "Generation JSON for rendered replacement fixture." }),
-    registerArtifact({ title: "editing_case/index.html", type: "html", filePath: path.join(editingCaseDir, "index.html"), description: "Editing.mov reference-vs-target material gap case with visible proxy output." }),
-    registerArtifact({ title: "editing_case/render.mp4", type: "video", filePath: path.join(editingCaseDir, "render.mp4"), description: "Rendered editing-case proxy placeholder output." }),
-    registerArtifact({ title: "editing_case/contact_sheet.png", type: "image", filePath: path.join(editingCaseDir, "contact_sheet.png"), description: "Editing-case proxy contact sheet." }),
-    registerArtifact({ title: "editing_case/replacement-slots.json", type: "json", filePath: path.join(editingCaseDir, "replacement-slots.json"), description: "Editing-case Interactive Gap Fill slots." }),
-    registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "Default timeline JSON." }),
-    registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "High fidelity timeline JSON." }),
-    registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "Final creative generation JSON." }),
-    registerArtifact({ title: "generation.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.high_fidelity.json"), description: "High fidelity generation JSON." }),
-    registerArtifact({ title: "corpus-regression-report.md", type: "markdown", filePath: path.join(corpusRegressionDir, "corpus-regression-report.md"), description: "Corpus regression human-readable report." }),
-    registerArtifact({ title: "corpus-regression-report.json", type: "json", filePath: path.join(corpusRegressionDir, "corpus-regression-report.json"), description: "Corpus regression machine-readable report." }),
-    registerArtifact({ title: "implementation_review.md", type: "markdown", filePath: path.join(artifactRoot, "review", "implementation_review.md"), description: "Implementation review report." })
+    registerArtifact({ title: "report.md", type: "markdown", filePath: path.join(marketingArtifactDir, "report.md"), description: "营销案例报告。" }),
+    registerArtifact({ title: "marketing_case/index.html", type: "html", filePath: path.join(marketingArtifactDir, "index.html"), description: "原营销案例页面。" }),
+    registerArtifact({ title: "product_demo/index.html", type: "html", filePath: htmlPath, description: "生成的产品演示页。", linkWhenMissing: true }),
+    registerArtifact({ title: "product_demo/ui-manifest.json", type: "json", filePath: manifestPath, description: "UI 消费 artifact 清单。" }),
+    registerArtifact({ title: "contact_sheet.png", type: "image", filePath: path.join(marketingArtifactDir, "contact_sheet.png"), description: "输入/输出视觉对比联系表。" }),
+    registerArtifact({ title: "evaluation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "evaluation.main.json"), description: "最终创意本地评估。" }),
+    registerArtifact({ title: "evaluation.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "evaluation.high_fidelity.json"), description: "高保真本地评估。" }),
+    registerArtifact({ title: "vlm-judge.main.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.main.json"), description: "最终创意 VLM 评审。" }),
+    registerArtifact({ title: "vlm-judge.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "vlm-judge.high_fidelity.json"), description: "高保真 VLM 评审。" }),
+    registerArtifact({ title: "variant-summary.json", type: "json", filePath: path.join(marketingArtifactDir, "variant-summary.json"), description: "多版本元数据与哈希。" }),
+    registerArtifact({ title: "slot-replacement-demo.json", type: "json", filePath: slotReplacementDemoPath, description: "交互式缺口补全前后对比 artifact。" }),
+    registerArtifact({ title: "interactive_gap_fill_proxy.mp4", type: "video", filePath: slotReplacementProxyVideoPath, description: "已渲染代理占位夹具。" }),
+    registerArtifact({ title: "interactive_gap_fill_user_replacement.mp4", type: "video", filePath: slotReplacementUserVideoPath, description: "已渲染托管用户替换素材夹具。" }),
+    registerArtifact({ title: "generation.interactive_gap_fill_user_replacement.json", type: "json", filePath: slotReplacementUserGenerationPath, description: "已渲染替换夹具的生成 JSON。" }),
+    registerArtifact({ title: "editing_case/index.html", type: "html", filePath: path.join(editingCaseDir, "index.html"), description: "editing.mov 参考/目标素材分离案例，包含可见代理输出。" }),
+    registerArtifact({ title: "editing_case/render.mp4", type: "video", filePath: path.join(editingCaseDir, "render.mp4"), description: "剪辑案例代理占位渲染输出。" }),
+    registerArtifact({ title: "editing_case/contact_sheet.png", type: "image", filePath: path.join(editingCaseDir, "contact_sheet.png"), description: "剪辑案例代理联系表。" }),
+    registerArtifact({ title: "editing_case/replacement-slots.json", type: "json", filePath: path.join(editingCaseDir, "replacement-slots.json"), description: "剪辑案例交互式缺口补全槽位。" }),
+    registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "默认时间线 JSON。" }),
+    registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "高保真时间线 JSON。" }),
+    registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "最终创意生成 JSON。" }),
+    registerArtifact({ title: "generation.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.high_fidelity.json"), description: "高保真生成 JSON。" }),
+    registerArtifact({ title: "corpus-regression-report.md", type: "markdown", filePath: path.join(corpusRegressionDir, "corpus-regression-report.md"), description: "语料回归可读报告。" }),
+    registerArtifact({ title: "corpus-regression-report.json", type: "json", filePath: path.join(corpusRegressionDir, "corpus-regression-report.json"), description: "语料回归机器可读报告。" }),
+    registerArtifact({ title: "implementation_review.md", type: "markdown", filePath: path.join(artifactRoot, "review", "implementation_review.md"), description: "实现评审报告。" })
   ];
-  return `<section class="artifact-gallery" id="artifact-gallery">
+  return `<section class="artifact-gallery" id="artifact-gallery" data-section="artifact-gallery">
     <div class="section-heading">
-      <span>Artifact Gallery</span>
-      <h2>Engineering evidence without overwhelming the demo</h2>
-      <p>Every card is existence-checked before linking. Missing files are labeled instead of linked.</p>
+      <span>工程证据</span>
+      <h2>不打断主线的工程证据</h2>
+      <p>每张卡片都会先检查文件是否存在；缺失文件只标记“缺失”，不生成死链接。</p>
     </div>
     <div class="gallery-grid">${galleryRecords.map((record) => `<article class="artifact-card artifact-${esc(record.status)}">
       <span>${esc(record.type)}</span>
       <h3>${esc(record.title)}</h3>
       <p>${esc(record.description)}</p>
-      ${badge(record.status === "exists" ? "exists" : "missing", record.status === "exists" ? "success" : "danger")}
+      ${badge(record.status === "exists" ? "存在" : "缺失", record.status === "exists" ? "success" : "danger")}
       ${artifactLink(record)}
     </article>`).join("")}</div>
   </section>`;
@@ -1646,7 +1720,7 @@ const html = scrubPrivateText(`<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>爆款结构迁移引擎 · Product Demo</title>
+  <title>爆款结构迁移引擎 · 产品演示</title>
   <style>
     :root {
       --bg: #F7F8FA;
@@ -1832,7 +1906,7 @@ const html = scrubPrivateText(`<!doctype html>
       position: relative;
     }
     .proxy-orb::after {
-      content: "Missing slot";
+      content: "缺失槽位";
       position: absolute;
       left: 50%;
       top: 50%;
@@ -1872,87 +1946,87 @@ const html = scrubPrivateText(`<!doctype html>
 </head>
 <body>
   <main>
-    <section class="hero" id="executive-summary">
+    <section class="hero" id="executive-summary" data-section="executive-summary">
       <div class="hero-copy">
-        <p class="eyebrow">Executive Summary</p>
+        <p class="eyebrow">三分钟总览</p>
         <h1>爆款结构迁移引擎</h1>
-        <p>Sample video -> structure analysis -> reusable template/atoms -> target assets -> slot mapping/gap report -> fill plan -> renderable timeline -> final videos + explainability.</p>
+        <p>样例视频 -> 结构分析 -> 可复用模板/原子 -> 目标素材 -> 槽位映射/缺口报告 -> 补全计划 -> 可渲染时间线 -> 最终视频 + 可解释证据。</p>
         <div class="summary-grid">
-          ${metricCard("Input sample", sampleName, `${formatSec(sampleMetadata.durationSec)} · ${formatNumber(sampleMetadata.width, 0)}x${formatNumber(sampleMetadata.height, 0)} · ${formatNumber(sampleMetadata.fps, 0)}fps`, "neutral")}
-          ${metricCard("Extracted structure", extractedStructureName, `${template?.visualStyle?.layout ?? "minimal poster layout"} · ${ribbon.pathFamily ?? "ribbon"} / ${ribbon.axis ?? "axis"}`, "accent")}
-          ${metricCard("Material gaps", `${gapReport.length} total`, `${highSeverityGaps} high severity · ${primaryGap?.gapLabelZh ?? primaryGap?.gapType ?? "none"}`, highSeverityGaps ? "danger" : "success")}
-          ${metricCard("Fill strategy", primaryFill?.strategy ?? "n/a", `${primaryFill?.rendererInstructions?.renderer ?? primaryGap?.fulfilledByBackend ?? "backend n/a"} · ${primaryFill?.rendererInstructions?.atom ?? "atom n/a"}`, "accent")}
-          ${metricCard("Output variants", `${videosFound}/${resolvedVariants.length}`, resolvedVariants.filter((variant) => variant.exists).map((variant) => variant.shortLabel).join(" · ") || "No MP4s", "success")}
-          ${metricCard("Local evaluator", localGatePassed ? "PASS" : evaluatorAvailable ? "CHECK" : "n/a", `Style ${formatPercentScore(bestVariant?.style)} · ${failedGates.length} failed gates`, localGatePassed ? "success" : "warning")}
-          ${metricCard("VLM judge", vlmAvailable ? formatPercentScore(bestVlmScores?.overall) : "not run", vlmAvailable ? `${bestVariant?.display} · no-copy ${formatPercentScore(bestVlmScores?.noDirectCopy)}` : "VLM artifact not generated", vlmAvailable ? "accent" : "neutral")}
-          ${metricCard("Best output", bestVariant?.display ?? "n/a", bestVariantReason, "success")}
+          ${metricCard("输入样例", sampleName, `${formatSec(sampleMetadata.durationSec)} · ${formatNumber(sampleMetadata.width, 0)}x${formatNumber(sampleMetadata.height, 0)} · ${formatNumber(sampleMetadata.fps, 0)}fps`, "neutral")}
+          ${metricCard("抽取结构", extractedStructureName, `${template?.visualStyle?.layout ?? "极简海报布局"} · ${ribbon.pathFamily ?? "ribbon"} / ${ribbon.axis ?? "axis"}`, "accent")}
+          ${metricCard("素材缺口", `${gapReport.length} 个`, `${highSeverityGaps} 个高严重度 · ${primaryGap?.gapLabelZh ?? primaryGap?.gapType ?? "无"}`, highSeverityGaps ? "danger" : "success")}
+          ${metricCard("补全策略", strategyLabel(primaryFill?.strategy ?? "n/a"), `${strategyLabel(primaryFill?.rendererInstructions?.renderer ?? primaryGap?.fulfilledByBackend ?? "backend n/a")} · ${primaryFill?.rendererInstructions?.atom ?? "atom n/a"}`, "accent")}
+          ${metricCard("输出版本", `${videosFound}/${resolvedVariants.length}`, resolvedVariants.filter((variant) => variant.exists).map((variant) => variant.shortLabel).join(" · ") || "没有 MP4", "success")}
+          ${metricCard("本地评估", statusBadge(localGatePassed ? "PASS" : evaluatorAvailable ? "CHECK" : "n/a"), `风格 ${formatPercentScore(bestVariant?.style)} · ${failedGates.length} 个失败 gates`, localGatePassed ? "success" : "warning")}
+          ${metricCard("VLM 评审", vlmAvailable ? formatPercentScore(bestVlmScores?.overall) : "未运行", vlmAvailable ? `${bestVariant?.display} · 无复制 ${formatPercentScore(bestVlmScores?.noDirectCopy)}` : "未生成 VLM artifact", vlmAvailable ? "accent" : "neutral")}
+          ${metricCard("最佳输出", bestVariant?.display ?? "n/a", bestVariantReason, "success")}
         </div>
         <div class="policy-row">
-          ${badge("No sample frames/audio copied by default", "success")}
-          ${badge("Transferred: structure, rhythm, layout grammar, motif geometry", "accent")}
-          ${badge("Human edit example: 换成白底高质感风格", "neutral")}
+          ${badge("默认不复制样例画面/音频", "success")}
+          ${badge("迁移：结构、节奏、版式语法、动机几何", "accent")}
+          ${badge("人类编辑示例：换成白底高质感风格", "neutral")}
         </div>
       </div>
       <div class="hero-video">
-        <h2>${esc(bestVariant?.display ?? "Generated Output")}</h2>
-        ${bestVariant?.exists ? `<video controls preload="metadata" src="${esc(bestVariant.href)}"></video>` : missingCard("Best output video", "No MP4 variant available")}
-        <p>${esc(bestVariant?.description ?? "Generated output not available.")}</p>
-        <p><strong>Selection rationale:</strong> ${esc(bestVariantReason)}</p>
+        <h2>${esc(bestVariant?.display ?? "生成输出")}</h2>
+        ${bestVariant?.exists ? `<video controls preload="metadata" src="${esc(bestVariant.href)}"></video>` : missingCard("最佳输出视频", "没有可用 MP4 版本")}
+        <p>${esc(bestVariant?.description ?? "生成输出不可用。")}</p>
+        <p><strong>选择依据：</strong> ${esc(bestVariantReason)}</p>
       </div>
     </section>
 
-    <section class="pipeline" id="pipeline-stepper">
+    <section class="pipeline" id="pipeline-stepper" data-section="pipeline-stepper">
       <div class="section-heading">
-        <span>Pipeline Stepper</span>
-        <h2>Input -> analysis -> mapping -> fill -> render -> judge</h2>
+        <span>迁移流程</span>
+        <h2>输入 -> 分析 -> 映射 -> 补全 -> 渲染 -> 评估</h2>
       </div>
       <div class="stepper">${pipelineStages.map(stageHtml).join("")}</div>
     </section>
 
-    <section class="timeline-rail" id="structure-timeline-rail">
+    <section class="timeline-rail" id="structure-timeline-rail" data-section="structure-timeline-rail">
       <div class="section-heading">
-        <span>Structure Timeline Rail</span>
-        <h2>Sample structure, target gaps, and generated clips aligned</h2>
+        <span>结构时间轨道</span>
+        <h2>样例结构、目标缺口与生成片段对齐展示</h2>
       </div>
       <div class="rail-track">
-        <div class="rail-label"><span>Track 1: Sample Structure</span><span>Excluded tail is separated</span></div>
+        <div class="rail-label"><span>轨道 1：样例结构</span><span>排除尾段单独标记</span></div>
         <div class="rail-row">${sampleStructureTrack()}</div>
       </div>
       <div class="rail-track">
-        <div class="rail-label"><span>Track 2: Target Slots / Gaps</span><span>Mapping state + fill source</span></div>
+        <div class="rail-label"><span>轨道 2：目标槽位 / 缺口</span><span>映射状态 + 补全来源</span></div>
         <div class="rail-row">${targetGapTrack()}</div>
       </div>
       <div class="rail-track">
-        <div class="rail-label"><span>Track 3: Generated Clips</span><span>${esc(bestVariant?.display ?? "best variant")}</span></div>
+        <div class="rail-label"><span>轨道 3：生成片段</span><span>${esc(bestVariant?.display ?? "最佳版本")}</span></div>
         <div class="rail-row">${generatedTrack()}</div>
       </div>
     </section>
 
-    <section class="workbench" id="three-column-workbench">
+    <section class="workbench" id="three-column-workbench" data-section="three-column-workbench">
       <div class="workbench-column">
-        <div class="section-heading">
-          <span>Workbench Left</span>
-          <h2>Sample Understanding</h2>
+        <div class="section-heading" data-section="sample-understanding">
+          <span>工作台左侧</span>
+          <h2>样例理解</h2>
         </div>
         <article class="panel-card">
-          <h3>Sample Frame Strip</h3>
+          <h3>样例帧条</h3>
           <div class="frame-strip">
-            ${imageCard("input_hook.png", "Hook frame")}
-            ${imageCard("input_climax.png", "Ribbon / climax frame")}
-            ${imageCard("input_excluded_tail.png", "Excluded tail frame")}
+            ${imageCard("input_hook.png", "钩子帧")}
+            ${imageCard("input_climax.png", "彩带 / 高潮帧")}
+            ${imageCard("input_excluded_tail.png", "排除尾段帧")}
           </div>
         </article>
         <article class="info-card">
-          <h3>Video Metadata</h3>
+          <h3>视频元数据</h3>
           <dl class="compact-dl">
-            <div><dt>Type</dt><dd>${esc(template?.videoType ?? "motion_graphic_marketing_poster")}</dd></div>
-            <div><dt>Duration</dt><dd>${formatSec(sampleMetadata.durationSec)}</dd></div>
-            <div><dt>Resolution</dt><dd>${esc(`${sampleMetadata.width ?? "n/a"}x${sampleMetadata.height ?? "n/a"}`)}</dd></div>
-            <div><dt>Audio</dt><dd>${esc(sampleMetadata.hasAudio ? "yes" : "n/a")}</dd></div>
+            <div><dt>类型</dt><dd>${esc(template?.videoType ?? "motion_graphic_marketing_poster")}</dd></div>
+            <div><dt>时长</dt><dd>${formatSec(sampleMetadata.durationSec)}</dd></div>
+            <div><dt>分辨率</dt><dd>${esc(`${sampleMetadata.width ?? "n/a"}x${sampleMetadata.height ?? "n/a"}`)}</dd></div>
+            <div><dt>音频</dt><dd>${esc(sampleMetadata.hasAudio ? "有" : "n/a")}</dd></div>
           </dl>
         </article>
         <article class="info-card">
-          <h3>Structure Segments</h3>
+          <h3>结构段落</h3>
           ${structureSegmentList()}
         </article>
         ${motifGeometryCard()}
@@ -1960,41 +2034,41 @@ const html = scrubPrivateText(`<!doctype html>
       </div>
 
       <div class="workbench-column">
-        <div class="section-heading">
-          <span>Workbench Middle</span>
-          <h2>Transfer Plan</h2>
+        <div class="section-heading" data-section="transfer-plan">
+          <span>工作台中间</span>
+          <h2>迁移计划</h2>
         </div>
         <article class="panel-card">
           <h3>StructureTemplate + KnowledgeAtoms</h3>
-          <p><strong>${esc(template?.name ?? "Template not generated")}</strong></p>
+          <p><strong>${esc(template?.name ?? "模板尚未生成")}</strong></p>
           <div class="pill-list">${structureAtoms.slice(0, 10).map((atom) => badge(atom.name ?? atom.id, "neutral")).join("")}</div>
         </article>
         <article class="panel-card">
-          <h3>Target Asset Shelf</h3>
+          <h3>目标素材架</h3>
           ${targetAssetShelf()}
         </article>
         <article class="panel-card">
-          <h3>Slot Mapping Board</h3>
+          <h3>槽位映射板</h3>
           ${slotMappingBoard()}
         </article>
         <article class="panel-card">
-          <h3>Gap Card Grid</h3>
+          <h3>缺口卡片</h3>
           ${gapCardGrid()}
         </article>
         <article class="panel-card">
-          <h3>Fill Plan Flow</h3>
+          <h3>补全流程</h3>
           ${fillPlanFlow()}
         </article>
       </div>
 
       <div class="workbench-column">
-        <div class="section-heading">
-          <span>Workbench Right</span>
-          <h2>Generated Outputs</h2>
+        <div class="section-heading" data-section="generated-outputs">
+          <span>工作台右侧</span>
+          <h2>生成结果</h2>
         </div>
         ${creativeToggle()}
         <article class="panel-card">
-          <h3>Video Tabs</h3>
+          <h3>视频标签页</h3>
           ${outputTabs()}
         </article>
       </div>
@@ -2004,31 +2078,31 @@ const html = scrubPrivateText(`<!doctype html>
     ${beforeAfterDiff()}
     ${interactiveGapFillSection()}
 
-    <section class="raw-disclosure" id="progressive-disclosure">
+    <section class="raw-disclosure" id="progressive-disclosure" data-section="progressive-disclosure">
       <div class="section-heading">
-        <span>Progressive Disclosure</span>
-        <h2>Raw JSON and evidence links</h2>
-        <p>Primary UI stays visual. Raw artifacts are available here for deeper review.</p>
+        <span>渐进披露</span>
+        <h2>原始 JSON 与证据链接</h2>
+        <p>主界面保持视觉化；更深入的原始 artifact 放在这里供复核。</p>
       </div>
       <details>
-        <summary>View raw analysis JSON</summary>
-        <p>${artifactLink(analysisArtifact.record, "Open analysis.marketing.json")}</p>
+        <summary>查看原始分析 JSON</summary>
+        <p>${artifactLink(analysisArtifact.record, "打开 analysis.marketing.json")}</p>
       </details>
       <details>
-        <summary>View timeline JSON</summary>
-        <p>${artifactLink(timelineByArtifactKey.high_fidelity.record, "Open timeline.high_fidelity.json")} · ${artifactLink(timelineByArtifactKey.main.record, "Open timeline.json")}</p>
+        <summary>查看时间线 JSON</summary>
+        <p>${artifactLink(timelineByArtifactKey.high_fidelity.record, "打开 timeline.high_fidelity.json")} · ${artifactLink(timelineByArtifactKey.main.record, "打开 timeline.json")}</p>
       </details>
       <details>
-        <summary>View evaluator JSON</summary>
-        <p>${artifactLink(evaluationByArtifactKey.high_fidelity.record, "Open evaluation.high_fidelity.json")} · ${artifactLink(evaluationByArtifactKey.main.record, "Open evaluation.main.json")}</p>
+        <summary>查看评估 JSON</summary>
+        <p>${artifactLink(evaluationByArtifactKey.high_fidelity.record, "打开 evaluation.high_fidelity.json")} · ${artifactLink(evaluationByArtifactKey.main.record, "打开 evaluation.main.json")}</p>
       </details>
       <details>
-        <summary>View VLM judge JSON</summary>
-        <p>${artifactLink(vlmByArtifactKey.high_fidelity.record, "Open vlm-judge.high_fidelity.json")} · ${artifactLink(vlmByArtifactKey.main.record, "Open vlm-judge.main.json")}</p>
+        <summary>查看 VLM 评审 JSON</summary>
+        <p>${artifactLink(vlmByArtifactKey.high_fidelity.record, "打开 vlm-judge.high_fidelity.json")} · ${artifactLink(vlmByArtifactKey.main.record, "打开 vlm-judge.main.json")}</p>
       </details>
       <details>
-        <summary>View corpus regression links</summary>
-        <p>Corpus regression: ${esc(corpus?.summary?.passed ?? 0)} passed / ${esc(corpus?.summary?.total ?? 0)} total.</p>
+        <summary>查看语料回归链接</summary>
+        <p>语料回归：${esc(corpus?.summary?.passed ?? 0)} 通过 / ${esc(corpus?.summary?.total ?? 0)} 总数。</p>
       </details>
     </section>
 

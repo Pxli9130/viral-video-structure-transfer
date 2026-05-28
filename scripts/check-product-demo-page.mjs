@@ -42,23 +42,23 @@ if (slotReplacementDemoText) {
 }
 
 const requiredText = [
-  "Executive Summary",
-  "Pipeline Stepper",
-  "Sample Understanding",
-  "Transfer Plan",
-  "Generated Outputs",
-  "High Fidelity",
-  "Natural Language Edit Before/After",
-  "Generated through existing parser/request regeneration path",
-  "not a relabeled pair of pre-existing variants",
-  "Artifact Gallery",
-  "Structure Timeline Rail",
-  "Selection rationale:",
-  "External-service disclosure",
-  "Motif Gap:",
-  "Interactive Gap Fill",
+  "三分钟总览",
+  "迁移流程",
+  "样例理解",
+  "迁移计划",
+  "生成结果",
+  "高保真",
+  "自然语言编辑前后对比",
+  "通过现有解析器和请求重生成路径",
+  "不是对既有变体的简单改名",
+  "工程证据",
+  "结构时间轨道",
+  "选择依据：",
+  "外部服务说明",
+  "主视觉缺口：",
+  "交互式缺口补全",
   "素材槽位替换器",
-  "proxy placeholder -> user replacement",
+  "代理占位 -> 用户素材替换",
   "interactive_gap_fill_proxy.mp4",
   "interactive_gap_fill_user_replacement.mp4",
   "editing_case/index.html"
@@ -70,11 +70,29 @@ for (const text of requiredText) {
   }
 }
 
+const requiredSections = [
+  "executive-summary",
+  "pipeline-stepper",
+  "sample-understanding",
+  "transfer-plan",
+  "generated-outputs",
+  "structure-timeline-rail",
+  "nl-before-after",
+  "interactive-gap-fill",
+  "artifact-gallery"
+];
+
+for (const section of requiredSections) {
+  if (!html.includes(`data-section="${section}"`)) {
+    failures.push(`Page missing required data-section: ${section}`);
+  }
+}
+
 const hasVlmArtifacts = ["main", "high_fidelity", "explainable_demo", "high_ctr", "high_quality"].some((label) =>
   existsSync(path.join(marketingArtifactDir, `vlm-judge.${label}.json`))
 );
 
-if (hasVlmArtifacts && !/VLM score/.test(html)) {
+if (hasVlmArtifacts && !/VLM\s*(分数|score)/i.test(html)) {
   failures.push("VLM artifacts exist but page does not contain a VLM score label.");
 }
 

@@ -286,11 +286,11 @@ function buildEditingAnalysis() {
       { id: "editing_action_montage", timeSec: 8.5, path: "preview_frames/sample_action.png", description: "Beat-sync action montage evidence", tags: ["action_montage_candidate", "comparison_candidate"] }
     ],
     shots: [
-      { id: "source_shot_1", startSec: 0, endSec: 1.5, durationSec: 1.5, tags: ["hook_candidate", "rotating_object_candidate"], confidence: 0.88, notes: "Reference-only rotating 3D hero object intro." },
-      { id: "source_shot_2", startSec: 1.5, endSec: 8, durationSec: 6.5, tags: ["text_card_candidate"], confidence: 0.82, notes: "Reference-only kinetic text cards." },
-      { id: "source_shot_3", startSec: 8, endSec: 15, durationSec: 7, tags: ["usage_scene", "action_montage_candidate"], confidence: 0.84, notes: "Reference-only beat-sync action montage." },
-      { id: "source_shot_4", startSec: 15, endSec: 30, durationSec: 15, tags: ["comparison_candidate", "match_cut_candidate"], confidence: 0.8, notes: "Reference-only cinematic match cuts." },
-      { id: "source_shot_5", startSec: 110, endSec: 118.12, durationSec: 8.12, tags: ["cta_candidate"], confidence: 0.72, notes: "Reference-only CTA/end slate." }
+      { id: "source_shot_1", startSec: 0, endSec: 1.5, durationSec: 1.5, tags: ["hook_candidate", "rotating_object_candidate"], confidence: 0.88, notes: "仅作参考证据的 3D 旋转主视觉开场。" },
+      { id: "source_shot_2", startSec: 1.5, endSec: 8, durationSec: 6.5, tags: ["text_card_candidate"], confidence: 0.82, notes: "仅作参考证据的动态文字卡片。" },
+      { id: "source_shot_3", startSec: 8, endSec: 15, durationSec: 7, tags: ["usage_scene", "action_montage_candidate"], confidence: 0.84, notes: "仅作参考证据的卡点动作混剪。" },
+      { id: "source_shot_4", startSec: 15, endSec: 30, durationSec: 15, tags: ["comparison_candidate", "match_cut_candidate"], confidence: 0.8, notes: "仅作参考证据的电影感 match cut。" },
+      { id: "source_shot_5", startSec: 110, endSec: 118.12, durationSec: 8.12, tags: ["cta_candidate"], confidence: 0.72, notes: "仅作参考证据的 CTA/end slate。" }
     ],
     primaryMotif: {
       motif: "rotating_3d_object_intro",
@@ -301,7 +301,7 @@ function buildEditingAnalysis() {
       { motif: "text_card_beat_sync_sequence", confidence: 0.78 },
       { motif: "cinematic_match_cut_montage", confidence: 0.76 }
     ],
-    warnings: ["Editing case fixture uses local sample frames as structure evidence only; targetAssets are intentionally empty."]
+    warnings: ["剪辑案例夹具只把本地样例帧作为结构证据；targetAssets 有意保持为空。"]
   };
 }
 
@@ -488,61 +488,61 @@ async function main() {
       "sample_reference_cannot_satisfy_visual_slots_by_default",
       disabledReferenceMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
       disabledReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      "editing.mov source_shot_* remains structure evidence only by default."
+      "editing.mov 的 source_shot_* 默认只保留为结构证据。"
     ),
     gate(
       "sample_visual_not_reused_without_authorization",
       disabledReferenceMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
       disabledReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      "Default sampleAssetReuse disabled blocks reference visual reuse."
+      "默认 sampleAssetReuse=disabled 会阻断参考视觉复用。"
     ),
     gate(
       "authorized_sample_reuse_can_match_visual_slots",
       authorizedReferenceMappings.some((mapping) => mapping.assetAvailability === "source_video_mapped"),
       authorizedReferenceMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      "sampleAssetReuse='authorized' is the explicit override path."
+      "sampleAssetReuse='authorized' 是显式授权覆盖路径。"
     ),
     gate(
       "mock_asset_cannot_satisfy_visual_slots",
       generation.slotMapping.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
       generation.slotMapping.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      "demo_source_video is mock/no renderable path and cannot fill visual slots."
+      "demo_source_video 是 mock 且没有可渲染路径，不能填充视觉槽位。"
     ),
     gate(
       "mock_asset_not_counted_as_match",
       generation.slotMapping.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
       generation.slotMapping.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      "Mock source evidence is blocked from material matching."
+      "Mock source 证据会被阻断，不能参与素材匹配。"
     ),
     gate(
       "asset_without_path_cannot_satisfy_visual_slots",
       pathlessMappings.every((mapping) => mapping.assetAvailability !== "source_video_mapped"),
       pathlessMappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
-      "Pathless source assets are not renderable material."
+      "没有 path/url 的 source asset 不是可渲染素材。"
     ),
     gate(
       "editing_case_no_target_assets_creates_visual_gaps",
       visualGapCount > 0,
       visualGapCount,
-      "targetAssets is empty, so visual gaps must be surfaced."
+      "targetAssets 为空，因此必须暴露视觉缺口。"
     ),
     gate(
       "gap_detected_when_no_target_assets",
       visualGapCount > 0,
       visualGapCount,
-      "No-target editing case produced non-low material gaps."
+      "无目标素材的剪辑案例产生了非低级素材缺口。"
     ),
     gate(
       "interactive_gap_fill_non_empty",
       (generation.replacementSlots ?? []).length > 0,
       generation.replacementSlots?.length ?? 0,
-      "replacementSlots are created for visual/material gaps."
+      "视觉/素材缺口已创建 replacementSlots。"
     ),
     gate(
       "proxy_placeholder_rendered",
       proxyClipCount > 0 && previewFrames.some((frame) => frame.kind === "proxy"),
       previewFrames.filter((frame) => frame.kind === "proxy").length,
-      "render.mp4 and preview_frames include proxy frames."
+      "render.mp4 与 preview_frames 包含代理占位帧。"
     ),
     gate(
       "timeline_preview_has_real_or_proxy_frames",
@@ -553,25 +553,25 @@ async function main() {
         existsSync(path.join(artifactDir, clip.sourceEvidenceFrame))
       ) && existsSync(path.join(previewDir, "manifest.json")),
       timeline.clips.length,
-      "Every timeline clip links to source evidence and generated/proxy preview frames."
+      "每个时间线片段都链接到样例证据帧和生成/代理预览帧。"
     ),
     gate(
       "render_mp4_has_audio",
       renderMetadata.hasAudio === true,
       renderMetadata.audioCodec ?? "missing",
-      "Editing-case MP4 includes deterministic low-volume beat/tick audio."
+      "剪辑案例 MP4 包含确定性的低音量节拍/滴答音频。"
     ),
     gate(
       "render_mp4_not_tiny",
       (renderMetadata.sizeBytes ?? 0) >= 250000,
       renderMetadata.sizeBytes ?? 0,
-      "Muxed audio and animated proxy render should avoid tiny text-card-only output."
+      "混入音频与动画代理渲染，避免变成极小的纯文字卡片输出。"
     ),
     gate(
       "render_mp4_not_only_text_cards",
       proxyClipCount > 0 && (renderMetadata.sizeBytes ?? 0) >= 250000,
       proxyClipCount,
-      "At least one rendered clip is a visible proxy placeholder, not a plain text card."
+      "至少一个已渲染片段是可见代理占位，而不是普通文字卡。"
     )
   ];
 
@@ -592,10 +592,10 @@ async function main() {
       publicArtifactScan: publicScan ? { passed: publicScan.passed, scannedFiles: publicScan.scannedFiles.length, matchCount: publicScan.matchCount } : undefined,
       materialPoolEvidence: {
         targetAssetsEmpty: true,
-        blockedMockAsset: "demo_source_video blocked because it is mock/no renderable path.",
-        blockedSampleReference: "source_shot_* from editing.mov blocked because sample/reference only.",
-        pathlessBlocked: "pathless source assets are ignored because they are not renderable material.",
-        authorizedOverride: "sampleAssetReuse='authorized' allows reference/source shots to satisfy visual slots."
+        blockedMockAsset: "demo_source_video 被阻断，因为它是 mock 且没有可渲染路径。",
+        blockedSampleReference: "editing.mov 的 source_shot_* 被阻断，因为它们只是样例/参考证据。",
+        pathlessBlocked: "没有 path/url 的 source asset 会被忽略，因为它不是可渲染素材。",
+        authorizedOverride: "sampleAssetReuse='authorized' 是允许参考/样例镜头满足视觉槽位的显式覆盖路径。"
       }
     };
 
@@ -607,54 +607,54 @@ async function main() {
     await writeJson("replacement-slots.json", generation.replacementSlots ?? []);
 
     const report = [
-    "# Editing Case IGF Report",
+    "# 剪辑样例交互式缺口补全报告",
     "",
-    `Generated: ${nowIso()}`,
+    `生成时间：${nowIso()}`,
     "",
-    "## Material Pool Policy",
+    "## 素材池策略",
     "",
-    "- `demo_source_video` was blocked because it is mock/no renderable path.",
-    "- `source_shot_*` from `editing.mov` was blocked because it is sample/reference only.",
-    "- `targetAssets` were empty, so visual gaps were detected.",
-    "- `sampleAssetReuse: \"authorized\"` is the explicit override path.",
-    "- Pathless and mock source assets are blocked from target-material matching.",
+    "- `demo_source_video` 被阻断，因为它是 mock 且没有可渲染路径。",
+    "- `editing.mov` 的 `source_shot_*` 被阻断，因为它们只是样例/参考证据。",
+    "- `targetAssets` 为空，因此系统检测到视觉素材缺口。",
+    "- `sampleAssetReuse: \"authorized\"` 是显式授权复用样例/参考素材的覆盖路径。",
+    "- 没有路径的素材与 mock source asset 都不能参与目标素材匹配。",
     "",
-    "## Motif Slots",
+    "## 动机级槽位",
     "",
     ...motifSlots.map((slot) => `- ${slot.id}: ${slot.visualForm ?? slot.slotType}, ${slot.semanticLabel ?? "unknown_object"}, clickToReplace=${slot.clickToReplace === true}`),
     "",
-    "## Detected Gaps",
+    "## 检测到的缺口",
     "",
     ...gapReport.map((gap) => `- ${gap.gapType ?? gap.slotId}: ${gap.gapLabelZh ?? gap.gapLabel ?? gap.reason} (${gap.severity})`),
     "",
-    "## Replacement Slots",
+    "## 替换槽位",
     "",
-    ...(generation.replacementSlots ?? []).map((slot) => `- ${slot.slotId}: ${slot.status}, ${slot.visualForm}, accepts ${slot.acceptedAssetTypes.join("/")}`),
+    ...(generation.replacementSlots ?? []).map((slot) => `- ${slot.slotId}: ${slot.status}, ${slot.visualForm}, 可接受 ${slot.acceptedAssetTypes.join("/")}`),
     "",
-    "## Gates",
+    "## 校验门",
     "",
-    ...currentGates.map((gate) => `- ${gate.passed ? "PASS" : "FAIL"} ${gate.id}: ${gate.value} - ${gate.comment}`),
+    ...currentGates.map((gate) => `- ${gate.passed ? "通过" : "失败"} ${gate.id}: ${gate.value} - ${gate.comment}`),
     "",
-    "## Render Metadata",
+    "## 渲染元数据",
     "",
-    `- duration: ${renderMetadata.durationSec ?? "unknown"}s`,
-    `- resolution: ${renderMetadata.width ?? "?"}x${renderMetadata.height ?? "?"}`,
+    `- 时长：${renderMetadata.durationSec ?? "unknown"}s`,
+    `- 分辨率：${renderMetadata.width ?? "?"}x${renderMetadata.height ?? "?"}`,
     `- fps: ${renderMetadata.fps ?? "unknown"}`,
     `- sizeBytes: ${renderMetadata.sizeBytes ?? "unknown"}`,
-    `- bitrate: ${renderMetadata.bitrate ?? "unknown"}`,
-    `- audio: ${renderMetadata.hasAudio ? renderMetadata.audioCodec ?? "present" : "missing"}`,
+    `- 比特率：${renderMetadata.bitrate ?? "unknown"}`,
+    `- 音频：${renderMetadata.hasAudio ? renderMetadata.audioCodec ?? "present" : "缺失"}`,
     "",
-    "## Timeline Preview",
+    "## 时间线预览",
     "",
-    "- `preview_frames/manifest.json` pairs labeled sample evidence frames with generated proxy frames.",
-    "- Sample frames are evidence only; they are not used as target material.",
+    "- `preview_frames/manifest.json` 将样例证据帧与生成代理帧成对记录。",
+    "- 样例帧只作为证据展示，不作为目标素材使用。",
     "",
-    "## Public Artifact Sanitization",
+    "## 公开 Artifact 清理",
     "",
     `- scannedFiles: ${publicScan?.scannedFiles.length ?? "pending"}`,
     `- forbiddenMatches: ${publicScan?.matchCount ?? "pending"}`,
     "",
-    "## Artifacts",
+    "## 工程证据",
     "",
     "- `render.mp4`",
     "- `contact_sheet.png`",
@@ -665,11 +665,11 @@ async function main() {
 
     const proxySlot = (generation.replacementSlots ?? []).find((slot) => slot.slotId === "slot_rotating_hero_object_intro") ?? generation.replacementSlots?.[0];
     const html = `<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Editing Case · Interactive Gap Fill</title>
+  <title>剪辑样例 · 交互式缺口补全</title>
   <style>
     body { margin: 0; background: #f7f8fa; color: #172033; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     main { max-width: 1180px; margin: 0 auto; padding: 28px; }
@@ -695,28 +695,28 @@ async function main() {
 <body>
 <main>
   <section class="hero">
-    <span class="badge warn">Reference Video ≠ Target Material</span>
-    <h1>Editing Case · Interactive Gap Fill</h1>
-    <p>editing.mov is used as structure evidence only. With empty targetAssets, visual slots become gaps and proxy placeholders are rendered instead of copying sample frames.</p>
+    <span class="badge warn">参考视频 ≠ 目标素材</span>
+    <h1>剪辑样例 · 交互式缺口补全</h1>
+    <p>editing.mov 只作为结构证据使用。targetAssets 为空时，视觉槽位会变成缺口，并渲染代理占位，而不是复制样例帧。</p>
     <div class="badges">
       <span class="badge">sampleAssetReuse: disabled</span>
       <span class="badge">targetAssets: empty</span>
-      <span class="badge">source_shot_* blocked</span>
-      <span class="badge">proxy_placeholder rendered</span>
+      <span class="badge">source_shot_* 已阻断</span>
+      <span class="badge">proxy_placeholder 已渲染</span>
     </div>
   </section>
   <div class="grid">
     <section class="card">
-      <h2>Rendered Proxy Output</h2>
+      <h2>代理占位渲染结果</h2>
       <video controls src="render.mp4"></video>
-      <p>Proxy must be visible in the MP4; JSON-only replacement slots do not count.</p>
+      <p>代理占位必须在 MP4 中可见；只有 JSON 里的 replacementSlots 不算完成。</p>
     </section>
     <section class="card">
-      <h2>Rotating Hero Object Slot</h2>
+      <h2>旋转主视觉槽位</h2>
       <table>
-        <tr><th>slotId</th><td>${esc(proxySlot?.slotId ?? "missing")}</td></tr>
-        <tr><th>status</th><td>${esc(proxySlot?.status ?? "missing")}</td></tr>
-        <tr><th>visualForm</th><td>${esc(proxySlot?.visualForm ?? "missing")}</td></tr>
+        <tr><th>slotId</th><td>${esc(proxySlot?.slotId ?? "缺失")}</td></tr>
+        <tr><th>status</th><td>${esc(proxySlot?.status ?? "缺失")}</td></tr>
+        <tr><th>visualForm</th><td>${esc(proxySlot?.visualForm ?? "缺失")}</td></tr>
         <tr><th>motion</th><td>${esc(`${proxySlot?.motionSpec?.type ?? "unknown"} / ${proxySlot?.motionSpec?.axis ?? "unknown"}`)}</td></tr>
         <tr><th>accepted</th><td>${esc(proxySlot?.acceptedAssetTypes?.join(", ") ?? "")}</td></tr>
         <tr><th>placeholder</th><td>${esc(proxySlot?.placeholderSpec?.label ?? "")}</td></tr>
@@ -724,22 +724,22 @@ async function main() {
     </section>
   </div>
   <section class="card" style="margin-top:16px">
-    <h2>Timeline Preview · Source Evidence → Generated Proxy</h2>
+    <h2>时间线预览 · 样例证据 → 生成代理</h2>
     <div class="frames">
-      ${previewPairs.map((pair) => `<figure><div class="pair"><div><img src="${esc(pair.sourceEvidenceFrame)}" alt="source evidence ${esc(pair.slotId)}" /><figcaption>source evidence</figcaption></div><div><img src="${esc(pair.generatedProxyFrame)}" alt="generated ${esc(pair.slotId)}" /><figcaption>${esc(pair.kind)} output</figcaption></div></div><figcaption>${esc(pair.slotId)} · ${esc(pair.status)}</figcaption></figure>`).join("")}
+      ${previewPairs.map((pair) => `<figure><div class="pair"><div><img src="${esc(pair.sourceEvidenceFrame)}" alt="样例证据 ${esc(pair.slotId)}" /><figcaption>样例证据</figcaption></div><div><img src="${esc(pair.generatedProxyFrame)}" alt="生成结果 ${esc(pair.slotId)}" /><figcaption>${esc(pair.kind === "proxy" ? "代理输出" : "生成输出")}</figcaption></div></div><figcaption>${esc(pair.slotId)} · ${esc(pair.status)}</figcaption></figure>`).join("")}
     </div>
     <p><a href="preview_frames/manifest.json">preview_frames/manifest.json</a></p>
   </section>
   <section class="card" style="margin-top:16px">
-    <h2>Gates</h2>
-    <div class="badges">${currentGates.map((gate) => `<span class="badge ${gate.passed ? "pass" : "fail"}">${esc(gate.id)}: ${gate.passed ? "PASS" : "FAIL"}</span>`).join("")}</div>
+    <h2>校验门</h2>
+    <div class="badges">${currentGates.map((gate) => `<span class="badge ${gate.passed ? "pass" : "fail"}">${esc(gate.id)}: ${gate.passed ? "通过" : "失败"}</span>`).join("")}</div>
   </section>
   <section class="card" style="margin-top:16px">
-    <h2>Render Metadata</h2>
-    <p>${esc(renderMetadata.durationSec ?? "?")}s · ${esc(renderMetadata.width ?? "?")}x${esc(renderMetadata.height ?? "?")} · audio=${renderMetadata.hasAudio ? "present" : "missing"} · size=${esc(renderMetadata.sizeBytes ?? "?")} bytes</p>
+    <h2>渲染元数据</h2>
+    <p>${esc(renderMetadata.durationSec ?? "?")}s · ${esc(renderMetadata.width ?? "?")}x${esc(renderMetadata.height ?? "?")} · audio=${renderMetadata.hasAudio ? "present" : "缺失"} · size=${esc(renderMetadata.sizeBytes ?? "?")} bytes</p>
   </section>
   <section class="card" style="margin-top:16px">
-    <h2>Artifact Links</h2>
+    <h2>工程证据链接</h2>
     <p><a href="report.md">report.md</a> · <a href="generation-result.json">generation-result.json</a> · <a href="gap-report.json">gap-report.json</a> · <a href="replacement-slots.json">replacement-slots.json</a> · <a href="contact_sheet.png">contact_sheet.png</a></p>
   </section>
 </main>
@@ -755,7 +755,7 @@ async function main() {
       "public_artifacts_sanitized",
       publicArtifactScan.passed,
       publicArtifactScan.matchCount,
-      "Public editing_case HTML/JSON/MD/TXT artifacts contain no private paths or obvious secret patterns."
+      "公开 editing_case HTML/JSON/MD/TXT artifact 不包含私有路径或明显密钥模式。"
     )
   );
   await writeCaseArtifacts(gates, publicArtifactScan);
