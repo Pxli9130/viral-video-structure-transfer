@@ -85,12 +85,17 @@ Core Services
   ├─ ProjectService
   ├─ AssetService
   ├─ VideoAnalysisService
+  ├─ VisualEvidenceTimelineService
   ├─ StructureExtractionService
+  ├─ OpenWorldSlotInductionService
   ├─ KnowledgeBaseService
   ├─ SourceUnderstandingService
   ├─ SlotMatchingService
+  ├─ MaterialPolicyService
+  ├─ TargetAssetMatchingService
   ├─ GapDetectionService
   ├─ GapFillService
+  ├─ RendererCapabilityService
   ├─ ReconstructionPlannerService
   ├─ TimelineValidationService
   ├─ RenderService
@@ -180,6 +185,41 @@ Adapters
 4. Timeline re-validates.
 5. Preview regenerates.
 ```
+
+### 4.4 Flow D — motion-graph evidence and target-asset adaptation
+
+This flow is the current SDE/MLE hardening showcase. It is intentionally scoped to `motion_graph_case`; editing/marketing/corpus analyzer expansion is not assumed by this slice.
+
+```text
+1. scripts/analyze-visual-evidence.py reads test_videos/motion_graph_1.mov.
+2. The analyzer writes VisualEvidenceTimeline artifacts:
+   - visual-evidence.json;
+   - evidence_frames/;
+   - visual-evidence-contact-sheet.png.
+3. slotInduction induces open-world visual families from visual evidence:
+   - media_cards;
+   - kinetic_typography;
+   - ui_showcase;
+   - geometric_mg;
+   - brand_cta;
+   - optional object_motion/live_action_montage when evidence supports it.
+4. The motion-graph template is renamed to a learned motion-graph structure and uses induced slots as the primary flow.
+5. The material policy blocks sample/reference frames as target material.
+6. Proxy mode leaves visual assets missing and renders family-specific proxies.
+7. Target-asset mode loads docs/fixtures/motion_graph_target_assets/ and matches assets to slots.
+8. Fill planning switches matched slots from proxy placeholders to target-material/procedural fulfillment.
+9. FFmpegRenderer renders target card stack, target feature list, target kinetic copy, procedural neon geometry, and target logo/CTA hold.
+10. The case writes MP4s, before/after contact sheet, slot-match artifacts, and evaluation gates.
+```
+
+Active commands:
+
+```bash
+node scripts/run-motion-graph-case.mjs
+node scripts/run-motion-graph-case.mjs --with-target-assets
+```
+
+Primary outputs are under `docs/artifacts/motion_graph_case/`.
 
 ---
 
@@ -286,6 +326,61 @@ Includes source video, selected template/atoms, prompt, target duration, aspect 
 
 Timeline JSON is the renderer contract. It includes ordered clips/layers, subtitles, overlays, mapping, gap report, fill plan, preview instructions, and render target.
 
+### 5.8 InducedVisualSlot
+
+`InducedVisualSlot` is the open-world slot representation used by the evidence-driven motion-graph path. It sits between raw visual evidence and a concrete `RequiredSlot`.
+
+Important fields:
+
+```ts
+type InducedVisualSlot = {
+  id: string;
+  role: SegmentRole;
+  modality: "visual" | "text" | "audio" | "mixed";
+  visualFormFamily:
+    | "media_cards"
+    | "kinetic_typography"
+    | "ui_showcase"
+    | "geometric_mg"
+    | "object_motion"
+    | "live_action_montage"
+    | "brand_cta"
+    | "unknown";
+  visualForm: string;
+  motionPattern?: string;
+  layoutRelation?: string;
+  assetRequirement?: SlotAssetRequirement;
+  sourceEvidence?: SlotSourceEvidence;
+  rendererCandidates: string[];
+  fallbackStrategies: FillStrategy[];
+  replacementPolicy: ReplacementPolicy;
+  confidence: number;
+};
+```
+
+The goal is not to invent a fixed slot taxonomy for every possible video. The goal is to keep enough structured evidence that a renderer, asset matcher, evaluator, and UI can explain what was preserved and what still needs material.
+
+### 5.9 TargetAssetInput and material roles
+
+Target assets represent material that may appear in the generated output. Sample/reference video frames are not target assets by default.
+
+For the current motion-graph target fixture:
+
+```text
+target_card_01..04     image cards for media_cards
+target_feature_copy    feature-list copy for ui_showcase
+target_kinetic_copy    brand/copy for kinetic_typography
+target_logo            logo + brand/CTA metadata for brand_cta
+```
+
+Material policy rules:
+
+- sample/reference material is structure evidence only unless sample reuse is authorized;
+- mock/no-path assets cannot satisfy visual slots;
+- copy can satisfy copy/text-driven slots, not arbitrary visual slots;
+- procedural families such as `geometric_mg` can be marked `procedural_not_required`;
+- missing visual material creates a gap plus proxy/replacement slot.
+
 ---
 
 ## 6. Video understanding design
@@ -337,6 +432,9 @@ type SlotMapping = {
   status: "matched" | "weak_match" | "missing";
   candidateShotIds: string[];
   selectedShotId?: string;
+  selectedTargetAssetId?: string;
+  selectedTargetAssetIds?: string[];
+  selectedTargetAssetKind?: TargetAssetKind;
   confidence: number;
   reason: string;
   risks: string[];
@@ -352,6 +450,9 @@ type SlotMapping = {
 - CTA slot may be video, text card, or packaging card;
 - if prompt contains useful text but no shot exists, mark `weak_match` and use text/packaging fill;
 - if neither visual nor text exists, mark `missing`.
+- for `media_cards`, match a target image set only when enough renderable target images exist;
+- for `geometric_mg`, use procedural fulfillment when no external asset is required;
+- never match sample/reference shots as output material unless explicitly authorized.
 
 ---
 
@@ -373,6 +474,17 @@ Each fill action must include:
 - expected visual result;
 - renderer instructions;
 - limitation note.
+
+For induced visual slots, fill plan behavior is slot-family specific:
+
+| Family | Proxy mode | Target-asset mode |
+|---|---|---|
+| `media_cards` | `card_stack_proxy` | `user_asset_replace` with target image set |
+| `kinetic_typography` | `kinetic_text_card` from prompt/copy | `kinetic_text_card` using target copy |
+| `ui_showcase` | `feature_list_scroller` from prompt/copy | `feature_list_scroller` using target feature list |
+| `geometric_mg` | procedural neon geometry | procedural neon geometry |
+| `brand_cta` | logo placeholder | target logo + brand/CTA hold |
+| `live_action_montage` | montage proxy | proxy unless enough image/video material exists |
 
 ---
 
@@ -400,12 +512,15 @@ interface RendererAdapter {
 
 ### 9.3 FFmpeg renderer
 
-Future implementation:
+Implemented and used by the motion-graph artifact path:
 
 - cut source clips with `-ss` / `-to`;
 - create text-card images/video snippets;
 - overlay subtitles or drawtext;
 - concat into 9:16 MP4.
+- render family-specific motion-graph proxies;
+- render target image sets as card stacks;
+- render target logo + CTA holds.
 
 ### 9.4 Remotion renderer
 
@@ -464,6 +579,8 @@ SQLite, then PostgreSQL if needed.
 - API keys from `.env` only.
 - Do not commit real keys.
 - Do not copy sample video frames into output unless user-authorized.
+- Public HTML/JSON artifacts should avoid absolute private paths and secret patterns.
+- Source evidence frames shown in timelines should be labeled as evidence-only, not target material.
 - Record source policy for every asset.
 - Provide content ownership disclaimer.
 - Generated output should be marked as demo unless rights are clear.
@@ -507,3 +624,13 @@ SQLite, then PostgreSQL if needed.
 - Remotion packaging;
 - natural-language edit;
 - multi-version generation.
+
+### Milestone 5 — evidence-driven slot transfer and target adaptation
+
+- deterministic VisualEvidenceTimeline for motion-graph sample;
+- open-world slot induction;
+- material-pool policy and no-sample-copy boundary;
+- target asset fixture and slot matching;
+- proxy mode and with-assets mode;
+- renderer capability gates;
+- corpus fixture `009_motion_graph_card_stack`.

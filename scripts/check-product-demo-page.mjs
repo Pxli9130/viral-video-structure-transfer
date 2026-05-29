@@ -103,7 +103,12 @@ const requiredText = [
   "interactive_gap_fill_proxy.mp4",
   "interactive_gap_fill_user_replacement.mp4",
   "editing_case/index.html",
-  "motion_graph_case/index.html"
+  "motion_graph_case/index.html",
+  "Motion Graph Target Adaptation",
+  "Proxy Mode -> Target Assets",
+  "Target Asset Pool",
+  "Slot Asset Mapping Table",
+  "before_after_contact_sheet.png"
 ];
 
 for (const text of requiredText) {
@@ -121,6 +126,7 @@ const requiredSections = [
   "structure-timeline-rail",
   "nl-before-after",
   "interactive-gap-fill",
+  "motion-graph-target-adaptation",
   "artifact-gallery"
 ];
 
@@ -190,7 +196,13 @@ const requiredManifestFields = [
   ["editingCase.available", manifest.editingCase?.available],
   ["editingCase.render", manifest.editingCase?.render],
   ["motionGraphCase.available", manifest.motionGraphCase?.available],
-  ["motionGraphCase.index", manifest.motionGraphCase?.index]
+  ["motionGraphCase.index", manifest.motionGraphCase?.index],
+  ["motionGraphCase.renderProxy", manifest.motionGraphCase?.renderProxy],
+  ["motionGraphCase.renderWithAssets", manifest.motionGraphCase?.renderWithAssets],
+  ["motionGraphCase.beforeAfterContactSheet", manifest.motionGraphCase?.beforeAfterContactSheet],
+  ["motionGraphCase.assetEvidence", manifest.motionGraphCase?.assetEvidence],
+  ["motionGraphCase.slotAssetMatches", manifest.motionGraphCase?.slotAssetMatches],
+  ["motionGraphCase.evaluation", manifest.motionGraphCase?.evaluation]
 ];
 
 for (const [field, value] of requiredManifestFields) {
@@ -225,6 +237,18 @@ if (existsSync(path.join(motionGraphCaseDir, "index.html")) && !html.includes("m
 
 if (existsSync(path.join(motionGraphCaseDir, "index.html")) && manifest.motionGraphCase?.available !== true) {
   failures.push("Manifest does not mark motion_graph_case as available while motion_graph_case artifacts exist.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "before_after_contact_sheet.png")) && !html.includes("motion_graph_case/before_after_contact_sheet.png")) {
+  failures.push("Motion graph before_after_contact_sheet exists but product demo does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "slot-asset-matches.json")) && !/data-motion-graph-slot-mapping="slot-asset-mapping"/.test(html)) {
+  failures.push("Product demo missing first-class motion graph slot mapping table.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "render_with_assets.mp4")) && !html.includes("motion_graph_case/render_with_assets.mp4")) {
+  failures.push("Motion graph with-assets render exists but product demo does not link it.");
 }
 
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {

@@ -4,6 +4,21 @@
 
 The system learns reusable creative structures from high-performing short videos, stores them as a knowledge base of `StructureTemplate` + `KnowledgeAtom`, and applies them to a new source video plus a user prompt to produce a reconstructed short-video plan, browser preview, and (when FFmpeg is available) an MP4 demo.
 
+The current hardening path also includes an evidence-driven motion-graph case:
+
+```text
+sample/reference video
+→ deterministic visual evidence
+→ induced open-world visual slots
+→ material-pool policy
+→ target asset matching
+→ proxy fill or target-asset replacement
+→ renderer capability selection
+→ MP4 + timeline previews + evaluator gates
+```
+
+The sample video is structure evidence only by default. Generated outputs use target/user material, authorized reusable assets, or procedural renderer output; sample frames/audio/text are not copied into target material unless explicitly authorized.
+
 For the current implementation state, architecture, usage, artifact layout, and tooling, see [Current Project Guide](./CURRENT_PROJECT_GUIDE.md).
 
 ## Spec v1.2 documents
@@ -16,7 +31,7 @@ For the current implementation state, architecture, usage, artifact layout, and 
 - [Demo Playbook](./spec_v2/demo-playbook.md)
 - [Source Alignment](./spec_v2/source-alignment.md)
 - [JSON Schemas](./spec_v2/schemas/)
-- **[Implementation Status](./spec_v2/implementation-status.md)** — what's done, what's partial, what's deferred (phase-by-phase against `tasks.md`)
+- [Latest SDE hardening review](./docs/artifacts/review/sde_hardening_review.md) — current readiness verdict, reviewed artifacts, and remaining gaps.
 
 The deprecated `specs_v1/` and `spec_v1_1/` directories are kept for traceability but are superseded by `spec_v2/`.
 
@@ -32,7 +47,13 @@ packages/
 scripts/
   seed-demo.mjs        # Build a seeded humidifier demo into storage/db + storage/demo/
   validate-schemas.mjs # AJV-validate every fixture and DB row
+  analyze-visual-evidence.py              # deterministic visual evidence for motion_graph_case
+  run-motion-graph-case.mjs               # proxy + target-asset motion graph showcase
+  generate-motion-graph-target-assets.mjs # deterministic target asset fixture generator
   python/              # Python helpers (ffprobe, keyframes, faster-whisper, easyocr)
+docs/
+  fixtures/motion_graph_target_assets/    # generated user-material fixture for target adaptation
+  artifacts/                              # reviewable case/demo/corpus outputs
 storage/
   uploads/, generated/, db/, demo/
 ```
@@ -95,6 +116,8 @@ npm run typecheck        # tsc --noEmit across workspaces
 npm test                 # shared + api vitest suites
 npm run seed:demo        # produce storage/db/app.json + storage/demo/*.json fixtures
 npm run validate:schemas # AJV-validate fixtures + DB rows
+npm run demo:product     # write docs/artifacts/product_demo/index.html
+npm run regression:corpus:strict # corpus gates, including motion_graph asset-mode gates
 ```
 
 `npm run dev` requires Node 18+ (the project uses `--experimental-vm-modules`-friendly ESM). If you have multiple Node installs, point `npm` at the right one (e.g. `nvm use 22`). When the default JSON backend is used and `storage/db/app.json` is missing, API startup automatically runs the demo seed before the store is opened. SQLite mode does not auto-write the JSON demo DB; run `npm run seed:demo` explicitly if you want those fixtures.
@@ -104,6 +127,68 @@ The FFmpeg/Python path is designed to use the conda env `viral`:
 ```bash
 CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral npm run dev:api
 ```
+
+## Motion graph target-asset adaptation demo
+
+This is the current judge-visible structure-transfer slice. It does not require VLM/API keys and does not call paid AIGC/video generation.
+
+```bash
+# Build first so the case script can import workspace dist files.
+npm run build
+
+# Generate deterministic fixture assets, if they do not already exist.
+node scripts/generate-motion-graph-target-assets.mjs
+
+# Proxy mode: proves evidence → induced slots → family-specific proxy render.
+node scripts/run-motion-graph-case.mjs
+
+# Target asset mode: proves proxy slots can be replaced by target/user material.
+node scripts/run-motion-graph-case.mjs --with-target-assets
+
+# Regression/product checks.
+npm run regression:corpus:strict
+VVST_REUSE_IGF_FIXTURE=1 npm run demo:product
+node scripts/check-product-demo-page.mjs
+```
+
+Target fixture:
+
+```text
+docs/fixtures/motion_graph_target_assets/
+  logo.png
+  card_01.png
+  card_02.png
+  card_03.png
+  card_04.png
+  copy.json
+```
+
+Primary outputs:
+
+```text
+docs/artifacts/motion_graph_case/visual-evidence.json
+docs/artifacts/motion_graph_case/induced-slots.json
+docs/artifacts/motion_graph_case/asset-evidence.json
+docs/artifacts/motion_graph_case/slot-asset-matches.json
+docs/artifacts/motion_graph_case/fill-plan.proxy.json
+docs/artifacts/motion_graph_case/fill-plan.with-assets.json
+docs/artifacts/motion_graph_case/render_proxy.mp4
+docs/artifacts/motion_graph_case/render_with_assets.mp4
+docs/artifacts/motion_graph_case/before_after_contact_sheet.png
+docs/artifacts/motion_graph_case/evaluation.motion_graph.json
+```
+
+Current asset-mode slot mapping:
+
+| Induced family | Target fulfillment |
+|---|---|
+| `media_cards` | target image set, 4 cards |
+| `kinetic_typography` | target brand/copy |
+| `ui_showcase` | target feature copy list |
+| `geometric_mg` | procedural renderer, no external asset required |
+| `brand_cta` | target logo + CTA |
+
+The corresponding corpus fixture is `test_videos/corpus/009_motion_graph_card_stack/fixture.json`.
 
 ## Adapter map (NFR-001)
 
@@ -116,7 +201,7 @@ All providers are isolated behind interfaces in `packages/shared/src/adapters.ts
 | ASR            | `DisabledASRAdapter`        | `FasterWhisperASRAdapter` via conda viral              | `ASR_PROVIDER=faster_whisper`         |
 | OCR            | `DisabledOCRAdapter`        | `EasyOCRAdapter` via conda viral                       | `OCR_PROVIDER=easyocr`                |
 | VLM            | `DisabledVLMAdapter`        | `KeyframeHeuristicVLMAdapter` (heuristic) **or** `GeminiVLMAdapter` (Google Gemini, real video understanding) | `VLM_PROVIDER=heuristic` or `gemini` |
-| Renderer       | `HtmlPreviewRenderer`       | `FFmpegRenderer` (real MP4), `RemotionRenderer` (bundles `apps/api/remotion/` + renderMedia), `HyperFramesRenderer` (deterministic JSON manifest stub) | per-request `rendererTarget` field    |
+| Renderer       | `HtmlPreviewRenderer`       | `FFmpegRenderer` (real MP4, family-specific motion graph proxies, target asset card/logo rendering), `RemotionRenderer` (bundles `apps/api/remotion/` + renderMedia), `HyperFramesRenderer` (deterministic JSON manifest stub) | per-request `rendererTarget` field    |
 | Storage        | `JsonStorageBackend` (single JSON file) | `SqliteStorageBackend` (better-sqlite3 with one table per collection) | `STORAGE_BACKEND=json` or `sqlite`    |
 
 `MockRenderer` lives in `apps/api/src/adapters/renderers.ts` alongside the real renderers; both the Remotion entry (`apps/api/remotion/index.tsx`) and the HyperFrames manifest writer are wired so the API returns a usable artefact for every renderer target.
@@ -210,4 +295,4 @@ These items are intentionally left for the user (cost or external setup):
 
 ## Primary vertical
 
-**B-end marketing / MG-style short promo videos** — the FFmpegRenderer is tuned for 9:16 720p with title-bar overlays, hard cuts and generated text cards. Other verticals (vlog, talking-head, beat_cut, short_drama, ecommerce) round-trip through the same pipeline but trigger a UI warning that they are best-effort.
+**B-end marketing / MG-style short promo videos** — the FFmpegRenderer is tuned for 9:16 720p with title-bar overlays, hard cuts, generated cards, family-specific motion-graph proxies, and target card/logo adaptation. Other verticals (vlog, talking-head, beat_cut, short_drama, ecommerce) round-trip through the same pipeline but trigger a UI warning that they are best-effort.

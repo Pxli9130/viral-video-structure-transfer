@@ -10,7 +10,9 @@
     "videoIsReference": true
   },
   "expectations": {
-    "motionGraphCaseGates": true
+    "motionGraphCaseGates": true,
+    "motionGraphAssetModeGates": true,
+    "motionGraphPartialAssetModeGates": true
   },
   "negativeExpectations": {
     "primaryMotifNotAnyOf": ["static_poster"]

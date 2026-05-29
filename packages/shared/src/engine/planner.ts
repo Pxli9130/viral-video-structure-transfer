@@ -1153,6 +1153,22 @@ function targetAssetForId(request: GenerationRequest, assetId: string | undefine
   return targetAssetsForRequest(request).find((asset) => asset.id === assetId);
 }
 
+function targetAssetsForIds(request: GenerationRequest, assetIds: string[] | undefined): TargetAssetInput[] {
+  if (!assetIds?.length) return [];
+  const byId = new Map(targetAssetsForRequest(request).map((asset) => [asset.id, asset]));
+  return assetIds.map((assetId) => byId.get(assetId)).filter((asset): asset is TargetAssetInput => Boolean(asset));
+}
+
+function textFromTargetAsset(asset: TargetAssetInput | undefined): string | undefined {
+  if (!asset) return undefined;
+  if (asset.text?.trim()) return asset.text.trim();
+  const featureList = asset.metadata?.features;
+  if (Array.isArray(featureList) && featureList.length) return featureList.map((item) => String(item)).join("\n");
+  if (typeof asset.metadata?.brandName === "string" && asset.metadata.brandName.trim()) return asset.metadata.brandName.trim();
+  if (typeof asset.metadata?.cta === "string" && asset.metadata.cta.trim()) return asset.metadata.cta.trim();
+  return undefined;
+}
+
 const REPLACEABLE_SLOT_TYPES = new Set<SlotType>([
   "hook_visual",
   "product_closeup",
@@ -1355,8 +1371,12 @@ function targetAssetScore(asset: TargetAssetInput, slotType: SlotType, family?: 
   const kinds = targetAssetKindsForFamily(family) ?? targetAssetKindsForSlot(slotType);
   let score = kinds.includes(asset.kind) ? 0.64 : 0.22;
   const haystack = [asset.role, asset.filename, asset.text, ...(asset.tags ?? [])].filter(Boolean).join(" ").toLowerCase();
+  if (family === "brand_cta" && asset.kind !== "logo" && !/(logo|brand|cta|品牌|标识|行动|结尾)/.test(haystack)) {
+    score = Math.min(score, 0.36);
+  }
   if (family === "media_cards" && /(card|collage|image|gallery|media|素材|卡片|拼贴)/.test(haystack)) score += 0.24;
   if (family === "ui_showcase" && /(feature|list|tool|ui|功能|工具|列表|界面)/.test(haystack)) score += 0.24;
+  if (family === "kinetic_typography" && /(kinetic|typography|motion text|brand|headline|动效|文字)/.test(haystack)) score += 0.24;
   if (family === "live_action_montage" && /(montage|action|clip|video|cinematic|动作|混剪|镜头)/.test(haystack)) score += 0.24;
   if (family === "brand_cta" && /(logo|brand|cta|品牌|标识|行动)/.test(haystack)) score += 0.24;
   if (family === "object_motion" && /(object|hero|logo|product|avatar|helmet|主视觉|主体|标识)/.test(haystack)) score += 0.24;
@@ -1376,6 +1396,36 @@ function bestTargetAssetForSlot(slotType: SlotType, assets: TargetAssetInput[], 
     .filter((candidate) => candidate.score >= 0.38)
     .sort((a, b) => b.score - a.score);
   return candidates[0];
+}
+
+function targetAssetSetForSlot(slot: RequiredSlot, assets: TargetAssetInput[]): { assets: TargetAssetInput[]; score: number } | undefined {
+  if (slot.visualFormFamily !== "media_cards") return undefined;
+  const minCount = Math.max(slot.assetRequirement?.minCount ?? 4, 4);
+  const candidates = assets
+    .map((asset) => ({ asset, score: targetAssetScore(asset, slot.slotType, slot.visualFormFamily) }))
+    .filter((candidate) => candidate.score >= 0.62 && targetAssetCanRenderForSlot(candidate.asset, slot.slotType, slot.visualFormFamily))
+    .sort((a, b) => b.score - a.score);
+  if (candidates.length < minCount) return undefined;
+  return {
+    assets: candidates.slice(0, Math.max(minCount, 4)).map((candidate) => candidate.asset),
+    score: clamp(candidates.reduce((sum, candidate) => sum + candidate.score, 0) / candidates.length, 0, 0.96)
+  };
+}
+
+function partialTargetAssetSetForSlot(slot: RequiredSlot, assets: TargetAssetInput[]): { assets: TargetAssetInput[]; score: number; minCount: number; missingCount: number } | undefined {
+  if (slot.visualFormFamily !== "media_cards") return undefined;
+  const minCount = Math.max(slot.assetRequirement?.minCount ?? 4, 4);
+  const candidates = assets
+    .map((asset) => ({ asset, score: targetAssetScore(asset, slot.slotType, slot.visualFormFamily) }))
+    .filter((candidate) => candidate.score >= 0.62 && targetAssetCanRenderForSlot(candidate.asset, slot.slotType, slot.visualFormFamily))
+    .sort((a, b) => b.score - a.score);
+  if (candidates.length === 0 || candidates.length >= minCount) return undefined;
+  return {
+    assets: candidates.map((candidate) => candidate.asset),
+    score: clamp(candidates.reduce((sum, candidate) => sum + candidate.score, 0) / candidates.length, 0, 0.88),
+    minCount,
+    missingCount: minCount - candidates.length
+  };
 }
 
 function overlapsExcludeSegment(shot: ShotCandidate, segment: NonNullable<StructureTemplate["excludeSegments"]>[number]): boolean {
@@ -1428,6 +1478,62 @@ export function matchSlots(
     const targetAssetCandidates = targetAssets
       .filter((asset) => targetAssetScore(asset, slot.slotType, slot.visualFormFamily) >= 0.38)
       .sort((a, b) => targetAssetScore(b, slot.slotType, slot.visualFormFamily) - targetAssetScore(a, slot.slotType, slot.visualFormFamily));
+    if (slot.visualFormFamily === "geometric_mg") {
+      return {
+        slotId: slot.id,
+        slotRole: slot.role,
+        slotType: slot.slotType,
+        status: "matched",
+        candidateShotIds: [],
+        targetAssetCandidateIds: [],
+        assetAvailability: "target_asset_mapped",
+        ...slotMetadata,
+        confidence: Math.max(slot.confidence ?? 0.72, 0.78),
+        reason: "Mapped geometric_mg to procedural_not_required; no target visual asset is needed.",
+        risks: ["Procedural MG renderer must preserve the induced geometry rhythm."]
+      };
+    }
+    const targetAssetSet = targetAssetSetForSlot(slot, targetAssets);
+    if (targetAssetSet) {
+      return {
+        slotId: slot.id,
+        slotRole: slot.role,
+        slotType: slot.slotType,
+        status: "matched",
+        candidateShotIds: [],
+        selectedAssetId: targetAssetSet.assets[0]?.id,
+        selectedTargetAssetId: targetAssetSet.assets[0]?.id,
+        selectedTargetAssetIds: targetAssetSet.assets.map((asset) => asset.id),
+        selectedTargetAssetKind: targetAssetSet.assets[0]?.kind,
+        targetAssetCandidateIds: targetAssetCandidates.map((asset) => asset.id),
+        assetAvailability: "target_asset_mapped",
+        ...slotMetadata,
+        confidence: targetAssetSet.score,
+        reason: `Mapped ${slot.visualFormFamily} to target image set (${targetAssetSet.assets.map((asset) => asset.id).join(", ")}).`,
+        risks: []
+      };
+    }
+    const partialTargetAssetSet = partialTargetAssetSetForSlot(slot, targetAssets);
+    if (partialTargetAssetSet) {
+      return {
+        slotId: slot.id,
+        slotRole: slot.role,
+        slotType: slot.slotType,
+        status: "weak_match",
+        candidateShotIds: [],
+        selectedAssetId: partialTargetAssetSet.assets[0]?.id,
+        selectedTargetAssetId: partialTargetAssetSet.assets[0]?.id,
+        selectedTargetAssetIds: partialTargetAssetSet.assets.map((asset) => asset.id),
+        selectedTargetAssetKind: partialTargetAssetSet.assets[0]?.kind,
+        targetAssetCandidateIds: targetAssetCandidates.map((asset) => asset.id),
+        assetAvailability: "target_asset_weak_match",
+        missingCount: partialTargetAssetSet.missingCount,
+        ...slotMetadata,
+        confidence: partialTargetAssetSet.score,
+        reason: `Only ${partialTargetAssetSet.assets.length}/${partialTargetAssetSet.minCount} required media-card assets are available; render a mixed target/proxy card stack.`,
+        risks: ["Partial media-card set; fill plan must preserve visible proxy placeholders for missing cards."]
+      };
+    }
     const bestTargetAsset = bestTargetAssetForSlot(slot.slotType, targetAssets, slot.visualFormFamily);
     if (bestTargetAsset && bestTargetAsset.score >= 0.62) {
       return {
@@ -1445,6 +1551,22 @@ export function matchSlots(
         confidence: bestTargetAsset.score,
         reason: `Mapped ${slot.slotType} to target ${bestTargetAsset.asset.kind} asset ${bestTargetAsset.asset.id}.`,
         risks: bestTargetAsset.asset.path || bestTargetAsset.asset.url || bestTargetAsset.asset.text ? [] : ["Target asset has metadata only; renderer may need a fallback."]
+      };
+    }
+    if (slot.visualFormFamily === "brand_cta") {
+      return {
+        slotId: slot.id,
+        slotRole: slot.role,
+        slotType: slot.slotType,
+        status: "missing",
+        candidateShotIds: [],
+        targetAssetCandidateIds: targetAssetCandidates.map((asset) => asset.id),
+        assetAvailability: targetAssets.length > 0 ? "target_asset_weak_match" : "no_user_asset_available",
+        missingCount: 1,
+        ...slotMetadata,
+        confidence: 0,
+        reason: "No renderable target logo or brand CTA asset is available; sample brand evidence is blocked as material.",
+        risks: ["Brand CTA must use a proxy/logo placeholder until a target logo or authorized brand asset is supplied."]
       };
     }
     const evidenceCandidateShots = source.candidates.filter((shot) => candidateMatchesSlot(shot, slot));
@@ -1739,6 +1861,7 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
         rendererCandidates: mapping.rendererCandidates,
         sourceEvidence: mapping.sourceEvidence,
         assetRequirement: mapping.assetRequirement,
+        missingCount: mapping.missingCount,
         assetAvailability: mapping.assetAvailability,
         mappedAssetId: mapping.selectedTargetAssetId ?? mapping.selectedAssetId,
         fillSource: mapping.assetAvailability === "target_asset_weak_match" ? "target_asset" : mapping.assetAvailability === "source_video_mapped" ? "source_video" : "none"
@@ -1939,7 +2062,10 @@ export function createFillPlan(
                   visualFormFamily: mapping.visualFormFamily,
                   rendererCandidates: mapping.rendererCandidates,
                   rendererCapability,
-                  capabilityId: rendererCapability?.id
+                  capabilityId: rendererCapability?.id,
+                  targetAssetIds: mapping.selectedTargetAssetIds ?? (mapping.selectedTargetAssetId ? [mapping.selectedTargetAssetId] : undefined),
+                  missingCount: mapping.missingCount,
+                  materialSource: mapping.assetAvailability === "target_asset_weak_match" ? "target_material_partial" : "proxy_placeholder"
                 }
               : strategy === "text_card"
             ? { renderer: "image_card", fallbackRenderer: "remotion_mg", strategy, fulfilledBy: "text_or_copy", requiredInputs: ["prompt_copy"], text: `${brief.productName}: ${brief.sellingPoints[0] ?? brief.topic}`, layout: "centered" }
@@ -1987,8 +2113,87 @@ export function createFillPlan(
       };
     });
 
+  const matchedCapabilityFillPlan: FillAction[] = mappings
+    .filter((mapping) => mapping.status === "matched" && Boolean(mapping.visualFormFamily))
+    .flatMap((mapping): FillAction[] => {
+      const rendererCapability = mapping.visualFormFamily ? primaryRendererCapabilityForFamily(mapping.visualFormFamily) : undefined;
+      const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${mapping.visualFormFamily ?? mapping.slotType} target fill`, undefined, mapping.visualFormFamily);
+      const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, undefined, mapping.visualFormFamily);
+      const selectedAssets = targetAssetsForIds(request, mapping.selectedTargetAssetIds ?? (mapping.selectedTargetAssetId ? [mapping.selectedTargetAssetId] : []));
+      const selectedAsset = selectedAssets[0] ?? targetAssetForId(request, mapping.selectedTargetAssetId);
+      const targetCopy = textFromTargetAsset(selectedAsset);
+      const strategy: FillStrategy =
+        mapping.visualFormFamily === "media_cards" || mapping.visualFormFamily === "brand_cta"
+          ? "user_asset_replace"
+          : mapping.visualFormFamily === "ui_showcase" || mapping.visualFormFamily === "kinetic_typography" || mapping.visualFormFamily === "geometric_mg"
+            ? "procedural_generation"
+            : "proxy_placeholder";
+      if (
+        mapping.visualFormFamily !== "media_cards" &&
+        mapping.visualFormFamily !== "brand_cta" &&
+        mapping.visualFormFamily !== "ui_showcase" &&
+        mapping.visualFormFamily !== "kinetic_typography" &&
+        mapping.visualFormFamily !== "geometric_mg"
+      ) {
+        return [];
+      }
+      const action: FillAction = {
+        slotId: mapping.slotId,
+        strategy,
+        reason:
+          strategy === "user_asset_replace"
+            ? `Use matched target material for ${mapping.visualFormFamily}; preserve slot motion and layout.`
+            : mapping.visualFormFamily === "geometric_mg"
+              ? "No external asset required; render the induced geometric MG family procedurally."
+              : `Render ${mapping.visualFormFamily} with matched target copy through its renderer capability.`,
+        targetClipId: stableId("clip", request.projectId, mapping.slotId, strategy, "target_asset"),
+        rendererInstructions: {
+          renderer: "remotion_mg",
+          fallbackRenderer: "ffmpeg_compose",
+          strategy,
+          fulfilledBy: strategy === "user_asset_replace" ? "target_asset" : "procedural_generation",
+          requiredInputs:
+            mapping.visualFormFamily === "media_cards"
+              ? ["target_image_set", "slot_motion"]
+              : mapping.visualFormFamily === "brand_cta"
+                ? ["target_logo", "brand_copy", "slot_motion"]
+                : mapping.visualFormFamily === "ui_showcase"
+                  ? ["target_copy", "feature_list"]
+                  : mapping.visualFormFamily === "kinetic_typography"
+                    ? ["target_copy", "typography_timing"]
+                    : ["procedural_shape_motif"],
+          replacementSlotId: strategy === "user_asset_replace" ? mapping.slotId : undefined,
+          boundAssetId: selectedAsset?.id,
+          targetAssetIds: selectedAssets.map((asset) => asset.id),
+          replacementAssetKind: selectedAsset?.kind ?? "image",
+          applyMotionFromSlot: true,
+          motionSpec,
+          placeholderSpec,
+          visualFormFamily: mapping.visualFormFamily,
+          rendererCandidates: mapping.rendererCandidates,
+          rendererCapability,
+          capabilityId: rendererCapability?.id,
+          targetCopy,
+          featureList: Array.isArray(selectedAsset?.metadata?.features) ? selectedAsset?.metadata?.features : undefined,
+          brandName: typeof selectedAsset?.metadata?.brandName === "string" ? selectedAsset.metadata.brandName : undefined,
+          cta: typeof selectedAsset?.metadata?.cta === "string" ? selectedAsset.metadata.cta : undefined,
+          materialSource: mapping.visualFormFamily === "geometric_mg" ? "procedural_not_required" : "target_material"
+        }
+      };
+      return [{
+        ...action,
+        capabilityId: rendererCapability?.id,
+        backend: action.rendererInstructions?.renderer as RendererBackend | undefined,
+        fallbackUsed: false,
+        visualFormFamily: mapping.visualFormFamily,
+        selectedStrategy: strategy,
+        fulfilledBy: action.rendererInstructions?.fulfilledBy as FillAction["fulfilledBy"]
+      }];
+    });
+
+  const plannedSlotIds = new Set([...slotFillPlan, ...matchedCapabilityFillPlan].map((action) => action.slotId));
   const boundSlotFillPlan: FillAction[] = replacementBindingsForRequest(request)
-    .filter((binding) => !slotFillPlan.some((action) => action.slotId === binding.slotId))
+    .filter((binding) => !plannedSlotIds.has(binding.slotId))
     .flatMap((binding): FillAction[] => {
       const mapping = mappings.find((item) => item.slotId === binding.slotId);
       if (!mapping) return [];
@@ -2031,7 +2236,7 @@ export function createFillPlan(
       }];
     });
 
-  const baseFillPlan = [...slotFillPlan, ...boundSlotFillPlan];
+  const baseFillPlan = [...slotFillPlan, ...matchedCapabilityFillPlan, ...boundSlotFillPlan];
 
   if (!hasRibbonOrbitMotif(template)) return baseFillPlan;
   const ribbonBinding = replacementBindingFor(request, "synthetic_dynamic_3d_ribbon_asset_gap", "dynamic_3d_ribbon_asset", "dynamic_3d_ribbon_asset");
@@ -2302,7 +2507,12 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       const fillForSlot = fillPlan.find((item) => item.slotId === slotId);
       const replacementFill = fillForSlot?.strategy === "user_asset_replace";
       const proxyFill = fillForSlot?.strategy === "proxy_placeholder";
-      const matched = mappingForSlot?.status === "matched" && !replacementFill;
+      const proceduralFill = fillForSlot?.strategy === "procedural_generation";
+      const familyRendererFill = Boolean(
+        mappingForSlot?.visualFormFamily &&
+          (replacementFill || proxyFill || proceduralFill)
+      );
+      const matched = mappingForSlot?.status === "matched" && !familyRendererFill;
       const strategy: "none" | FillStrategy = matched ? "none" : (fillForSlot?.strategy ?? "text_card");
       const clipId = matched
         ? stableId("clip", generationId, slotId)
@@ -2312,6 +2522,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       const durationSec = perSlotDuration;
       const role = segment.role;
       const targetAssetId = mappingForSlot?.selectedTargetAssetId;
+      const targetAssetIds = mappingForSlot?.selectedTargetAssetIds ?? (targetAssetId ? [targetAssetId] : undefined);
       const replacementAssetId =
         typeof fillForSlot?.rendererInstructions?.boundAssetId === "string" ? fillForSlot.rendererInstructions.boundAssetId : undefined;
       const sourceAssetId = replacementFill ? replacementAssetId : matched ? (targetAssetId ?? source.assetId) : undefined;
@@ -2323,11 +2534,15 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             ? "text_card"
             : "video"
         : replacementFill
-          ? fillForSlot?.rendererInstructions?.replacementAssetKind === "video"
+          ? mappingForSlot?.visualFormFamily
+            ? "generated_card"
+            : fillForSlot?.rendererInstructions?.replacementAssetKind === "video"
             ? "video"
             : fillForSlot?.rendererInstructions?.replacementAssetKind === "copy" || fillForSlot?.rendererInstructions?.replacementAssetKind === "cta_info"
               ? "text_card"
               : "image"
+        : proceduralFill && mappingForSlot?.visualFormFamily
+          ? "generated_card"
         : clipTypeForFill(fillForSlot?.strategy);
 
       const layers: TimelineLayer[] = [
@@ -2352,6 +2567,13 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             fillStrategy: "user_asset_replace",
             replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
             placeholderSpec: fillForSlot?.rendererInstructions?.placeholderSpec,
+            targetAssetIds,
+            targetCopy: fillForSlot?.rendererInstructions?.targetCopy,
+            featureList: fillForSlot?.rendererInstructions?.featureList,
+            brandName: fillForSlot?.rendererInstructions?.brandName,
+            cta: fillForSlot?.rendererInstructions?.cta,
+            materialSource: fillForSlot?.rendererInstructions?.materialSource,
+            capabilityId: fillForSlot?.rendererInstructions?.capabilityId,
             targetAssetKind: fillForSlot?.rendererInstructions?.replacementAssetKind,
             visualForm: slot?.visualForm,
             visualFormFamily: slot?.visualFormFamily,
@@ -2381,8 +2603,42 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             fillStrategy: "proxy_placeholder",
             replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
             placeholderSpec,
+            targetCopy: fillForSlot?.rendererInstructions?.targetCopy,
+            featureList: fillForSlot?.rendererInstructions?.featureList,
+            brandName: fillForSlot?.rendererInstructions?.brandName,
+            cta: fillForSlot?.rendererInstructions?.cta,
+            materialSource: fillForSlot?.rendererInstructions?.materialSource,
+            targetAssetIds: fillForSlot?.rendererInstructions?.targetAssetIds,
+            missingCount: fillForSlot?.rendererInstructions?.missingCount,
+            capabilityId: fillForSlot?.rendererInstructions?.capabilityId,
             acceptedAssetTypes: fillForSlot?.rendererInstructions?.acceptedAssetTypes,
             clickToReplace: true,
+            visualForm: slot?.visualForm,
+            visualFormFamily: slot?.visualFormFamily,
+            semanticLabel: slot?.semanticLabel
+          }
+        });
+      } else if (proceduralFill && slot?.visualFormFamily) {
+        const placeholderSpec = fillForSlot?.rendererInstructions?.placeholderSpec as PlaceholderSpec | undefined;
+        layers.push({
+          id: stableId("layer_generated_family", clipId, slotId),
+          kind: "base_visual",
+          text: String(fillForSlot?.rendererInstructions?.targetCopy ?? placeholderSpec?.label ?? subtitle),
+          timing: {
+            fit: "contain",
+            motion: "family_specific_procedural",
+            motionSpec: fillForSlot?.rendererInstructions?.motionSpec
+          },
+          style: {
+            fillStrategy: "procedural_generation",
+            replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
+            placeholderSpec,
+            targetCopy: fillForSlot?.rendererInstructions?.targetCopy,
+            featureList: fillForSlot?.rendererInstructions?.featureList,
+            brandName: fillForSlot?.rendererInstructions?.brandName,
+            cta: fillForSlot?.rendererInstructions?.cta,
+            materialSource: fillForSlot?.rendererInstructions?.materialSource,
+            capabilityId: fillForSlot?.rendererInstructions?.capabilityId,
             visualForm: slot?.visualForm,
             visualFormFamily: slot?.visualFormFamily,
             semanticLabel: slot?.semanticLabel
@@ -2440,6 +2696,8 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
           ? targetAssetId
             ? `Uses target ${mappingForSlot?.selectedTargetAssetKind ?? "asset"} ${targetAssetId}`
             : `Uses source shot ${sourceShotId ?? "unknown"}`
+          : replacementFill && targetAssetIds?.length
+            ? `Uses target asset set ${targetAssetIds.join(", ")}`
           : `Uses ${strategy} fill`,
         packaging: template.packaging.titleCardStyle ?? "default packaging",
         rationale: mappingForSlot?.reason ?? "Reconstructed by deterministic planner."

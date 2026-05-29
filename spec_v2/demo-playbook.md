@@ -142,10 +142,65 @@ Show export buttons:
 - The product handles missing material.
 - The product explains every mapping and gap fill.
 - The product has renderer path for FFmpeg/Remotion/HyperFrames.
+- The motion-graph hardening path separates reference structure evidence from target material and shows proxy-to-asset replacement.
 
 ---
 
-## 5. Demo fallback statement
+## 5. Motion-graph target adaptation walkthrough
+
+Use this focused artifact demo when the judge wants proof that the system is not just showing proxy cards.
+
+Commands:
+
+```bash
+npm run build
+node scripts/generate-motion-graph-target-assets.mjs
+node scripts/run-motion-graph-case.mjs
+node scripts/run-motion-graph-case.mjs --with-target-assets
+npm run regression:corpus:strict
+VVST_REUSE_IGF_FIXTURE=1 npm run demo:product
+node scripts/check-product-demo-page.mjs
+```
+
+Show these artifacts:
+
+```text
+docs/artifacts/motion_graph_case/visual-evidence.json
+docs/artifacts/motion_graph_case/induced-slots.json
+docs/artifacts/motion_graph_case/slot-asset-matches.json
+docs/artifacts/motion_graph_case/render_proxy.mp4
+docs/artifacts/motion_graph_case/render_with_assets.mp4
+docs/artifacts/motion_graph_case/before_after_contact_sheet.png
+docs/artifacts/motion_graph_case/evaluation.motion_graph.json
+```
+
+Narration:
+
+```text
+这里样例视频只提供结构证据，不作为目标素材复制。系统从像素证据归纳 media cards、feature list、neon geometry 和 CTA 等开放世界槽位。没有目标素材时先生成代理版本；加载目标素材 fixture 后，media cards 替换成用户卡片图，feature list 使用用户文案，CTA 使用用户 logo，同时保持原来的 motion-graph 结构。
+```
+
+Expected slot mapping:
+
+| Slot family | Fulfillment |
+|---|---|
+| `media_cards` | 4 target card images |
+| `kinetic_typography` | target brand/copy |
+| `ui_showcase` | target feature list |
+| `geometric_mg` | procedural neon geometry |
+| `brand_cta` | target logo + CTA |
+
+Corpus evidence:
+
+```text
+test_videos/corpus/009_motion_graph_card_stack/fixture.json
+```
+
+This fixture gates visual evidence generation, induced slots, renderer capability selection, target asset matching, no sample visual copy, preview frames, and with-assets render presence.
+
+---
+
+## 6. Demo fallback statement
 
 If real AI or renderer is disabled, say:
 
@@ -155,7 +210,7 @@ If real AI or renderer is disabled, say:
 
 ---
 
-## 6. Final recording checklist
+## 7. Final recording checklist
 
 - [ ] show README and local run command;
 - [ ] show project dashboard;
@@ -167,5 +222,6 @@ If real AI or renderer is disabled, say:
 - [ ] show gap report;
 - [ ] show fill plan;
 - [ ] show timeline preview or MP4;
+- [ ] show motion_graph proxy vs with-assets before/after sheet;
 - [ ] show export JSON;
 - [ ] explain future VLM/ASR/Remotion path.

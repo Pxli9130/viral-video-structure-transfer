@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
-import { mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
+import { mkdir, copyFile, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   buildFallbackTemplate,
@@ -780,6 +780,38 @@ function publicGeneration(generation) {
   return clone;
 }
 
+const publicTextExtensions = new Set([".html", ".md", ".json", ".txt", ".csv"]);
+
+function scrubPublicArtifactText(value) {
+  return String(value ?? "")
+    .replaceAll(`${repoRoot}${path.sep}`, "")
+    .replace(/\/home\/pxli\/[^\s"'<>)]*/g, "[local-path]")
+    .replace(/GEMINI_API_KEY/gi, "[redacted-key-name]")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "[redacted-key]")
+    .replace(/ark-[0-9A-Za-z_-]+/gi, "[redacted-key]")
+    .replace(/\.env\b/g, "[redacted-config]");
+}
+
+async function sanitizePublicTextArtifacts(root) {
+  let entries = [];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      await sanitizePublicTextArtifacts(fullPath);
+      continue;
+    }
+    if (!entry.isFile() || !publicTextExtensions.has(path.extname(entry.name).toLowerCase())) continue;
+    const body = await readFile(fullPath, "utf8");
+    const scrubbed = scrubPublicArtifactText(body);
+    if (scrubbed !== body) await writeFile(fullPath, scrubbed, "utf8");
+  }
+}
+
 function tableRows(items, render) {
   return items.map(render).join("\n");
 }
@@ -1353,6 +1385,7 @@ const html = `<!doctype html>
 </html>
 `;
 await writeFile(path.join(artifactDir, "index.html"), html, "utf8");
+await sanitizePublicTextArtifacts(artifactDir);
 
 console.log(JSON.stringify({
   status: "PASS",

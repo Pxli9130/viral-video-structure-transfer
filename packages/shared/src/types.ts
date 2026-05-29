@@ -157,9 +157,12 @@ export interface SlotAssetRequirement {
 export interface SlotSourceEvidence {
   timeRange?: [number, number];
   frameIds?: string[];
+  framePaths?: string[];
   textEvidence?: string[];
   confidence: number;
   summary?: string;
+  signalSource?: string;
+  evidenceKinds?: string[];
 }
 
 export interface SlotReplacementPolicy {
@@ -566,9 +569,11 @@ export interface SlotMapping {
   selectedShotId?: string;
   selectedAssetId?: string;
   selectedTargetAssetId?: string;
+  selectedTargetAssetIds?: string[];
   selectedTargetAssetKind?: TargetAssetKind;
   targetAssetCandidateIds?: string[];
   assetAvailability?: "target_asset_mapped" | "target_asset_weak_match" | "no_user_asset_available" | "source_video_mapped";
+  missingCount?: number;
   visualForm?: ReplacementVisualForm;
   visualFormFamily?: VisualFormFamily;
   modality?: SlotModality;
@@ -612,6 +617,7 @@ export interface GapReportItem {
   severity: "low" | "medium" | "high";
   reason: string;
   impact: string;
+  missingCount?: number;
   gapType?: GapCategory;
   gapLabel?: string;
   gapLabelZh?: string;

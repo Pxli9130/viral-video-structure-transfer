@@ -122,7 +122,34 @@ Expected:
 
 ---
 
-## 8. Unit + automated test matrix (status as of r3)
+## 8. Demo case F — motion-graph target asset adaptation
+
+Input:
+
+- Reference sample: `test_videos/motion_graph_1.mov`.
+- Target material fixture: `docs/fixtures/motion_graph_target_assets/`.
+- Commands:
+
+```bash
+node scripts/generate-motion-graph-target-assets.mjs
+node scripts/run-motion-graph-case.mjs
+node scripts/run-motion-graph-case.mjs --with-target-assets
+```
+
+Expected:
+
+- `visual-evidence.json` is generated from deterministic video evidence.
+- `induced-slots.json` includes open-world families such as `media_cards`, `ui_showcase`, `geometric_mg`, `kinetic_typography`, and `brand_cta`.
+- The selected template name is `Learned Motion Graph Structure · Media Cards + Feature List + Neon Geometry + CTA`, not the seed B2B scaffold.
+- Proxy mode writes `render_proxy.mp4` and family-specific proxy fill artifacts.
+- Target-asset mode writes `render_with_assets.mp4`, `slot-asset-matches.json`, `asset-evidence.json`, and `before_after_contact_sheet.png`.
+- Target-asset mode visibly uses target card images, target feature copy, and target logo/CTA.
+- Sample/reference frames appear only as evidence, not target material.
+- `evaluation.motion_graph.json` passes all target asset gates.
+
+---
+
+## 9. Unit + automated test matrix (status as of current hardening)
 
 | Area | Test | Implemented in | Expected |
 |---|---|---|---|
@@ -142,11 +169,15 @@ Expected:
 | Storage | SQLite backend round-trips + clears deleted ids | api vitest | matches input on read |
 | E2E | project create → sample analyze → source upload+analyze → generate → render html_preview + hyperframes → export → revise → variants → scorecard → KB export | api vitest | all 201/200, variants returns 4 named versions, scorecard has 5 dimensions |
 | Remotion | bundle TSX entry without errors (gated by `RUN_REMOTION_BUNDLE_TEST`) | api vitest | bundle path returned |
-| Schemas (runtime) | AJV-validate every demo fixture + DB row | `npm run validate:schemas` | 158/0 |
+| Motion graph | deterministic visual evidence and induced open-world slots | `node scripts/run-motion-graph-case.mjs` | proxy render + gates pass |
+| Motion graph target assets | slot-specific target material matching and adapted render | `node scripts/run-motion-graph-case.mjs --with-target-assets` | `evaluation.motion_graph.json` passes |
+| Corpus | open-world motion graph fixture + asset-mode gates | `npm run regression:corpus:strict` | `009_motion_graph_card_stack` PASS |
+| Product demo | VLM optional; motion graph artifacts linked | `VVST_REUSE_IGF_FIXTURE=1 npm run demo:product` + `node scripts/check-product-demo-page.mjs` | smoke check passes |
+| Schemas (runtime) | AJV-validate every demo fixture + DB row | `npm run validate:schemas` | 339/0 |
 
 ---
 
-## 9. E2E acceptance criteria
+## 10. E2E acceptance criteria
 
 MVP passes if:
 
@@ -175,13 +206,17 @@ High-score passes (P1 progression, r3) if:
 - [x] `/scorecard` returns five-dimension scores in 0-100;
 - [x] FR-008 gap report exposes Chinese labels + recommended fill strategies;
 - [x] full E2E `apps/api/tests/e2e.test.ts` is green.
+- [x] motion-graph target-asset adaptation demo renders both proxy and with-assets MP4s.
+- [x] corpus fixture `009_motion_graph_card_stack` gates visual evidence, induced slots, renderer capability, target asset matching, no sample copy, and preview frames.
 
 ---
 
-## 10. Known limitations to declare
+## 11. Known limitations to declare
 
 - First version may use heuristic/mock video understanding.
 - Direct video generation is not required and not assumed.
 - Doubao-Seed-2.0-lite, if used, is treated as language/model planning capability, not a video generator.
 - Initial renderer may be HTML preview before FFmpeg/Remotion/HyperFrames MP4.
 - The product learns and transfers structure; it does not guarantee viral performance.
+- Motion-graph target adaptation is fixture-driven in this slice; general upload/UI replacement is still a later product layer.
+- The deterministic visual evidence analyzer is currently wired to `motion_graph_case`; editing/marketing analyzer expansion is intentionally deferred.
