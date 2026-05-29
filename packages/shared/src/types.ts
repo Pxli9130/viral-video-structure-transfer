@@ -962,6 +962,12 @@ export interface GenerationResult {
   createdAt: string;
 }
 
+export interface RenderClipPreviewFrame {
+  clipId: string;
+  /** Public path (served under /generated) of a still extracted from the rendered clip. */
+  previewFrame: string;
+}
+
 export interface RenderOutput {
   renderId: string;
   generationId: string;
@@ -969,6 +975,8 @@ export interface RenderOutput {
   status: JobStatus;
   outputPath?: string;
   previewHtml?: string;
+  /** Real stills sampled from the rendered timeline, one per clip, keyed by clip id. */
+  clipPreviewFrames?: RenderClipPreviewFrame[];
   error?: string;
   createdAt: string;
 }

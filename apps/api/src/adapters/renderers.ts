@@ -7,6 +7,7 @@ import { HtmlPreviewRenderer, MockRenderer } from "@vvst/renderer";
 import {
   nowIso,
   stableId,
+  type RenderClipPreviewFrame,
   type RenderOutput,
   type RendererAdapter,
   type RendererBackend,
@@ -493,6 +494,8 @@ export class FFmpegRenderer implements RendererAdapter {
     const outputPath = path.join(this.opts.generatedDir, `${renderId}.mp4`);
     await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-movflags", "+faststart", outputPath]);
 
+    const clipPreviewFrames = await this.extractClipPreviewFrames(timeline.clips, segmentFiles, renderId, warnings);
+
     return {
       renderId,
       generationId,
@@ -500,9 +503,54 @@ export class FFmpegRenderer implements RendererAdapter {
       status: "completed",
       outputPath,
       previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
+      clipPreviewFrames,
       error: warnings.length ? warnings.join(" | ") : undefined,
       createdAt: nowIso()
     };
+  }
+
+  /**
+   * Sample one real still per clip from its already-rendered segment so the web
+   * timeline preview shows the actual frame at that timestamp instead of a gradient.
+   * Failures are non-fatal: a missing frame just falls back to the placeholder card.
+   */
+  private async extractClipPreviewFrames(
+    clips: TimelineClip[],
+    segmentFiles: string[],
+    renderId: string,
+    warnings: string[]
+  ): Promise<RenderClipPreviewFrame[]> {
+    const frames: RenderClipPreviewFrame[] = [];
+    const frameDir = path.join(this.opts.generatedDir, "previews", renderId);
+    let frameDirReady = false;
+    for (let index = 0; index < clips.length; index += 1) {
+      const clip = clips[index];
+      const segmentPath = segmentFiles[index];
+      if (!segmentPath || !existsSync(segmentPath)) continue;
+      const framePath = path.join(frameDir, `clip_${index + 1}.png`);
+      // Sample near the middle of the segment; clamp to the rendered (>=0.5s) duration.
+      const renderedDuration = Math.max(0.5, clip.durationSec);
+      const seek = Math.max(0.05, Math.min(clip.durationSec / 2, renderedDuration - 0.05));
+      try {
+        if (!frameDirReady) {
+          await fs.mkdir(frameDir, { recursive: true });
+          frameDirReady = true;
+        }
+        await runFfmpeg([
+          "-y",
+          "-ss", seek.toFixed(2),
+          "-i", segmentPath,
+          "-frames:v", "1",
+          "-vf", "scale=240:-2",
+          framePath
+        ]);
+        const relative = path.relative(this.opts.generatedDir, framePath).split(path.sep).join("/");
+        frames.push({ clipId: clip.id, previewFrame: `/generated/${relative}` });
+      } catch (error) {
+        warnings.push(`Clip ${clip.id}: preview frame extraction failed (${(error as Error).message}).`);
+      }
+    }
+    return frames;
   }
 
   private async renderClip(

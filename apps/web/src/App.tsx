@@ -53,7 +53,13 @@ type RenderResponse = {
   jobId: string;
   renderId: string;
   status: string;
-  render: { outputPath?: string; previewHtml?: string; rendererTarget: RendererTarget; status: string };
+  render: {
+    outputPath?: string;
+    previewHtml?: string;
+    rendererTarget: RendererTarget;
+    status: string;
+    clipPreviewFrames?: { clipId: string; previewFrame: string }[];
+  };
 };
 
 type ReviseResponse = {
@@ -408,6 +414,13 @@ function AppContent() {
   const generationCandidates = safeArray(generation?.sourceUnderstanding?.candidates);
   const generationStoryboard = safeArray(generation?.storyboard);
   const generationClips = safeArray(generation?.timeline?.clips);
+  const renderedClipFrames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of safeArray(renderResult?.clipPreviewFrames)) {
+      if (entry?.clipId && entry?.previewFrame) map.set(entry.clipId, publicAssetUrl(entry.previewFrame));
+    }
+    return map;
+  }, [renderResult]);
   const managedTargetAssets = materialManifest?.targetAssets ?? [];
   const managedBlockedAssets = materialManifest?.blockedAssets ?? [];
   const aigcMaterialFill = generation?.aigcMaterialFill;
@@ -1525,7 +1538,8 @@ function AppContent() {
                   <div className="timeline-strip">
                     {generationClips.map((clip, index) => {
                       const subtitle = clip.subtitleText ?? safeArray(clip.layers).find((layer) => layer.kind === "subtitle")?.text ?? clip.visualIntent ?? `Clip ${index + 1}`;
-                      const previewFrame = String((clip as { previewFrame?: string; thumbnailPath?: string }).previewFrame ?? (clip as { previewFrame?: string; thumbnailPath?: string }).thumbnailPath ?? "");
+                      const clipExtra = clip as { previewFrame?: string; thumbnailPath?: string };
+                      const previewFrame = renderedClipFrames.get(clip.id) ?? String(clipExtra.previewFrame ?? clipExtra.thumbnailPath ?? "");
                       const proxyLayer = safeArray(clip.layers).find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
                       const isProxy = clip.gapFillStrategy === "proxy_placeholder" || Boolean(proxyLayer);
                       return (
