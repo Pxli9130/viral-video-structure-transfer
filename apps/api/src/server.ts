@@ -34,6 +34,7 @@ import {
   type SlotReplacementBinding,
   type SourcePolicy,
   type StructureTemplate,
+  type TargetAssetInput,
   type TargetAssetKind,
   type TemplateRecord,
   type Vertical,
@@ -352,6 +353,232 @@ function targetKindForReplacementAsset(asset: Asset): TargetAssetKind {
   return "image";
 }
 
+const MANAGED_ASSET_REF_PREFIX = "asset://managed/";
+const TARGET_MATERIAL_MANIFEST_SCHEMA = "target-material-manifest-v1";
+const TARGET_MATERIAL_FAMILIES = new Set(["media_cards", "ui_showcase", "kinetic_typography", "brand_cta", "live_action_montage", "object_motion"]);
+const VISUAL_TARGET_KINDS = new Set<TargetAssetKind>(["image", "video", "logo", "background_image"]);
+
+function targetFamilyForManifestRole(role: unknown, kind: unknown): string {
+  const value = String(role ?? "").toLowerCase();
+  if (/media[_\s-]?card|media_cards|card/.test(value)) return "media_cards";
+  if (/brand[_\s-]?logo|brand_cta|logo/.test(value) || kind === "logo") return "brand_cta";
+  if (/feature[_\s-]?copy|feature[_\s-]?list|ui_showcase|copy_list/.test(value)) return "ui_showcase";
+  if (/kinetic[_\s-]?copy|kinetic_typography|headline/.test(value)) return "kinetic_typography";
+  if (/montage|live_action/.test(value)) return "live_action_montage";
+  if (/object|hero|product/.test(value)) return "object_motion";
+  return value || "unknown";
+}
+
+function targetKindForManifestEntry(entry: Record<string, unknown>, asset?: Asset): TargetAssetKind {
+  const kind = String(entry.kind ?? "").toLowerCase();
+  if (kind === "image" || kind === "video" || kind === "logo" || kind === "copy" || kind === "cta_info" || kind === "background_image") {
+    return kind as TargetAssetKind;
+  }
+  if (asset) return targetKindForReplacementAsset(asset);
+  return entry.text ? "copy" : "image";
+}
+
+function tagsForManagedTargetAsset(family: string, entry: Record<string, unknown>, asset?: Asset): string[] {
+  const rawTags = Array.isArray(entry.tags)
+    ? entry.tags.map(String)
+    : typeof entry.tags === "string"
+      ? parseTags(entry.tags)
+      : [];
+  const tags = new Set(["target_material", "managed_upload", family, ...rawTags, ...(asset?.tags ?? [])]);
+  if (family === "media_cards") {
+    tags.add("card");
+    tags.add("image_set");
+  }
+  if (family === "ui_showcase") {
+    tags.add("feature_list");
+    tags.add("copy_list");
+  }
+  if (family === "kinetic_typography") tags.add("copy");
+  if (family === "brand_cta") {
+    tags.add("brand");
+    tags.add("logo");
+  }
+  return Array.from(tags);
+}
+
+async function managedAssetSize(asset: Asset): Promise<number> {
+  if (!asset.path) return 0;
+  try {
+    const info = await fs.stat(asset.path);
+    return info.isFile() ? info.size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+type ImageDecodeResult =
+  | { decodeStatus: "ok"; width: number; height: number; codec: string }
+  | { decodeStatus: "failed"; reason: string };
+
+function decodeJpegDimensions(buffer: Buffer): ImageDecodeResult {
+  let offset = 2;
+  while (offset + 9 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    const length = buffer.readUInt16BE(offset + 2);
+    if (length < 2) return { decodeStatus: "failed", reason: "invalid_jpeg_segment_length" };
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      return {
+        decodeStatus: "ok",
+        height: buffer.readUInt16BE(offset + 5),
+        width: buffer.readUInt16BE(offset + 7),
+        codec: "jpeg"
+      };
+    }
+    offset += 2 + length;
+  }
+  return { decodeStatus: "failed", reason: "jpeg_dimensions_not_found" };
+}
+
+async function decodeImageAsset(asset: Asset): Promise<ImageDecodeResult> {
+  if (!asset.path) return { decodeStatus: "failed", reason: "missing_path" };
+  let buffer: Buffer;
+  try {
+    buffer = await fs.readFile(asset.path);
+  } catch {
+    return { decodeStatus: "failed", reason: "file_not_readable" };
+  }
+  if (buffer.length < 10) return { decodeStatus: "failed", reason: "file_too_small" };
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    if (buffer.length < 24 || buffer.toString("ascii", 12, 16) !== "IHDR") {
+      return { decodeStatus: "failed", reason: "invalid_png_header" };
+    }
+    return {
+      decodeStatus: "ok",
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20),
+      codec: "png"
+    };
+  }
+  if (buffer.toString("ascii", 0, 3) === "GIF") {
+    return {
+      decodeStatus: "ok",
+      width: buffer.readUInt16LE(6),
+      height: buffer.readUInt16LE(8),
+      codec: "gif"
+    };
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) return decodeJpegDimensions(buffer);
+  if (buffer.toString("ascii", 0, 2) === "BM" && buffer.length >= 26) {
+    return {
+      decodeStatus: "ok",
+      width: Math.abs(buffer.readInt32LE(18)),
+      height: Math.abs(buffer.readInt32LE(22)),
+      codec: "bmp"
+    };
+  }
+  return { decodeStatus: "failed", reason: "unsupported_or_invalid_image_header" };
+}
+
+async function normalizeManagedTargetAsset(params: {
+  projectId: string;
+  entry: Record<string, unknown>;
+  asset?: Asset;
+  brandName?: string;
+  cta?: string;
+  features?: string[];
+}): Promise<{ targetAsset?: TargetAssetInput; evidence?: Record<string, unknown>; blocked?: Record<string, unknown> }> {
+  const { projectId, entry, asset, brandName, cta, features } = params;
+  const assetId = typeof entry.assetId === "string" ? entry.assetId : undefined;
+  const family = targetFamilyForManifestRole(entry.role, entry.kind);
+  const kind = targetKindForManifestEntry(entry, asset);
+  const baseBlocked = {
+    assetId: assetId ?? null,
+    kind,
+    role: entry.role ?? null,
+    status: "blocked"
+  };
+  if (entry.path || entry.url) {
+    return { blocked: { ...baseBlocked, reason: "external_path_not_allowed; upload material through /api/projects/:projectId/assets first" } };
+  }
+  if (!assetId || !asset) {
+    return { blocked: { ...baseBlocked, reason: "asset_id_missing_or_not_found" } };
+  }
+  if (asset.projectId !== projectId) {
+    return { blocked: { ...baseBlocked, reason: "asset_project_mismatch" } };
+  }
+  if (!TARGET_MATERIAL_FAMILIES.has(family)) {
+    return { blocked: { ...baseBlocked, reason: `unsupported_or_wrong_role:${entry.role ?? "missing"}` } };
+  }
+  if (asset.status !== "ready") {
+    return { blocked: { ...baseBlocked, reason: `asset_not_ready:${asset.status}` } };
+  }
+  if (VISUAL_TARGET_KINDS.has(kind)) {
+    const expectedType = kind === "video" ? "video" : "image";
+    if (asset.type !== expectedType) {
+      return { blocked: { ...baseBlocked, reason: `asset_type_mismatch:${asset.type}` } };
+    }
+    const size = await managedAssetSize(asset);
+    if (!asset.path || size <= 0) {
+      return { blocked: { ...baseBlocked, reason: "visual_asset_not_renderable_or_empty" } };
+    }
+    if (expectedType === "image") {
+      const decoded = await decodeImageAsset(asset);
+      if (decoded.decodeStatus !== "ok" || decoded.width <= 0 || decoded.height <= 0) {
+        return { blocked: { ...baseBlocked, reason: "image_decode_failed", decodeStatus: decoded } };
+      }
+    }
+  } else if (kind === "copy" || kind === "cta_info") {
+    const text = typeof entry.text === "string" ? entry.text : asset.text;
+    if (!text?.trim() && asset.type !== "text") {
+      return { blocked: { ...baseBlocked, reason: "copy_asset_has_no_text" } };
+    }
+  }
+
+  const text = typeof entry.text === "string" ? entry.text : asset.text;
+  const imageDecode = VISUAL_TARGET_KINDS.has(kind) && asset.type === "image" ? await decodeImageAsset(asset) : undefined;
+  const dimensions = imageDecode?.decodeStatus === "ok"
+    ? { width: imageDecode.width, height: imageDecode.height, codec: imageDecode.codec }
+    : undefined;
+  const targetAsset: TargetAssetInput = {
+    id: asset.id,
+    kind,
+    role: family,
+    path: VISUAL_TARGET_KINDS.has(kind) ? `${MANAGED_ASSET_REF_PREFIX}${asset.id}` : undefined,
+    text: text?.trim() || undefined,
+    filename: asset.filename,
+    mimeType: asset.mimeType,
+    tags: tagsForManagedTargetAsset(family, entry, asset),
+    metadata: {
+      materialRole: "target_material",
+      source: "managed_upload",
+      managedAssetRef: `${MANAGED_ASSET_REF_PREFIX}${asset.id}`,
+      manifestRole: entry.role,
+      brandName,
+      cta,
+      features: family === "ui_showcase" ? features : undefined,
+      dimensions,
+      decodeStatus: imageDecode?.decodeStatus
+    }
+  };
+  return {
+    targetAsset,
+    evidence: {
+      assetId: asset.id,
+      type: kind,
+      role: family,
+      materialRole: "target_material",
+      path: targetAsset.path,
+      text: targetAsset.text,
+      filename: asset.filename,
+      mimeType: asset.mimeType,
+      renderable: Boolean(targetAsset.path || targetAsset.text),
+      dimensions,
+      decodeStatus: imageDecode?.decodeStatus ?? (VISUAL_TARGET_KINDS.has(kind) ? "not_checked" : "not_required"),
+      tags: targetAsset.tags,
+      source: "managed_upload"
+    }
+  };
+}
+
 async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisPurpose, mode: AnalyzerMode | "auto", body: Request["body"]): Promise<{ job: Job; analysis: VideoAnalysisResult; templateRecord?: TemplateRecord; vlm?: VLMVideoAnalysis }> {
   let job = createJob(project.id, "analysis", { assetId: asset.id, purpose, mode }, [
     "metadata_extraction",
@@ -631,6 +858,84 @@ app.get(
   asyncRoute(async (req, res) => {
     const db = await store.read();
     ok(res, db.assets.filter((asset) => asset.projectId === req.params.projectId));
+  })
+);
+
+app.post(
+  "/api/projects/:projectId/target-material-manifests",
+  asyncRoute(async (req, res) => {
+    const projectId = String(req.params.projectId);
+    const db = await store.read();
+    assertFound(db.projects.find((project) => project.id === projectId), "Project");
+    const manifest = req.body ?? {};
+    const entries = Array.isArray(manifest.assets) ? manifest.assets : [];
+    const assetsById = new Map(db.assets.filter((asset) => asset.projectId === projectId).map((asset) => [asset.id, asset]));
+    const brandName = typeof manifest.brandName === "string" ? manifest.brandName : undefined;
+    const cta = typeof manifest.cta === "string" ? manifest.cta : undefined;
+    const features = Array.isArray(manifest.features) ? manifest.features.map(String).filter(Boolean) : [];
+    const targetAssets: TargetAssetInput[] = [];
+    const assetEvidence: Record<string, unknown>[] = [];
+    const blockedAssets: Record<string, unknown>[] = [];
+
+    for (const rawEntry of entries) {
+      const entry = rawEntry && typeof rawEntry === "object" ? rawEntry as Record<string, unknown> : {};
+      const assetId = typeof entry.assetId === "string" ? entry.assetId : undefined;
+      const normalized = await normalizeManagedTargetAsset({
+        projectId,
+        entry,
+        asset: assetId ? assetsById.get(assetId) : undefined,
+        brandName,
+        cta,
+        features
+      });
+      if (normalized.targetAsset) targetAssets.push(normalized.targetAsset);
+      if (normalized.evidence) assetEvidence.push(normalized.evidence);
+      if (normalized.blocked) blockedAssets.push(normalized.blocked);
+    }
+
+    if (!targetAssets.some((asset) => asset.role === "ui_showcase") && features.length) {
+      targetAssets.push({
+        id: stableId("target-feature-copy", projectId, features.join("|")),
+        kind: "copy",
+        role: "ui_showcase",
+        text: features.join("\n"),
+        filename: "manifest-feature-copy.txt",
+        tags: ["target_material", "managed_manifest_copy", "ui_showcase", "feature_list", "copy_list"],
+        metadata: { materialRole: "target_material", source: "manifest_copy", brandName, cta, features }
+      });
+    }
+    if (!targetAssets.some((asset) => asset.role === "kinetic_typography") && brandName) {
+      targetAssets.push({
+        id: stableId("target-kinetic-copy", projectId, brandName),
+        kind: "copy",
+        role: "kinetic_typography",
+        text: brandName,
+        filename: "manifest-kinetic-copy.txt",
+        tags: ["target_material", "managed_manifest_copy", "kinetic_typography", "copy"],
+        metadata: { materialRole: "target_material", source: "manifest_copy", brandName, cta, features }
+      });
+    }
+
+    ok(
+      res,
+      {
+        schemaVersion: TARGET_MATERIAL_MANIFEST_SCHEMA,
+        projectId,
+        normalizedAt: nowIso(),
+        brandName,
+        cta,
+        features,
+        targetAssets,
+        assetEvidence,
+        blockedAssets,
+        materialPolicy: {
+          source: "managed_upload",
+          externalPathsAllowed: false,
+          sampleReferenceUse: "structure_evidence_only"
+        }
+      },
+      201
+    );
   })
 );
 

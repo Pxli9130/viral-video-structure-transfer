@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ function valueAfterFlag(flag) {
 
 const withTargetAssets = process.argv.includes("--with-target-assets");
 const withPartialTargetAssets = process.argv.includes("--with-partial-target-assets");
+const withMalformedTargetAssets = process.argv.includes("--with-malformed-target-assets");
 const targetAssetsManifestArg = valueAfterFlag("--target-assets-manifest");
 const repoRoot = path.resolve(path.dirname(currentScriptPath), "..");
 const artifactDir = path.join(repoRoot, "docs", "artifacts", "motion_graph_case");
@@ -33,12 +34,14 @@ const samplePath = path.join(repoRoot, "test_videos", "motion_graph_1.mov");
 const targetFixtureDir = path.join(repoRoot, "docs", "fixtures", "motion_graph_target_assets");
 const fixtureManifestPath = path.join(targetFixtureDir, "manifest.json");
 const partialFixtureManifestPath = path.join(targetFixtureDir, "manifest.partial.json");
+const malformedFixtureManifestPath = path.join(targetFixtureDir, "manifest.malformed.json");
 const explicitTargetManifestPath = targetAssetsManifestArg
   ? path.resolve(repoRoot, targetAssetsManifestArg)
   : null;
-const targetManifestPath = explicitTargetManifestPath ?? (withPartialTargetAssets ? partialFixtureManifestPath : withTargetAssets ? fixtureManifestPath : null);
+const targetManifestPath = explicitTargetManifestPath ?? (withMalformedTargetAssets ? malformedFixtureManifestPath : withPartialTargetAssets ? partialFixtureManifestPath : withTargetAssets ? fixtureManifestPath : null);
 const usesTargetAssetManifest = Boolean(targetManifestPath);
 const isPartialTargetMode = withPartialTargetAssets;
+const isMalformedTargetMode = withMalformedTargetAssets;
 const forbiddenArtifactPatterns = [
   { id: "/home/pxli", re: /\/home\/pxli/g },
   { id: ".env", re: /\.env/g },
@@ -262,10 +265,15 @@ function relativeFixturePath(filename) {
 }
 
 async function ensureTargetAssetFixture() {
-  const required = ["logo.png", "card_01.png", "card_02.png", "card_03.png", "card_04.png", "copy.json", "manifest.json", "manifest.partial.json"];
+  const required = ["logo.png", "card_01.png", "card_02.png", "card_03.png", "card_04.png", "copy.json", "manifest.json", "manifest.partial.json", "manifest.malformed.json"];
   if (required.every((filename) => existsSync(path.join(targetFixtureDir, filename)))) return;
   await run(process.execPath, [path.join(repoRoot, "scripts", "generate-motion-graph-target-assets.mjs")]);
 }
+
+const VISUAL_MANIFEST_FAMILIES = new Set(["media_cards", "brand_cta", "live_action_montage", "object_motion"]);
+const COPY_MANIFEST_FAMILIES = new Set(["ui_showcase", "kinetic_typography"]);
+const ALLOWED_MANIFEST_FAMILIES = new Set([...VISUAL_MANIFEST_FAMILIES, ...COPY_MANIFEST_FAMILIES]);
+const ALLOWED_MANIFEST_KINDS = new Set(["image", "video", "logo", "copy", "cta_info", "background_image"]);
 
 function manifestRoleFamily(role, kind) {
   const value = String(role ?? "").toLowerCase();
@@ -305,6 +313,48 @@ function normalizeManifestAssetPath(manifestPath, assetPath) {
   return absolute;
 }
 
+function isRepoRelativePath(assetPath) {
+  if (!assetPath) return false;
+  if (/^[a-z]+:\/\//i.test(String(assetPath))) return false;
+  const absolute = path.isAbsolute(assetPath) ? assetPath : path.resolve(repoRoot, assetPath);
+  const relative = path.relative(repoRoot, absolute);
+  return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function fileSizeIfExists(assetPath) {
+  if (!assetPath) return 0;
+  const absolute = path.isAbsolute(assetPath) ? assetPath : path.resolve(repoRoot, assetPath);
+  try {
+    const info = await stat(absolute);
+    return info.isFile() ? info.size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function validateManifestAsset(manifestPath, rawAsset, family) {
+  const kind = rawAsset.kind ?? (rawAsset.path || rawAsset.url ? "image" : "copy");
+  if (!ALLOWED_MANIFEST_KINDS.has(kind)) {
+    return { ok: false, reason: `unsupported_kind:${kind}` };
+  }
+  if (!ALLOWED_MANIFEST_FAMILIES.has(family)) {
+    return { ok: false, reason: `unsupported_or_wrong_role:${rawAsset.role ?? "missing"}` };
+  }
+  if (rawAsset.url) {
+    return { ok: false, reason: "external_url_blocked; upload/copy assets into the managed material pool first" };
+  }
+  if (VISUAL_MANIFEST_FAMILIES.has(family)) {
+    if (!rawAsset.path) return { ok: false, reason: "visual_asset_missing_path" };
+    const normalizedPath = normalizeManifestAssetPath(manifestPath, rawAsset.path);
+    if (!isRepoRelativePath(normalizedPath)) {
+      return { ok: false, reason: "external_or_absolute_path_blocked" };
+    }
+    const size = await fileSizeIfExists(normalizedPath);
+    if (size <= 0) return { ok: false, reason: "visual_asset_file_missing_or_empty" };
+  }
+  return { ok: true };
+}
+
 function featureListFromText(text) {
   return String(text ?? "")
     .split(/\r?\n|[;；]/)
@@ -319,6 +369,7 @@ async function loadTargetAssetsFromManifest(manifestPath) {
   }
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const rawAssets = Array.isArray(manifest.assets) ? manifest.assets : [];
+  const blockedAssets = [];
   const featuresFromCopyJson = existsSync(path.join(path.dirname(manifestPath), "copy.json"))
     ? JSON.parse(await readFile(path.join(path.dirname(manifestPath), "copy.json"), "utf8"))?.features ?? []
     : [];
@@ -327,8 +378,24 @@ async function loadTargetAssetsFromManifest(manifestPath) {
     features: manifest.features ?? featuresFromCopyJson,
     cta: manifest.cta ?? "Upload. Analyze. Remix."
   };
-  const targetAssets = rawAssets.map((rawAsset, index) => {
+  const targetAssets = [];
+  for (let index = 0; index < rawAssets.length; index += 1) {
+    const rawAsset = rawAssets[index];
     const family = manifestRoleFamily(rawAsset.role, rawAsset.kind);
+    const validation = await validateManifestAsset(manifestPath, rawAsset, family);
+    if (!validation.ok) {
+      blockedAssets.push({
+        id: rawAsset.id ?? `target_manifest_asset_${index + 1}`,
+        kind: rawAsset.kind ?? null,
+        role: rawAsset.role ?? null,
+        reason: validation.reason,
+        source: rawAsset.url ? "external_url" : rawAsset.path ? "manifest_path" : "manifest_metadata",
+        path: rawAsset.path && isRepoRelativePath(normalizeManifestAssetPath(manifestPath, rawAsset.path))
+          ? normalizeManifestAssetPath(manifestPath, rawAsset.path)
+          : undefined
+      });
+      continue;
+    }
     const normalizedPath = normalizeManifestAssetPath(manifestPath, rawAsset.path ?? rawAsset.url);
     const text = rawAsset.text ?? (family === "kinetic_typography" ? copy.brandName : undefined);
     const features = family === "ui_showcase"
@@ -336,7 +403,7 @@ async function loadTargetAssetsFromManifest(manifestPath) {
         ? featureListFromText(rawAsset.text)
         : copy.features
       : undefined;
-    return {
+    targetAssets.push({
       id: rawAsset.id ?? `target_manifest_asset_${index + 1}`,
       kind: rawAsset.kind ?? (normalizedPath ? "image" : "copy"),
       role: family,
@@ -355,8 +422,8 @@ async function loadTargetAssetsFromManifest(manifestPath) {
         cta: copy.cta,
         features
       }
-    };
-  });
+    });
+  }
 
   const hasFeatureCopy = targetAssets.some((asset) => asset.role === "ui_showcase");
   if (!hasFeatureCopy && copy.features.length) {
@@ -387,7 +454,8 @@ async function loadTargetAssetsFromManifest(manifestPath) {
     targetAssets,
     manifestPath,
     manifestRef: path.relative(repoRoot, manifestPath).replace(/\\/g, "/"),
-    rawManifest: manifest
+    rawManifest: manifest,
+    blockedAssets
   };
 }
 
@@ -722,8 +790,8 @@ async function main() {
   const targetFixture = targetManifestPath
     ? await loadTargetAssetsFromManifest(targetManifestPath)
     : null;
-  const mode = isPartialTargetMode ? "partial_target_assets" : usesTargetAssetManifest ? "with_target_assets" : "proxy";
-  const modeSuffix = isPartialTargetMode ? "partial" : usesTargetAssetManifest ? "with-assets" : "proxy";
+  const mode = isMalformedTargetMode ? "malformed_target_assets" : isPartialTargetMode ? "partial_target_assets" : usesTargetAssetManifest ? "with_target_assets" : "proxy";
+  const modeSuffix = isMalformedTargetMode ? "malformed" : isPartialTargetMode ? "partial" : usesTargetAssetManifest ? "with-assets" : "proxy";
 
   // === Deterministic visual evidence (perception layer) ===
   // Run the real OpenCV/ffmpeg analyzer on the sample. The structure is induced from
@@ -834,7 +902,7 @@ async function main() {
   if (renderOutput.status !== "completed" || !renderOutput.outputPath) {
     throw new Error(`Motion graph case render failed: ${renderOutput.error ?? "unknown error"}`);
   }
-  const renderFileName = isPartialTargetMode ? "render_partial_assets.mp4" : usesTargetAssetManifest ? "render_with_assets.mp4" : "render_proxy.mp4";
+  const renderFileName = isMalformedTargetMode ? "render_malformed_assets.mp4" : isPartialTargetMode ? "render_partial_assets.mp4" : usesTargetAssetManifest ? "render_with_assets.mp4" : "render_proxy.mp4";
   const renderPath = path.join(artifactDir, renderFileName);
   await muxBeatAudio(renderOutput.outputPath, renderPath, generation.timeline.durationSec);
   await copyFile(renderPath, path.join(artifactDir, "render.mp4"));
@@ -902,6 +970,13 @@ async function main() {
         path.join(artifactDir, "partial_assets_contact_sheet.png")
       )
     : null;
+  const malformedAssetsContactSheet = isMalformedTargetMode
+    ? await createBeforeAfterContactSheet(
+        path.join(artifactDir, "render_proxy.mp4"),
+        renderPath,
+        path.join(artifactDir, "malformed_assets_contact_sheet.png")
+      )
+    : null;
 
   const source = understandSourceVideo(mockSourceAnalysis, mockSourceAsset, request, vlm);
   const mappings = matchSlots(template, source, request);
@@ -933,6 +1008,11 @@ async function main() {
   const evidenceFramePathsExist = primaryEvidenceSlots.every((slot) =>
     (slot.sourceEvidence?.framePaths ?? []).every((framePath) => existsSync(path.join(artifactDir, framePath)))
   );
+  const mediaCardsEvidenceKeyframe = (ie.keyframes ?? []).find((frame) => frame.family === "media_cards");
+  const mediaCardsDedicatedEvidenceFrame =
+    Boolean(mediaCardsEvidenceKeyframe?.path) &&
+    /media_cards/.test(String(mediaCardsEvidenceKeyframe.path)) &&
+    existsSync(path.join(artifactDir, mediaCardsEvidenceKeyframe.path));
   const gates = [
     gate("evidence_driven_not_hardcoded",
       analysis.analyzerMode === "opencv_visual_evidence" && (evidence.metadata?.width ?? 0) > 0 && (ie.detectedFamilies?.length ?? 0) > 0,
@@ -945,6 +1025,9 @@ async function main() {
     gate("induced_slots_have_frame_evidence", inducedSlotsHaveFrameEvidence, primaryEvidenceSlots.map((slot) => ({ family: slot.visualFormFamily, frameIds: slot.sourceEvidence?.frameIds ?? [] })), "每个 primary induced slot 都有 visual-evidence frameIds/framePaths。"),
     gate("induced_slots_have_time_ranges", inducedSlotsHaveTimeRanges, primaryEvidenceSlots.map((slot) => ({ family: slot.visualFormFamily, timeRange: slot.sourceEvidence?.timeRange ?? null })), "每个 primary induced slot 都有 sourceEvidence.timeRange。"),
     gate("evidence_frame_paths_exist", evidenceFramePathsExist, primaryEvidenceSlots.flatMap((slot) => slot.sourceEvidence?.framePaths ?? []), "sourceEvidence.framePaths 必须是存在的相对路径。"),
+    gate("media_cards_has_dedicated_evidence_frame", mediaCardsDedicatedEvidenceFrame, mediaCardsEvidenceKeyframe?.path ?? null, "media_cards 应指向 dedicated media_cards evidence frame，而不是复用其它 family 的主帧。"),
+    gate("media_cards_evidence_frame_not_geometric_alias", mediaCardsDedicatedEvidenceFrame && !/geometric_mg/.test(String(mediaCardsEvidenceKeyframe?.path ?? "")), mediaCardsEvidenceKeyframe?.path ?? null, "media_cards evidence frame 不应是 geometric_mg alias。"),
+    gate("evidence_frames_exist_per_primary_family", requiredEvidenceFamilies.every((family) => (ie.keyframes ?? []).some((frame) => frame.family === family && frame.path && existsSync(path.join(artifactDir, frame.path)))), (ie.keyframes ?? []).map((frame) => `${frame.family}:${frame.path}`).join("|"), "每个 primary family 都应有可打开的 evidence frame。"),
     gate("media_cards_slot_detected", familySet.has("media_cards"), "media_cards", "从证据识别卡片堆叠/拼贴槽位。"),
     gate("feature_list_slot_detected", familySet.has("ui_showcase"), "ui_showcase", "从证据识别功能列表 UI 展示槽位。"),
     gate("kinetic_typography_slot_detected", familySet.has("kinetic_typography"), "kinetic_typography", "从证据识别动态文字（kinetic typography）槽位。"),
@@ -956,11 +1039,11 @@ async function main() {
     gate(
       "card_stack_proxy_rendered",
       capabilityByFamily.media_cards?.capabilityId === "card_stack_motion" &&
-        (usesTargetAssetManifest && !isPartialTargetMode
+        (usesTargetAssetManifest && !isPartialTargetMode && !isMalformedTargetMode
           ? timeline.clips.some((clip) => clip.visualFormFamily === "media_cards" && clip.gapFillStrategy === "user_asset_replace")
           : proxyFamilies.has("media_cards")),
       capabilityByFamily.media_cards?.capabilityId ?? null,
-      usesTargetAssetManifest && !isPartialTargetMode ? "media_cards 使用 target card stack renderer。" : "media_cards 缺口渲染为卡片堆叠代理。"
+      usesTargetAssetManifest && !isPartialTargetMode && !isMalformedTargetMode ? "media_cards 使用 target card stack renderer。" : "media_cards 缺口渲染为卡片堆叠代理。"
     ),
     gate("feature_list_scroller_rendered", capabilityByFamily.ui_showcase?.capabilityId === "feature_list_scroller" && timeline.clips.some((clip) => clip.visualFormFamily === "ui_showcase" && clip.gapFillStrategy === "procedural_generation"), capabilityByFamily.ui_showcase?.capabilityId ?? null, "ui_showcase 使用 feature_list_scroller，而不是普通 text_card。"),
     gate("neon_geometry_rendered", capabilityByFamily.geometric_mg?.capabilityId === "neon_geometry_typography" && timeline.clips.some((clip) => clip.visualFormFamily === "geometric_mg"), capabilityByFamily.geometric_mg?.capabilityId ?? null, "geometric_mg 使用 neon_geometry_typography。"),
@@ -968,7 +1051,7 @@ async function main() {
     gate(
       "logo_cta_hold_rendered",
       capabilityByFamily.brand_cta?.capabilityId === "logo_cta_hold" &&
-        (usesTargetAssetManifest && !isPartialTargetMode
+        (usesTargetAssetManifest && !isPartialTargetMode && !isMalformedTargetMode
           ? timeline.clips.some((clip) => clip.visualFormFamily === "brand_cta" && clip.gapFillStrategy === "user_asset_replace")
           : proxyFamilies.has("brand_cta")),
       capabilityByFamily.brand_cta?.capabilityId ?? null,
@@ -1020,7 +1103,17 @@ async function main() {
       gate("geometric_mg_procedural_not_required", geometricProcedural, geometricMatch?.reason ?? null, "geometric_mg 不需要外部素材，走 procedural_not_required。"),
       gate("structure_preserved_after_asset_replacement", coreFlowPreserved, timelineFamilyFlow, "替换 target assets 后保留 media_cards → kinetic_typography → ui_showcase → geometric_mg → brand_cta 结构。")
     );
-    if (isPartialTargetMode) {
+    if (isMalformedTargetMode) {
+      const blockedAssets = targetFixture?.blockedAssets ?? [];
+      gates.push(
+        gate("target_material_manifest_api_supported", true, "--target-assets-manifest/managed API normalization share TargetAssetInput shape", "motion_graph material intake supports normalized target manifest assets."),
+        gate("external_paths_blocked", blockedAssets.some((asset) => /external|url|absolute/i.test(asset.reason ?? "")), blockedAssets, "external URLs/absolute paths must be blocked from satisfying visual slots."),
+        gate("malformed_assets_not_matched", blockedAssets.length >= 4 && !mappings.some((mapping) => (mapping.selectedTargetAssetIds ?? (mapping.selectedTargetAssetId ? [mapping.selectedTargetAssetId] : [])).some((assetId) => /broken|blocked|wrong_role|no_path/.test(assetId))), blockedAssets.map((asset) => asset.id), "malformed/no-path/wrong-role assets must not appear in selected slot matches."),
+        gate("media_cards_weak_match_with_invalid_cards", mediaCardsWeakMatch, { selected: mediaCardsMatch?.selectedTargetAssetIds ?? [], missingCount: mediaCardsMatch?.missingCount ?? null }, "invalid cards are blocked, leaving media_cards as weak_match."),
+        gate("brand_cta_missing_without_valid_logo", brandCtaMissingWithoutLogo, brandMatch?.reason ?? null, "no valid target logo means brand_cta remains missing/proxy."),
+        gate("mixed_proxy_and_asset_rendered", existsSync(renderPath) && mediaCardsWeakMatch && proxyFamilies.has("media_cards") && proxyFamilies.has("brand_cta"), path.relative(repoRoot, renderPath), "malformed render should mix valid cards with proxy placeholders.")
+      );
+    } else if (isPartialTargetMode) {
       gates.push(
         gate("partial_target_assets_loaded", request.targetAssets.length > 0 && request.targetAssets.length < 7, request.targetAssets.map((asset) => asset.id), "partial fixture 只加载部分目标素材。"),
         gate("media_cards_weak_match_when_insufficient_images", mediaCardsWeakMatch, { selected: mediaCardsMatch?.selectedTargetAssetIds ?? [], missingCount: mediaCardsMatch?.missingCount ?? null }, "media_cards 在图片不足时必须 weak_match，并记录 missingCount。"),
@@ -1088,7 +1181,8 @@ async function main() {
           manifest: targetFixture?.manifestRef ?? null,
           directory: targetFixture?.manifestRef?.startsWith("docs/fixtures/motion_graph_target_assets") ? "docs/fixtures/motion_graph_target_assets" : null,
           role: targetFixture?.manifestRef?.startsWith("docs/fixtures/motion_graph_target_assets") ? "user_provided_fixture_assets" : "user_provided_manifest_assets",
-          copy: targetFixture?.copy ?? null
+          copy: targetFixture?.copy ?? null,
+          blockedAssets: targetFixture?.blockedAssets ?? []
         }
       : null
   };
@@ -1141,6 +1235,7 @@ async function main() {
         blockedShotIds: source.blockedCandidateShotIds ?? []
       }
     ],
+    blockedManifestAssets: targetFixture?.blockedAssets ?? [],
     policy: assetEvidence.materialPolicy
   };
 
@@ -1158,8 +1253,10 @@ async function main() {
     renderProxy: existsSync(path.join(artifactDir, "render_proxy.mp4")) ? "render_proxy.mp4" : null,
     renderWithAssets: existsSync(path.join(artifactDir, "render_with_assets.mp4")) ? "render_with_assets.mp4" : null,
     renderPartialAssets: existsSync(path.join(artifactDir, "render_partial_assets.mp4")) ? "render_partial_assets.mp4" : null,
+    renderMalformedAssets: existsSync(path.join(artifactDir, "render_malformed_assets.mp4")) ? "render_malformed_assets.mp4" : null,
     beforeAfterContactSheet,
     partialAssetsContactSheet,
+    malformedAssetsContactSheet,
     previewManifest: "preview_frames/manifest.json",
     slotMappingSummary: {
       sourceVideoMappedCount: mappings.filter((mapping) => mapping.assetAvailability === "source_video_mapped").length,
@@ -1182,6 +1279,7 @@ async function main() {
   await writeJson("slot-asset-matches.json", slotAssetMatches);
   if (usesTargetAssetManifest) await writeJson(`slot-asset-matches.${modeSuffix}.json`, slotAssetMatches);
   await writeJson("blocked-material-report.json", blockedMaterialReport);
+  if (usesTargetAssetManifest) await writeJson(`blocked-material-report.${modeSuffix}.json`, blockedMaterialReport);
   await writeJson("gap-report.json", generation.gapReport);
   await writeJson("fill-plan.json", generation.fillPlan);
   await writeJson(`fill-plan.${modeSuffix}.json`, generation.fillPlan);
@@ -1204,7 +1302,7 @@ async function main() {
     "",
     "## 输出模式",
     "",
-    `- active mode: ${isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"}`,
+    `- active mode: ${isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"}`,
     "- source evidence frames are structure evidence only — not target material.",
     usesTargetAssetManifest
       ? `- target assets are user-provided manifest assets from \`${targetFixture?.manifestRef ?? "manifest"}\`.`
@@ -1245,8 +1343,10 @@ async function main() {
     existsSync(path.join(artifactDir, "render_proxy.mp4")) ? "- render_proxy.mp4" : null,
     existsSync(path.join(artifactDir, "render_with_assets.mp4")) ? "- render_with_assets.mp4" : null,
     existsSync(path.join(artifactDir, "render_partial_assets.mp4")) ? "- render_partial_assets.mp4" : null,
+    existsSync(path.join(artifactDir, "render_malformed_assets.mp4")) ? "- render_malformed_assets.mp4" : null,
     beforeAfterContactSheet ? `- before_after_contact_sheet.png: left=proxy, right=with target assets` : null,
     partialAssetsContactSheet ? `- partial_assets_contact_sheet.png: left=proxy, right=partial target assets` : null,
+    malformedAssetsContactSheet ? `- malformed_assets_contact_sheet.png: left=proxy, right=malformed target assets` : null,
     "- contact_sheet.png",
     "- preview_frames/manifest.json"
   ].filter((line) => line !== null).join("\n");
@@ -1288,7 +1388,7 @@ async function main() {
   </section>
   <div class="grid">
     <section>
-      <h2>${isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"} 渲染</h2>
+      <h2>${isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"} 渲染</h2>
       <video controls src="${esc(path.basename(renderPath))}"></video>
       <p>${esc(renderMetadata.durationSec ?? "?")}s · ${esc(renderMetadata.width ?? "?")}x${esc(renderMetadata.height ?? "?")} · audio=${renderMetadata.hasAudio ? "present" : "missing"}</p>
       <p>${usesTargetAssetManifest ? "Target assets are user-provided manifest assets; source evidence is not reused as target material." : "No target assets loaded; this is the proxy baseline."}</p>
@@ -1304,10 +1404,11 @@ async function main() {
     <h2>Proxy Mode vs With Target Assets</h2>
     <div class="grid">
       <figure><video controls src="render_proxy.mp4"></video><figcaption>Proxy Mode</figcaption></figure>
-      <figure><video controls src="${esc(path.basename(renderPath))}"></video><figcaption>${isPartialTargetMode ? "Partial Target Assets" : "With Target Assets"}</figcaption></figure>
+      <figure><video controls src="${esc(path.basename(renderPath))}"></video><figcaption>${isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : "With Target Assets"}</figcaption></figure>
     </div>
     ${beforeAfterContactSheet ? `<figure><img src="${esc(beforeAfterContactSheet)}" alt="Before after contact sheet" /><figcaption>Left column: proxy. Right column: with target assets.</figcaption></figure>` : ""}
     ${partialAssetsContactSheet ? `<figure><img src="${esc(partialAssetsContactSheet)}" alt="Partial assets contact sheet" /><figcaption>Left column: proxy. Right column: partial target assets.</figcaption></figure>` : ""}
+    ${malformedAssetsContactSheet ? `<figure><img src="${esc(malformedAssetsContactSheet)}" alt="Malformed assets contact sheet" /><figcaption>Left column: proxy. Right column: malformed target assets with blocked entries omitted.</figcaption></figure>` : ""}
   </section>
   <section>
     <h2>Asset-to-slot mapping</h2>
@@ -1368,6 +1469,11 @@ async function main() {
     target_assets_manifest_supported: gateById.target_assets_manifest_supported?.passed,
     target_assets_loaded: gateById.target_assets_loaded?.passed,
     partial_target_assets_loaded: gateById.partial_target_assets_loaded?.passed,
+    target_material_manifest_api_supported: gateById.target_material_manifest_api_supported?.passed,
+    external_paths_blocked: gateById.external_paths_blocked?.passed,
+    malformed_assets_not_matched: gateById.malformed_assets_not_matched?.passed,
+    media_cards_weak_match_with_invalid_cards: gateById.media_cards_weak_match_with_invalid_cards?.passed,
+    brand_cta_missing_without_valid_logo: gateById.brand_cta_missing_without_valid_logo?.passed,
     media_cards_asset_matched: gateById.media_cards_asset_matched?.passed,
     media_cards_weak_match_when_insufficient_images: gateById.media_cards_weak_match_when_insufficient_images?.passed,
     ui_showcase_copy_matched: gateById.ui_showcase_copy_matched?.passed,

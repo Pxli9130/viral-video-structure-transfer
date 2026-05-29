@@ -162,6 +162,7 @@ class Sample:
 class FrameFeatures:
     time: float
     card_count: int = 0
+    card_boxes: list[list[int]] = field(default_factory=list)
     row_count: int = 0
     big_text: float = 0.0
     neon_on_dark: float = 0.0
@@ -229,6 +230,7 @@ def frame_features(s: Sample) -> FrameFeatures:
     contours, _ = cv2.findContours(cv2.dilate(edges, np.ones((3, 3), np.uint8)),
                                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cards = 0
+    card_boxes: list[list[int]] = []
     for c in contours:
         a = cv2.contourArea(c)
         if a < area * 0.012 or a > area * 0.28:
@@ -243,7 +245,9 @@ def frame_features(s: Sample) -> FrameFeatures:
             rect_fill = a / float(ww * hh + 1e-6)
             if 0.45 <= ar <= 2.6 and rect_fill > 0.6:
                 cards += 1
+                card_boxes.append([int(x), int(y), int(ww), int(hh)])
     ff.card_count = cards
+    ff.card_boxes = sorted(card_boxes, key=lambda box: box[2] * box[3], reverse=True)[:8]
 
     # row detection (feature-list / UI): horizontal edge bands stacked vertically
     # restrict to a central column band where list rows usually sit.
@@ -501,6 +505,29 @@ def extract_full_frame(input_path: str, time_sec: float, out_path: Path) -> bool
     return res.returncode == 0 and out_path.exists()
 
 
+def write_card_crops(sample: Sample, boxes: list[list[int]], shot_id: str, frames_out: Path, artifact_root: Path) -> list[str]:
+    crop_paths: list[str] = []
+    frame_dir = frames_out.relative_to(artifact_root) if frames_out.is_relative_to(artifact_root) else Path(frames_out.name)
+    h, w = sample.small.shape[:2]
+    for idx, box in enumerate(boxes[:4], start=1):
+        x, y, ww, hh = box
+        pad = max(4, int(min(ww, hh) * 0.08))
+        x0 = max(0, x - pad)
+        y0 = max(0, y - pad)
+        x1 = min(w, x + ww + pad)
+        y1 = min(h, y + hh + pad)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        crop = sample.small[y0:y1, x0:x1]
+        if crop.size == 0:
+            continue
+        out_name = f"{shot_id}_media_cards_crop_{idx:02d}.jpg"
+        out_path = frames_out / out_name
+        if cv2.imwrite(str(out_path), crop):
+            crop_paths.append(f"{frame_dir}/{out_name}")
+    return crop_paths
+
+
 def build_contact_sheet(frame_paths: list[Path], out_path: Path) -> bool:
     valid = [p for p in frame_paths if p.exists()]
     if not valid:
@@ -573,6 +600,7 @@ def main() -> int:
     family_best: dict[str, float] = {}
     best_shot_for_family: dict[str, dict[str, Any]] = {}
     total_dur = meta["durationSec"] or (samples[-1].time if samples else 1.0)
+    EMIT_FLOOR = 0.6
 
     for shot in shots:
         a, b = shot.get("_sample_range", [0, len(samples)])
@@ -589,6 +617,7 @@ def main() -> int:
         family = max(scores, key=scores.get) if scores else "unknown"
         conf = round(scores.get(family, 0.0), 3) if scores else 0.0
         vocab = FAMILY_VOCAB.get(family)
+        media_card_crop_paths: list[str] = []
 
         shot["family"] = family
         shot["familyScores"] = {k: round(v, 3) for k, v in sorted(scores.items(), key=lambda kv: -kv[1])}
@@ -599,7 +628,19 @@ def main() -> int:
 
         # populate layout candidate buckets (deterministic, evidence-derived)
         if agg.get("card_max", 0) >= 3:
-            layout["cardCandidates"].append({"timeSec": round(mid_time, 3), "cards": int(agg["card_max"])})
+            best_card_index = max(range(a, min(b, len(feats))), key=lambda i: feats[i].card_count) if a < min(b, len(feats)) else a
+            best_card_features = feats[best_card_index] if best_card_index < len(feats) else None
+            best_card_sample = samples[best_card_index] if best_card_index < len(samples) else None
+            card_boxes = best_card_features.card_boxes if best_card_features else []
+            if best_card_sample is not None and card_boxes:
+                media_card_crop_paths = write_card_crops(best_card_sample, card_boxes, shot["id"], frames_out, artifact_root)
+            layout["cardCandidates"].append({
+                "timeSec": round(mid_time, 3),
+                "cards": int(agg["card_max"]),
+                "sourceShotId": shot["id"],
+                "bboxes": card_boxes,
+                "cropPaths": media_card_crop_paths,
+            })
         if agg.get("row_count", 0) >= 5:
             layout["uiListCandidates"].append({"timeSec": round(mid_time, 3), "rows": int(agg["row_count"])})
         if agg.get("neon_on_dark", 0) > 0.02 or agg.get("line_count", 0) >= 3:
@@ -621,16 +662,25 @@ def main() -> int:
                 family_best[fam] = sc
                 best_shot_for_family[fam] = {"shot": shot, "midTime": round(mid_time, 3), "score": round(sc, 3)}
 
-        # representative evidence frame for the shot (labeled by the per-shot argmax)
-        frame_name = f"{shot['id']}_{family}.jpg"
-        frame_rel = f"{frames_out.relative_to(artifact_root) if frames_out.is_relative_to(artifact_root) else frames_out.name}/{frame_name}"
-        frame_abs = frames_out / frame_name
-        if extract_full_frame(input_path, mid_time, frame_abs):
-            evidence_frames.append({
-                "id": shot["id"], "timeSec": round(mid_time, 3),
-                "path": frame_rel, "family": family, "confidence": conf,
-                "reason": (vocab["desc"] if vocab else "unclassified visual segment"),
-            })
+        # Dedicated evidence frames are emitted per detected family. A shot can
+        # support media_cards and geometric_mg at the same timestamp; downstream
+        # slots must not have to reuse the shot argmax family's filename.
+        frame_families = [(fam, sc) for fam, sc in scores.items() if sc >= EMIT_FLOOR]
+        if not frame_families and family == "unknown":
+            frame_families = [("unknown", 0.0)]
+        for fam, sc in frame_families:
+            fam_vocab = FAMILY_VOCAB.get(fam)
+            frame_name = f"{shot['id']}_{fam}.jpg"
+            frame_rel = f"{frames_out.relative_to(artifact_root) if frames_out.is_relative_to(artifact_root) else frames_out.name}/{frame_name}"
+            frame_abs = frames_out / frame_name
+            if extract_full_frame(input_path, mid_time, frame_abs):
+                evidence_frames.append({
+                    "id": f"{shot['id']}_{fam}", "sourceShotId": shot["id"], "timeSec": round(mid_time, 3),
+                    "path": frame_rel, "family": fam, "confidence": round(float(sc), 3),
+                    "reason": (fam_vocab["desc"] if fam_vocab else "unclassified visual segment"),
+                    "evidenceKinds": ["layout", "shot", "motion"],
+                    "cropPaths": media_card_crop_paths if fam == "media_cards" else [],
+                })
 
     # clean private bookkeeping field
     for shot in shots:
@@ -647,22 +697,33 @@ def main() -> int:
     # Emit induction evidence for every family with real pixel support above the
     # floor, each anchored to the shot where it scored highest. EMIT_FLOOR aligns
     # with the induction "required" threshold so weak noise is excluded.
-    EMIT_FLOOR = 0.6
     ranked = sorted([(f, c) for f, c in family_best.items() if c >= EMIT_FLOOR],
                     key=lambda kv: -kv[1])
-    frame_by_shot = {ef["id"]: ef["path"] for ef in evidence_frames}
+    frame_by_shot_family = {
+        (ef.get("sourceShotId") or ef.get("id"), ef.get("family")): ef.get("path")
+        for ef in evidence_frames
+        if ef.get("path")
+    }
     for fam, c in ranked:
         info = best_shot_for_family[fam]
         sh = info["shot"]
         vocab = FAMILY_VOCAB[fam]
+        family_frame_path = frame_by_shot_family.get((sh["id"], fam))
+        fallback_frame_path = next((ef.get("path") for ef in evidence_frames if ef.get("sourceShotId") == sh["id"]), None)
         induction_shots.append({
             "id": f"source_{sh['id']}_{fam}",
             "startSec": sh["startSec"], "endSec": sh["endSec"], "durationSec": sh["durationSec"],
             "tags": vocab["tags"], "confidence": round(c, 3), "notes": vocab["note"],
         })
+        family_crop_paths = []
+        if fam == "media_cards":
+            family_crop_paths = next((item.get("cropPaths", []) for item in layout["cardCandidates"] if item.get("sourceShotId") == sh["id"]), [])
         induction_keyframes.append({
             "id": f"kf_{fam}", "timeSec": info["midTime"], "family": fam,
-            "path": frame_by_shot.get(sh["id"]), "description": vocab["desc"], "tags": vocab["tags"],
+            "path": (family_crop_paths[0] if family_crop_paths else family_frame_path or fallback_frame_path),
+            "framePath": family_frame_path or fallback_frame_path,
+            "cropPaths": family_crop_paths,
+            "description": vocab["desc"], "tags": vocab["tags"],
         })
 
     primary_motif = None

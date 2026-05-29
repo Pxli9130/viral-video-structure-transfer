@@ -176,8 +176,69 @@ async function main() {
       }
     ]
   };
+  const malformedManifest = {
+    schemaVersion: "motion-graph-target-assets-manifest-v1",
+    brandName: copy.brandName,
+    cta: copy.cta,
+    assets: [
+      {
+        id: "target_card_01",
+        kind: "image",
+        role: "media_card",
+        path: "card_01.png"
+      },
+      {
+        id: "target_card_02",
+        kind: "image",
+        role: "media_card",
+        path: "card_02.png"
+      },
+      {
+        id: "broken_missing_card",
+        kind: "image",
+        role: "media_card",
+        path: "missing_card.png"
+      },
+      {
+        id: "blocked_external_url",
+        kind: "image",
+        role: "media_card",
+        url: "https://example.invalid/not-downloaded-card.png"
+      },
+      {
+        id: "blocked_external_path",
+        kind: "image",
+        role: "media_card",
+        path: "/tmp/vvst_external_card.png"
+      },
+      {
+        id: "wrong_role_visual",
+        kind: "image",
+        role: "unclassified_visual",
+        path: "card_03.png"
+      },
+      {
+        id: "no_path_visual",
+        kind: "image",
+        role: "media_card"
+      },
+      {
+        id: "target_feature_copy",
+        kind: "copy",
+        role: "feature_copy",
+        text: copy.features.join("\n")
+      },
+      {
+        id: "target_kinetic_copy",
+        kind: "copy",
+        role: "kinetic_copy",
+        text: copy.brandName
+      }
+    ]
+  };
   await writeFile(path.join(fixtureDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   await writeFile(path.join(fixtureDir, "manifest.partial.json"), `${JSON.stringify(partialManifest, null, 2)}\n`, "utf8");
+  await writeFile(path.join(fixtureDir, "manifest.malformed.json"), `${JSON.stringify(malformedManifest, null, 2)}\n`, "utf8");
   const colors = ["0x0f172a", "0x111827", "0x172554", "0x3b0764"];
   const accents = ["0x38bdf8", "0x22c55e", "0xf97316", "0xe11d48"];
   for (let index = 0; index < copy.features.length; index += 1) {

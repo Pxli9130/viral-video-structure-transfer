@@ -585,6 +585,15 @@ function readJsonIfExists(filePath) {
   }
 }
 
+function readTextIfExists(filePath) {
+  if (!existsSync(filePath)) return "";
+  try {
+    return readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 function scrubPublicArtifactText(value) {
   return String(value ?? "")
     .replaceAll(`${repoRoot}${path.sep}`, "")
@@ -613,6 +622,8 @@ function motionGraphArtifactGates(options = {}) {
   const timeline = readJsonIfExists(path.join(mgDir, "timeline.json"));
   const slotAssetMatches = readJsonIfExists(path.join(mgDir, "slot-asset-matches.json"));
   const partialSlotAssetMatches = readJsonIfExists(path.join(mgDir, "slot-asset-matches.partial.json"));
+  const malformedSlotAssetMatches = readJsonIfExists(path.join(mgDir, "slot-asset-matches.malformed.json"));
+  const malformedBlockedReport = readJsonIfExists(path.join(mgDir, "blocked-material-report.malformed.json"));
   const previewManifest = readJsonIfExists(path.join(mgDir, "preview_frames", "manifest.json"));
   const evaluation = readJsonIfExists(path.join(mgDir, "evaluation.motion_graph.json"));
   const slotFamilies = new Set((Array.isArray(inducedSlots) ? inducedSlots : []).map((slot) => slot.visualFormFamily));
@@ -654,6 +665,11 @@ function motionGraphArtifactGates(options = {}) {
       id: "induced_slots_have_evidence_frames",
       passed: evalGate("induced_slots_have_frame_evidence") || inducedSlotsHaveEvidenceFrames,
       detail: primaryEvidenceSlots.map((slot) => `${slot.visualFormFamily}:${slot.sourceEvidence?.framePaths?.length ?? 0}`).join("|")
+    },
+    {
+      id: "media_cards_has_dedicated_evidence_frame",
+      passed: evalGate("media_cards_has_dedicated_evidence_frame") === true,
+      detail: (visualEvidence?.inductionEvidence?.keyframes ?? []).filter((frame) => frame.family === "media_cards").map((frame) => frame.path).join("|") || "missing media_cards keyframe"
     },
     { id: "media_cards_detected", passed: slotFamilies.has("media_cards"), detail: Array.from(slotFamilies).join("|") },
     { id: "ui_showcase_detected", passed: slotFamilies.has("ui_showcase"), detail: Array.from(slotFamilies).join("|") },
@@ -753,6 +769,31 @@ function motionGraphArtifactGates(options = {}) {
         id: "mixed_proxy_and_asset_rendered",
         passed: existsSync(path.join(mgDir, "render_partial_assets.mp4")) && existsSync(path.join(mgDir, "partial_assets_contact_sheet.png")),
         detail: "partial render and contact sheet exist"
+      },
+      {
+        id: "target_material_manifest_api_supported",
+        passed: evalGate("target_material_manifest_api_supported") === true || readTextIfExists(path.join(repoRoot, "apps", "api", "src", "server.ts")).includes("/target-material-manifests"),
+        detail: "managed upload target-material manifest endpoint exists"
+      },
+      {
+        id: "external_paths_blocked",
+        passed: evalGate("external_paths_blocked") === true || (malformedBlockedReport?.blockedManifestAssets ?? []).some((asset) => /external|url|absolute/i.test(String(asset.reason ?? ""))),
+        detail: JSON.stringify(malformedBlockedReport?.blockedManifestAssets ?? [])
+      },
+      {
+        id: "malformed_assets_not_matched",
+        passed: evalGate("malformed_assets_not_matched") === true || (Array.isArray(malformedSlotAssetMatches) && !malformedSlotAssetMatches.some((match) => (match.selectedAssetIds ?? []).some((assetId) => /broken|blocked|wrong_role|no_path/.test(String(assetId))))),
+        detail: JSON.stringify(malformedSlotAssetMatches ?? [])
+      },
+      {
+        id: "media_cards_weak_match_with_invalid_cards",
+        passed: evalGate("media_cards_weak_match_with_invalid_cards") === true || (Array.isArray(malformedSlotAssetMatches) && malformedSlotAssetMatches.find((match) => match.visualFormFamily === "media_cards")?.status === "weak_match"),
+        detail: JSON.stringify((malformedSlotAssetMatches ?? []).find((match) => match.visualFormFamily === "media_cards") ?? null)
+      },
+      {
+        id: "brand_cta_missing_without_valid_logo",
+        passed: evalGate("brand_cta_missing_without_valid_logo") === true || (Array.isArray(malformedSlotAssetMatches) && malformedSlotAssetMatches.find((match) => match.visualFormFamily === "brand_cta")?.status === "missing"),
+        detail: JSON.stringify((malformedSlotAssetMatches ?? []).find((match) => match.visualFormFamily === "brand_cta") ?? null)
       }
     );
   }

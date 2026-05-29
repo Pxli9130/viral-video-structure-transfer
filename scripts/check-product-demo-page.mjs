@@ -247,8 +247,20 @@ if (existsSync(path.join(motionGraphCaseDir, "slot-asset-matches.json")) && !/da
   failures.push("Product demo missing first-class motion graph slot mapping table.");
 }
 
+if (existsSync(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")) && !/data-motion-graph-managed-material-intake="managed-material-intake"/.test(html)) {
+  failures.push("Product demo missing first-class managed material intake section.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")) && !/data-motion-graph-blocked-material="blocked-material"/.test(html)) {
+  failures.push("Product demo missing blocked malformed material table.");
+}
+
 if (existsSync(path.join(motionGraphCaseDir, "render_with_assets.mp4")) && !html.includes("motion_graph_case/render_with_assets.mp4")) {
   failures.push("Motion graph with-assets render exists but product demo does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "render_malformed_assets.mp4")) && !html.includes("motion_graph_case/render_malformed_assets.mp4")) {
+  failures.push("Motion graph malformed-assets render exists but product demo does not link it.");
 }
 
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {

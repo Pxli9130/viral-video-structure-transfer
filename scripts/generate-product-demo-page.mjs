@@ -413,6 +413,18 @@ const motionGraphSlotAssetMatchesArtifact = await readJsonArtifact({
   description: "motion_graph slot-to-target-asset matching table.",
   fallback: []
 });
+const motionGraphMalformedSlotAssetMatchesArtifact = await readJsonArtifact({
+  title: "motion_graph_case/slot-asset-matches.malformed.json",
+  filePath: path.join(motionGraphCaseDir, "slot-asset-matches.malformed.json"),
+  description: "motion_graph malformed material stress slot matching table.",
+  fallback: []
+});
+const motionGraphMalformedBlockedArtifact = await readJsonArtifact({
+  title: "motion_graph_case/blocked-material-report.malformed.json",
+  filePath: path.join(motionGraphCaseDir, "blocked-material-report.malformed.json"),
+  description: "motion_graph malformed/external material block report.",
+  fallback: {}
+});
 const motionGraphEvaluationArtifact = await readJsonArtifact({
   title: "motion_graph_case/evaluation.motion_graph.json",
   filePath: path.join(motionGraphCaseDir, "evaluation.motion_graph.json"),
@@ -463,6 +475,8 @@ const editingCase = editingCaseArtifact.data ?? {};
 const motionGraphCase = motionGraphCaseArtifact.data ?? {};
 const motionGraphAssetEvidence = motionGraphAssetEvidenceArtifact.data ?? {};
 const motionGraphSlotAssetMatches = motionGraphSlotAssetMatchesArtifact.data ?? [];
+const motionGraphMalformedSlotAssetMatches = motionGraphMalformedSlotAssetMatchesArtifact.data ?? [];
+const motionGraphMalformedBlocked = motionGraphMalformedBlockedArtifact.data ?? {};
 const motionGraphEvaluation = motionGraphEvaluationArtifact.data ?? {};
 const primaryGeneration =
   generationByArtifactKey.high_fidelity?.data ??
@@ -1636,13 +1650,21 @@ function motionGraphTargetAdaptationSection() {
   const renderProxy = path.join(motionGraphCaseDir, "render_proxy.mp4");
   const renderWithAssets = path.join(motionGraphCaseDir, "render_with_assets.mp4");
   const renderPartial = path.join(motionGraphCaseDir, "render_partial_assets.mp4");
+  const renderMalformed = path.join(motionGraphCaseDir, "render_malformed_assets.mp4");
   const beforeAfter = path.join(motionGraphCaseDir, "before_after_contact_sheet.png");
   const partialSheet = path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png");
+  const malformedSheet = path.join(motionGraphCaseDir, "malformed_assets_contact_sheet.png");
   const slotFamilySummary = Array.isArray(motionGraphCase.inducedSlots)
     ? motionGraphCase.inducedSlots.map((slot) => slot.visualFormFamily).filter(Boolean)
     : [];
   const targetAssetRows = targetAssets.map((asset) => `<tr><td>${esc(asset.assetId ?? asset.id)}</td><td>${esc(asset.type ?? asset.kind)}</td><td>${esc(asset.role)}</td><td>${esc(asset.renderable === false ? "no" : "yes")}</td></tr>`).join("");
   const mappingRows = matches.map((match) => `<tr><td>${esc(match.visualFormFamily ?? match.slotType)}</td><td>${esc(match.status)}</td><td>${esc(match.matchKind ?? "none")}</td><td>${esc((match.selectedAssetIds ?? []).join(", ") || "no asset")}</td><td>${esc(match.missingCount ?? "")}</td></tr>`).join("");
+  const malformedRows = (Array.isArray(motionGraphMalformedSlotAssetMatches) ? motionGraphMalformedSlotAssetMatches : [])
+    .map((match) => `<tr><td>${esc(match.visualFormFamily ?? match.slotType)}</td><td>${esc(match.status)}</td><td>${esc(match.matchKind ?? "none")}</td><td>${esc((match.selectedAssetIds ?? []).join(", ") || "no asset")}</td><td>${esc(match.missingCount ?? "")}</td></tr>`)
+    .join("");
+  const blockedRows = (motionGraphMalformedBlocked.blockedManifestAssets ?? [])
+    .map((asset) => `<tr><td>${esc(asset.id ?? asset.assetId ?? "unknown")}</td><td>${esc(asset.kind ?? "")}</td><td>${esc(asset.role ?? "")}</td><td>${esc(asset.reason ?? "")}</td></tr>`)
+    .join("");
   return `<section class="motion-graph-adaptation" id="motion-graph-target-adaptation" data-section="motion-graph-target-adaptation">
     <div class="section-heading">
       <span>Motion Graph Target Adaptation</span>
@@ -1668,6 +1690,26 @@ function motionGraphTargetAdaptationSection() {
         <h3>Partial Assets Video</h3>
         ${existsSync(renderPartial) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderPartial))}"></video>` : missingCard("Partial assets", "render_partial_assets.mp4 missing")}
       </article>
+      <article class="panel-card">
+        <h3>Malformed Assets Video</h3>
+        ${existsSync(renderMalformed) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderMalformed))}"></video>` : missingCard("Malformed assets", "render_malformed_assets.mp4 missing")}
+      </article>
+    </div>
+    <div class="compare-grid managed-material-intake" data-motion-graph-managed-material-intake="managed-material-intake" style="margin-top:12px">
+      <article class="panel-card">
+        <h3>Managed Material Intake</h3>
+        <p>API path: <code>POST /api/projects/:projectId/assets</code> -> <code>POST /api/projects/:projectId/target-material-manifests</code>.</p>
+        <p>Manifest entries reference managed <code>assetId</code>; public outputs use safe managed asset refs, not local filesystem paths.</p>
+        <p class="evidence">External URLs and absolute paths are blocked unless they are first uploaded into managed project storage.</p>
+      </article>
+      <article class="panel-card">
+        <h3>Blocked Malformed Assets</h3>
+        <table data-motion-graph-blocked-material="blocked-material"><thead><tr><th>asset</th><th>kind</th><th>role</th><th>reason</th></tr></thead><tbody>${blockedRows}</tbody></table>
+      </article>
+      <article class="panel-card">
+        <h3>Malformed Slot Mapping</h3>
+        <table data-motion-graph-slot-mapping="malformed-slot-asset-mapping"><thead><tr><th>family</th><th>status</th><th>match</th><th>assets</th><th>missing</th></tr></thead><tbody>${malformedRows}</tbody></table>
+      </article>
     </div>
     <div class="compare-grid" style="margin-top:12px">
       <article class="panel-card">
@@ -1692,6 +1734,10 @@ function motionGraphTargetAdaptationSection() {
       <article class="panel-card">
         <h3>Partial Assets Contact Sheet</h3>
         ${existsSync(partialSheet) ? `<img src="${esc(hrefFromDemo(partialSheet))}" alt="motion graph partial assets contact sheet" />` : missingCard("partial_assets_contact_sheet.png", "missing")}
+      </article>
+      <article class="panel-card">
+        <h3>Malformed Assets Contact Sheet</h3>
+        ${existsSync(malformedSheet) ? `<img src="${esc(hrefFromDemo(malformedSheet))}" alt="motion graph malformed assets contact sheet" />` : missingCard("malformed_assets_contact_sheet.png", "missing")}
       </article>
       <article class="panel-card">
         <h3>Raw JSON</h3>
@@ -1852,11 +1898,15 @@ const manifest = scrubObject({
     renderProxy: hrefFromDemo(path.join(motionGraphCaseDir, "render_proxy.mp4")),
     renderWithAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_with_assets.mp4")),
     renderPartialAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_partial_assets.mp4")),
+    renderMalformedAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_malformed_assets.mp4")),
     contactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "contact_sheet.png")),
     beforeAfterContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "before_after_contact_sheet.png")),
     partialAssetsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png")),
+    malformedAssetsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "malformed_assets_contact_sheet.png")),
     assetEvidence: hrefFromDemo(path.join(motionGraphCaseDir, "asset-evidence.json")),
     slotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.json")),
+    malformedSlotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.malformed.json")),
+    malformedBlockedMaterialReport: hrefFromDemo(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")),
     evaluation: hrefFromDemo(path.join(motionGraphCaseDir, "evaluation.motion_graph.json")),
     inducedSlots: Array.isArray(motionGraphCase.inducedSlots) ? motionGraphCase.inducedSlots.map((slot) => ({ id: slot.id, family: slot.visualFormFamily, status: slot.status })) : [],
     targetAssets: Array.isArray(motionGraphAssetEvidence.targetAssets) ? motionGraphAssetEvidence.targetAssets.map((asset) => ({ id: asset.assetId, type: asset.type, role: asset.role, renderable: asset.renderable })) : [],
