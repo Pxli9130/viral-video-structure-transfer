@@ -818,6 +818,12 @@ function motionGraphArtifactGates(options = {}) {
   if (options.includeAigcMode) {
     const qualityOk = Array.isArray(aigcQuality) && aigcQuality.length > 0 && aigcQuality.every((result) => result.usable === true);
     const candidatesOk = Array.isArray(aigcCandidates) && aigcCandidates.length > 0 && aigcCandidates.every((candidate) => candidate.provider === "mock_provider" && candidate.provenance?.externalProviderUsed === false);
+    const generatedAssetFilesExist = Array.isArray(aigcCandidates) && aigcCandidates.length > 0 && aigcCandidates.every((candidate) => existsSync(path.resolve(repoRoot, candidate.path)));
+    const explicitExternalOk =
+      evalGate("external_provider_explicitly_enabled") === true &&
+      Array.isArray(aigcCandidates) &&
+      aigcCandidates.length > 0 &&
+      aigcCandidates.every((candidate) => candidate.provenance?.sampleFramesSentExternally === false);
     gates.push(
       {
         id: "aigc_material_briefs_generated",
@@ -826,7 +832,7 @@ function motionGraphArtifactGates(options = {}) {
       },
       {
         id: "generated_assets_exist",
-        passed: candidatesOk && aigcCandidates.every((candidate) => existsSync(path.resolve(repoRoot, candidate.path))),
+        passed: generatedAssetFilesExist,
         detail: JSON.stringify((aigcCandidates ?? []).map((candidate) => candidate.path))
       },
       {
@@ -841,7 +847,7 @@ function motionGraphArtifactGates(options = {}) {
       },
       {
         id: "external_provider_not_called_by_default",
-        passed: candidatesOk,
+        passed: candidatesOk || explicitExternalOk,
         detail: JSON.stringify((aigcCandidates ?? []).map((candidate) => ({ provider: candidate.provider, external: candidate.provenance?.externalProviderUsed })))
       }
     );

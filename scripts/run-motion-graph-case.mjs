@@ -21,6 +21,26 @@ import {
 import { FFmpegRenderer } from "../apps/api/dist/adapters/renderers.js";
 
 const currentScriptPath = fileURLToPath(import.meta.url);
+const repoRoot = path.resolve(path.dirname(currentScriptPath), "..");
+
+async function loadDotEnvIfPresent() {
+  const envPath = path.join(repoRoot, ".env");
+  if (!existsSync(envPath)) return;
+  const text = await readFile(envPath, "utf8");
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) continue;
+    const value = rawValue.replace(/^['"]|['"]$/g, "");
+    process.env[key] = value;
+  }
+}
+
+await loadDotEnvIfPresent();
+
 function valueAfterFlag(flag) {
   const index = process.argv.indexOf(flag);
   return index >= 0 ? process.argv[index + 1] : undefined;
@@ -30,8 +50,9 @@ const withTargetAssets = process.argv.includes("--with-target-assets");
 const withPartialTargetAssets = process.argv.includes("--with-partial-target-assets");
 const withMalformedTargetAssets = process.argv.includes("--with-malformed-target-assets");
 const withAigcMaterials = process.argv.includes("--with-aigc-materials");
+const aigcProviderArg = valueAfterFlag("--aigc-provider");
+const allowExternalAigc = process.argv.includes("--allow-external-aigc");
 const targetAssetsManifestArg = valueAfterFlag("--target-assets-manifest");
-const repoRoot = path.resolve(path.dirname(currentScriptPath), "..");
 const artifactDir = path.join(repoRoot, "docs", "artifacts", "motion_graph_case");
 const previewDir = path.join(artifactDir, "preview_frames");
 const samplePath = path.join(repoRoot, "test_videos", "motion_graph_1.mov");
@@ -45,6 +66,12 @@ const explicitTargetManifestPath = targetAssetsManifestArg
 const targetManifestPath = explicitTargetManifestPath ?? (withMalformedTargetAssets ? malformedFixtureManifestPath : withPartialTargetAssets ? partialFixtureManifestPath : withTargetAssets ? fixtureManifestPath : null);
 const usesTargetAssetManifest = Boolean(targetManifestPath);
 const usesAigcMaterials = withAigcMaterials;
+const supportedAigcProviders = new Set(["mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"]);
+const resolvedAigcProvider = aigcProviderArg === "env" ? (process.env.AIGC_IMAGE_PROVIDER ?? "mock_provider") : (aigcProviderArg ?? "mock_provider");
+if (usesAigcMaterials && !supportedAigcProviders.has(resolvedAigcProvider)) {
+  throw new Error(`Unsupported AIGC provider "${resolvedAigcProvider}".`);
+}
+const externalAigcProvider = resolvedAigcProvider === "volcengine_seedream";
 const isPartialTargetMode = withPartialTargetAssets;
 const isMalformedTargetMode = withMalformedTargetAssets;
 const forbiddenArtifactPatterns = [
@@ -841,7 +868,7 @@ async function main() {
     warnings: [
       "motion_graph_case: structure induced from deterministic visual-evidence (opencv_visual_evidence).",
       usesAigcMaterials
-        ? "sample frames are labeled evidence only; optional AIGC material fill uses deterministic mock_provider generated target material."
+        ? `sample frames are labeled evidence only; optional AIGC material fill uses ${resolvedAigcProvider} generated target material.`
         : usesTargetAssetManifest
         ? "sample frames are labeled evidence only; target manifest assets are used as target material."
         : "sample frames are labeled evidence only; targetAssets intentionally remain empty (noSampleVisualCopy)."
@@ -918,22 +945,24 @@ async function main() {
       generationId: generation.id,
       config: {
         enabled: true,
-        provider: "mock_provider",
+        provider: resolvedAigcProvider,
         maxAssetsPerRun: 8,
-        allowExternalUpload: false,
+        allowExternalUpload: externalAigcProvider && allowExternalAigc,
         allowSampleFramesToProvider: false,
         requireUserApprovalBeforeRender: false,
         cacheEnabled: true
       }
     });
-    const provider = getAigcMaterialProvider("mock_provider");
+    const provider = getAigcMaterialProvider(resolvedAigcProvider);
     const generatedAssetsDir = path.join(artifactDir, "generated-assets");
     await mkdir(generatedAssetsDir, { recursive: true });
     for (const brief of aigcMaterialBriefs) {
       const candidates = await provider.generate(brief, {
         outputDir: generatedAssetsDir,
         publicPathPrefix: "docs/artifacts/motion_graph_case/generated-assets",
-        now: nowIso()
+        now: nowIso(),
+        env: process.env,
+        allowExternalProviderCall: allowExternalAigc
       });
       generatedAssetCandidates.push(...candidates);
     }
@@ -1229,6 +1258,7 @@ async function main() {
   const geometricProcedural = geometricMatch?.status === "matched" && !geometricMatch.selectedTargetAssetId;
   if (usesAigcMaterials) {
     const generatedAssetIds = new Set(aigcGeneratedTargetAssets.map((asset) => asset.id));
+    const externalProviderUsed = generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed);
     const generatedAssetsUsed = generation.fillPlan.some((action) => action.strategy === "aigc_generated_asset") &&
       timeline.clips.some((clip) => clip.gapFillStrategy === "aigc_generated_asset" && (clip.layers ?? []).some((layer) =>
         Array.isArray(layer.style?.targetAssetIds) && layer.style.targetAssetIds.some((assetId) => generatedAssetIds.has(String(assetId)))
@@ -1236,12 +1266,25 @@ async function main() {
     gates.push(
       gate("aigc_material_fill_disabled_by_default", requestForCase().controls.allowAigcMaterialGeneration !== true, "default=false", "AIGC material fill must not be enabled in the default request."),
       gate("aigc_material_briefs_generated", aigcMaterialBriefs.length > 0, aigcMaterialBriefs.map((brief) => `${brief.visualFormFamily}:${brief.assetType}:${brief.count}`), "AIGC mode creates structured briefs from real missing slots."),
-      gate("generated_assets_exist", generatedAssetCandidates.length > 0 && generatedAssetCandidates.every((candidate) => existsSync(path.resolve(repoRoot, candidate.path))), generatedAssetCandidates.map((candidate) => candidate.path), "mock_provider writes deterministic generated asset files."),
+      gate("generated_assets_exist", generatedAssetCandidates.length > 0 && generatedAssetCandidates.every((candidate) => existsSync(path.resolve(repoRoot, candidate.path))), generatedAssetCandidates.map((candidate) => candidate.path), "AIGC provider writes generated asset files to local artifacts."),
       gate("generated_assets_quality_checked", generatedAssetQuality.length === generatedAssetCandidates.length && generatedAssetQuality.every((result) => result.usable && result.vlmStatus === "skipped_infra"), generatedAssetQuality.map((result) => `${result.candidateId}:${result.usable}:${result.vlmStatus}`), "quality gate ran deterministic checks; VLM unavailable is skipped_infra."),
       gate("generated_assets_used_in_render", generatedAssetsUsed, rendererCapabilitySummary(generation.fillPlan), "usable generated material is registered as target material and selected by renderer fill plan."),
-      gate("external_provider_not_called_by_default", generatedAssetCandidates.every((candidate) => candidate.provider === "mock_provider" && candidate.provenance.externalProviderUsed === false && candidate.provenance.sampleFramesSentExternally === false), generatedAssetCandidates.map((candidate) => candidate.provider), "AIGC demo uses deterministic mock provider only; no external calls or sample uploads."),
+      gate(
+        "external_provider_not_called_by_default",
+        (resolvedAigcProvider === "mock_provider" && !externalProviderUsed) || (externalAigcProvider && allowExternalAigc && generatedAssetCandidates.every((candidate) => candidate.provenance.sampleFramesSentExternally === false)),
+        generatedAssetCandidates.map((candidate) => ({ provider: candidate.provider, external: candidate.provenance.externalProviderUsed, sampleFrames: candidate.provenance.sampleFramesSentExternally })),
+        "Default AIGC uses mock_provider; external providers require explicit opt-in and never receive sample frames."
+      ),
       gate("generated_assets_labeled_not_user_provided", aigcGeneratedTargetAssets.length > 0 && aigcGeneratedTargetAssets.every((asset) => asset.metadata?.materialRole === "aigc_generated_material" && asset.tags?.includes("aigc_generated_material")), aigcGeneratedTargetAssets.map((asset) => asset.id), "generated assets are labeled as AIGC material, not user-provided assets.")
     );
+    if (externalAigcProvider) {
+      gates.push(gate(
+        "external_provider_explicitly_enabled",
+        allowExternalAigc && externalProviderUsed && generatedAssetCandidates.every((candidate) => candidate.provider === resolvedAigcProvider),
+        { provider: resolvedAigcProvider, allowExternalAigc, externalProviderUsed },
+        "Volcengine Seedream runs only when an explicit external-provider flag is present."
+      ));
+    }
   }
   if (usesTargetAssetManifest) {
     gates.push(
@@ -1336,11 +1379,13 @@ async function main() {
       : null,
     aigcGeneratedMaterial: usesAigcMaterials
       ? {
-          provider: "mock_provider",
-          externalProviderUsed: false,
-          sampleFramesSentExternally: false,
+          provider: resolvedAigcProvider,
+          externalProviderUsed: generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
+          sampleFramesSentExternally: generatedAssetCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
           generatedAssetCount: aigcGeneratedTargetAssets.length,
-          note: "AIGC material fill is optional; this demo uses deterministic mock_provider output."
+          note: externalAigcProvider
+            ? "AIGC material fill is optional; this run used Volcengine Seedream with explicit external-provider opt-in."
+            : "AIGC material fill is optional; this demo uses deterministic mock_provider output."
         }
       : null
   };
@@ -1483,7 +1528,7 @@ async function main() {
     `- active mode: ${usesAigcMaterials ? "AIGC Generated Materials" : isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"}`,
     "- source evidence frames are structure evidence only — not target material.",
     usesAigcMaterials
-      ? "- AIGC material fill is optional; this run uses deterministic `mock_provider` assets labeled `aigc_generated_material`."
+      ? `- AIGC material fill is optional; this run uses \`${resolvedAigcProvider}\` assets labeled \`aigc_generated_material\`${externalAigcProvider ? " with explicit external-provider opt-in." : "."}`
       : usesTargetAssetManifest
       ? `- target assets are user-provided manifest assets from \`${targetFixture?.manifestRef ?? "manifest"}\`.`
       : "- no target assets loaded; visual slots use proxy/procedural fills.",
@@ -1573,7 +1618,7 @@ async function main() {
       <h2>${usesAigcMaterials ? "AIGC Generated Materials" : isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"} 渲染</h2>
       <video controls src="${esc(path.basename(renderPath))}"></video>
       <p>${esc(renderMetadata.durationSec ?? "?")}s · ${esc(renderMetadata.width ?? "?")}x${esc(renderMetadata.height ?? "?")} · audio=${renderMetadata.hasAudio ? "present" : "missing"}</p>
-      <p>${usesAigcMaterials ? "AIGC material fill is optional. This run uses deterministic mock_provider assets labeled as AI-generated material; source evidence is not copied." : usesTargetAssetManifest ? "Target assets are user-provided manifest assets; source evidence is not reused as target material." : "No target assets loaded; this is the proxy baseline."}</p>
+      <p>${usesAigcMaterials ? `AIGC material fill is optional. This run uses ${esc(resolvedAigcProvider)} assets labeled as AI-generated material; source evidence is not copied.` : usesTargetAssetManifest ? "Target assets are user-provided manifest assets; source evidence is not reused as target material." : "No target assets loaded; this is the proxy baseline."}</p>
     </section>
     <section>
       <h2>模板选择</h2>
@@ -1591,11 +1636,11 @@ async function main() {
     ${beforeAfterContactSheet ? `<figure><img src="${esc(beforeAfterContactSheet)}" alt="Before after contact sheet" /><figcaption>Left column: proxy. Right column: with target assets.</figcaption></figure>` : ""}
     ${partialAssetsContactSheet ? `<figure><img src="${esc(partialAssetsContactSheet)}" alt="Partial assets contact sheet" /><figcaption>Left column: proxy. Right column: partial target assets.</figcaption></figure>` : ""}
     ${malformedAssetsContactSheet ? `<figure><img src="${esc(malformedAssetsContactSheet)}" alt="Malformed assets contact sheet" /><figcaption>Left column: proxy. Right column: malformed target assets with blocked entries omitted.</figcaption></figure>` : ""}
-    ${aigcMaterialsContactSheet ? `<figure><img src="${esc(aigcMaterialsContactSheet)}" alt="AIGC materials contact sheet" /><figcaption>Left column: proxy. Right column: deterministic AIGC generated materials.</figcaption></figure>` : ""}
+    ${aigcMaterialsContactSheet ? `<figure><img src="${esc(aigcMaterialsContactSheet)}" alt="AIGC materials contact sheet" /><figcaption>Left column: proxy. Right column: ${externalAigcProvider ? "external Seedream" : "deterministic"} AIGC generated materials.</figcaption></figure>` : ""}
   </section>
   ${usesAigcMaterials ? `<section>
     <h2>Optional AIGC Material Fill</h2>
-    <p>AIGC material fill is optional. Default generation does not call external providers. This demo uses <code>mock_provider</code>; external generation requires explicit opt-in.</p>
+    <p>AIGC material fill is optional. Default generation does not call external providers. This run uses <code>${esc(resolvedAigcProvider)}</code>; external generation requires explicit opt-in.</p>
     <table><thead><tr><th>brief</th><th>slot</th><th>asset type</th><th>count</th><th>privacy</th></tr></thead><tbody>
       ${aigcMaterialBriefs.map((brief) => `<tr><td>${esc(brief.id)}</td><td>${esc(brief.visualFormFamily)}</td><td>${esc(brief.assetType)}</td><td>${esc(brief.count)}</td><td>sampleFramesAllowed=${brief.privacyPolicy.sampleFramesAllowedToProvider}</td></tr>`).join("")}
     </tbody></table>
@@ -1605,7 +1650,7 @@ async function main() {
   </section>` : ""}
   <section>
     <h2>Asset-to-slot mapping</h2>
-    <p>${usesAigcMaterials ? "Target assets are generated mock-provider assets, labeled as AI-generated material." : `Target assets are user-provided manifest assets from <code>${esc(targetFixture?.manifestRef ?? "manifest")}</code>.`}</p>
+    <p>${usesAigcMaterials ? `Target assets are generated ${esc(resolvedAigcProvider)} assets, labeled as AI-generated material.` : `Target assets are user-provided manifest assets from <code>${esc(targetFixture?.manifestRef ?? "manifest")}</code>.`}</p>
     <table><thead><tr><th>family</th><th>status</th><th>match</th><th>assets</th></tr></thead><tbody>
       ${slotAssetMatches.map((match) => `<tr><td>${esc(match.visualFormFamily ?? match.slotType)}</td><td>${esc(match.status)}</td><td>${esc(match.matchKind ?? "none")}</td><td>${esc(match.selectedAssetIds?.join(", ") || "no asset")}</td></tr>`).join("")}
     </tbody></table>
@@ -1700,8 +1745,8 @@ async function main() {
     aigcMaterialsContactSheet,
     aigc: usesAigcMaterials
       ? {
-          provider: "mock_provider",
-          externalProviderUsed: false,
+          provider: resolvedAigcProvider,
+          externalProviderUsed: generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
           briefs: "aigc-material-briefs.json",
           candidates: "generated-asset-candidates.json",
           quality: "generated-asset-quality.json",
@@ -1737,7 +1782,7 @@ async function main() {
     console.log(`Target asset matches: media_cards=${mediaCardsMatch?.selectedTargetAssetIds?.join(",")}; ui_showcase=${uiShowcaseMatch?.selectedTargetAssetId}; brand_cta=${brandMatch?.selectedTargetAssetId}`);
   }
   if (usesAigcMaterials) {
-    console.log(`AIGC provider: mock_provider (external calls: no)`);
+    console.log(`AIGC provider: ${resolvedAigcProvider} (external calls: ${generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed) ? "yes" : "no"})`);
     console.log(`Generated material briefs: ${aigcMaterialBriefs.map((brief) => `${brief.visualFormFamily}:${brief.assetType}:${brief.count}`).join(", ")}`);
     console.log(`Generated assets: ${generatedAssetCandidates.map((candidate) => candidate.path).join(", ")}`);
   }

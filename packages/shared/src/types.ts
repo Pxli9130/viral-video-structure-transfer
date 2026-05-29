@@ -125,6 +125,7 @@ export type FillStrategy =
 export type AigcMaterialProviderId =
   | "mock_provider"
   | "local_folder_provider"
+  | "volcengine_seedream"
   | "ark_seedance_provider_stub"
   | "image_provider"
   | "copy_provider"

@@ -12,7 +12,7 @@ function resolveCandidatePath(candidate: GeneratedAssetCandidate, rootDir?: stri
   return path.resolve(rootDir ?? process.cwd(), candidate.path);
 }
 
-async function pngDimensions(filePath: string): Promise<{ width: number; height: number; codec: string } | undefined> {
+async function imageDimensions(filePath: string): Promise<{ width: number; height: number; codec: string } | undefined> {
   const buffer = await readFile(filePath);
   if (buffer.length < 24) return undefined;
   if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
@@ -21,6 +21,35 @@ async function pngDimensions(filePath: string): Promise<{ width: number; height:
       height: buffer.readUInt32BE(20),
       codec: "png"
     };
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      const length = buffer.readUInt16BE(offset + 2);
+      if (marker >= 0xc0 && marker <= 0xc3 && offset + 8 < buffer.length) {
+        return {
+          height: buffer.readUInt16BE(offset + 5),
+          width: buffer.readUInt16BE(offset + 7),
+          codec: "jpeg"
+        };
+      }
+      offset += Math.max(2, length + 2);
+    }
+  }
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
+    const chunk = buffer.subarray(12, 16).toString("ascii");
+    if (chunk === "VP8X" && buffer.length >= 30) {
+      return {
+        width: 1 + buffer.readUIntLE(24, 3),
+        height: 1 + buffer.readUIntLE(27, 3),
+        codec: "webp"
+      };
+    }
   }
   return undefined;
 }
@@ -53,7 +82,7 @@ export async function checkGeneratedMaterialCandidate(input: {
   if (exists) {
     const info = statSync(filePath);
     notEmpty = info.size > 0;
-    if (input.candidate.type === "image") dimensions = await pngDimensions(filePath);
+    if (input.candidate.type === "image") dimensions = await imageDimensions(filePath);
   }
   deterministicChecks.push({ id: "generated_asset_not_empty", passed: notEmpty, value: exists ? statSync(filePath).size : 0 });
   if (!notEmpty) issues.push("generated asset is empty");
