@@ -137,11 +137,17 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
+function generatedOutputUrl(render: RenderResponse["render"] | null): string | null {
+  const outputPath = render?.outputPath;
+  if (!outputPath) return null;
+  const filename = outputPath.split(/[\\/]/).pop();
+  return filename ? `/generated/${filename}` : null;
+}
+
 function renderOutputUrl(render: RenderResponse["render"] | null): string | null {
   const outputPath = render?.outputPath;
   if (!outputPath || !outputPath.endsWith(".mp4")) return null;
-  const filename = outputPath.split(/[\\/]/).pop();
-  return filename ? `/generated/${filename}` : null;
+  return generatedOutputUrl(render);
 }
 
 function safeArray<T>(value: T[] | null | undefined): T[] {
@@ -318,7 +324,7 @@ function AppContent() {
   const [pace, setPace] = useState<"slow" | "medium" | "fast">("fast");
   const [packagingStyle, setPackagingStyle] = useState<"clean" | "bold" | "mg_motion">("mg_motion");
   const [generation, setGeneration] = useState<GenerationResult | null>(null);
-  const [rendererTarget, setRendererTarget] = useState<RendererTarget>("html_preview");
+  const [rendererTarget, setRendererTarget] = useState<RendererTarget>("ffmpeg");
   const [renderResult, setRenderResult] = useState<RenderResponse["render"] | null>(null);
   const [reviseInstruction, setReviseInstruction] = useState("放慢节奏，减少字幕，CTA 更柔和");
   const [reviseResult, setReviseResult] = useState<ReviseResponse | null>(null);
@@ -340,7 +346,9 @@ function AppContent() {
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
     [selectedTemplateId, templates]
   );
+  const renderedOutputUrl = generatedOutputUrl(renderResult);
   const renderedVideoUrl = renderOutputUrl(renderResult);
+  const renderedHtmlPreview = renderResult?.previewHtml ?? null;
   const replacementSlots = generation?.replacementSlots ?? [];
   const selectedReplacementSlot =
     replacementSlots.find((slot) => slot.slotId === selectedReplacementSlotId) ?? replacementSlots[0] ?? null;
@@ -932,7 +940,7 @@ function AppContent() {
               </div>
               {knowledgeBase && <button onClick={() => downloadJson("knowledge-base.json", knowledgeBase)}>导出知识库</button>}
             </div>
-            <div className="asset-list">
+            <div className="asset-list knowledge-scroll">
               {knowledgeAtoms.map((atom) => (
                 <article key={`${atom.templateId}-${atom.id}`}>
                   <strong>{roleLabel(atom.role)} · {atom.category}: {atom.name}</strong>
@@ -1139,29 +1147,33 @@ function AppContent() {
                       {aigcMaterialFill.providerFallbackReason && <small>{aigcMaterialFill.providerFallbackReason}</small>}
                     </div>
                     <div className="result-grid compact-grid">
-                      <table>
-                        <thead><tr><th>brief</th><th>family</th><th>type</th><th>count</th></tr></thead>
-                        <tbody>
-                          {aigcMaterialFill.briefs.map((brief) => (
-                            <tr key={brief.id}><td>{brief.slotId}</td><td>{brief.visualFormFamily}</td><td>{brief.assetType}</td><td>{brief.count}</td></tr>
-                          ))}
-                          {!aigcMaterialFill.briefs.length && <tr><td colSpan={4}>没有可生成的缺口。</td></tr>}
-                        </tbody>
-                      </table>
-                      <table>
-                        <thead><tr><th>candidate</th><th>usable</th><th>vlm</th><th>issues</th></tr></thead>
-                        <tbody>
-                          {aigcMaterialFill.quality.map((item) => (
-                            <tr key={item.candidateId}>
-                              <td>{item.candidateId}</td>
-                              <td>{item.usable ? "yes" : "no"}</td>
-                              <td>{item.vlmStatus}</td>
-                              <td>{item.issues?.join(", ") || "none"}</td>
-                            </tr>
-                          ))}
-                          {!aigcMaterialFill.quality.length && <tr><td colSpan={4}>尚无质量检查结果。</td></tr>}
-                        </tbody>
-                      </table>
+                      <div className="table-scroll">
+                        <table>
+                          <thead><tr><th>brief</th><th>family</th><th>type</th><th>count</th></tr></thead>
+                          <tbody>
+                            {aigcMaterialFill.briefs.map((brief) => (
+                              <tr key={brief.id}><td>{brief.slotId}</td><td>{brief.visualFormFamily}</td><td>{brief.assetType}</td><td>{brief.count}</td></tr>
+                            ))}
+                            {!aigcMaterialFill.briefs.length && <tr><td colSpan={4}>没有可生成的缺口。</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="table-scroll">
+                        <table>
+                          <thead><tr><th>candidate</th><th>usable</th><th>vlm</th><th>issues</th></tr></thead>
+                          <tbody>
+                            {aigcMaterialFill.quality.map((item) => (
+                              <tr key={item.candidateId}>
+                                <td>{item.candidateId}</td>
+                                <td>{item.usable ? "yes" : "no"}</td>
+                                <td>{item.vlmStatus}</td>
+                                <td>{item.issues?.join(", ") || "none"}</td>
+                              </tr>
+                            ))}
+                            {!aigcMaterialFill.quality.length && <tr><td colSpan={4}>尚无质量检查结果。</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1313,6 +1325,14 @@ function AppContent() {
                 )}
                 {renderedVideoUrl && (
                   <video className="render-player" controls src={renderedVideoUrl} />
+                )}
+                {!renderedVideoUrl && renderedHtmlPreview && (
+                  <iframe className="html-preview wide" title="HTML render preview" srcDoc={renderedHtmlPreview} />
+                )}
+                {!renderedVideoUrl && !renderedHtmlPreview && renderedOutputUrl && (
+                  <p className="empty wide">
+                    <a href={renderedOutputUrl} target="_blank" rel="noreferrer">打开渲染结果</a>
+                  </p>
                 )}
                 <label className="wide">
                   修改指令
