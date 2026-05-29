@@ -191,6 +191,11 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   return /^(1|true|yes|on)$/i.test(value);
 }
 
+function parseInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function envValue(env: Record<string, string | undefined> | undefined, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const value = env?.[key] ?? process.env[key];
@@ -209,6 +214,8 @@ export interface SeedreamProviderConfig {
   sequentialImageGeneration: string;
   stream: boolean;
   watermark: boolean;
+  maxRetries: number;
+  retryDelayMs: number;
 }
 
 export function resolveSeedreamProviderConfig(env?: Record<string, string | undefined>): SeedreamProviderConfig {
@@ -225,8 +232,18 @@ export function resolveSeedreamProviderConfig(env?: Record<string, string | unde
     imageSize: envValue(env, "SEEDREAM_IMAGE_SIZE", "AIGC_IMAGE_SIZE") ?? "2K",
     sequentialImageGeneration: envValue(env, "SEEDREAM_SEQUENTIAL_IMAGE_GENERATION") ?? "disabled",
     stream: parseBoolean(envValue(env, "SEEDREAM_STREAM"), false),
-    watermark: parseBoolean(envValue(env, "SEEDREAM_WATERMARK", "AIGC_IMAGE_WATERMARK"), false)
+    watermark: parseBoolean(envValue(env, "SEEDREAM_WATERMARK", "AIGC_IMAGE_WATERMARK"), false),
+    maxRetries: parseInteger(envValue(env, "SEEDREAM_MAX_RETRIES", "AIGC_IMAGE_MAX_RETRIES"), 2),
+    retryDelayMs: parseInteger(envValue(env, "SEEDREAM_RETRY_DELAY_MS", "AIGC_IMAGE_RETRY_DELAY_MS"), 1500)
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryableSeedreamStatus(status: number): boolean {
+  return status === 429 || status >= 500;
 }
 
 function imageGenerationUrl(config: SeedreamProviderConfig): string {
@@ -337,16 +354,21 @@ export const volcengineSeedreamProvider: AigcMaterialProvider = {
     const candidates: GeneratedAssetCandidate[] = [];
     for (let index = 0; index < count; index += 1) {
       const prompt = brief.promptPack?.[index] ?? brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated material`;
-      const response = await fetchImpl(imageGenerationUrl(config), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify(seedreamRequestBody(config, prompt))
-      });
-      if (!response.ok) {
-        throw new Error(`volcengine_seedream image generation failed with HTTP ${response.status}.`);
+      let response: Response | undefined;
+      for (let attempt = 0; attempt <= config.maxRetries; attempt += 1) {
+        response = await fetchImpl(imageGenerationUrl(config), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`
+          },
+          body: JSON.stringify(seedreamRequestBody(config, prompt))
+        });
+        if (response.ok || !retryableSeedreamStatus(response.status) || attempt >= config.maxRetries) break;
+        await sleep(config.retryDelayMs * Math.max(1, attempt + 1));
+      }
+      if (!response?.ok) {
+        throw new Error(`volcengine_seedream image generation failed with HTTP ${response?.status ?? "unknown"}.`);
       }
       const payload = await response.json();
       let fileBuffer: Buffer;

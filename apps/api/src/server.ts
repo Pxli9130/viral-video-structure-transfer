@@ -1271,6 +1271,16 @@ function aigcProviderForRequest(request: GenerationRequest): AigcMaterialProvide
   return requested && AIGC_PROVIDER_IDS.has(requested) ? requested : "mock_provider";
 }
 
+function sanitizeAigcProviderError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/ark-[A-Za-z0-9-]+/g, "ark-***")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "AIza***")
+    .replace(/GEMINI_API_KEY=[^\s]+/g, "GEMINI_API_KEY=***")
+    .replace(/SEEDREAM_ARK_API_KEY=[^\s]+/g, "SEEDREAM_ARK_API_KEY=***")
+    .slice(0, 500);
+}
+
 function targetAssetFromGeneratedCandidate(input: {
   candidate: GeneratedAssetCandidate;
   brief: MaterialGenerationBrief | undefined;
@@ -1321,6 +1331,7 @@ async function applyAigcMaterialFill(input: {
   const providerId = aigcProviderForRequest(input.request);
   const externalProvider = EXTERNAL_AIGC_PROVIDERS.has(providerId);
   const provider = getAigcMaterialProvider(providerId);
+  const fallbackProvider = getAigcMaterialProvider("mock_provider");
   const briefs = createMaterialGenerationBriefs({
     gapReport: input.baseGeneration.gapReport,
     fillPlan: input.baseGeneration.fillPlan,
@@ -1338,17 +1349,33 @@ async function applyAigcMaterialFill(input: {
   });
 
   const candidates: GeneratedAssetCandidate[] = [];
+  const providerErrors: string[] = [];
+  let providerFallbackReason: string | undefined;
   const outputDir = path.join(generatedDir, "aigc-materials", input.baseGeneration.id);
   const publicPathPrefix = path.relative(repoRoot, outputDir).replace(/\\/g, "/");
   await fs.mkdir(outputDir, { recursive: true });
   for (const brief of briefs) {
-    const generated = await provider.generate(brief, {
-      outputDir,
-      publicPathPrefix,
-      env: process.env,
-      allowExternalProviderCall: externalProvider && input.request.controls?.allowExternalAigcProvider === true
-    });
-    candidates.push(...generated);
+    try {
+      const generated = await provider.generate(brief, {
+        outputDir,
+        publicPathPrefix,
+        env: process.env,
+        allowExternalProviderCall: externalProvider && input.request.controls?.allowExternalAigcProvider === true
+      });
+      candidates.push(...generated);
+    } catch (error) {
+      const reason = sanitizeAigcProviderError(error);
+      providerErrors.push(`${providerId}: ${reason}`);
+      if (!externalProvider || providerId === "mock_provider") throw error;
+      providerFallbackReason = `External AIGC provider ${providerId} failed (${reason}); used deterministic mock_provider fallback.`;
+      const generated = await fallbackProvider.generate(brief, {
+        outputDir,
+        publicPathPrefix,
+        env: process.env,
+        allowExternalProviderCall: false
+      });
+      candidates.push(...generated);
+    }
   }
 
   const quality = await checkGeneratedMaterials({
@@ -1401,13 +1428,17 @@ async function applyAigcMaterialFill(input: {
     request: augmentedRequest,
     warnings: [
       ...generation.warnings,
+      ...(providerFallbackReason ? [providerFallbackReason] : []),
       briefs.length
-        ? `AIGC material fill used ${providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
+        ? `AIGC material fill used ${providerFallbackReason ? "mock_provider fallback" : providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
         : "AIGC material fill was enabled, but no eligible missing visual slots produced generation briefs."
     ],
     aigcMaterialFill: {
       enabled: true,
-      provider: providerId,
+      provider: providerFallbackReason ? "mock_provider" : providerId,
+      requestedProvider: providerId,
+      providerFallbackReason,
+      providerErrors,
       externalProviderUsed: reviewedCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
       sampleFramesSentExternally: reviewedCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
       briefs,

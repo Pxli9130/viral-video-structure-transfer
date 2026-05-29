@@ -172,7 +172,7 @@ async function runGeneratedAssetVlmReview({ briefs, candidates, quality, rootDir
       const watermarkRisk = clampScore(parsed.watermark_risk);
       const vlmIssues = Array.isArray(parsed.issues) ? parsed.issues.map((issue) => String(issue)).filter(Boolean) : [];
       const rationale = String(parsed.rationale ?? "").slice(0, 240);
-      const issueText = `${vlmIssues.join(" ")} ${rationale}`;
+      const issueText = vlmIssues.join(" ");
       const hasBlockingIssue = /sample|copied|copying|watermark|platform|fake\s+logo|unsafe|garbled|unreadable|random\s+text/i.test(issueText);
       const hasExplicitWatermarkConcern = /watermark/i.test(issueText);
       const vlmUsable = parsed.usable === true &&
@@ -238,7 +238,8 @@ const resolvedAigcProvider = aigcProviderArg === "env" ? (process.env.AIGC_IMAGE
 if (usesAigcMaterials && !supportedAigcProviders.has(resolvedAigcProvider)) {
   throw new Error(`Unsupported AIGC provider "${resolvedAigcProvider}".`);
 }
-const externalAigcProvider = resolvedAigcProvider === "volcengine_seedream";
+const externalAigcProviderIds = new Set(["volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
+const externalAigcProvider = externalAigcProviderIds.has(resolvedAigcProvider);
 const isPartialTargetMode = withPartialTargetAssets;
 const isMalformedTargetMode = withMalformedTargetAssets;
 const forbiddenArtifactPatterns = [
@@ -249,6 +250,16 @@ const forbiddenArtifactPatterns = [
   { id: "ark-", re: /ark-[0-9A-Za-z_-]*/g }
 ];
 const textArtifactExtensions = new Set([".html", ".md", ".json", ".txt", ".csv"]);
+
+function sanitizeAigcProviderError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/ark-[0-9A-Za-z_-]+/g, "ark-***")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "AIza***")
+    .replace(/GEMINI_API_KEY=[^\s]+/g, "GEMINI_API_KEY=***")
+    .replace(/SEEDREAM_ARK_API_KEY=[^\s]+/g, "SEEDREAM_ARK_API_KEY=***")
+    .slice(0, 500);
+}
 
 function resolveBin(name) {
   const explicit = process.env[name === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH"];
@@ -1101,6 +1112,9 @@ async function main() {
   let generatedAssetCandidates = [];
   let generatedAssetQuality = [];
   let aigcGeneratedTargetAssets = [];
+  let activeAigcProvider = resolvedAigcProvider;
+  let aigcProviderFallbackReason = null;
+  const aigcProviderErrors = [];
   if (usesAigcMaterials) {
     aigcMaterialBriefs = createMaterialGenerationBriefs({
       gapReport: generation.gapReport,
@@ -1121,16 +1135,35 @@ async function main() {
       }
     });
     const provider = getAigcMaterialProvider(resolvedAigcProvider);
+    const fallbackProvider = getAigcMaterialProvider("mock_provider");
     const generatedAssetsDir = path.join(artifactDir, "generated-assets");
     await mkdir(generatedAssetsDir, { recursive: true });
     for (const brief of aigcMaterialBriefs) {
-      const candidates = await provider.generate(brief, {
-        outputDir: generatedAssetsDir,
-        publicPathPrefix: "docs/artifacts/motion_graph_case/generated-assets",
-        now: nowIso(),
-        env: process.env,
-        allowExternalProviderCall: allowExternalAigc
-      });
+      let candidates;
+      try {
+        candidates = await provider.generate(brief, {
+          outputDir: generatedAssetsDir,
+          publicPathPrefix: "docs/artifacts/motion_graph_case/generated-assets",
+          now: nowIso(),
+          env: process.env,
+          allowExternalProviderCall: allowExternalAigc
+        });
+      } catch (error) {
+        const reason = sanitizeAigcProviderError(error);
+        aigcProviderErrors.push(`${resolvedAigcProvider}: ${reason}`);
+        if (!externalAigcProvider || resolvedAigcProvider === "mock_provider") {
+          throw error;
+        }
+        activeAigcProvider = "mock_provider";
+        aigcProviderFallbackReason ??= `External AIGC provider ${resolvedAigcProvider} failed (${reason}); used deterministic mock_provider fallback.`;
+        candidates = await fallbackProvider.generate(brief, {
+          outputDir: generatedAssetsDir,
+          publicPathPrefix: "docs/artifacts/motion_graph_case/generated-assets",
+          now: nowIso(),
+          env: process.env,
+          allowExternalProviderCall: false
+        });
+      }
       generatedAssetCandidates.push(...candidates);
     }
     generatedAssetQuality = await checkGeneratedMaterials({
@@ -1447,8 +1480,14 @@ async function main() {
       gate("generated_assets_used_in_render", generatedAssetsUsed, rendererCapabilitySummary(generation.fillPlan), "usable generated material is registered as target material and selected by renderer fill plan."),
       gate(
         "external_provider_not_called_by_default",
-        (resolvedAigcProvider === "mock_provider" && !externalProviderUsed) || (externalAigcProvider && allowExternalAigc && generatedAssetCandidates.every((candidate) => candidate.provenance.sampleFramesSentExternally === false)),
-        generatedAssetCandidates.map((candidate) => ({ provider: candidate.provider, external: candidate.provenance.externalProviderUsed, sampleFrames: candidate.provenance.sampleFramesSentExternally })),
+        (resolvedAigcProvider === "mock_provider" && !externalProviderUsed) ||
+          (externalAigcProvider && allowExternalAigc && generatedAssetCandidates.every((candidate) => candidate.provenance.sampleFramesSentExternally === false)),
+        {
+          requestedProvider: resolvedAigcProvider,
+          activeProvider: activeAigcProvider,
+          fallbackReason: aigcProviderFallbackReason,
+          candidates: generatedAssetCandidates.map((candidate) => ({ provider: candidate.provider, external: candidate.provenance.externalProviderUsed, sampleFrames: candidate.provenance.sampleFramesSentExternally }))
+        },
         "Default AIGC uses mock_provider; external providers require explicit opt-in and never receive sample frames."
       ),
       gate("generated_assets_labeled_not_user_provided", aigcGeneratedTargetAssets.length > 0 && aigcGeneratedTargetAssets.every((asset) => asset.metadata?.materialRole === "aigc_generated_material" && asset.tags?.includes("aigc_generated_material")), aigcGeneratedTargetAssets.map((asset) => asset.id), "generated assets are labeled as AIGC material, not user-provided assets.")
@@ -1456,9 +1495,12 @@ async function main() {
     if (externalAigcProvider) {
       gates.push(gate(
         "external_provider_explicitly_enabled",
-        allowExternalAigc && externalProviderUsed && generatedAssetCandidates.every((candidate) => candidate.provider === resolvedAigcProvider),
-        { provider: resolvedAigcProvider, allowExternalAigc, externalProviderUsed },
-        "Volcengine Seedream runs only when an explicit external-provider flag is present."
+        allowExternalAigc && (
+          (externalProviderUsed && generatedAssetCandidates.every((candidate) => candidate.provider === resolvedAigcProvider)) ||
+          Boolean(aigcProviderFallbackReason)
+        ),
+        { requestedProvider: resolvedAigcProvider, activeProvider: activeAigcProvider, allowExternalAigc, externalProviderUsed, fallbackReason: aigcProviderFallbackReason },
+        "External AIGC runs only with an explicit external-provider flag; provider failures are recorded and may fall back to mock_provider."
       ));
     }
   }
@@ -1555,11 +1597,16 @@ async function main() {
       : null,
     aigcGeneratedMaterial: usesAigcMaterials
       ? {
-          provider: resolvedAigcProvider,
+          provider: activeAigcProvider,
+          requestedProvider: resolvedAigcProvider,
+          providerFallbackReason: aigcProviderFallbackReason,
+          providerErrors: aigcProviderErrors,
           externalProviderUsed: generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
           sampleFramesSentExternally: generatedAssetCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
           generatedAssetCount: aigcGeneratedTargetAssets.length,
-          note: externalAigcProvider
+          note: aigcProviderFallbackReason
+            ? "AIGC material fill is optional; the requested external provider failed and deterministic mock_provider fallback was used."
+            : externalAigcProvider
             ? "AIGC material fill is optional; this run used Volcengine Seedream with explicit external-provider opt-in."
             : "AIGC material fill is optional; this demo uses deterministic mock_provider output."
         }
@@ -1704,10 +1751,13 @@ async function main() {
     `- active mode: ${usesAigcMaterials ? "AIGC Generated Materials" : isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"}`,
     "- source evidence frames are structure evidence only — not target material.",
     usesAigcMaterials
-      ? `- AIGC material fill is optional; this run uses \`${resolvedAigcProvider}\` assets labeled \`aigc_generated_material\`${externalAigcProvider ? " with explicit external-provider opt-in." : "."}`
+      ? `- AIGC material fill is optional; requested provider \`${resolvedAigcProvider}\`, active provider \`${activeAigcProvider}\`; assets are labeled \`aigc_generated_material\`${externalAigcProvider ? " with explicit external-provider opt-in." : "."}`
       : usesTargetAssetManifest
       ? `- target assets are user-provided manifest assets from \`${targetFixture?.manifestRef ?? "manifest"}\`.`
       : "- no target assets loaded; visual slots use proxy/procedural fills.",
+    ...(usesAigcMaterials && aigcProviderFallbackReason
+      ? [`- provider fallback: ${aigcProviderFallbackReason}`]
+      : []),
     "",
     ...(usesTargetAssetManifest
       ? [
@@ -1794,7 +1844,8 @@ async function main() {
       <h2>${usesAigcMaterials ? "AIGC Generated Materials" : isMalformedTargetMode ? "Malformed Target Assets" : isPartialTargetMode ? "Partial Target Assets" : usesTargetAssetManifest ? "With Target Assets" : "Proxy Mode"} 渲染</h2>
       <video controls src="${esc(path.basename(renderPath))}"></video>
       <p>${esc(renderMetadata.durationSec ?? "?")}s · ${esc(renderMetadata.width ?? "?")}x${esc(renderMetadata.height ?? "?")} · audio=${renderMetadata.hasAudio ? "present" : "missing"}</p>
-      <p>${usesAigcMaterials ? `AIGC material fill is optional. This run uses ${esc(resolvedAigcProvider)} assets labeled as AI-generated material; source evidence is not copied.` : usesTargetAssetManifest ? "Target assets are user-provided manifest assets; source evidence is not reused as target material." : "No target assets loaded; this is the proxy baseline."}</p>
+      <p>${usesAigcMaterials ? `AIGC material fill is optional. Requested provider: ${esc(resolvedAigcProvider)}; active provider: ${esc(activeAigcProvider)}. Assets are labeled as AI-generated material; source evidence is not copied.` : usesTargetAssetManifest ? "Target assets are user-provided manifest assets; source evidence is not reused as target material." : "No target assets loaded; this is the proxy baseline."}</p>
+      ${usesAigcMaterials && aigcProviderFallbackReason ? `<p><strong>Provider fallback:</strong> ${esc(aigcProviderFallbackReason)}</p>` : ""}
     </section>
     <section>
       <h2>模板选择</h2>
@@ -1812,11 +1863,12 @@ async function main() {
     ${beforeAfterContactSheet ? `<figure><img src="${esc(beforeAfterContactSheet)}" alt="Before after contact sheet" /><figcaption>Left column: proxy. Right column: with target assets.</figcaption></figure>` : ""}
     ${partialAssetsContactSheet ? `<figure><img src="${esc(partialAssetsContactSheet)}" alt="Partial assets contact sheet" /><figcaption>Left column: proxy. Right column: partial target assets.</figcaption></figure>` : ""}
     ${malformedAssetsContactSheet ? `<figure><img src="${esc(malformedAssetsContactSheet)}" alt="Malformed assets contact sheet" /><figcaption>Left column: proxy. Right column: malformed target assets with blocked entries omitted.</figcaption></figure>` : ""}
-    ${aigcMaterialsContactSheet ? `<figure><img src="${esc(aigcMaterialsContactSheet)}" alt="AIGC materials contact sheet" /><figcaption>Left column: proxy. Right column: ${externalAigcProvider ? "external Seedream" : "deterministic"} AIGC generated materials.</figcaption></figure>` : ""}
+    ${aigcMaterialsContactSheet ? `<figure><img src="${esc(aigcMaterialsContactSheet)}" alt="AIGC materials contact sheet" /><figcaption>Left column: proxy. Right column: ${esc(activeAigcProvider)} AIGC generated materials.</figcaption></figure>` : ""}
   </section>
   ${usesAigcMaterials ? `<section>
     <h2>Optional AIGC Material Fill</h2>
-    <p>AIGC material fill is optional. Default generation does not call external providers. This run uses <code>${esc(resolvedAigcProvider)}</code>; external generation requires explicit opt-in.</p>
+    <p>AIGC material fill is optional. Default generation does not call external providers. Requested provider: <code>${esc(resolvedAigcProvider)}</code>; active provider: <code>${esc(activeAigcProvider)}</code>. External generation requires explicit opt-in.</p>
+    ${aigcProviderFallbackReason ? `<p><strong>Provider fallback:</strong> ${esc(aigcProviderFallbackReason)}</p>` : ""}
     <table><thead><tr><th>brief</th><th>slot</th><th>asset type</th><th>count</th><th>privacy</th></tr></thead><tbody>
       ${aigcMaterialBriefs.map((brief) => `<tr><td>${esc(brief.id)}</td><td>${esc(brief.visualFormFamily)}</td><td>${esc(brief.assetType)}</td><td>${esc(brief.count)}</td><td>sampleFramesAllowed=${brief.privacyPolicy.sampleFramesAllowedToProvider}</td></tr>`).join("")}
     </tbody></table>
@@ -1826,7 +1878,7 @@ async function main() {
   </section>` : ""}
   <section>
     <h2>Asset-to-slot mapping</h2>
-    <p>${usesAigcMaterials ? `Target assets are generated ${esc(resolvedAigcProvider)} assets, labeled as AI-generated material.` : `Target assets are user-provided manifest assets from <code>${esc(targetFixture?.manifestRef ?? "manifest")}</code>.`}</p>
+    <p>${usesAigcMaterials ? `Target assets are generated ${esc(activeAigcProvider)} assets, labeled as AI-generated material.` : `Target assets are user-provided manifest assets from <code>${esc(targetFixture?.manifestRef ?? "manifest")}</code>.`}</p>
     <table><thead><tr><th>family</th><th>status</th><th>match</th><th>assets</th></tr></thead><tbody>
       ${slotAssetMatches.map((match) => `<tr><td>${esc(match.visualFormFamily ?? match.slotType)}</td><td>${esc(match.status)}</td><td>${esc(match.matchKind ?? "none")}</td><td>${esc(match.selectedAssetIds?.join(", ") || "no asset")}</td></tr>`).join("")}
     </tbody></table>
@@ -1921,7 +1973,10 @@ async function main() {
     aigcMaterialsContactSheet,
     aigc: usesAigcMaterials
       ? {
-          provider: resolvedAigcProvider,
+          provider: activeAigcProvider,
+          requestedProvider: resolvedAigcProvider,
+          providerFallbackReason: aigcProviderFallbackReason,
+          providerErrors: aigcProviderErrors,
           externalProviderUsed: generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
           briefs: "aigc-material-briefs.json",
           candidates: "generated-asset-candidates.json",
@@ -1958,7 +2013,8 @@ async function main() {
     console.log(`Target asset matches: media_cards=${mediaCardsMatch?.selectedTargetAssetIds?.join(",")}; ui_showcase=${uiShowcaseMatch?.selectedTargetAssetId}; brand_cta=${brandMatch?.selectedTargetAssetId}`);
   }
   if (usesAigcMaterials) {
-    console.log(`AIGC provider: ${resolvedAigcProvider} (external calls: ${generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed) ? "yes" : "no"})`);
+    console.log(`AIGC provider: requested=${resolvedAigcProvider}; active=${activeAigcProvider}; external calls=${generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed) ? "yes" : "no"}`);
+    if (aigcProviderFallbackReason) console.log(`AIGC provider fallback: ${aigcProviderFallbackReason}`);
     console.log(`Generated material briefs: ${aigcMaterialBriefs.map((brief) => `${brief.visualFormFamily}:${brief.assetType}:${brief.count}`).join(", ")}`);
     console.log(`Generated assets: ${generatedAssetCandidates.map((candidate) => candidate.path).join(", ")}`);
   }

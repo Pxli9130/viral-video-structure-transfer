@@ -212,6 +212,44 @@ describe("E2E pipeline (mock adapters)", () => {
     ).toBe(true);
   });
 
+  it("falls back to mock AIGC material when an external provider fails", async () => {
+    const previousProvider = process.env.AIGC_IMAGE_PROVIDER;
+    process.env.AIGC_IMAGE_PROVIDER = "image_provider";
+    try {
+      const generateRes = await api
+        .post("/api/generations")
+        .send({
+          projectId,
+          inputMode: "prompt_only",
+          selectedTemplateIds: [templateId],
+          prompt: "主题：AI 视频结构迁移工具\nCTA：立即上传素材",
+          target: { vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15, outputMode: "storyboard_preview" },
+          controls: {
+            pace: "fast",
+            hookIntensity: "strong",
+            packagingStyle: "mg_motion",
+            allowAigcPlaceholder: true,
+            allowAigcMaterialGeneration: true,
+            allowExternalAigcProvider: true
+          }
+        })
+        .expect(201);
+
+      const fill = generateRes.body.data.generation.aigcMaterialFill;
+      expect(fill.enabled).toBe(true);
+      expect(fill.requestedProvider).toBe("image_provider");
+      expect(fill.provider).toBe("mock_provider");
+      expect(fill.providerFallbackReason).toContain("used deterministic mock_provider fallback");
+      expect(fill.providerErrors.length).toBeGreaterThan(0);
+      expect(fill.externalProviderUsed).toBe(false);
+      expect(fill.sampleFramesSentExternally).toBe(false);
+      expect(fill.generatedTargetAssets.length).toBeGreaterThan(0);
+    } finally {
+      if (previousProvider === undefined) delete process.env.AIGC_IMAGE_PROVIDER;
+      else process.env.AIGC_IMAGE_PROVIDER = previousProvider;
+    }
+  });
+
   it("binds an uploaded replacement asset to a gap slot and regenerates", async () => {
     const replacementUploadRes = await api
       .post(`/api/projects/${projectId}/assets`)

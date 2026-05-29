@@ -1132,8 +1132,11 @@ function AppContent() {
                     <div>
                       <strong>AIGC material fill</strong>
                       <span>
-                        provider: {aigcMaterialFill.provider} · generated target assets: {aigcMaterialFill.generatedTargetAssets.length} · external calls: {aigcMaterialFill.externalProviderUsed ? "yes" : "no"} · sample frames sent: {aigcMaterialFill.sampleFramesSentExternally ? "yes" : "no"}
+                        provider: {aigcMaterialFill.provider}
+                        {aigcMaterialFill.requestedProvider && aigcMaterialFill.requestedProvider !== aigcMaterialFill.provider ? ` · requested: ${aigcMaterialFill.requestedProvider}` : ""}
+                        {" "}· generated target assets: {aigcMaterialFill.generatedTargetAssets.length} · external calls: {aigcMaterialFill.externalProviderUsed ? "yes" : "no"} · sample frames sent: {aigcMaterialFill.sampleFramesSentExternally ? "yes" : "no"}
                       </span>
+                      {aigcMaterialFill.providerFallbackReason && <small>{aigcMaterialFill.providerFallbackReason}</small>}
                     </div>
                     <div className="result-grid compact-grid">
                       <table>

@@ -222,7 +222,7 @@ describe("optional AIGC material fill", () => {
           arrayBuffer: async () => tinyPng.buffer.slice(tinyPng.byteOffset, tinyPng.byteOffset + tinyPng.byteLength)
         } as Response;
       };
-      const [candidate] = await getAigcMaterialProvider("volcengine_seedream").generate(brief, {
+      const candidates = await getAigcMaterialProvider("volcengine_seedream").generate(brief, {
         outputDir: temp,
         publicPathPrefix: temp,
         now: "2026-01-01T00:00:00.000Z",
@@ -240,6 +240,7 @@ describe("optional AIGC material fill", () => {
         stream: false,
         watermark: false
       });
+      const [candidate] = candidates;
       expect(candidate.provider).toBe("volcengine_seedream");
       expect(candidate.materialRole).toBe("aigc_generated_material");
       expect(candidate.provenance.externalProviderUsed).toBe(true);
@@ -247,6 +248,58 @@ describe("optional AIGC material fill", () => {
       expect(validateGeneratedAssetCandidate(candidate).valid).toBe(true);
       const quality = await checkGeneratedMaterials({ briefs: [brief], candidates: [candidate], rootDir: process.cwd(), vlmAvailable: false });
       expect(quality[0].usable).toBe(true);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("volcengine seedream retries transient 429 responses", async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), "vvst-seedream-retry-test-"));
+    try {
+      const [brief] = createMaterialGenerationBriefs({
+        gapReport: [{ slotId: "slot_media_cards", status: "missing", severity: "high", reason: "missing", impact: "missing", visualFormFamily: "media_cards", visualForm: "stacked_media_cards", missingCount: 1, rendererCandidates: ["card_stack_motion"], sourceEvidence: mediaCardsSlot.sourceEvidence }],
+        inducedSlots: [mediaCardsSlot],
+        request: request(true),
+        config: { enabled: true, provider: "volcengine_seedream", maxAssetsPerRun: 1, allowExternalUpload: true, allowSampleFramesToProvider: false, requireUserApprovalBeforeRender: false, cacheEnabled: true }
+      });
+      const env = {
+        SEEDREAM_ARK_API_KEY: "ark-test-secret",
+        SEEDREAM_ARK_MODEL: "doubao-seedream-5-0-260128",
+        SEEDREAM_MAX_RETRIES: "1",
+        SEEDREAM_RETRY_DELAY_MS: "0"
+      };
+      const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+      let generationCalls = 0;
+      const fetchImpl = async (url: string | URL | Request): Promise<Response> => {
+        const urlString = String(url);
+        if (urlString.includes("/images/generations")) {
+          generationCalls += 1;
+          if (generationCalls === 1) return { ok: false, status: 429 } as Response;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ data: [{ url: "https://seedream.local/generated.png" }] })
+          } as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name: string) => name.toLowerCase() === "content-type" ? "image/png" : null },
+          arrayBuffer: async () => tinyPng.buffer.slice(tinyPng.byteOffset, tinyPng.byteOffset + tinyPng.byteLength)
+        } as Response;
+      };
+      const candidates = await getAigcMaterialProvider("volcengine_seedream").generate(brief, {
+        outputDir: temp,
+        publicPathPrefix: temp,
+        now: "2026-01-01T00:00:00.000Z",
+        env,
+        fetchImpl,
+        allowExternalProviderCall: true
+      });
+      const [candidate] = candidates;
+      expect(generationCalls).toBe(candidates.length + 1);
+      expect(candidate.provider).toBe("volcengine_seedream");
+      expect(candidate.provenance.externalProviderUsed).toBe(true);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

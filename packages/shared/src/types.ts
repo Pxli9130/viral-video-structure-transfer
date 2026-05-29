@@ -948,6 +948,9 @@ export interface GenerationResult {
   aigcMaterialFill?: {
     enabled: boolean;
     provider: AigcMaterialProviderId;
+    requestedProvider?: AigcMaterialProviderId;
+    providerFallbackReason?: string;
+    providerErrors?: string[];
     externalProviderUsed: boolean;
     sampleFramesSentExternally: boolean;
     briefs: MaterialGenerationBrief[];
