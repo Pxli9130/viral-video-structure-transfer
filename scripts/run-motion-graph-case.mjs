@@ -46,6 +46,173 @@ function valueAfterFlag(flag) {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+function stripJsonFence(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed.startsWith("```")) return trimmed;
+  return trimmed.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+}
+
+function clampScore(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(1, number));
+}
+
+function envFlagEnabled(value) {
+  return /^(1|true|yes|on)$/i.test(String(value ?? ""));
+}
+
+function mimeTypeForImagePath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  return "image/png";
+}
+
+function generatedMaterialVlmConfigured() {
+  return process.env.VVST_SKIP_AIGC_MATERIAL_VLM !== "1" &&
+    String(process.env.VLM_PROVIDER ?? "").toLowerCase() === "gemini" &&
+    Boolean(process.env.GEMINI_API_KEY);
+}
+
+function buildGeneratedMaterialVlmPrompt(brief, candidate) {
+  return `You are a strict generated-material quality judge for a structure-transfer video engine.
+
+You will see one GENERATED image candidate. You will NOT see source/sample frames by design.
+The sample/reference video is structure evidence only and must not be copied or sent here.
+
+Judge whether the candidate is usable target material for this slot:
+- slotId: ${brief.slotId}
+- visualFormFamily: ${brief.visualFormFamily}
+- visualForm: ${brief.visualForm}
+- assetType: ${brief.assetType}
+- targetTheme: ${brief.targetTheme}
+- intendedRendererCapability: ${brief.structureConstraints?.intendedRendererCapability ?? "unknown"}
+- negativePrompts: ${(brief.negativePrompts ?? []).join("; ")}
+- provider: ${candidate.provider}
+- model: ${candidate.model}
+
+Return STRICT JSON only:
+{
+  "slot_fit": <0-1>,
+  "target_theme_fit": <0-1>,
+  "no_sample_copy": <0-1>,
+  "text_artifact_risk": <0-1>,
+  "watermark_risk": <0-1>,
+  "usable": <boolean>,
+  "issues": ["short issue strings"],
+  "rationale": "<120 chars"
+}
+
+Scoring rules:
+- For media_cards, favor original card/interface/product-like visuals suitable for card-stack rendering.
+- For brand_cta logo_placeholder, do not require a real logo; a generic placeholder/CTA panel is acceptable.
+- Penalize watermarks, platform UI marks, unreadable random text, fake real logos, obvious copied branding, or unusable blank images.
+- Because sample frames are not provided, judge no_sample_copy from visible evidence only; do not invent copy claims.`;
+}
+
+async function runGeneratedAssetVlmReview({ briefs, candidates, quality, rootDir }) {
+  if (!generatedMaterialVlmConfigured()) return quality;
+  const { GoogleGenAI, createUserContent } = await import("@google/genai");
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const modelCandidates = Array.from(new Set([
+    process.env.VLM_MODEL ?? "gemini-flash-latest",
+    process.env.GEMINI_VLM_FALLBACK_MODEL ?? "gemini-2.5-flash"
+  ].filter(Boolean)));
+  const briefById = new Map(briefs.map((brief) => [brief.id, brief]));
+  const qualityById = new Map(quality.map((result) => [result.candidateId, result]));
+  const reviewed = [];
+  for (const candidate of candidates) {
+    const existing = qualityById.get(candidate.id);
+    const brief = briefById.get(candidate.briefId);
+    if (!existing || !brief) {
+      reviewed.push(existing ?? {
+        candidateId: candidate.id,
+        slotId: candidate.slotId,
+        usable: false,
+        deterministicChecks: [],
+        vlmStatus: "failed",
+        issues: ["brief or deterministic quality result missing before VLM review"]
+      });
+      continue;
+    }
+    if (!existing.usable || candidate.type !== "image") {
+      reviewed.push({ ...existing, vlmStatus: existing.vlmStatus === "skipped_infra" ? "not_run" : existing.vlmStatus });
+      continue;
+    }
+    const resolvedPath = path.isAbsolute(candidate.path) ? candidate.path : path.resolve(rootDir, candidate.path);
+    try {
+      const imageBase64 = (await readFile(resolvedPath)).toString("base64");
+      const contents = createUserContent([
+        { inlineData: { data: imageBase64, mimeType: mimeTypeForImagePath(resolvedPath) } },
+        buildGeneratedMaterialVlmPrompt(brief, candidate)
+      ]);
+      let response;
+      let model = modelCandidates[0];
+      let lastError;
+      for (const candidateModel of modelCandidates) {
+        try {
+          response = await client.models.generateContent({
+            model: candidateModel,
+            contents,
+            config: { responseMimeType: "application/json" }
+          });
+          model = candidateModel;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!response) throw lastError ?? new Error("VLM material review failed before response.");
+      const parsed = JSON.parse(stripJsonFence(response.text ?? ""));
+      const slotFitScore = clampScore(parsed.slot_fit);
+      const targetThemeFitScore = clampScore(parsed.target_theme_fit);
+      const noSampleCopyScore = clampScore(parsed.no_sample_copy);
+      const textArtifactRisk = clampScore(parsed.text_artifact_risk);
+      const watermarkRisk = clampScore(parsed.watermark_risk);
+      const vlmIssues = Array.isArray(parsed.issues) ? parsed.issues.map((issue) => String(issue)).filter(Boolean) : [];
+      const rationale = String(parsed.rationale ?? "").slice(0, 240);
+      const issueText = `${vlmIssues.join(" ")} ${rationale}`;
+      const hasBlockingIssue = /sample|copied|copying|watermark|platform|fake\s+logo|unsafe|garbled|unreadable|random\s+text/i.test(issueText);
+      const hasExplicitWatermarkConcern = /watermark/i.test(issueText);
+      const vlmUsable = parsed.usable === true &&
+        slotFitScore >= 0.55 &&
+        noSampleCopyScore >= 0.7 &&
+        (!hasExplicitWatermarkConcern || watermarkRisk <= 0.4) &&
+        !hasBlockingIssue;
+      reviewed.push({
+        ...existing,
+        usable: existing.usable && vlmUsable,
+        slotFitScore,
+        targetThemeFitScore,
+        noSampleCopyScore,
+        textArtifactRisk,
+        vlmStatus: "ok",
+        issues: [...existing.issues, ...(!vlmUsable ? vlmIssues.length ? vlmIssues : ["VLM rejected generated material"] : [])],
+        vlm: {
+          provider: "gemini",
+          model,
+          slot_fit: slotFitScore,
+          target_theme_fit: targetThemeFitScore,
+          no_sample_copy: noSampleCopyScore,
+          text_artifact_risk: textArtifactRisk,
+          watermark_risk: watermarkRisk,
+          usable: parsed.usable === true,
+          rationale
+        }
+      });
+    } catch (error) {
+      reviewed.push({
+        ...existing,
+        usable: false,
+        vlmStatus: "failed",
+        issues: [...existing.issues, `VLM material review failed: ${error.message}`]
+      });
+    }
+  }
+  return reviewed;
+}
+
 const withTargetAssets = process.argv.includes("--with-target-assets");
 const withPartialTargetAssets = process.argv.includes("--with-partial-target-assets");
 const withMalformedTargetAssets = process.argv.includes("--with-malformed-target-assets");
@@ -970,7 +1137,13 @@ async function main() {
       briefs: aigcMaterialBriefs,
       candidates: generatedAssetCandidates,
       rootDir: repoRoot,
-      vlmAvailable: false
+      vlmAvailable: generatedMaterialVlmConfigured()
+    });
+    generatedAssetQuality = await runGeneratedAssetVlmReview({
+      briefs: aigcMaterialBriefs,
+      candidates: generatedAssetCandidates,
+      quality: generatedAssetQuality,
+      rootDir: repoRoot
     });
     const qualityById = new Map(generatedAssetQuality.map((result) => [result.candidateId, result]));
     generatedAssetCandidates = generatedAssetCandidates.map((candidate) => {
@@ -1259,6 +1432,8 @@ async function main() {
   if (usesAigcMaterials) {
     const generatedAssetIds = new Set(aigcGeneratedTargetAssets.map((asset) => asset.id));
     const externalProviderUsed = generatedAssetCandidates.some((candidate) => candidate.provenance.externalProviderUsed);
+    const vlmConfigured = generatedMaterialVlmConfigured();
+    const vlmReviewed = generatedAssetQuality.length === generatedAssetCandidates.length && generatedAssetQuality.every((result) => result.vlmStatus === "ok");
     const generatedAssetsUsed = generation.fillPlan.some((action) => action.strategy === "aigc_generated_asset") &&
       timeline.clips.some((clip) => clip.gapFillStrategy === "aigc_generated_asset" && (clip.layers ?? []).some((layer) =>
         Array.isArray(layer.style?.targetAssetIds) && layer.style.targetAssetIds.some((assetId) => generatedAssetIds.has(String(assetId)))
@@ -1267,7 +1442,8 @@ async function main() {
       gate("aigc_material_fill_disabled_by_default", requestForCase().controls.allowAigcMaterialGeneration !== true, "default=false", "AIGC material fill must not be enabled in the default request."),
       gate("aigc_material_briefs_generated", aigcMaterialBriefs.length > 0, aigcMaterialBriefs.map((brief) => `${brief.visualFormFamily}:${brief.assetType}:${brief.count}`), "AIGC mode creates structured briefs from real missing slots."),
       gate("generated_assets_exist", generatedAssetCandidates.length > 0 && generatedAssetCandidates.every((candidate) => existsSync(path.resolve(repoRoot, candidate.path))), generatedAssetCandidates.map((candidate) => candidate.path), "AIGC provider writes generated asset files to local artifacts."),
-      gate("generated_assets_quality_checked", generatedAssetQuality.length === generatedAssetCandidates.length && generatedAssetQuality.every((result) => result.usable && result.vlmStatus === "skipped_infra"), generatedAssetQuality.map((result) => `${result.candidateId}:${result.usable}:${result.vlmStatus}`), "quality gate ran deterministic checks; VLM unavailable is skipped_infra."),
+      gate("generated_assets_quality_checked", generatedAssetQuality.length === generatedAssetCandidates.length && generatedAssetQuality.every((result) => result.usable && (result.vlmStatus === "ok" || (!vlmConfigured && result.vlmStatus === "skipped_infra"))), generatedAssetQuality.map((result) => `${result.candidateId}:${result.usable}:${result.vlmStatus}`), "quality gate ran deterministic checks plus VLM review when configured."),
+      gate("generated_assets_vlm_reviewed", vlmConfigured ? vlmReviewed : generatedAssetQuality.every((result) => result.vlmStatus === "skipped_infra"), generatedAssetQuality.map((result) => `${result.candidateId}:${result.vlmStatus}`), "Gemini VLM reviews generated assets when VLM credentials are configured."),
       gate("generated_assets_used_in_render", generatedAssetsUsed, rendererCapabilitySummary(generation.fillPlan), "usable generated material is registered as target material and selected by renderer fill plan."),
       gate(
         "external_provider_not_called_by_default",

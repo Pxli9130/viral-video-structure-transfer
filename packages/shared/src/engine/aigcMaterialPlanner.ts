@@ -55,7 +55,7 @@ function slotForGap(gap: GapReportItem, inducedSlots: InducedVisualSlot[] | unde
 
 function promptPackFor(family: VisualFormFamily | "poster_layout", count: number, targetTheme: string): string[] {
   const base = {
-    media_cards: "Clean abstract SaaS/product interface card, bold motion-graph composition, no logo, no watermark, no readable sample text",
+    media_cards: "Clean abstract SaaS/product interface card, bold motion-graph composition, no logo, no watermark, no letters, no words, no readable text, icon-and-shape UI only",
     live_action_montage: "Cinematic product/lifestyle still for beat-cut montage, original generic scene, no watermark, no sample-like person",
     object_motion: "Generic hero object still, isolated, clean lighting, original target-theme visual, no logo",
     poster_layout: "Original poster background image, clean commercial layout, no copied sample branding",

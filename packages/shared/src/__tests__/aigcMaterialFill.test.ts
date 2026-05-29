@@ -192,7 +192,7 @@ describe("optional AIGC material fill", () => {
         SEEDREAM_RESPONSE_FORMAT: "url",
         SEEDREAM_IMAGE_SIZE: "2K",
         SEEDREAM_STREAM: "false",
-        SEEDREAM_WATERMARK: "true"
+        SEEDREAM_WATERMARK: "false"
       };
       expect(resolveSeedreamProviderConfig(env).model).toBe("doubao-seedream-5-0-260128");
       await expect(getAigcMaterialProvider("volcengine_seedream").generate(brief, {
@@ -238,7 +238,7 @@ describe("optional AIGC material fill", () => {
         response_format: "url",
         size: "2K",
         stream: false,
-        watermark: true
+        watermark: false
       });
       expect(candidate.provider).toBe("volcengine_seedream");
       expect(candidate.materialRole).toBe("aigc_generated_material");

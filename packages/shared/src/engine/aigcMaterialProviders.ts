@@ -125,7 +125,7 @@ export function resolveSeedreamProviderConfig(env?: Record<string, string | unde
     imageSize: envValue(env, "SEEDREAM_IMAGE_SIZE", "AIGC_IMAGE_SIZE") ?? "2K",
     sequentialImageGeneration: envValue(env, "SEEDREAM_SEQUENTIAL_IMAGE_GENERATION") ?? "disabled",
     stream: parseBoolean(envValue(env, "SEEDREAM_STREAM"), false),
-    watermark: parseBoolean(envValue(env, "SEEDREAM_WATERMARK", "AIGC_IMAGE_WATERMARK"), true)
+    watermark: parseBoolean(envValue(env, "SEEDREAM_WATERMARK", "AIGC_IMAGE_WATERMARK"), false)
   };
 }
 

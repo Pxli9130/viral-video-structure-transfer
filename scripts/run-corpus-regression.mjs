@@ -841,6 +841,11 @@ function motionGraphArtifactGates(options = {}) {
         detail: JSON.stringify((aigcQuality ?? []).map((result) => `${result.candidateId}:${result.usable}:${result.vlmStatus}`))
       },
       {
+        id: "generated_assets_vlm_reviewed",
+        passed: Array.isArray(aigcQuality) && aigcQuality.length > 0 && aigcQuality.every((result) => result.vlmStatus === "ok" || result.vlmStatus === "skipped_infra"),
+        detail: JSON.stringify((aigcQuality ?? []).map((result) => `${result.candidateId}:${result.vlmStatus}`))
+      },
+      {
         id: "generated_assets_used_in_render",
         passed: existsSync(path.join(mgDir, "render_aigc_materials.mp4")) && Array.isArray(fillPlanAigc) && fillPlanAigc.some((action) => action.strategy === "aigc_generated_asset"),
         detail: existsSync(path.join(mgDir, "render_aigc_materials.mp4")) ? "render_aigc_materials.mp4 exists" : "missing render_aigc_materials.mp4"
