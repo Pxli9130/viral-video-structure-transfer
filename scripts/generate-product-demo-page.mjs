@@ -7,6 +7,7 @@ import { artifactRoot, corpusRegressionDir, marketingArtifactDir, rel } from "./
 
 const demoDir = path.join(artifactRoot, "product_demo");
 const editingCaseDir = path.join(artifactRoot, "editing_case");
+const motionGraphCaseDir = path.join(artifactRoot, "motion_graph_case");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const htmlPath = path.join(demoDir, "index.html");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
@@ -299,6 +300,23 @@ function normalizeVlmScores(vlmJson) {
   return Object.values(normalized).some((value) => value !== null && value !== undefined) ? normalized : null;
 }
 
+function hasNumericVlmScore(vlmScores) {
+  return Boolean(
+    vlmScores &&
+    [vlmScores.overall, vlmScores.structure, vlmScores.style, vlmScores.noDirectCopy, vlmScores.visualQuality]
+      .some((value) => typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function vlmRunStatus(vlmArtifact, vlmScores) {
+  if (!vlmArtifact?.exists) return "missing";
+  if (hasNumericVlmScore(vlmScores)) return "ok";
+  const status = String(vlmArtifact.data?.status ?? "").toLowerCase();
+  const reason = String(vlmArtifact.data?.reason ?? "").toLowerCase();
+  if (/skip|skipped/.test(status) || /skip|not set|not run|disabled|not configured/.test(reason)) return "skipped_infra";
+  return "not_run";
+}
+
 function localStyleScore(evaluation) {
   return firstNumber(evaluation?.styleFidelity?.overall, evaluation?.style_fidelity_to_sample?.overall);
 }
@@ -377,6 +395,48 @@ const editingCaseArtifact = await readJsonArtifact({
   description: "editing.mov 参考视频与目标素材分离案例，包含代理缺口补全证据。",
   fallback: {}
 });
+const motionGraphCaseArtifact = await readJsonArtifact({
+  title: "motion_graph_case/generation-result.json",
+  filePath: path.join(motionGraphCaseDir, "generation-result.json"),
+  description: "motion_graph_1.mov 开放世界槽位归纳案例，包含 family-specific proxy 证据。",
+  fallback: {}
+});
+const motionGraphAssetEvidenceArtifact = await readJsonArtifact({
+  title: "motion_graph_case/asset-evidence.json",
+  filePath: path.join(motionGraphCaseDir, "asset-evidence.json"),
+  description: "motion_graph target material pool evidence.",
+  fallback: {}
+});
+const motionGraphSlotAssetMatchesArtifact = await readJsonArtifact({
+  title: "motion_graph_case/slot-asset-matches.json",
+  filePath: path.join(motionGraphCaseDir, "slot-asset-matches.json"),
+  description: "motion_graph slot-to-target-asset matching table.",
+  fallback: []
+});
+const motionGraphMalformedSlotAssetMatchesArtifact = await readJsonArtifact({
+  title: "motion_graph_case/slot-asset-matches.malformed.json",
+  filePath: path.join(motionGraphCaseDir, "slot-asset-matches.malformed.json"),
+  description: "motion_graph malformed material stress slot matching table.",
+  fallback: []
+});
+const motionGraphMalformedBlockedArtifact = await readJsonArtifact({
+  title: "motion_graph_case/blocked-material-report.malformed.json",
+  filePath: path.join(motionGraphCaseDir, "blocked-material-report.malformed.json"),
+  description: "motion_graph malformed/external material block report.",
+  fallback: {}
+});
+const motionGraphEvaluationArtifact = await readJsonArtifact({
+  title: "motion_graph_case/evaluation.motion_graph.json",
+  filePath: path.join(motionGraphCaseDir, "evaluation.motion_graph.json"),
+  description: "motion_graph deterministic evaluator gates.",
+  fallback: {}
+});
+const motionGraphRenderAssetCheckArtifact = await readJsonArtifact({
+  title: "motion_graph_case/render-asset-check.json",
+  filePath: path.join(motionGraphCaseDir, "render-asset-check.json"),
+  description: "motion_graph deterministic pixel-level target asset render check.",
+  fallback: {}
+});
 
 const generationByArtifactKey = {};
 const evaluationByArtifactKey = {};
@@ -418,6 +478,13 @@ const generationResult = generationResultArtifact.data ?? {};
 const variantSummary = variantSummaryArtifact.data ?? [];
 const corpus = corpusArtifact.data ?? {};
 const editingCase = editingCaseArtifact.data ?? {};
+const motionGraphCase = motionGraphCaseArtifact.data ?? {};
+const motionGraphAssetEvidence = motionGraphAssetEvidenceArtifact.data ?? {};
+const motionGraphSlotAssetMatches = motionGraphSlotAssetMatchesArtifact.data ?? [];
+const motionGraphMalformedSlotAssetMatches = motionGraphMalformedSlotAssetMatchesArtifact.data ?? [];
+const motionGraphMalformedBlocked = motionGraphMalformedBlockedArtifact.data ?? {};
+const motionGraphEvaluation = motionGraphEvaluationArtifact.data ?? {};
+const motionGraphRenderAssetCheck = motionGraphRenderAssetCheckArtifact.data ?? {};
 const primaryGeneration =
   generationByArtifactKey.high_fidelity?.data ??
   generationByArtifactKey.main?.data ??
@@ -445,6 +512,8 @@ const resolvedVariants = videoVariants.map((config) => {
   const evaluation = evaluationArtifact?.data ?? {};
   const vlm = vlmArtifact?.data ?? null;
   const vlmScores = vlmArtifact?.exists ? normalizeVlmScores(vlm) : null;
+  const vlmStatus = vlmRunStatus(vlmArtifact, vlmScores);
+  const vlmScoreAvailable = hasNumericVlmScore(vlmScores);
   const style = localStyleScore(evaluation);
   const timelineArtifact = timelineByArtifactKey[config.artifactKey];
   return {
@@ -462,6 +531,8 @@ const resolvedVariants = videoVariants.map((config) => {
     evaluationExists: evaluationArtifact?.exists ?? false,
     vlm,
     vlmExists: vlmArtifact?.exists ?? false,
+    vlmStatus,
+    vlmAvailable: vlmScoreAvailable,
     vlmScores,
     style,
     localPassed: evaluation?.passed === true,
@@ -502,7 +573,7 @@ const bestEvaluation = bestVariant?.evaluation ?? {};
 const bestVlmScores = bestVariant?.vlmScores ?? null;
 const sampleName = path.basename(firstDefined(bestVariant?.vlm?.sampleVideo, analysis?.sampleVideo, analysis?.sourceVideo, "marketing.mov"));
 const extractedStructureName = toTitle(firstDefined(template?.videoType, analysis?.videoType, analysis?.primaryMotif?.motif, "motion_graphic_marketing_poster"));
-const vlmAvailable = resolvedVariants.some((variant) => variant.vlmExists);
+const vlmAvailable = resolvedVariants.some((variant) => variant.vlmAvailable);
 const evaluatorAvailable = resolvedVariants.some((variant) => variant.evaluationExists);
 const videosFound = resolvedVariants.filter((variant) => variant.exists).length;
 const highSeverityGaps = gapReport.filter((gap) => String(gap.severity).toLowerCase() === "high").length;
@@ -1477,7 +1548,7 @@ function evaluatorScoreboard() {
           ${scoreBlock("视觉质量", formatPercentScore(bestVlmScores?.visualQuality), "neutral")}
         </div>
         <p>${esc(bestVlmScores?.rationale ?? "VLM 没有提供 rationale。")}</p>
-        <p class="evidence">外部服务说明：VLM 评审是来自已配置 judge adapter 的可选评估证据；它不作为渲染器使用，本页面不会暴露 API key。</p>` : `<p>该 artifact 集未运行 VLM。</p>`}
+        <p class="evidence">外部服务说明：VLM 评审是来自已配置 judge adapter 的可选评估证据；它不作为渲染器使用，本页面不会暴露 API key。</p>` : `<p>该 artifact 集未运行 VLM。</p><p class="evidence">外部服务说明：VLM 评审是可选评估证据；未运行时记录为 skipped_infra/not_run，不计作通过或失败。</p>`}
       </article>
       <article class="panel-card trust-card">
         <h3>可信策略</h3>
@@ -1579,6 +1650,118 @@ function interactiveGapFillSection() {
   </section>`;
 }
 
+function motionGraphTargetAdaptationSection() {
+  const targetAssets = Array.isArray(motionGraphAssetEvidence.targetAssets) ? motionGraphAssetEvidence.targetAssets : [];
+  const matches = Array.isArray(motionGraphSlotAssetMatches) ? motionGraphSlotAssetMatches : [];
+  const gates = Array.isArray(motionGraphEvaluation.gates) ? motionGraphEvaluation.gates : [];
+  const pixelGates = Array.isArray(motionGraphRenderAssetCheck.gates) ? motionGraphRenderAssetCheck.gates : [];
+  const renderProxy = path.join(motionGraphCaseDir, "render_proxy.mp4");
+  const renderWithAssets = path.join(motionGraphCaseDir, "render_with_assets.mp4");
+  const renderPartial = path.join(motionGraphCaseDir, "render_partial_assets.mp4");
+  const renderMalformed = path.join(motionGraphCaseDir, "render_malformed_assets.mp4");
+  const beforeAfter = path.join(motionGraphCaseDir, "before_after_contact_sheet.png");
+  const partialSheet = path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png");
+  const malformedSheet = path.join(motionGraphCaseDir, "malformed_assets_contact_sheet.png");
+  const slotFamilySummary = Array.isArray(motionGraphCase.inducedSlots)
+    ? motionGraphCase.inducedSlots.map((slot) => slot.visualFormFamily).filter(Boolean)
+    : [];
+  const targetAssetRows = targetAssets.map((asset) => `<tr><td>${esc(asset.assetId ?? asset.id)}</td><td>${esc(asset.type ?? asset.kind)}</td><td>${esc(asset.role)}</td><td>${esc(asset.renderable === false ? "no" : "yes")}</td></tr>`).join("");
+  const mappingRows = matches.map((match) => `<tr><td>${esc(match.visualFormFamily ?? match.slotType)}</td><td>${esc(match.status)}</td><td>${esc(match.matchKind ?? "none")}</td><td>${esc((match.selectedAssetIds ?? []).join(", ") || "no asset")}</td><td>${esc(match.missingCount ?? "")}</td></tr>`).join("");
+  const malformedRows = (Array.isArray(motionGraphMalformedSlotAssetMatches) ? motionGraphMalformedSlotAssetMatches : [])
+    .map((match) => `<tr><td>${esc(match.visualFormFamily ?? match.slotType)}</td><td>${esc(match.status)}</td><td>${esc(match.matchKind ?? "none")}</td><td>${esc((match.selectedAssetIds ?? []).join(", ") || "no asset")}</td><td>${esc(match.missingCount ?? "")}</td></tr>`)
+    .join("");
+  const blockedRows = (motionGraphMalformedBlocked.blockedManifestAssets ?? [])
+    .map((asset) => `<tr><td>${esc(asset.id ?? asset.assetId ?? "unknown")}</td><td>${esc(asset.kind ?? "")}</td><td>${esc(asset.role ?? "")}</td><td>${esc(asset.reason ?? "")}</td></tr>`)
+    .join("");
+  return `<section class="motion-graph-adaptation" id="motion-graph-target-adaptation" data-section="motion-graph-target-adaptation">
+    <div class="section-heading">
+      <span>Motion Graph Target Adaptation</span>
+      <h2>Proxy Mode -> Target Assets -> Partial Assets</h2>
+      <p>该区块展示 motion_graph_case 的通用素材摄入路径：样例只提供结构证据，target manifest assets 才能提供可渲染材料。</p>
+    </div>
+    <div class="replacement-demo-grid">
+      <article class="panel-card">
+        <h3>样例结构摘要</h3>
+        <p><strong>${esc(motionGraphCase.selectedTemplate?.name ?? "Learned Motion Graph Structure")}</strong></p>
+        <div class="pill-list">${slotFamilySummary.map((family) => badge(family, "accent")).join("")}</div>
+        <p class="evidence">Policy: sample/reference frames are source evidence only, not target material.</p>
+      </article>
+      <article class="panel-card">
+        <h3>Proxy Mode Video</h3>
+        ${existsSync(renderProxy) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderProxy))}"></video>` : missingCard("Proxy mode", "render_proxy.mp4 missing")}
+      </article>
+      <article class="panel-card">
+        <h3>With Target Assets Video</h3>
+        ${existsSync(renderWithAssets) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderWithAssets))}"></video>` : missingCard("With target assets", "render_with_assets.mp4 missing")}
+      </article>
+      <article class="panel-card">
+        <h3>Partial Assets Video</h3>
+        ${existsSync(renderPartial) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderPartial))}"></video>` : missingCard("Partial assets", "render_partial_assets.mp4 missing")}
+      </article>
+      <article class="panel-card">
+        <h3>Malformed Assets Video</h3>
+        ${existsSync(renderMalformed) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderMalformed))}"></video>` : missingCard("Malformed assets", "render_malformed_assets.mp4 missing")}
+      </article>
+    </div>
+    <div class="compare-grid managed-material-intake" data-motion-graph-managed-material-intake="managed-material-intake" style="margin-top:12px">
+      <article class="panel-card">
+        <h3>Managed Material Intake</h3>
+        <p>API path: <code>POST /api/projects/:projectId/assets</code> -> <code>POST /api/projects/:projectId/target-material-manifests</code>.</p>
+        <p>Manifest entries reference managed <code>assetId</code>; public outputs use safe managed asset refs, not local filesystem paths.</p>
+        <p class="evidence">External URLs and absolute paths are blocked unless they are first uploaded into managed project storage.</p>
+      </article>
+      <article class="panel-card">
+        <h3>Blocked Malformed Assets</h3>
+        <table data-motion-graph-blocked-material="blocked-material"><thead><tr><th>asset</th><th>kind</th><th>role</th><th>reason</th></tr></thead><tbody>${blockedRows}</tbody></table>
+      </article>
+      <article class="panel-card">
+        <h3>Malformed Slot Mapping</h3>
+        <table data-motion-graph-slot-mapping="malformed-slot-asset-mapping"><thead><tr><th>family</th><th>status</th><th>match</th><th>assets</th><th>missing</th></tr></thead><tbody>${malformedRows}</tbody></table>
+      </article>
+    </div>
+    <div class="compare-grid" style="margin-top:12px">
+      <article class="panel-card">
+        <h3>Target Asset Pool</h3>
+        <table data-motion-graph-slot-mapping="asset-pool"><thead><tr><th>asset</th><th>type</th><th>role</th><th>renderable</th></tr></thead><tbody>${targetAssetRows}</tbody></table>
+        <p>Manifest: <code>${esc(motionGraphAssetEvidence.targetFixture?.manifest ?? motionGraphEvaluation.targetAssetsManifest ?? "n/a")}</code></p>
+      </article>
+      <article class="panel-card">
+        <h3>Slot Asset Mapping Table</h3>
+        <table data-motion-graph-slot-mapping="slot-asset-mapping"><thead><tr><th>family</th><th>status</th><th>match</th><th>assets</th><th>missing</th></tr></thead><tbody>${mappingRows}</tbody></table>
+      </article>
+      <article class="panel-card">
+        <h3>Evaluator Gates</h3>
+        <div class="gate-grid">${gates.map((gate) => `<span class="gate ${gate.passed ? "pass" : "fail"}" title="${esc(gate.comment ?? "")}">${esc(gate.id)}: ${gate.passed ? "pass" : "fail"}</span>`).join("")}</div>
+      </article>
+      <article class="panel-card">
+        <h3>Pixel Asset Check</h3>
+        <div class="gate-grid">${pixelGates.map((gate) => `<span class="gate ${gate.passed ? "pass" : "fail"}">${esc(gate.id)}: ${gate.passed ? "pass" : "fail"}</span>`).join("") || badge("render-asset-check missing", "warning")}</div>
+      </article>
+    </div>
+    <div class="compare-grid" style="margin-top:12px">
+      <article class="panel-card">
+        <h3>Before / After Contact Sheet</h3>
+        ${existsSync(beforeAfter) ? `<img src="${esc(hrefFromDemo(beforeAfter))}" alt="motion graph before after contact sheet" />` : missingCard("before_after_contact_sheet.png", "missing")}
+      </article>
+      <article class="panel-card">
+        <h3>Partial Assets Contact Sheet</h3>
+        ${existsSync(partialSheet) ? `<img src="${esc(hrefFromDemo(partialSheet))}" alt="motion graph partial assets contact sheet" />` : missingCard("partial_assets_contact_sheet.png", "missing")}
+      </article>
+      <article class="panel-card">
+        <h3>Malformed Assets Contact Sheet</h3>
+        ${existsSync(malformedSheet) ? `<img src="${esc(hrefFromDemo(malformedSheet))}" alt="motion graph malformed assets contact sheet" />` : missingCard("malformed_assets_contact_sheet.png", "missing")}
+      </article>
+      <article class="panel-card">
+        <h3>Raw JSON</h3>
+        <details>
+          <summary>Open artifacts</summary>
+          <p><a href="${esc(hrefFromDemo(path.join(motionGraphCaseDir, "asset-evidence.json")))}">asset-evidence.json</a> · <a href="${esc(hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.json")))}">slot-asset-matches.json</a> · <a href="${esc(hrefFromDemo(path.join(motionGraphCaseDir, "evaluation.motion_graph.json")))}">evaluation.motion_graph.json</a></p>
+        </details>
+      </article>
+    </div>
+  </section>`;
+}
+
 function artifactGalleryCards() {
   const galleryRecords = [
     registerArtifact({ title: "report.md", type: "markdown", filePath: path.join(marketingArtifactDir, "report.md"), description: "营销案例报告。" }),
@@ -1599,6 +1782,18 @@ function artifactGalleryCards() {
     registerArtifact({ title: "editing_case/render.mp4", type: "video", filePath: path.join(editingCaseDir, "render.mp4"), description: "剪辑案例代理占位渲染输出。" }),
     registerArtifact({ title: "editing_case/contact_sheet.png", type: "image", filePath: path.join(editingCaseDir, "contact_sheet.png"), description: "剪辑案例代理联系表。" }),
     registerArtifact({ title: "editing_case/replacement-slots.json", type: "json", filePath: path.join(editingCaseDir, "replacement-slots.json"), description: "剪辑案例交互式缺口补全槽位。" }),
+    registerArtifact({ title: "motion_graph_case/index.html", type: "html", filePath: path.join(motionGraphCaseDir, "index.html"), description: "开放世界槽位归纳案例，展示动态图形样例的通用槽位 family。" }),
+    registerArtifact({ title: "motion_graph_case/render.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render.mp4"), description: "动态图形案例 family-specific proxy 渲染输出。" }),
+    registerArtifact({ title: "motion_graph_case/render_proxy.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_proxy.mp4"), description: "Motion graph proxy mode output." }),
+    registerArtifact({ title: "motion_graph_case/render_with_assets.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_with_assets.mp4"), description: "Motion graph target asset adaptation output." }),
+    registerArtifact({ title: "motion_graph_case/render_partial_assets.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_partial_assets.mp4"), description: "Motion graph partial asset stress output." }),
+    registerArtifact({ title: "motion_graph_case/contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "contact_sheet.png"), description: "动态图形案例联系表。" }),
+    registerArtifact({ title: "motion_graph_case/before_after_contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "before_after_contact_sheet.png"), description: "Proxy versus with-target-assets contact sheet." }),
+    registerArtifact({ title: "motion_graph_case/partial_assets_contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png"), description: "Proxy versus partial-target-assets contact sheet." }),
+    registerArtifact({ title: "motion_graph_case/induced-slots.json", type: "json", filePath: path.join(motionGraphCaseDir, "induced-slots.json"), description: "开放世界归纳槽位清单。" }),
+    registerArtifact({ title: "motion_graph_case/asset-evidence.json", type: "json", filePath: path.join(motionGraphCaseDir, "asset-evidence.json"), description: "Motion graph target asset evidence." }),
+    registerArtifact({ title: "motion_graph_case/slot-asset-matches.json", type: "json", filePath: path.join(motionGraphCaseDir, "slot-asset-matches.json"), description: "Motion graph slot asset matching table." }),
+    registerArtifact({ title: "motion_graph_case/evaluation.motion_graph.json", type: "json", filePath: path.join(motionGraphCaseDir, "evaluation.motion_graph.json"), description: "Motion graph evaluator gates." }),
     registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "默认时间线 JSON。" }),
     registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "高保真时间线 JSON。" }),
     registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "最终创意生成 JSON。" }),
@@ -1638,7 +1833,8 @@ const manifest = scrubObject({
         path: variant.href,
         source: variant.summary ? "variant-summary.json" : "known filename fallback",
         localEvaluator: variant.evaluationExists,
-        vlmJudge: variant.vlmExists,
+        vlmJudge: variant.vlmAvailable,
+        vlmStatus: variant.vlmStatus,
         vlmOverall: variant.vlmScores?.overall ?? null,
         localStyleFidelity: variant.style ?? null
       }
@@ -1666,7 +1862,8 @@ const manifest = scrubObject({
     byVariant: Object.fromEntries(resolvedVariants.map((variant) => [
       variant.key,
       {
-        available: variant.vlmExists,
+        available: variant.vlmAvailable,
+        status: variant.vlmStatus,
         overall: variant.vlmScores?.overall ?? null,
         structure: variant.vlmScores?.structure ?? null,
         style: variant.vlmScores?.style ?? null,
@@ -1705,6 +1902,31 @@ const manifest = scrubObject({
     contactSheet: hrefFromDemo(path.join(editingCaseDir, "contact_sheet.png")),
     replacementSlots: Array.isArray(editingCase.replacementSlots) ? editingCase.replacementSlots.map((slot) => slot.slotId) : [],
     evaluatorGates: editingCase.editingCaseGates ?? []
+  },
+  motionGraphCase: {
+    available: motionGraphCaseArtifact.exists,
+    index: hrefFromDemo(path.join(motionGraphCaseDir, "index.html")),
+    render: hrefFromDemo(path.join(motionGraphCaseDir, "render.mp4")),
+    renderProxy: hrefFromDemo(path.join(motionGraphCaseDir, "render_proxy.mp4")),
+    renderWithAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_with_assets.mp4")),
+    renderPartialAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_partial_assets.mp4")),
+    renderMalformedAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_malformed_assets.mp4")),
+    contactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "contact_sheet.png")),
+    beforeAfterContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "before_after_contact_sheet.png")),
+    partialAssetsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png")),
+    malformedAssetsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "malformed_assets_contact_sheet.png")),
+    assetEvidence: hrefFromDemo(path.join(motionGraphCaseDir, "asset-evidence.json")),
+    slotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.json")),
+    malformedSlotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.malformed.json")),
+    malformedBlockedMaterialReport: hrefFromDemo(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")),
+    renderAssetCheck: hrefFromDemo(path.join(motionGraphCaseDir, "render-asset-check.json")),
+    evaluation: hrefFromDemo(path.join(motionGraphCaseDir, "evaluation.motion_graph.json")),
+    inducedSlots: Array.isArray(motionGraphCase.inducedSlots) ? motionGraphCase.inducedSlots.map((slot) => ({ id: slot.id, family: slot.visualFormFamily, status: slot.status })) : [],
+    targetAssets: Array.isArray(motionGraphAssetEvidence.targetAssets) ? motionGraphAssetEvidence.targetAssets.map((asset) => ({ id: asset.assetId, type: asset.type, role: asset.role, renderable: asset.renderable })) : [],
+    slotAssetMapping: Array.isArray(motionGraphSlotAssetMatches) ? motionGraphSlotAssetMatches.map((match) => ({ family: match.visualFormFamily, status: match.status, matchKind: match.matchKind, selectedAssetIds: match.selectedAssetIds, missingCount: match.missingCount })) : [],
+    selectedTemplateReason: motionGraphCase.selectedTemplateReason ?? null,
+    evaluatorGates: motionGraphCase.motionGraphCaseGates ?? [],
+    adaptationGates: Array.isArray(motionGraphEvaluation.gates) ? motionGraphEvaluation.gates.filter((gate) => /target|asset|manifest|weak_match|brand_cta|evidence_frame/i.test(gate.id)) : []
   },
   artifactsConsumed: artifactRegistry.map(({ title, type, status, href, description }) => ({ title, type, status, path: href, description })),
   missingArtifacts: artifactRegistry.filter((artifact) => artifact.status !== "exists").map((artifact) => artifact.title)
@@ -2077,6 +2299,7 @@ const html = scrubPrivateText(`<!doctype html>
     ${evaluatorScoreboard()}
     ${beforeAfterDiff()}
     ${interactiveGapFillSection()}
+    ${motionGraphTargetAdaptationSection()}
 
     <section class="raw-disclosure" id="progressive-disclosure" data-section="progressive-disclosure">
       <div class="section-heading">

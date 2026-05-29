@@ -370,6 +370,7 @@ export const generationRequestSchema = {
         analysisId: { type: "string" }
       }
     },
+    sampleReferenceAssetId: { type: "string" },
     selectedTemplateIds: { type: "array", items: { type: "string" } },
     selectedAtomIds: { type: "array", items: { type: "string" } },
     assets: {

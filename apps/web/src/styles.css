@@ -247,6 +247,20 @@ dd {
   gap: 8px;
 }
 
+.material-intake {
+  background: #f8fafc;
+  border: 1px solid #d8e1e8;
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 14px;
+}
+
+.inline-file {
+  justify-content: center;
+  min-height: 40px;
+  width: 100%;
+}
+
 .form-grid {
   display: grid;
   gap: 14px;
@@ -292,6 +306,10 @@ textarea {
 
 .compare-grid {
   grid-template-columns: 0.8fr 1fr 1.2fr;
+}
+
+.compact-grid {
+  margin-top: 14px;
 }
 
 .workspace .two-col {

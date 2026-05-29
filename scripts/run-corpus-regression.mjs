@@ -576,6 +576,236 @@ function checkNegative(fixture, analysis) {
   };
 }
 
+function readJsonIfExists(filePath) {
+  if (!existsSync(filePath)) return null;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readTextIfExists(filePath) {
+  if (!existsSync(filePath)) return "";
+  try {
+    return readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function scrubPublicArtifactText(value) {
+  return String(value ?? "")
+    .replaceAll(`${repoRoot}${path.sep}`, "")
+    .replace(/\/home\/pxli\/[^\s"'<>)]*/g, "[local-path]")
+    .replace(/GEMINI_API_KEY/gi, "[redacted-key-name]")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "[redacted-key]")
+    .replace(/ark-[0-9A-Za-z_-]+/gi, "[redacted-key]")
+    .replace(/\.env\b/g, "[redacted-config]");
+}
+
+function scrubObject(value) {
+  if (Array.isArray(value)) return value.map((item) => scrubObject(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubObject(item)]));
+  }
+  return typeof value === "string" ? scrubPublicArtifactText(value) : value;
+}
+
+function motionGraphArtifactGates(options = {}) {
+  const includeAssetMode = options.includeAssetMode === true;
+  const mgDir = path.join(repoRoot, "docs", "artifacts", "motion_graph_case");
+  const visualEvidence = readJsonIfExists(path.join(mgDir, "visual-evidence.json"));
+  const inducedSlots = readJsonIfExists(path.join(mgDir, "induced-slots.json"));
+  const selectedTemplate = readJsonIfExists(path.join(mgDir, "selected-template.json"));
+  const fillPlan = readJsonIfExists(path.join(mgDir, "fill-plan.json"));
+  const timeline = readJsonIfExists(path.join(mgDir, "timeline.json"));
+  const slotAssetMatches = readJsonIfExists(path.join(mgDir, "slot-asset-matches.json"));
+  const partialSlotAssetMatches = readJsonIfExists(path.join(mgDir, "slot-asset-matches.partial.json"));
+  const malformedSlotAssetMatches = readJsonIfExists(path.join(mgDir, "slot-asset-matches.malformed.json"));
+  const malformedBlockedReport = readJsonIfExists(path.join(mgDir, "blocked-material-report.malformed.json"));
+  const previewManifest = readJsonIfExists(path.join(mgDir, "preview_frames", "manifest.json"));
+  const evaluation = readJsonIfExists(path.join(mgDir, "evaluation.motion_graph.json"));
+  const renderAssetCheck = readJsonIfExists(path.join(mgDir, "render-asset-check.json"));
+  const slotFamilies = new Set((Array.isArray(inducedSlots) ? inducedSlots : []).map((slot) => slot.visualFormFamily));
+  const evalGate = (id) => (evaluation?.gates ?? []).find((gate) => gate.id === id)?.passed === true;
+  const capabilityIds = new Set((Array.isArray(fillPlan) ? fillPlan : []).map((action) => action.capabilityId ?? action.rendererInstructions?.capabilityId).filter(Boolean));
+  const textCards = (timeline?.clips ?? []).filter((clip) => clip.type === "text_card" || clip.gapFillStrategy === "text_card").length;
+  const totalClips = timeline?.clips?.length ?? 0;
+  const previewFilesExist = Array.isArray(previewManifest?.pairs) && previewManifest.pairs.length > 0 && previewManifest.pairs.every((pair) => {
+    const generated = pair.generatedProxyFrame ? path.join(mgDir, pair.generatedProxyFrame) : null;
+    const source = pair.sourceEvidenceFrame ? path.join(mgDir, pair.sourceEvidenceFrame) : null;
+    return generated && source && existsSync(generated) && existsSync(source);
+  });
+  const sampleVisualCopied = (timeline?.clips ?? []).some((clip) =>
+    clip.sourceAssetId === "motion_graph_sample" ||
+    (clip.layers ?? []).some((layer) => layer.assetId === "motion_graph_sample")
+  );
+  const genericName = /B2B MG Promo Structure:\s*Hook Body Proof CTA/i.test(String(selectedTemplate?.name ?? ""));
+  const primaryEvidenceSlots = (Array.isArray(inducedSlots) ? inducedSlots : []).filter((slot) =>
+    ["media_cards", "kinetic_typography", "ui_showcase", "geometric_mg", "brand_cta"].includes(slot.visualFormFamily)
+  );
+  const inducedSlotsHaveEvidenceFrames =
+    primaryEvidenceSlots.length >= 5 &&
+    primaryEvidenceSlots.every((slot) =>
+      (slot.sourceEvidence?.frameIds?.length ?? 0) > 0 &&
+      (slot.sourceEvidence?.framePaths ?? []).every((framePath) => existsSync(path.join(mgDir, framePath)))
+    );
+  const gates = [
+    {
+      id: "visual_evidence_generated",
+      passed: visualEvidence?.schemaVersion === "visual-evidence-v1" && (visualEvidence?.shots?.length ?? 0) > 0,
+      detail: visualEvidence ? `${visualEvidence.schemaVersion}; shots=${visualEvidence.shots?.length ?? 0}` : "missing visual-evidence.json"
+    },
+    {
+      id: "induced_slots_non_empty",
+      passed: Array.isArray(inducedSlots) && inducedSlots.length > 0,
+      detail: Array.isArray(inducedSlots) ? `${inducedSlots.length} induced slots` : "missing induced-slots.json"
+    },
+    {
+      id: "induced_slots_have_evidence_frames",
+      passed: evalGate("induced_slots_have_frame_evidence") || inducedSlotsHaveEvidenceFrames,
+      detail: primaryEvidenceSlots.map((slot) => `${slot.visualFormFamily}:${slot.sourceEvidence?.framePaths?.length ?? 0}`).join("|")
+    },
+    {
+      id: "media_cards_has_dedicated_evidence_frame",
+      passed: evalGate("media_cards_has_dedicated_evidence_frame") === true,
+      detail: (visualEvidence?.inductionEvidence?.keyframes ?? []).filter((frame) => frame.family === "media_cards").map((frame) => frame.path).join("|") || "missing media_cards keyframe"
+    },
+    { id: "media_cards_detected", passed: slotFamilies.has("media_cards"), detail: Array.from(slotFamilies).join("|") },
+    { id: "ui_showcase_detected", passed: slotFamilies.has("ui_showcase"), detail: Array.from(slotFamilies).join("|") },
+    { id: "geometric_mg_detected", passed: slotFamilies.has("geometric_mg"), detail: Array.from(slotFamilies).join("|") },
+    { id: "brand_cta_detected", passed: slotFamilies.has("brand_cta"), detail: Array.from(slotFamilies).join("|") },
+    {
+      id: "selected_template_not_seed_b2b",
+      passed: selectedTemplate?.seedB2bNotPrimary === true && !genericName,
+      detail: selectedTemplate ? `${selectedTemplate.name ?? selectedTemplate.id}` : "missing selected-template.json"
+    },
+    {
+      id: "renderer_capability_selected",
+      passed: evalGate("renderer_capability_selected") || ["card_stack_motion", "feature_list_scroller", "neon_geometry_typography", "kinetic_text_card", "logo_cta_hold"].every((id) => capabilityIds.has(id)),
+      detail: `capabilities=${Array.from(capabilityIds).join("|") || "(none)"}`
+    },
+    {
+      id: "not_only_text_cards",
+      passed: totalClips > 0 && textCards / totalClips <= 0.3,
+      detail: `${textCards}/${totalClips} text-card clips`
+    },
+    {
+      id: "preview_frames_exist",
+      passed: previewFilesExist,
+      detail: `pairs=${previewManifest?.pairs?.length ?? 0}`
+    },
+    {
+      id: "no_sample_visual_copy",
+      passed: !sampleVisualCopied,
+      detail: sampleVisualCopied ? "timeline uses motion_graph_sample as material" : "sample only appears as evidence"
+    }
+  ];
+  if (includeAssetMode) {
+    const byFamily = new Map((Array.isArray(slotAssetMatches) ? slotAssetMatches : []).map((match) => [match.visualFormFamily, match]));
+    const partialByFamily = new Map((Array.isArray(partialSlotAssetMatches) ? partialSlotAssetMatches : []).map((match) => [match.visualFormFamily, match]));
+    gates.push(
+      {
+        id: "target_assets_manifest_supported",
+        passed: evalGate("target_assets_manifest_supported") === true,
+        detail: evaluation?.targetAssetsManifest ?? "missing manifest support gate"
+      },
+      {
+        id: "target_assets_loaded",
+        passed: evalGate("target_assets_loaded") === true,
+        detail: `mode=${evaluation?.mode ?? "missing"}; targetAssets=${evaluation?.targetAssets?.length ?? 0}`
+      },
+      {
+        id: "media_cards_asset_matched",
+        passed: evalGate("media_cards_asset_matched") === true && (byFamily.get("media_cards")?.selectedAssetIds?.length ?? 0) >= 4,
+        detail: JSON.stringify(byFamily.get("media_cards")?.selectedAssetIds ?? [])
+      },
+      {
+        id: "ui_showcase_copy_matched",
+        passed: evalGate("ui_showcase_copy_matched") === true,
+        detail: byFamily.get("ui_showcase")?.selectedAssetId ?? "missing"
+      },
+      {
+        id: "brand_cta_logo_matched",
+        passed: evalGate("brand_cta_logo_matched") === true,
+        detail: byFamily.get("brand_cta")?.selectedAssetId ?? "missing"
+      },
+      {
+        id: "proxy_to_asset_replacement_applied",
+        passed: evalGate("proxy_to_asset_replacement_applied") === true,
+        detail: "media/logo proxy slots replaced by target material"
+      },
+      {
+        id: "render_with_assets_has_user_images",
+        passed: evalGate("render_with_assets_has_user_images") === true && existsSync(path.join(mgDir, "render_with_assets.mp4")),
+        detail: existsSync(path.join(mgDir, "render_with_assets.mp4")) ? "render_with_assets.mp4 exists" : "missing render_with_assets.mp4"
+      },
+      {
+        id: "render_with_assets_has_brand_cta",
+        passed: evalGate("render_with_assets_has_brand_cta") === true,
+        detail: "brand/logo CTA target match gate"
+      },
+      {
+        id: "structure_preserved_after_asset_replacement",
+        passed: evalGate("structure_preserved_after_asset_replacement") === true,
+        detail: "core motion graph slot flow preserved"
+      },
+      {
+        id: "partial_target_assets_loaded",
+        passed: existsSync(path.join(mgDir, "render_partial_assets.mp4")) && Array.isArray(partialSlotAssetMatches),
+        detail: existsSync(path.join(mgDir, "render_partial_assets.mp4")) ? "render_partial_assets.mp4 exists" : "missing partial render"
+      },
+      {
+        id: "media_cards_weak_match_when_insufficient_images",
+        passed: partialByFamily.get("media_cards")?.status === "weak_match" && (partialByFamily.get("media_cards")?.missingCount ?? 0) >= 2,
+        detail: JSON.stringify(partialByFamily.get("media_cards") ?? null)
+      },
+      {
+        id: "brand_cta_missing_without_logo",
+        passed: partialByFamily.get("brand_cta")?.status === "missing",
+        detail: JSON.stringify(partialByFamily.get("brand_cta") ?? null)
+      },
+      {
+        id: "mixed_proxy_and_asset_rendered",
+        passed: existsSync(path.join(mgDir, "render_partial_assets.mp4")) && existsSync(path.join(mgDir, "partial_assets_contact_sheet.png")),
+        detail: "partial render and contact sheet exist"
+      },
+      {
+        id: "target_material_manifest_api_supported",
+        passed: evalGate("target_material_manifest_api_supported") === true || readTextIfExists(path.join(repoRoot, "apps", "api", "src", "server.ts")).includes("/target-material-manifests"),
+        detail: "managed upload target-material manifest endpoint exists"
+      },
+      {
+        id: "external_paths_blocked",
+        passed: evalGate("external_paths_blocked") === true || (malformedBlockedReport?.blockedManifestAssets ?? []).some((asset) => /external|url|absolute/i.test(String(asset.reason ?? ""))),
+        detail: JSON.stringify(malformedBlockedReport?.blockedManifestAssets ?? [])
+      },
+      {
+        id: "malformed_assets_not_matched",
+        passed: evalGate("malformed_assets_not_matched") === true || (Array.isArray(malformedSlotAssetMatches) && !malformedSlotAssetMatches.some((match) => (match.selectedAssetIds ?? []).some((assetId) => /broken|blocked|wrong_role|no_path/.test(String(assetId))))),
+        detail: JSON.stringify(malformedSlotAssetMatches ?? [])
+      },
+      {
+        id: "media_cards_weak_match_with_invalid_cards",
+        passed: evalGate("media_cards_weak_match_with_invalid_cards") === true || (Array.isArray(malformedSlotAssetMatches) && malformedSlotAssetMatches.find((match) => match.visualFormFamily === "media_cards")?.status === "weak_match"),
+        detail: JSON.stringify((malformedSlotAssetMatches ?? []).find((match) => match.visualFormFamily === "media_cards") ?? null)
+      },
+      {
+        id: "brand_cta_missing_without_valid_logo",
+        passed: evalGate("brand_cta_missing_without_valid_logo") === true || (Array.isArray(malformedSlotAssetMatches) && malformedSlotAssetMatches.find((match) => match.visualFormFamily === "brand_cta")?.status === "missing"),
+        detail: JSON.stringify((malformedSlotAssetMatches ?? []).find((match) => match.visualFormFamily === "brand_cta") ?? null)
+      },
+      {
+        id: "render_asset_pixel_check_passed",
+        passed: renderAssetCheck?.passed === true,
+        detail: renderAssetCheck ? JSON.stringify(renderAssetCheck.gates?.map((gate) => `${gate.id}:${gate.passed}`) ?? []) : "missing render-asset-check.json"
+      }
+    );
+  }
+  return gates;
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 — render variants and evaluate
 // ---------------------------------------------------------------------------
@@ -971,6 +1201,8 @@ async function runFixture(entry, args) {
   let analysis;
   try {
     analysis = runAnalyzer(videoPath, analysisPath);
+    analysis = scrubObject(analysis);
+    await writeFile(analysisPath, JSON.stringify(analysis, null, 2), "utf8");
   } catch (error) {
     gates.push({ id: "analyzer_ran", passed: false, detail: error.message });
     return { id: entry.id, status: "FAIL", gates, fixture: entry.fixture, analysis: null, frames: [] };
@@ -985,6 +1217,9 @@ async function runFixture(entry, args) {
   gates.push({ id: "analyzer_band_width", ...checkBandWidth(entry.fixture.expectations, analysis) });
   gates.push({ id: "analyzer_ribbon_motion", ...checkRibbonMotion(entry.fixture.expectations, analysis) });
   gates.push({ id: "negative_expectations", ...checkNegative(entry.fixture, analysis) });
+  if (entry.fixture.expectations?.motionGraphCaseGates === true) {
+    gates.push(...motionGraphArtifactGates({ includeAssetMode: entry.fixture.expectations?.motionGraphAssetModeGates === true }));
+  }
 
   // Expected-vs-actual JSON for the report.
   const compare = {
@@ -1215,9 +1450,9 @@ async function main() {
       judgeByVariant: r.judgeByVariant ?? {}
     }))
   };
-  await writeFile(path.join(reportRoot, "corpus-regression-report.json"), JSON.stringify(report, null, 2), "utf8");
+  await writeFile(path.join(reportRoot, "corpus-regression-report.json"), JSON.stringify(scrubObject(report), null, 2), "utf8");
   const md = markdownReport(results, summary, runId, modeStr);
-  await writeFile(path.join(reportRoot, "corpus-regression-report.md"), md, "utf8");
+  await writeFile(path.join(reportRoot, "corpus-regression-report.md"), scrubPublicArtifactText(md), "utf8");
   console.log(`\nWrote ${rel(path.join(reportRoot, "corpus-regression-report.json"))}`);
   console.log(`Wrote ${rel(path.join(reportRoot, "corpus-regression-report.md"))}`);
   console.log(`Summary: ${summary.passed} passed, ${summary.passedWithAccepted} passed-with-accepted, ${summary.failed} failed, ${summary.skipped} skipped`);

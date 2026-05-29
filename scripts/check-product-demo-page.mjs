@@ -8,6 +8,7 @@ const htmlPath = path.join(demoDir, "index.html");
 const manifestPath = path.join(demoDir, "ui-manifest.json");
 const slotReplacementDemoPath = path.join(marketingArtifactDir, "slot-replacement-demo.json");
 const editingCaseDir = path.join(artifactRoot, "editing_case");
+const motionGraphCaseDir = path.join(artifactRoot, "motion_graph_case");
 
 const failures = [];
 
@@ -41,6 +42,46 @@ if (slotReplacementDemoText) {
   }
 }
 
+function firstNumber(...values) {
+  for (const value of values) {
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+  }
+  return null;
+}
+
+function vlmScoreAvailable(vlmJson) {
+  const scores = vlmJson?.scores && typeof vlmJson.scores === "object" ? vlmJson.scores : vlmJson;
+  return firstNumber(
+    scores?.overall,
+    scores?.structure_transfer,
+    scores?.motif_preserved,
+    scores?.phases_visible,
+    scores?.sample_style_fidelity,
+    scores?.visual_quality,
+    scores?.no_direct_copy
+  ) !== null;
+}
+
+function vlmState(label) {
+  const filePath = path.join(marketingArtifactDir, `vlm-judge.${label}.json`);
+  if (!existsSync(filePath)) return { label, exists: false, hasScore: false, status: "missing" };
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    const hasScore = vlmScoreAvailable(parsed);
+    const rawStatus = String(parsed?.status ?? "").toLowerCase();
+    const reason = String(parsed?.reason ?? "").toLowerCase();
+    const status = hasScore
+      ? "ok"
+      : /skip|skipped/.test(rawStatus) || /skip|not run|not configured|not set|disabled/.test(reason)
+        ? "skipped_infra"
+        : "not_run";
+    return { label, exists: true, hasScore, status };
+  } catch (error) {
+    return { label, exists: true, hasScore: false, status: "invalid_json", error: error.message };
+  }
+}
+
 const requiredText = [
   "三分钟总览",
   "迁移流程",
@@ -61,7 +102,13 @@ const requiredText = [
   "代理占位 -> 用户素材替换",
   "interactive_gap_fill_proxy.mp4",
   "interactive_gap_fill_user_replacement.mp4",
-  "editing_case/index.html"
+  "editing_case/index.html",
+  "motion_graph_case/index.html",
+  "Motion Graph Target Adaptation",
+  "Proxy Mode -> Target Assets",
+  "Target Asset Pool",
+  "Slot Asset Mapping Table",
+  "before_after_contact_sheet.png"
 ];
 
 for (const text of requiredText) {
@@ -79,6 +126,7 @@ const requiredSections = [
   "structure-timeline-rail",
   "nl-before-after",
   "interactive-gap-fill",
+  "motion-graph-target-adaptation",
   "artifact-gallery"
 ];
 
@@ -88,15 +136,16 @@ for (const section of requiredSections) {
   }
 }
 
-const hasVlmArtifacts = ["main", "high_fidelity", "explainable_demo", "high_ctr", "high_quality"].some((label) =>
-  existsSync(path.join(marketingArtifactDir, `vlm-judge.${label}.json`))
-);
+const vlmStates = ["main", "high_fidelity", "explainable_demo", "high_ctr", "high_quality"].map(vlmState);
+const hasVlmArtifacts = vlmStates.some((state) => state.exists);
+const hasScoredVlmArtifacts = vlmStates.some((state) => state.hasScore);
+const highFidelityVlmState = vlmStates.find((state) => state.label === "high_fidelity");
 
-if (hasVlmArtifacts && !/VLM\s*(分数|score)/i.test(html)) {
+if (hasScoredVlmArtifacts && !/VLM\s*(分数|score)/i.test(html)) {
   failures.push("VLM artifacts exist but page does not contain a VLM score label.");
 }
 
-if (hasVlmArtifacts && /VLM judge is skipped/i.test(html)) {
+if (hasScoredVlmArtifacts && /VLM judge is skipped/i.test(html)) {
   failures.push("Page incorrectly says VLM judge is skipped while VLM artifacts exist.");
 }
 
@@ -145,7 +194,15 @@ const requiredManifestFields = [
   ["naturalLanguageEdit.demoArtifact", manifest.naturalLanguageEdit?.demoArtifact],
   ["naturalLanguageEdit.parsedOperations", manifest.naturalLanguageEdit?.parsedOperations],
   ["editingCase.available", manifest.editingCase?.available],
-  ["editingCase.render", manifest.editingCase?.render]
+  ["editingCase.render", manifest.editingCase?.render],
+  ["motionGraphCase.available", manifest.motionGraphCase?.available],
+  ["motionGraphCase.index", manifest.motionGraphCase?.index],
+  ["motionGraphCase.renderProxy", manifest.motionGraphCase?.renderProxy],
+  ["motionGraphCase.renderWithAssets", manifest.motionGraphCase?.renderWithAssets],
+  ["motionGraphCase.beforeAfterContactSheet", manifest.motionGraphCase?.beforeAfterContactSheet],
+  ["motionGraphCase.assetEvidence", manifest.motionGraphCase?.assetEvidence],
+  ["motionGraphCase.slotAssetMatches", manifest.motionGraphCase?.slotAssetMatches],
+  ["motionGraphCase.evaluation", manifest.motionGraphCase?.evaluation]
 ];
 
 for (const [field, value] of requiredManifestFields) {
@@ -172,6 +229,42 @@ if (existsSync(path.join(editingCaseDir, "index.html")) && !html.includes("editi
 
 if (existsSync(path.join(editingCaseDir, "index.html")) && manifest.editingCase?.available !== true) {
   failures.push("Manifest does not mark editing_case as available while editing_case artifacts exist.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "index.html")) && !html.includes("motion_graph_case/index.html")) {
+  failures.push("Motion graph case artifact exists but product demo gallery does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "index.html")) && manifest.motionGraphCase?.available !== true) {
+  failures.push("Manifest does not mark motion_graph_case as available while motion_graph_case artifacts exist.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "before_after_contact_sheet.png")) && !html.includes("motion_graph_case/before_after_contact_sheet.png")) {
+  failures.push("Motion graph before_after_contact_sheet exists but product demo does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "slot-asset-matches.json")) && !/data-motion-graph-slot-mapping="slot-asset-mapping"/.test(html)) {
+  failures.push("Product demo missing first-class motion graph slot mapping table.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")) && !/data-motion-graph-managed-material-intake="managed-material-intake"/.test(html)) {
+  failures.push("Product demo missing first-class managed material intake section.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")) && !/data-motion-graph-blocked-material="blocked-material"/.test(html)) {
+  failures.push("Product demo missing blocked malformed material table.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "render-asset-check.json")) && !html.includes("Pixel Asset Check")) {
+  failures.push("Product demo missing motion graph pixel asset check summary.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "render_with_assets.mp4")) && !html.includes("motion_graph_case/render_with_assets.mp4")) {
+  failures.push("Motion graph with-assets render exists but product demo does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "render_malformed_assets.mp4")) && !html.includes("motion_graph_case/render_malformed_assets.mp4")) {
+  failures.push("Motion graph malformed-assets render exists but product demo does not link it.");
 }
 
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {
@@ -227,11 +320,25 @@ if (!Array.isArray(manifest.naturalLanguageEdit?.parsedOperations) || manifest.n
   failures.push("Manifest naturalLanguageEdit.parsedOperations must be non-empty.");
 }
 
-if (hasVlmArtifacts && manifest.vlm?.available !== true) {
-  failures.push("Manifest does not mark VLM as available while VLM artifacts exist.");
+if (hasScoredVlmArtifacts && manifest.vlm?.available !== true) {
+  failures.push("Manifest does not mark VLM as available while scored VLM artifacts exist.");
 }
 
-if (hasVlmArtifacts && !manifest.vlm?.byVariant?.high_fidelity?.overall) {
+if (!hasScoredVlmArtifacts && hasVlmArtifacts && manifest.vlm?.available === true) {
+  failures.push("Manifest marks VLM as available even though all VLM artifacts are skipped/not_run.");
+}
+
+if (hasVlmArtifacts) {
+  for (const state of vlmStates.filter((item) => item.exists && !item.hasScore)) {
+    const manifestKey = state.label === "main" ? "final_creative" : state.label;
+    const manifestState = manifest.vlm?.byVariant?.[manifestKey];
+    if (!["skipped_infra", "not_run", "missing"].includes(String(manifestState?.status ?? ""))) {
+      failures.push(`Manifest must mark ${state.label} VLM as skipped_infra/not_run when score is absent.`);
+    }
+  }
+}
+
+if (highFidelityVlmState?.hasScore && !manifest.vlm?.byVariant?.high_fidelity?.overall) {
   failures.push("Manifest missing high_fidelity VLM score in vlm.byVariant.");
 }
 
@@ -254,3 +361,5 @@ console.log(`- ${rel(htmlPath)}`);
 console.log(`- ${rel(manifestPath)}`);
 console.log(`- bestVariant: ${manifest.bestVariant}`);
 console.log(`- vlmAvailable: ${manifest.vlm?.available === true}`);
+console.log(`- product_demo_allows_missing_vlm_when_not_run: ${!hasScoredVlmArtifacts && hasVlmArtifacts ? "pass" : "not_applicable"}`);
+console.log(`- product_demo_displays_vlm_when_json_exists: ${hasScoredVlmArtifacts ? "pass" : "not_applicable"}`);

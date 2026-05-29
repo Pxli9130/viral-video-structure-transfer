@@ -65,6 +65,87 @@ describe("E2E pipeline (mock adapters)", () => {
     expect(kbExport.body.templates ?? JSON.parse(kbExport.text).templates).toBeDefined();
   });
 
+  it("normalizes uploaded target material manifests and blocks unsafe entries", async () => {
+    const tinyPng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const cardIds: string[] = [];
+    for (let index = 1; index <= 4; index += 1) {
+      const uploadRes = await api
+        .post(`/api/projects/${projectId}/assets`)
+        .field("role", "user_image")
+        .field("type", "image")
+        .field("tags", "media_card,card")
+        .attach("file", tinyPng, { filename: `card_${index}.png`, contentType: "image/png" })
+        .expect(201);
+      cardIds.push(uploadRes.body.data.id as string);
+    }
+    const logoRes = await api
+      .post(`/api/projects/${projectId}/assets`)
+      .field("role", "user_image")
+      .field("type", "image")
+      .field("tags", "brand_logo,logo")
+      .attach("file", tinyPng, { filename: "logo.png", contentType: "image/png" })
+      .expect(201);
+    const copyRes = await api
+      .post(`/api/projects/${projectId}/assets`)
+      .send({
+        role: "user_text",
+        type: "text",
+        originalName: "features.txt",
+        text: "Analyze sample videos\nInduce reusable slots",
+        tags: "feature_copy"
+      })
+      .expect(201);
+    const noPathVisualRes = await api
+      .post(`/api/projects/${projectId}/assets`)
+      .send({
+        role: "user_image",
+        type: "image",
+        originalName: "ghost.png",
+        tags: "media_card"
+      })
+      .expect(201);
+    const corruptImageRes = await api
+      .post(`/api/projects/${projectId}/assets`)
+      .field("role", "user_image")
+      .field("type", "image")
+      .field("tags", "media_card,card")
+      .attach("file", Buffer.from("not a real png"), { filename: "corrupt.png", contentType: "image/png" })
+      .expect(201);
+
+    const manifestRes = await api
+      .post(`/api/projects/${projectId}/target-material-manifests`)
+      .send({
+        schemaVersion: "target-material-manifest-v1",
+        brandName: "Viral Structure Engine",
+        cta: "Upload. Analyze. Remix.",
+        features: ["Analyze sample videos", "Induce reusable slots"],
+        assets: [
+          ...cardIds.map((assetId) => ({ assetId, kind: "image", role: "media_card" })),
+          { assetId: logoRes.body.data.id, kind: "logo", role: "brand_logo" },
+          { assetId: copyRes.body.data.id, kind: "copy", role: "feature_copy" },
+          { assetId: noPathVisualRes.body.data.id, kind: "image", role: "media_card" },
+          { assetId: corruptImageRes.body.data.id, kind: "image", role: "media_card" },
+          { kind: "image", role: "media_card", path: "/tmp/vvst-external-card.png" },
+          { kind: "image", role: "media_card", url: "https://example.invalid/card.png" }
+        ]
+      })
+      .expect(201);
+
+    const targetAssets = manifestRes.body.data.targetAssets as Array<{ role: string; path?: string }>;
+    const mediaCards = targetAssets.filter((asset) => asset.role === "media_cards");
+    expect(mediaCards).toHaveLength(4);
+    expect(mediaCards.every((asset) => asset.path?.startsWith("asset://managed/"))).toBe(true);
+    expect(manifestRes.body.data.assetEvidence.every((asset: { dimensions?: { width?: number; height?: number }; decodeStatus?: string }) => asset.decodeStatus !== "ok" || ((asset.dimensions?.width ?? 0) > 0 && (asset.dimensions?.height ?? 0) > 0))).toBe(true);
+    expect(JSON.stringify(manifestRes.body.data)).not.toContain("/home/pxli");
+    expect(manifestRes.body.data.blockedAssets.length).toBeGreaterThanOrEqual(4);
+    expect(JSON.stringify(manifestRes.body.data.blockedAssets)).toContain("external_path_not_allowed");
+    expect(JSON.stringify(manifestRes.body.data.blockedAssets)).toContain("visual_asset_not_renderable_or_empty");
+    expect(JSON.stringify(manifestRes.body.data.blockedAssets)).toContain("image_decode_failed");
+  });
+
   it("uploads/analyzes source material and generates a gap-aware timeline", async () => {
     const sourceUploadRes = await api
       .post(`/api/projects/${projectId}/assets`)

@@ -13,6 +13,8 @@ import {
   parsePromptToBrief,
   applyNaturalLanguageEditToRequest,
   applyNaturalLanguageEditToTimeline,
+  induceSlotsFromAnalysis,
+  primaryRendererCapabilityForFamily,
   understandSourceVideo,
   validateAssetAnalysis,
   validateGenerationRequest,
@@ -68,6 +70,16 @@ function sourceAsset(): Asset {
     tags: ["product_like"],
     status: "ready",
     createdAt: "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function minimalVlm<T extends Record<string, unknown>>(partial: T): any {
+  return {
+    shots: [],
+    structure: { sellingPoints: [] },
+    rhythm: {},
+    packaging: {},
+    ...partial
   };
 }
 
@@ -334,6 +346,223 @@ describe("v1.2 mock pipeline", () => {
       expect(new Set(atom.applicableVerticals).size).toBe(atom.applicableVerticals.length);
     }
     expect(validateStructureTemplate(enriched).valid).toBe(true);
+  });
+
+  it("induced_slots_from_card_stack_atoms", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "motion_graph_sample", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Cascading card stack showing varied media formats and rapid collage zoom.",
+      reusablePatterns: ["rapid_collage_zoom", "cascading card stack"]
+    }));
+    const slots = induceSlotsFromAnalysis(analysis, template, template.structureAtoms, minimalVlm({
+      videoSummary: "Cascading card stack showing varied media formats and rapid collage zoom.",
+      reusablePatterns: ["rapid_collage_zoom", "cascading card stack"]
+    }));
+    const mediaSlot = slots.find((slot) => slot.visualFormFamily === "media_cards");
+
+    expect(mediaSlot?.status).toBe("required");
+    expect(mediaSlot?.rendererCandidates).toContain("card_stack_motion");
+    expect(template.requiredSlots[0]?.visualFormFamily).toBe("media_cards");
+  });
+
+  it("induced_slots_from_feature_list_atoms", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "feature_sample", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "SaaS demo with feature list UI, tool list highlight, and menu scroller.",
+      reusablePatterns: ["feature_list_scroller"]
+    }));
+    const uiSlot = template.inducedSlots?.find((slot) => slot.visualFormFamily === "ui_showcase");
+
+    expect(uiSlot?.status).toBe("required");
+    expect(uiSlot?.replacementPolicy.clickToReplace).toBe(false);
+    expect(uiSlot?.rendererCandidates).toContain("feature_list_scroller");
+  });
+
+  it("induced_slots_from_logo_cta_atoms", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "brand_sample", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Final logo hold and brand reveal end slate with CTA.",
+      structure: { cta: "Brand logo/end-slate CTA hold" },
+      reusablePatterns: ["logo_cta_hold"]
+    }));
+    const brandSlot = template.inducedSlots?.find((slot) => slot.visualFormFamily === "brand_cta");
+
+    expect(brandSlot?.status).toBe("required");
+    expect(brandSlot?.replacementPolicy.clickToReplace).toBe(true);
+    expect(template.requiredSlots.some((slot) => slot.visualFormFamily === "brand_cta")).toBe(true);
+  });
+
+  it("learned_template_selected_over_seed_b2b", () => {
+    const seed = buildFallbackTemplate(buildMockVideoAnalysis({ assetId: "demo_sample_video", projectId: "project_demo", purpose: "sample" }), "b2b_marketing_mg", "project_demo");
+    const learned = buildFallbackTemplate(buildMockVideoAnalysis({ assetId: "current_sample", projectId: "project_demo", purpose: "sample" }), "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Current learned template with cascading card stack and logo end slate.",
+      reusablePatterns: ["cascading card stack", "logo_cta_hold"]
+    }));
+
+    expect(learned.sourceSampleIds).toContain("current_sample");
+    expect(seed.sourceSampleIds).not.toContain("current_sample");
+    expect(learned.inducedSlots?.length).toBeGreaterThan(0);
+  });
+
+  it("current_sample_template_selected_before_latest_template", () => {
+    const current = buildFallbackTemplate(buildMockVideoAnalysis({ assetId: "active_sample", projectId: "project_demo", purpose: "sample" }), "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Active sample with feature list UI and logo end slate.",
+      reusablePatterns: ["feature_list_scroller", "logo_cta_hold"]
+    }));
+    const later = buildFallbackTemplate(buildMockVideoAnalysis({ assetId: "later_sample", projectId: "project_demo", purpose: "sample" }), "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Later unrelated cinematic montage.",
+      reusablePatterns: ["cinematic_hero_montage"]
+    }));
+    const selected = [current, later].find((template) => template.sourceSampleIds.includes("active_sample"));
+
+    expect(selected?.id).toBe(current.id);
+    expect(selected?.inducedSlots?.some((slot) => slot.visualFormFamily === "ui_showcase")).toBe(true);
+  });
+
+  it("generic_b2b_slots_do_not_override_induced_slots", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "motion_graph_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Cascading card stack and cinematic hero montage with final logo end slate.",
+      reusablePatterns: ["cascading card stack", "cinematic_hero_montage", "logo_cta_hold"]
+    }));
+
+    expect(template.requiredSlots[0]?.inducedSlotId).toBe(template.requiredSlots[0]?.id);
+    expect(template.requiredSlots.findIndex((slot) => slot.visualFormFamily === "media_cards")).toBeLessThan(
+      template.requiredSlots.findIndex((slot) => slot.id === "slot_subtitle_text")
+    );
+  });
+
+  it("media_cards_gap_creates_card_proxy", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "motion_graph_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Cascading card stack showing varied media formats.",
+      reusablePatterns: ["cascading card stack"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const mediaAction = fillPlan.find((action) => action.rendererInstructions?.visualFormFamily === "media_cards");
+
+    expect(mediaAction?.strategy).toBe("proxy_placeholder");
+    expect(mediaAction?.rendererInstructions?.placeholderSpec).toMatchObject({ label: "Card stack proxy" });
+  });
+
+  it("live_action_montage_gap_creates_montage_proxy", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "montage_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Cinematic hero montage and beat-sync action montage proof sequence.",
+      structure: { climax: "Cinematic hero montage proof sequence" },
+      reusablePatterns: ["cinematic_hero_montage"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const montageAction = fillPlan.find((action) => action.rendererInstructions?.visualFormFamily === "live_action_montage");
+
+    expect(montageAction?.strategy).toBe("proxy_placeholder");
+    expect(montageAction?.rendererInstructions?.placeholderSpec).toMatchObject({ label: "Beat montage proxy" });
+  });
+
+  it("brand_cta_gap_creates_logo_placeholder", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "brand_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Final logo hold and CTA end slate.",
+      structure: { cta: "Logo end-slate CTA hold" },
+      reusablePatterns: ["logo_cta_hold"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const brandAction = fillPlan.find((action) => action.rendererInstructions?.visualFormFamily === "brand_cta");
+
+    expect(brandAction?.strategy).toBe("proxy_placeholder");
+    expect(brandAction?.rendererInstructions?.placeholderSpec).toMatchObject({ label: "Logo / CTA placeholder" });
+  });
+
+  it("geometric_mg_is_procedural_and_not_click_to_replace", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "geo_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Neon geometry line frame and polygon shape pulse around kinetic title.",
+      reusablePatterns: ["neon_geometry_line_frame"]
+    }));
+    const geoSlot = template.inducedSlots?.find((slot) => slot.visualFormFamily === "geometric_mg");
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const geoAction = fillPlan.find((action) => action.rendererInstructions?.visualFormFamily === "geometric_mg");
+
+    expect(geoSlot?.replacementPolicy.clickToReplace).toBe(false);
+    expect(primaryRendererCapabilityForFamily("geometric_mg")?.proceduralOnly).toBe(true);
+    expect(geoAction?.strategy).toBe("procedural_generation");
+  });
+
+  it("feature_list_scroller_rendered", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "feature_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Feature list UI with tool list highlight and menu scroller.",
+      reusablePatterns: ["feature_list_scroller"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const uiAction = fillPlan.find((action) => action.visualFormFamily === "ui_showcase");
+
+    expect(uiAction?.strategy).toBe("procedural_generation");
+    expect(uiAction?.capabilityId).toBe("feature_list_scroller");
+    expect(uiAction?.rendererInstructions?.atom).toBe("feature_list_scroller");
+  });
+
+  it("kinetic_text_card_rendered", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "kinetic_sample", projectId: "project_demo", purpose: "sample" });
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo", minimalVlm({
+      videoSummary: "Split kinetic typography and dynamic text card sequence.",
+      reusablePatterns: ["split_kinetic_typography"]
+    }));
+    const sparseSource = understandSourceVideo(undefined, undefined, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const mappings = matchSlots(template, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined });
+    const fillPlan = createFillPlan(mappings, sparseSource, { ...request(), inputMode: "prompt_only", sourceVideo: undefined }, template);
+    const kineticAction = fillPlan.find((action) => action.visualFormFamily === "kinetic_typography");
+
+    expect(kineticAction?.strategy).toBe("procedural_generation");
+    expect(kineticAction?.capabilityId).toBe("kinetic_text_card");
+    expect(kineticAction?.rendererInstructions?.atom).toBe("kinetic_text_card");
+  });
+
+  it("static_poster_must_not_induce_media_cards", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "poster_sample", projectId: "project_demo", purpose: "sample" });
+    const slots = induceSlotsFromAnalysis(analysis, undefined, [], minimalVlm({
+      videoSummary: "Static poster with central title and one product silhouette.",
+      reusablePatterns: ["minimal poster layout"]
+    }));
+    expect(slots.some((slot) => slot.visualFormFamily === "media_cards")).toBe(false);
+  });
+
+  it("plain_text_card_sequence_must_not_induce_media_cards", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "text_sample", projectId: "project_demo", purpose: "sample" });
+    const slots = induceSlotsFromAnalysis(analysis, undefined, [], minimalVlm({
+      videoSummary: "Plain text card sequence with bold kinetic typography.",
+      reusablePatterns: ["text_card_sequence"]
+    }));
+    expect(slots.some((slot) => slot.visualFormFamily === "media_cards")).toBe(false);
+    expect(slots.some((slot) => slot.visualFormFamily === "kinetic_typography")).toBe(true);
+  });
+
+  it("generic_b2b_promo_must_not_induce_brand_cta_without_logo_or_end_slate", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "b2b_sample", projectId: "project_demo", purpose: "sample" });
+    const slots = induceSlotsFromAnalysis(analysis, undefined, [], minimalVlm({
+      videoSummary: "Generic B2B promo with direct CTA button and benefit recap.",
+      structure: { cta: "Click to learn more" }
+    }));
+    expect(slots.some((slot) => slot.visualFormFamily === "brand_cta")).toBe(false);
+  });
+
+  it("random_montage_must_not_induce_feature_list_ui", () => {
+    const analysis = buildMockVideoAnalysis({ assetId: "montage_sample", projectId: "project_demo", purpose: "sample" });
+    const slots = induceSlotsFromAnalysis(analysis, undefined, [], minimalVlm({
+      videoSummary: "Random cinematic montage with fast action clips and beat cuts.",
+      reusablePatterns: ["cinematic_montage"]
+    }));
+    expect(slots.some((slot) => slot.visualFormFamily === "ui_showcase")).toBe(false);
   });
 
   it("editing_case_no_target_assets_creates_visual_gaps, interactive_gap_fill_non_empty, proxy_placeholder_rendered, timeline_preview_has_real_or_proxy_frames", () => {

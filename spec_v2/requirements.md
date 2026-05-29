@@ -61,6 +61,21 @@ existing learned knowledge base
 → system reconstructs a new short video plan / preview / demo
 ```
 
+Current hardening adds a second judge-visible path for motion-graph structure transfer:
+
+```text
+sample/reference video
+→ deterministic visual evidence
+→ open-world induced slots
+→ target material pool
+→ slot-specific asset matching
+→ proxy fill or target asset replacement
+→ family-specific renderer capability
+→ MP4 + timeline previews + evaluator gates
+```
+
+In this path, the sample/reference video is structure evidence only by default. Target assets, authorized reusable assets, and procedural renderer output are the material pool. Mock/no-path assets MUST NOT satisfy visual slots.
+
 ### 1.4 Build stages
 
 | Stage | Name | Must work? | Purpose |
@@ -301,6 +316,91 @@ The project SHALL be locally runnable.
 - Reviewer SHALL be able to complete main flow through UI.
 - App SHOULD not require production deployment.
 
+### FR-016 Evidence-driven visual slot induction
+
+The system SHOULD support deterministic visual evidence for open-world motion-graph structures instead of relying only on model summaries or seed B2B slots.
+
+**Acceptance criteria**
+
+- Visual evidence artifacts SHOULD include metadata, shots, motion/layout candidates, evidence frames, and a contact sheet.
+- Induced visual slots SHOULD record `visualFormFamily`, `visualForm`, motion/layout relation, asset requirements, renderer candidates, fallback strategies, replacement policy, confidence, and evidence.
+- The motion-graph case SHOULD induce families such as:
+  - `media_cards`;
+  - `kinetic_typography`;
+  - `ui_showcase`;
+  - `geometric_mg`;
+  - `brand_cta`;
+  - optional `object_motion` or `live_action_montage` when supported by evidence.
+- Generic B2B slots such as `hook_visual/product_closeup/usage_scene/comparison/cta_visual` MUST NOT be the primary flow when open-world slots exist.
+
+### FR-017 Material pool and target asset adaptation
+
+The system SHALL separate reference structure evidence from output material.
+
+**Acceptance criteria**
+
+- Sample/reference assets SHALL be blocked as target material unless `sampleAssetReuse="authorized"`.
+- Target assets SHALL be matched to induced slots by role, kind, tags, renderability, and slot requirements.
+- `media_cards` SHALL support image-set matching, not only single-image matching.
+- Text/copy assets MAY satisfy text or copy-driven slots but MUST NOT satisfy required visual slots unless the slot family explicitly supports procedural text rendering.
+- Missing visual material SHALL produce a gap report plus proxy/replacement slots.
+- For the motion-graph target-asset demo, expected matches are:
+  - `media_cards -> image_set` with at least 4 images;
+  - `ui_showcase -> copy_list`;
+  - `kinetic_typography -> copy`;
+  - `brand_cta -> logo_or_brand_name`;
+  - `geometric_mg -> procedural_not_required`;
+  - `live_action_montage -> missing/proxy` unless enough image/video material exists.
+
+### FR-018 Renderer capability selection for induced slots
+
+Renderer selection SHALL be driven by slot family and fill strategy rather than silently falling back to centered text cards.
+
+**Acceptance criteria**
+
+- Fill actions SHOULD expose renderer capability ids and fulfillment source.
+- Motion-graph renderers SHOULD support:
+  - `card_stack_motion`;
+  - `feature_list_scroller`;
+  - `neon_geometry_typography`;
+  - `kinetic_text_card`;
+  - `logo_cta_hold`;
+  - `generic_asset_proxy` for honest unknown/fallback clips.
+- Proxy mode SHOULD render family-specific proxies.
+- Target-asset mode SHOULD visibly render target card images, feature copy, and logo/CTA while preserving the induced structure.
+
+### FR-019 Motion-graph regression artifacts
+
+The motion-graph case SHALL write enough artifacts for code-driven, artifact-driven, and visual review.
+
+**Acceptance criteria**
+
+- Required artifacts SHOULD include:
+  - `visual-evidence.json`;
+  - `induced-slots.json`;
+  - `selected-template.json`;
+  - `asset-evidence.json`;
+  - `slot-asset-matches.json`;
+  - `fill-plan.proxy.json`;
+  - `fill-plan.with-assets.json`;
+  - `replacement-slots.proxy.json`;
+  - `replacement-slots.with-assets.json`;
+  - `render_proxy.mp4`;
+  - `render_with_assets.mp4`;
+  - `before_after_contact_sheet.png`;
+  - `evaluation.motion_graph.json`;
+  - `preview_frames/manifest.json`.
+- Evaluator gates SHOULD include:
+  - `target_assets_loaded`;
+  - `media_cards_asset_matched`;
+  - `ui_showcase_copy_matched`;
+  - `brand_cta_logo_matched`;
+  - `proxy_to_asset_replacement_applied`;
+  - `render_with_assets_has_user_images`;
+  - `render_with_assets_has_brand_cta`;
+  - `structure_preserved_after_asset_replacement`;
+  - `no_sample_visual_copy`.
+
 ---
 
 ## 4. P1/P2 requirements
@@ -316,6 +416,7 @@ The project SHALL be locally runnable.
 - ✅ Natural-language adjustment commands (`POST /api/generations/:id/revise` mutates controls + re-runs the pipeline; heuristic by default, LLM via Ark/OpenAI-compatible when wired).
 - ✅ Four output variants instead of two: **高点击版 / 高转化版 / 高节奏版 / 高质感版** via `POST /api/generations/:id/variants`.
 - ✅ Quality evaluator scorecard (`POST /api/generations/:id/scorecard`) with heuristic + optional LLM judge merged 50/50.
+- ✅ Motion-graph evidence-driven slot induction and target-asset adaptation demo (`scripts/run-motion-graph-case.mjs --with-target-assets`) with corpus gates.
 
 ### P2 — advanced additions
 
@@ -359,6 +460,8 @@ System SHALL persist intermediate artifacts and job states.
 
 - API keys SHALL be read from `.env`, never committed.
 - Sample videos SHALL be used for structural learning, not direct copying.
+- Public artifacts SHALL avoid absolute private paths and secret patterns.
+- Sample/reference frames SHALL be labeled as evidence-only when shown next to generated preview frames.
 - Source policy SHALL be recorded.
 - User-facing copy SHALL remind that commercial use requires authorization.
 - The system SHALL not rely on platform performance data or claim a video will definitely go viral.

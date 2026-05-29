@@ -8,6 +8,7 @@ import type {
   Project,
   RendererTarget,
   StructureTemplate,
+  TargetAssetInput,
   TemplateRecord,
   Vertical
 } from "@vvst/shared";
@@ -87,6 +88,19 @@ type ReplacementResponse = {
   replacementSlot: NonNullable<GenerationResult["replacementSlots"]>[number] | null;
   binding: { slotId: string; assetId: string; applyMotionFromSlot?: boolean };
   generation: GenerationResult;
+};
+
+type TargetMaterialManifestResponse = {
+  schemaVersion: string;
+  projectId: string;
+  normalizedAt: string;
+  brandName?: string;
+  cta?: string;
+  features?: string[];
+  targetAssets: TargetAssetInput[];
+  assetEvidence: Array<{ assetId: string; type: string; role: string; renderable: boolean; dimensions?: { width?: number; height?: number; codec?: string }; decodeStatus?: string }>;
+  blockedAssets: Array<{ assetId?: string | null; kind?: string; role?: string; reason: string; status?: string }>;
+  materialPolicy: Record<string, unknown>;
 };
 
 type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string; details?: unknown } };
@@ -295,6 +309,7 @@ function AppContent() {
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBaseResponse | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [sampleDescription, setSampleDescription] = useState("B2B MG 宣传片：强钩子、产品价值、证明卡片、CTA。");
+  const [sampleAssetId, setSampleAssetId] = useState<string>("");
   const [sampleAnalysis, setSampleAnalysis] = useState<ExampleAnalysis | null>(null);
   const [sourceAssetId, setSourceAssetId] = useState<string>("");
   const [sourceAnalysis, setSourceAnalysis] = useState<ExampleAnalysis | null>(null);
@@ -310,6 +325,13 @@ function AppContent() {
   const [scorecard, setScorecard] = useState<ScorecardResponse | null>(null);
   const [selectedReplacementSlotId, setSelectedReplacementSlotId] = useState<string>("");
   const [replacementResult, setReplacementResult] = useState<ReplacementResponse | null>(null);
+  const [materialCardAssetIds, setMaterialCardAssetIds] = useState<string[]>([]);
+  const [materialLogoAssetId, setMaterialLogoAssetId] = useState<string>("");
+  const [materialCopyAssetId, setMaterialCopyAssetId] = useState<string>("");
+  const [materialBrandName, setMaterialBrandName] = useState("Viral Structure Engine");
+  const [materialCta, setMaterialCta] = useState("Upload. Analyze. Remix.");
+  const [materialFeatureCopy, setMaterialFeatureCopy] = useState("Analyze sample videos\nInduce reusable slots\nDetect missing assets\nRender editable timelines");
+  const [materialManifest, setMaterialManifest] = useState<TargetMaterialManifestResponse | null>(null);
 
   const selectedTemplate = useMemo(
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
@@ -337,6 +359,8 @@ function AppContent() {
   const generationCandidates = safeArray(generation?.sourceUnderstanding?.candidates);
   const generationStoryboard = safeArray(generation?.storyboard);
   const generationClips = safeArray(generation?.timeline?.clips);
+  const managedTargetAssets = materialManifest?.targetAssets ?? [];
+  const managedBlockedAssets = materialManifest?.blockedAssets ?? [];
 
   async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
     setApiState("loading");
@@ -423,6 +447,8 @@ function AppContent() {
       setProject(created);
       setProjects((current) => [created, ...current]);
       setSelectedTemplateId("");
+      setSampleAssetId("");
+      setSampleAnalysis(null);
       setGeneration(null);
       setRenderResult(null);
       await refreshProject(created.id);
@@ -445,6 +471,7 @@ function AppContent() {
         })
       });
       if (response.template) setSelectedTemplateId(response.template.id);
+      setSampleAssetId(response.asset.id);
       setSampleAnalysis(response.analysis);
       await refreshProject(project.id);
     });
@@ -467,10 +494,90 @@ function AppContent() {
         setSourceAssetId(asset.id);
         setSourceAnalysis(analysis.analysis);
       } else {
+        setSampleAssetId(asset.id);
         setSampleAnalysis(analysis.analysis);
       }
       if (analysis.template) setSelectedTemplateId(analysis.template.id);
       await refreshProject(project.id);
+    });
+  }
+
+  async function uploadMotionGraphCards(files: FileList | null) {
+    if (!project || !files?.length) return;
+    await run(async () => {
+      const uploaded: string[] = [];
+      for (const file of Array.from(files)) {
+        const body = new FormData();
+        body.set("file", file);
+        body.set("role", "user_image");
+        body.set("sourcePolicy", "user_authorized");
+        body.set("tags", "media_card,card,target_material");
+        const asset = await api<Asset>(`/api/projects/${project.id}/assets`, { method: "POST", body });
+        uploaded.push(asset.id);
+      }
+      setMaterialCardAssetIds((current) => Array.from(new Set([...current, ...uploaded])));
+      setMaterialManifest(null);
+      await refreshProject(project.id);
+    });
+  }
+
+  async function uploadMotionGraphLogo(file: File | null) {
+    if (!project || !file) return;
+    await run(async () => {
+      const body = new FormData();
+      body.set("file", file);
+      body.set("role", "user_image");
+      body.set("sourcePolicy", "user_authorized");
+      body.set("tags", "brand_logo,logo,target_material");
+      const asset = await api<Asset>(`/api/projects/${project.id}/assets`, { method: "POST", body });
+      setMaterialLogoAssetId(asset.id);
+      setMaterialManifest(null);
+      await refreshProject(project.id);
+    });
+  }
+
+  async function saveMotionGraphCopyAsset() {
+    if (!project || !materialFeatureCopy.trim()) return;
+    await run(async () => {
+      const asset = await api<Asset>(`/api/projects/${project.id}/assets`, {
+        method: "POST",
+        body: JSON.stringify({
+          role: "user_text",
+          type: "text",
+          originalName: "motion-graph-feature-copy.txt",
+          text: materialFeatureCopy.trim(),
+          tags: "feature_copy,kinetic_copy,target_material",
+          sourcePolicy: "user_authorized"
+        })
+      });
+      setMaterialCopyAssetId(asset.id);
+      setMaterialManifest(null);
+      await refreshProject(project.id);
+    });
+  }
+
+  async function buildMotionGraphTargetManifest() {
+    if (!project) return;
+    await run(async () => {
+      const features = materialFeatureCopy
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const response = await api<TargetMaterialManifestResponse>(`/api/projects/${project.id}/target-material-manifests`, {
+        method: "POST",
+        body: JSON.stringify({
+          schemaVersion: "target-material-manifest-v1",
+          brandName: materialBrandName,
+          cta: materialCta,
+          features,
+          assets: [
+            ...materialCardAssetIds.map((assetId) => ({ assetId, kind: "image", role: "media_card" })),
+            ...(materialLogoAssetId ? [{ assetId: materialLogoAssetId, kind: "logo", role: "brand_logo" }] : []),
+            ...(materialCopyAssetId ? [{ assetId: materialCopyAssetId, kind: "copy", role: "feature_copy" }] : [])
+          ]
+        })
+      });
+      setMaterialManifest(response);
     });
   }
 
@@ -504,6 +611,7 @@ function AppContent() {
         projectId: project.id,
         inputMode: sourceAssetId ? "video_plus_prompt" : "prompt_only",
         selectedTemplateIds: selectedTemplateId ? [selectedTemplateId] : undefined,
+        sampleReferenceAssetId: sampleAssetId || sampleAnalysis?.assetId,
         sourceVideo: sourceAssetId ? { assetId: sourceAssetId } : undefined,
         prompt,
         target: {
@@ -521,7 +629,8 @@ function AppContent() {
         },
         constraints: {
           noSampleVisualCopy: true
-        }
+        },
+        targetAssets: managedTargetAssets.length ? managedTargetAssets : undefined
       };
       const response = await api<GenerateResponse>("/api/generations", {
         method: "POST",
@@ -891,6 +1000,77 @@ function AppContent() {
                 提示词
                 <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
               </label>
+            </div>
+            <div className="material-intake">
+              <div className="panel-heading compact">
+                <div>
+                  <span className="step">Motion Graph Material Intake</span>
+                  <h3>目标卡片 / Logo / 文案素材池</h3>
+                </div>
+                <button onClick={buildMotionGraphTargetManifest} disabled={!project || apiState === "loading"}>
+                  生成 Target Manifest
+                </button>
+              </div>
+              <p className="empty">该路径使用项目托管上传素材。样例视频只作为结构证据，不会作为 target material。</p>
+              <div className="form-grid">
+                <label>
+                  品牌名
+                  <input value={materialBrandName} onChange={(event) => setMaterialBrandName(event.target.value)} />
+                </label>
+                <label>
+                  CTA
+                  <input value={materialCta} onChange={(event) => setMaterialCta(event.target.value)} />
+                </label>
+                <label>
+                  上传 media cards
+                  <span className="file-button inline-file">
+                    选择图片
+                    <input type="file" accept="image/*" multiple onChange={(event) => uploadMotionGraphCards(event.target.files)} />
+                  </span>
+                </label>
+                <label>
+                  上传 logo
+                  <span className="file-button inline-file">
+                    选择 Logo
+                    <input type="file" accept="image/*" onChange={(event) => uploadMotionGraphLogo(event.target.files?.[0] ?? null)} />
+                  </span>
+                </label>
+                <label className="wide">
+                  feature copy
+                  <textarea value={materialFeatureCopy} onChange={(event) => setMaterialFeatureCopy(event.target.value)} />
+                </label>
+                <button onClick={saveMotionGraphCopyAsset} disabled={!project || !materialFeatureCopy.trim() || apiState === "loading"}>
+                  保存文案素材
+                </button>
+              </div>
+              <div className="result-grid compact-grid">
+                <div>
+                  <h3>已选素材</h3>
+                  <table>
+                    <thead><tr><th>角色</th><th>素材</th></tr></thead>
+                    <tbody>
+                      <tr><td>media_cards</td><td>{materialCardAssetIds.map((id) => assets.find((asset) => asset.id === id)?.filename ?? id).join(", ") || "未上传"}</td></tr>
+                      <tr><td>brand_cta</td><td>{assets.find((asset) => asset.id === materialLogoAssetId)?.filename ?? "未上传"}</td></tr>
+                      <tr><td>ui_showcase/copy</td><td>{assets.find((asset) => asset.id === materialCopyAssetId)?.filename ?? "使用 manifest features 或未保存"}</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div>
+                  <h3>Manifest 结果</h3>
+                  <table>
+                    <thead><tr><th>asset</th><th>role</th><th>状态</th></tr></thead>
+                    <tbody>
+                      {managedTargetAssets.map((asset) => (
+                        <tr key={asset.id}><td>{asset.filename ?? asset.id}</td><td>{asset.role}</td><td>target material</td></tr>
+                      ))}
+                      {managedBlockedAssets.map((asset, index) => (
+                        <tr key={`${asset.assetId ?? "blocked"}-${index}`}><td>{asset.assetId ?? "manifest entry"}</td><td>{asset.role ?? asset.kind}</td><td>{asset.reason}</td></tr>
+                      ))}
+                      {!managedTargetAssets.length && !managedBlockedAssets.length && <tr><td colSpan={3}>尚未生成 manifest。</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </section>
 
