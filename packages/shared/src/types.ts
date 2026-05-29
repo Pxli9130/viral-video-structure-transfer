@@ -612,6 +612,7 @@ export interface GenerationControls {
   ctaStyle?: "soft" | "direct";
   allowAigcPlaceholder?: boolean;
   allowAigcMaterialGeneration?: boolean;
+  allowExternalAigcProvider?: boolean;
   creativeMode?: CreativeOutputMode;
   subtitleDensity?: "minimal" | "medium" | "dense";
   stylePreset?: "sample_like" | "clean_premium" | "white_poster" | "bold_mg";
@@ -944,6 +945,16 @@ export interface GenerationResult {
   };
   migrationExplanation: string;
   warnings: string[];
+  aigcMaterialFill?: {
+    enabled: boolean;
+    provider: AigcMaterialProviderId;
+    externalProviderUsed: boolean;
+    sampleFramesSentExternally: boolean;
+    briefs: MaterialGenerationBrief[];
+    candidates: GeneratedAssetCandidate[];
+    quality: GeneratedAssetQualityResult[];
+    generatedTargetAssets: TargetAssetInput[];
+  };
   createdAt: string;
 }
 

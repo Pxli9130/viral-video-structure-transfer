@@ -53,6 +53,20 @@ function slotForGap(gap: GapReportItem, inducedSlots: InducedVisualSlot[] | unde
   return inducedSlots?.find((slot) => slot.id === gap.inducedSlotId || slot.id === gap.slotId || slot.visualFormFamily === gap.visualFormFamily);
 }
 
+function familyForGap(gap: GapReportItem): VisualFormFamily | "poster_layout" | undefined {
+  if (gap.visualFormFamily) return gap.visualFormFamily;
+  const haystack = [gap.gapType, gap.slotId, gap.slotType, gap.visualForm].join(" ").toLowerCase();
+  if (/media[_\s-]?cards|card[_\s-]?stack/.test(haystack)) return "media_cards";
+  if (/brand|cta|logo/.test(haystack)) return "brand_cta";
+  if (/montage|action|beat[_\s-]?cut|match[_\s-]?cut/.test(haystack)) return "live_action_montage";
+  if (/product|object|hero|closeup|close-up|rotating/.test(haystack)) return "object_motion";
+  if (/poster|cover|background/.test(haystack)) return "poster_layout";
+  if (/ui|feature[_\s-]?list|showcase/.test(haystack)) return "ui_showcase";
+  if (/subtitle|title|text|typography/.test(haystack)) return "kinetic_typography";
+  if (/hook|proof|usage|comparison|visual/.test(haystack)) return "unknown";
+  return undefined;
+}
+
 function promptPackFor(family: VisualFormFamily | "poster_layout", count: number, targetTheme: string): string[] {
   const base = {
     media_cards: "Clean abstract SaaS/product interface card, bold motion-graph composition, no logo, no watermark, no letters, no words, no readable text, icon-and-shape UI only",
@@ -68,7 +82,7 @@ function promptPackFor(family: VisualFormFamily | "poster_layout", count: number
   return Array.from({ length: Math.max(1, count) }, (_, index) => `${base[family]} · ${targetTheme} · variant ${index + 1}`);
 }
 
-function briefAssetTypeFor(family: VisualFormFamily | undefined, gap: GapReportItem): MaterialGenerationBrief["assetType"] | undefined {
+function briefAssetTypeFor(family: VisualFormFamily | "poster_layout" | undefined, gap: GapReportItem): MaterialGenerationBrief["assetType"] | undefined {
   if (family === "media_cards") return "image_set";
   if (family === "live_action_montage") return "image_set";
   if (family === "object_motion") return "image";
@@ -79,13 +93,13 @@ function briefAssetTypeFor(family: VisualFormFamily | undefined, gap: GapReportI
   return family === "unknown" ? "image" : undefined;
 }
 
-function briefCountFor(family: VisualFormFamily | undefined, gap: GapReportItem): number {
+function briefCountFor(family: VisualFormFamily | "poster_layout" | undefined, gap: GapReportItem): number {
   if (family === "media_cards") return Math.max(gap.missingCount ?? gap.assetRequirement?.minCount ?? 4, 4);
   if (family === "live_action_montage") return Math.max(gap.missingCount ?? 3, 3);
   return Math.max(gap.missingCount ?? 1, 1);
 }
 
-function hasTargetMaterialForFamily(family: VisualFormFamily | undefined, targetAssets: TargetAssetInput[] | undefined): boolean {
+function hasTargetMaterialForFamily(family: VisualFormFamily | "poster_layout" | undefined, targetAssets: TargetAssetInput[] | undefined): boolean {
   if (!family || !targetAssets?.length) return false;
   if (family === "geometric_mg") return true;
   if (family === "media_cards") {
@@ -113,7 +127,7 @@ export function createMaterialGenerationBriefs(input: {
   const copyContext = promptLines(input.request);
   const briefs: MaterialGenerationBrief[] = [];
   for (const gap of input.gapReport) {
-    const family = gap.visualFormFamily;
+    const family = familyForGap(gap);
     if (hasTargetMaterialForFamily(family, input.targetAssets)) continue;
     const assetType = briefAssetTypeFor(family, gap);
     if (!assetType) continue;

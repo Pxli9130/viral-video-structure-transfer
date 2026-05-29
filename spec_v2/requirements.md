@@ -20,7 +20,7 @@ The product is an **AI video structure transfer platform**. It should not simply
 6. understand usable source-video shots;
 7. match source shots to target structure slots;
 8. detect missing or weak material slots;
-9. fill gaps through reuse, crop/zoom, text cards, packaging overlays, reordering, or future AIGC placeholders;
+9. fill gaps through reuse, crop/zoom, text cards, packaging overlays, reordering, proxy placeholders, user material, or optional AIGC generated material;
 10. generate script, storyboard, timeline JSON, explanation, and preview;
 11. optionally render an MP4 through FFmpeg / Remotion / HyperFrames.
 
@@ -70,11 +70,12 @@ sample/reference video
 → target material pool
 → slot-specific asset matching
 → proxy fill or target asset replacement
+→ optional AIGC material fill when explicitly enabled
 → family-specific renderer capability
 → MP4 + timeline previews + evaluator gates
 ```
 
-In this path, the sample/reference video is structure evidence only by default. Target assets, authorized reusable assets, and procedural renderer output are the material pool. Mock/no-path assets MUST NOT satisfy visual slots.
+In this path, the sample/reference video is structure evidence only by default. Target assets, authorized reusable assets, procedural renderer output, and explicitly accepted generated material are the material pool. Mock/no-path assets MUST NOT satisfy visual slots. AIGC material generation MUST be opt-in and MUST NOT upload sample frames to external providers unless a future explicit privacy control allows it.
 
 ### 1.4 Build stages
 
@@ -401,6 +402,40 @@ The motion-graph case SHALL write enough artifacts for code-driven, artifact-dri
   - `structure_preserved_after_asset_replacement`;
   - `no_sample_visual_copy`.
 
+### FR-020 Optional AIGC material fill
+
+The system SHALL support optional generated material fill for missing visual slots without making external generation part of the default path.
+
+**Acceptance criteria**
+
+- AIGC material fill SHALL be disabled by default.
+- Enabling external AIGC providers SHALL require explicit user/operator opt-in.
+- The web reconstruction planner SHALL expose an explicit AIGC gap-fill control, not hide AIGC behind the normal generate action.
+- The web UI SHALL make the safe default clear: no external calls unless the external-provider control is enabled.
+- `GenerationRequest.controls` SHALL support `allowAigcMaterialGeneration` and `allowExternalAigcProvider`.
+- Generation responses SHOULD expose an `aigcMaterialFill` summary containing provider, external-call status, sample-frame-sent status, briefs, candidates, quality results, and generated target assets.
+- The motion-graph harness SHALL support `--with-aigc-materials`.
+- The default provider for deterministic tests SHALL be `mock_provider`.
+- Volcengine Seedream image generation MAY be used as an external image provider when `--allow-external-aigc` is present.
+- Seedream image requests SHOULD set watermark generation off for reviewable artifacts.
+- Missing `media_cards` MAY create an `image_set` generation brief.
+- Missing `brand_cta` MUST NOT generate a fake real logo; it MAY create a logo placeholder or ask for user upload.
+- Generated assets SHALL record provenance, provider, model, prompt, external-call status, and whether sample frames were sent.
+- Usable generated assets SHALL be registered as target material with `materialRole="aigc_generated_material"`, not as user-provided assets.
+- Deterministic quality checks SHALL run before VLM review.
+- VLM review, when configured, SHALL be a bounded strict-JSON quality gate. If unavailable, it SHALL be marked as skipped infrastructure, not as a deterministic pass.
+- Required AIGC artifacts SHOULD include:
+  - `aigc-material-briefs.json`;
+  - `generated-assets/`;
+  - `generated-asset-candidates.json`;
+  - `generated-asset-quality.json`;
+  - `asset-evidence.aigc.json`;
+  - `slot-asset-matches.aigc.json`;
+  - `fill-plan.aigc.json`;
+  - `replacement-slots.aigc.json`;
+  - `render_aigc_materials.mp4`;
+  - `aigc_materials_contact_sheet.png`.
+
 ---
 
 ## 4. P1/P2 requirements
@@ -417,6 +452,8 @@ The motion-graph case SHALL write enough artifacts for code-driven, artifact-dri
 - ✅ Four output variants instead of two: **高点击版 / 高转化版 / 高节奏版 / 高质感版** via `POST /api/generations/:id/variants`.
 - ✅ Quality evaluator scorecard (`POST /api/generations/:id/scorecard`) with heuristic + optional LLM judge merged 50/50.
 - ✅ Motion-graph evidence-driven slot induction and target-asset adaptation demo (`scripts/run-motion-graph-case.mjs --with-target-assets`) with corpus gates.
+- ✅ Motion-graph managed material intake, partial/malformed target material stress, and optional no-watermark Seedream AIGC material fill (`--with-aigc-materials --aigc-provider env --allow-external-aigc`) with generated-asset provenance and Gemini quality gate.
+- ✅ Browser/API optional AIGC gap-fill path: the Reconstruction Planner exposes an explicit AIGC button/toggle, API generation uses `allowAigcMaterialGeneration`, deterministic `mock_provider` is the safe default, and external Seedream remains opt-in.
 
 ### P2 — advanced additions
 
@@ -462,6 +499,9 @@ System SHALL persist intermediate artifacts and job states.
 - Sample videos SHALL be used for structural learning, not direct copying.
 - Public artifacts SHALL avoid absolute private paths and secret patterns.
 - Sample/reference frames SHALL be labeled as evidence-only when shown next to generated preview frames.
+- External AIGC providers SHALL never receive sample frames by default.
+- Generated assets SHALL be labeled as generated material and SHALL NOT be represented as user uploads.
+- API keys SHALL NOT be printed, persisted in public artifacts, or included in prompts/reports.
 - Source policy SHALL be recorded.
 - User-facing copy SHALL remind that commercial use requires authorization.
 - The system SHALL not rely on platform performance data or claim a video will definitely go viral.
@@ -478,6 +518,8 @@ Generation speed SHALL not be the primary optimization target. Correct structure
 - Mandatory cloud deployment.
 - Guaranteed viral performance prediction.
 - Direct video-generation model dependency.
+- Default external AIGC generation.
+- Fake brand/logo generation.
 - Music copyright handling beyond placeholders.
 - Real ad platform data integration.
 - Multi-user collaboration and account system.

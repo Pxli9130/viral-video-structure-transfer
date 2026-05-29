@@ -134,6 +134,8 @@ Input:
 node scripts/generate-motion-graph-target-assets.mjs
 node scripts/run-motion-graph-case.mjs
 node scripts/run-motion-graph-case.mjs --with-target-assets
+node scripts/run-motion-graph-case.mjs --with-partial-target-assets
+node scripts/run-motion-graph-case.mjs --with-malformed-target-assets
 ```
 
 Expected:
@@ -144,8 +146,45 @@ Expected:
 - Proxy mode writes `render_proxy.mp4` and family-specific proxy fill artifacts.
 - Target-asset mode writes `render_with_assets.mp4`, `slot-asset-matches.json`, `asset-evidence.json`, and `before_after_contact_sheet.png`.
 - Target-asset mode visibly uses target card images, target feature copy, and target logo/CTA.
+- Partial mode reports weak `media_cards` matching and keeps missing logo as proxy.
+- Malformed mode blocks external paths, unsupported/no-path/zero-byte/wrong-role assets and does not match them to visual slots.
 - Sample/reference frames appear only as evidence, not target material.
 - `evaluation.motion_graph.json` passes all target asset gates.
+
+## 8.1 Demo case G — optional AIGC material fill
+
+Input:
+
+- Reference sample: `test_videos/motion_graph_1.mov`.
+- No user target image fixture is required for AIGC mode.
+- Web path: open the Reconstruction Planner and click **AIGC 补缺口并生成**.
+- API path: `POST /api/generations` with `controls.allowAigcMaterialGeneration=true`.
+- Optional external provider config in `.env`:
+  - `AIGC_IMAGE_PROVIDER=volcengine_seedream`;
+  - `SEEDREAM_ARK_MODEL=doubao-seedream-5-0-260128`;
+  - `SEEDREAM_WATERMARK=false`;
+  - `VLM_PROVIDER=gemini` for generated-material review.
+
+Commands:
+
+```bash
+node scripts/run-motion-graph-case.mjs --with-aigc-materials
+node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
+```
+
+Expected:
+
+- AIGC fill is disabled in default/proxy runs.
+- Web UI exposes the AIGC button/toggle and does not run AIGC through the normal generate action unless enabled.
+- API response includes `generation.aigcMaterialFill` with provider, external-call status, sample-frame-sent status, briefs, candidates, quality, and generated target assets.
+- External provider mode runs only with `--allow-external-aigc`.
+- `aigc-material-briefs.json` maps real missing slots to generation briefs.
+- `generated-asset-candidates.json` records provider, model, prompt, provenance, and `sampleFramesSentExternally=false`.
+- `generated-asset-quality.json` records deterministic checks and Gemini VLM status when configured.
+- `asset-evidence.aigc.json` and `slot-asset-matches.aigc.json` mark usable generated assets as `aigc_generated_material`.
+- `fill-plan.aigc.json` uses `aigc_generated_asset` for usable generated media cards / CTA placeholder.
+- `render_aigc_materials.mp4` and `aigc_materials_contact_sheet.png` exist and visibly use generated materials.
+- Public artifacts contain no API keys, `.env` values, or private absolute paths.
 
 ---
 
@@ -171,9 +210,13 @@ Expected:
 | Remotion | bundle TSX entry without errors (gated by `RUN_REMOTION_BUNDLE_TEST`) | api vitest | bundle path returned |
 | Motion graph | deterministic visual evidence and induced open-world slots | `node scripts/run-motion-graph-case.mjs` | proxy render + gates pass |
 | Motion graph target assets | slot-specific target material matching and adapted render | `node scripts/run-motion-graph-case.mjs --with-target-assets` | `evaluation.motion_graph.json` passes |
+| Motion graph partial assets | insufficient cards/no logo produce weak/missing slots | `node scripts/run-motion-graph-case.mjs --with-partial-target-assets` | weak match + mixed proxy/target render |
+| Motion graph malformed assets | bad/external/no-path assets are blocked | `node scripts/run-motion-graph-case.mjs --with-malformed-target-assets` | blocked report + no false visual match |
+| Motion graph AIGC materials | optional generated material fill | `node scripts/run-motion-graph-case.mjs --with-aigc-materials` and explicit external mode when configured | briefs, candidates, quality, AIGC render gates pass |
+| Web/API AIGC gap fill | explicit UI button + generation API controls | `apps/api/tests/e2e.test.ts` + browser build | mock provider by default, no external calls, generated assets labeled |
 | Corpus | open-world motion graph fixture + asset-mode gates | `npm run regression:corpus:strict` | `009_motion_graph_card_stack` PASS |
 | Product demo | VLM optional; motion graph artifacts linked | `VVST_REUSE_IGF_FIXTURE=1 npm run demo:product` + `node scripts/check-product-demo-page.mjs` | smoke check passes |
-| Schemas (runtime) | AJV-validate every demo fixture + DB row | `npm run validate:schemas` | 339/0 |
+| Schemas (runtime) | AJV-validate every demo fixture + DB row | `npm run validate:schemas` | current run: 366/0 |
 
 ---
 
@@ -208,6 +251,9 @@ High-score passes (P1 progression, r3) if:
 - [x] full E2E `apps/api/tests/e2e.test.ts` is green.
 - [x] motion-graph target-asset adaptation demo renders both proxy and with-assets MP4s.
 - [x] corpus fixture `009_motion_graph_card_stack` gates visual evidence, induced slots, renderer capability, target asset matching, no sample copy, and preview frames.
+- [x] optional AIGC material fill generates briefs, generated assets, quality checks, AIGC fill plan, MP4, and contact sheet.
+- [x] no-watermark Seedream image generation can be used through explicit external-provider opt-in; Gemini VLM can review generated assets without sample-frame upload.
+- [x] web Reconstruction Planner exposes an explicit AIGC gap-fill button/toggle and API e2e covers the safe mock-provider path.
 
 ---
 
@@ -218,5 +264,7 @@ High-score passes (P1 progression, r3) if:
 - Doubao-Seed-2.0-lite, if used, is treated as language/model planning capability, not a video generator.
 - Initial renderer may be HTML preview before FFmpeg/Remotion/HyperFrames MP4.
 - The product learns and transfers structure; it does not guarantee viral performance.
-- Motion-graph target adaptation is fixture-driven in this slice; general upload/UI replacement is still a later product layer.
+- Motion-graph target adaptation is still strongest in deterministic fixture/API harness modes; richer browser-side asset management remains productization work.
+- Managed material manifest intake exists at the API/harness layer; browser AIGC gap fill is wired, but full drag/drop material pool editing is still productization work.
+- Optional AIGC image material fill is implemented; direct video generation remains intentionally out of default scope.
 - The deterministic visual evidence analyzer is currently wired to `motion_graph_case`; editing/marketing analyzer expansion is intentionally deferred.

@@ -1371,6 +1371,10 @@ function targetAssetScore(asset: TargetAssetInput, slotType: SlotType, family?: 
   const kinds = targetAssetKindsForFamily(family) ?? targetAssetKindsForSlot(slotType);
   let score = kinds.includes(asset.kind) ? 0.64 : 0.22;
   const haystack = [asset.role, asset.filename, asset.text, ...(asset.tags ?? [])].filter(Boolean).join(" ").toLowerCase();
+  const isGeneratedMaterial = asset.metadata?.materialRole === "aigc_generated_material" || asset.tags?.includes("aigc_generated_material");
+  if (isGeneratedMaterial && family && asset.role && asset.role !== family) {
+    score = Math.min(score, 0.36);
+  }
   if (family === "brand_cta" && asset.kind !== "logo" && !/(logo|brand|cta|品牌|标识|行动|结尾)/.test(haystack)) {
     score = Math.min(score, 0.36);
   }
@@ -2114,17 +2118,20 @@ export function createFillPlan(
     });
 
   const matchedCapabilityFillPlan: FillAction[] = mappings
-    .filter((mapping) => mapping.status === "matched" && Boolean(mapping.visualFormFamily))
+    .filter((mapping) => mapping.status === "matched")
     .flatMap((mapping): FillAction[] => {
-      const rendererCapability = mapping.visualFormFamily ? primaryRendererCapabilityForFamily(mapping.visualFormFamily) : undefined;
-      const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${mapping.visualFormFamily ?? mapping.slotType} target fill`, undefined, mapping.visualFormFamily);
-      const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, undefined, mapping.visualFormFamily);
       const selectedAssets = targetAssetsForIds(request, mapping.selectedTargetAssetIds ?? (mapping.selectedTargetAssetId ? [mapping.selectedTargetAssetId] : []));
       const selectedAsset = selectedAssets[0] ?? targetAssetForId(request, mapping.selectedTargetAssetId);
       const targetCopy = textFromTargetAsset(selectedAsset);
       const selectedAssetsGenerated = selectedAssets.length > 0 && selectedAssets.every((asset) => asset.metadata?.materialRole === "aigc_generated_material" || asset.tags?.includes("aigc_generated_material"));
+      const effectiveFamily = mapping.visualFormFamily ?? (selectedAssetsGenerated ? "unknown" : undefined);
+      const rendererCapability = effectiveFamily ? primaryRendererCapabilityForFamily(effectiveFamily) : undefined;
+      const placeholderSpec = placeholderSpecForSlot(mapping.slotType, `${effectiveFamily ?? mapping.slotType} target fill`, undefined, effectiveFamily);
+      const motionSpec = mapping.motionSpec ?? motionSpecForSlot(mapping.slotType, undefined, effectiveFamily);
       const strategy: FillStrategy =
-        mapping.visualFormFamily === "media_cards" || mapping.visualFormFamily === "brand_cta"
+        selectedAssetsGenerated
+          ? "aigc_generated_asset"
+          : mapping.visualFormFamily === "media_cards" || mapping.visualFormFamily === "brand_cta"
           ? selectedAssetsGenerated
             ? "aigc_generated_asset"
             : "user_asset_replace"
@@ -2132,6 +2139,7 @@ export function createFillPlan(
             ? "procedural_generation"
             : "proxy_placeholder";
       if (
+        !selectedAssetsGenerated &&
         mapping.visualFormFamily !== "media_cards" &&
         mapping.visualFormFamily !== "brand_cta" &&
         mapping.visualFormFamily !== "ui_showcase" &&
@@ -2156,15 +2164,17 @@ export function createFillPlan(
           strategy,
           fulfilledBy: strategy === "aigc_generated_asset" ? "aigc_generated_material" : strategy === "user_asset_replace" ? "target_asset" : "procedural_generation",
           requiredInputs:
-            mapping.visualFormFamily === "media_cards"
+            effectiveFamily === "media_cards"
               ? ["target_image_set", "slot_motion"]
-              : mapping.visualFormFamily === "brand_cta"
+              : effectiveFamily === "brand_cta"
                 ? ["target_logo", "brand_copy", "slot_motion"]
-                : mapping.visualFormFamily === "ui_showcase"
+                : effectiveFamily === "ui_showcase"
                   ? ["target_copy", "feature_list"]
-                  : mapping.visualFormFamily === "kinetic_typography"
+                  : effectiveFamily === "kinetic_typography"
                     ? ["target_copy", "typography_timing"]
-                    : ["procedural_shape_motif"],
+                    : strategy === "aigc_generated_asset"
+                      ? ["generated_target_asset", "slot_motion"]
+                      : ["procedural_shape_motif"],
           replacementSlotId: strategy === "user_asset_replace" || strategy === "aigc_generated_asset" ? mapping.slotId : undefined,
           boundAssetId: selectedAsset?.id,
           targetAssetIds: selectedAssets.map((asset) => asset.id),
@@ -2172,7 +2182,7 @@ export function createFillPlan(
           applyMotionFromSlot: true,
           motionSpec,
           placeholderSpec,
-          visualFormFamily: mapping.visualFormFamily,
+          visualFormFamily: effectiveFamily,
           rendererCandidates: mapping.rendererCandidates,
           rendererCapability,
           capabilityId: rendererCapability?.id,
@@ -2180,7 +2190,7 @@ export function createFillPlan(
           featureList: Array.isArray(selectedAsset?.metadata?.features) ? selectedAsset?.metadata?.features : undefined,
           brandName: typeof selectedAsset?.metadata?.brandName === "string" ? selectedAsset.metadata.brandName : undefined,
           cta: typeof selectedAsset?.metadata?.cta === "string" ? selectedAsset.metadata.cta : undefined,
-          materialSource: strategy === "aigc_generated_asset" ? "aigc_generated_material" : mapping.visualFormFamily === "geometric_mg" ? "procedural_not_required" : "target_material"
+          materialSource: strategy === "aigc_generated_asset" ? "aigc_generated_material" : effectiveFamily === "geometric_mg" ? "procedural_not_required" : "target_material"
         }
       };
       return [{
@@ -2188,7 +2198,7 @@ export function createFillPlan(
         capabilityId: rendererCapability?.id,
         backend: action.rendererInstructions?.renderer as RendererBackend | undefined,
         fallbackUsed: false,
-        visualFormFamily: mapping.visualFormFamily,
+        visualFormFamily: effectiveFamily,
         selectedStrategy: strategy,
         fulfilledBy: action.rendererInstructions?.fulfilledBy as FillAction["fulfilledBy"]
       }];

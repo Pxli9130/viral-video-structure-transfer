@@ -6,8 +6,11 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
+  checkGeneratedMaterials,
+  createMaterialGenerationBriefs,
   buildFallbackTemplate,
   generateMigrationResult,
+  getAigcMaterialProvider,
   nowIso,
   parsePromptToBrief,
   stableId,
@@ -20,7 +23,10 @@ import {
   type Asset,
   type AssetRole,
   type AssetType,
+  type AigcMaterialProviderId,
   type ExampleAnalysis,
+  type GeneratedAssetCandidate,
+  type GeneratedAssetQualityResult,
   type GenerationRequest,
   type GenerationResult,
   type Job,
@@ -28,6 +34,7 @@ import {
   type JobStatus,
   type JobType,
   type KnowledgeAtom,
+  type MaterialGenerationBrief,
   type Project,
   type RenderOutput,
   type RendererTarget,
@@ -64,6 +71,16 @@ const ASSET_ROLES: AssetRole[] = [
 ];
 const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_user_uploaded", "demo_only", "unknown"];
 const RENDERER_TARGETS: RendererTarget[] = ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"];
+const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
+  "mock_provider",
+  "local_folder_provider",
+  "volcengine_seedream",
+  "ark_seedance_provider_stub",
+  "image_provider",
+  "copy_provider",
+  "none"
+]);
+const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
 
 const repoRoot =
   path.basename(process.cwd()) === "api" && path.basename(path.dirname(process.cwd())) === "apps"
@@ -1248,6 +1265,159 @@ interface RunGenerationOutcome {
   templateId: string;
 }
 
+function aigcProviderForRequest(request: GenerationRequest): AigcMaterialProviderId {
+  if (request.controls?.allowExternalAigcProvider !== true) return "mock_provider";
+  const requested = process.env.AIGC_IMAGE_PROVIDER as AigcMaterialProviderId | undefined;
+  return requested && AIGC_PROVIDER_IDS.has(requested) ? requested : "mock_provider";
+}
+
+function targetAssetFromGeneratedCandidate(input: {
+  candidate: GeneratedAssetCandidate;
+  brief: MaterialGenerationBrief | undefined;
+  quality: GeneratedAssetQualityResult | undefined;
+}): TargetAssetInput {
+  const family = input.brief?.visualFormFamily ?? "unknown";
+  const assetType = input.brief?.assetType ?? input.candidate.type;
+  return {
+    id: input.candidate.id,
+    kind: input.candidate.type === "video" ? "video" : input.candidate.type === "copy" ? "copy" : "image",
+    role: family,
+    path: input.candidate.type === "copy" ? undefined : input.candidate.path,
+    text: input.candidate.type === "copy" ? input.candidate.prompt : undefined,
+    filename: path.basename(input.candidate.path),
+    tags: [
+      "target_material",
+      "aigc_generated_material",
+      family,
+      assetType,
+      ...(family === "media_cards" ? ["media_card", "card"] : []),
+      ...(family === "brand_cta" ? ["logo_placeholder", "cta"] : [])
+    ],
+    metadata: {
+      materialRole: "aigc_generated_material",
+      provider: input.candidate.provider,
+      model: input.candidate.model,
+      briefId: input.candidate.briefId,
+      slotId: input.candidate.slotId,
+      generatedAssetType: assetType,
+      quality: input.quality,
+      provenance: input.candidate.provenance
+    }
+  };
+}
+
+async function applyAigcMaterialFill(input: {
+  template: StructureTemplate;
+  request: GenerationRequest;
+  sourceAsset?: Asset;
+  sourceAnalysis?: VideoAnalysisResult;
+  sourceVlm?: VLMVideoAnalysis;
+  selectedTemplateReason?: string;
+  baseGeneration: GenerationResult;
+  generationIdSalt?: string;
+}): Promise<GenerationResult> {
+  if (input.request.controls?.allowAigcMaterialGeneration !== true) return input.baseGeneration;
+
+  const providerId = aigcProviderForRequest(input.request);
+  const externalProvider = EXTERNAL_AIGC_PROVIDERS.has(providerId);
+  const provider = getAigcMaterialProvider(providerId);
+  const briefs = createMaterialGenerationBriefs({
+    gapReport: input.baseGeneration.gapReport,
+    fillPlan: input.baseGeneration.fillPlan,
+    request: input.request,
+    targetAssets: input.request.targetAssets,
+    config: {
+      enabled: true,
+      provider: providerId,
+      maxAssetsPerRun: 8,
+      allowExternalUpload: externalProvider && input.request.controls?.allowExternalAigcProvider === true,
+      allowSampleFramesToProvider: false,
+      requireUserApprovalBeforeRender: false,
+      cacheEnabled: true
+    }
+  });
+
+  const candidates: GeneratedAssetCandidate[] = [];
+  const outputDir = path.join(generatedDir, "aigc-materials", input.baseGeneration.id);
+  const publicPathPrefix = path.relative(repoRoot, outputDir).replace(/\\/g, "/");
+  await fs.mkdir(outputDir, { recursive: true });
+  for (const brief of briefs) {
+    const generated = await provider.generate(brief, {
+      outputDir,
+      publicPathPrefix,
+      env: process.env,
+      allowExternalProviderCall: externalProvider && input.request.controls?.allowExternalAigcProvider === true
+    });
+    candidates.push(...generated);
+  }
+
+  const quality = await checkGeneratedMaterials({
+    briefs,
+    candidates,
+    rootDir: repoRoot,
+    vlmAvailable: false
+  });
+  const briefById = new Map(briefs.map((brief) => [brief.id, brief]));
+  const qualityById = new Map(quality.map((item) => [item.candidateId, item]));
+  const reviewedCandidates = candidates.map((candidate) => {
+    const result = qualityById.get(candidate.id);
+    return {
+      ...candidate,
+      quality: {
+        ...candidate.quality,
+        usable: result?.usable ?? false,
+        slotFitScore: result?.slotFitScore,
+        noSampleCopyScore: result?.noSampleCopyScore,
+        issues: result?.issues ?? []
+      }
+    };
+  });
+  const generatedTargetAssets = reviewedCandidates
+    .filter((candidate) => qualityById.get(candidate.id)?.usable)
+    .map((candidate) => targetAssetFromGeneratedCandidate({
+      candidate,
+      brief: briefById.get(candidate.briefId),
+      quality: qualityById.get(candidate.id)
+    }));
+
+  const augmentedRequest: GenerationRequest = {
+    ...input.request,
+    targetAssets: [...(input.request.targetAssets ?? []), ...generatedTargetAssets]
+  };
+  const generation = generatedTargetAssets.length
+    ? generateMigrationResult({
+        template: input.template,
+        request: augmentedRequest,
+        sourceAsset: input.sourceAsset,
+        sourceAnalysis: input.sourceAnalysis,
+        sourceVlm: input.sourceVlm,
+        generationIdSalt: input.generationIdSalt ? `${input.generationIdSalt}_aigc` : "aigc_material_fill",
+        selectedTemplateReason: input.selectedTemplateReason
+      })
+    : input.baseGeneration;
+
+  return {
+    ...generation,
+    request: augmentedRequest,
+    warnings: [
+      ...generation.warnings,
+      briefs.length
+        ? `AIGC material fill used ${providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
+        : "AIGC material fill was enabled, but no eligible missing visual slots produced generation briefs."
+    ],
+    aigcMaterialFill: {
+      enabled: true,
+      provider: providerId,
+      externalProviderUsed: reviewedCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
+      sampleFramesSentExternally: reviewedCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
+      briefs,
+      candidates: reviewedCandidates,
+      quality,
+      generatedTargetAssets
+    }
+  };
+}
+
 async function runGeneration(
   db: Database,
   request: GenerationRequest,
@@ -1311,6 +1481,16 @@ async function runGeneration(
       sourceVlm,
       generationIdSalt: options.variantLabel,
       selectedTemplateReason: templateSelection.reason
+    });
+    generation = await applyAigcMaterialFill({
+      template: templateRecord.template,
+      request,
+      sourceAsset,
+      sourceAnalysis,
+      sourceVlm,
+      selectedTemplateReason: templateSelection.reason,
+      baseGeneration: generation,
+      generationIdSalt: options.variantLabel
     });
     if (options.variantLabel) {
       generation = {

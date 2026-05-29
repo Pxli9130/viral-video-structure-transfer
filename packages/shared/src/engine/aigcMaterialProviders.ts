@@ -42,21 +42,7 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([length, typeBuffer, data, crc]);
 }
 
-function makePng(width: number, height: number, seed: number, label: string): Buffer {
-  const raw = Buffer.alloc((width * 3 + 1) * height);
-  const labelBytes = Buffer.from(label, "utf8");
-  for (let y = 0; y < height; y += 1) {
-    const row = y * (width * 3 + 1);
-    raw[row] = 0;
-    for (let x = 0; x < width; x += 1) {
-      const offset = row + 1 + x * 3;
-      const band = Math.floor((x / width) * 4) + Math.floor((y / height) * 4);
-      const accent = (labelBytes[(x + y) % Math.max(1, labelBytes.length)] ?? 31) + seed + band * 19;
-      raw[offset] = (seed * 31 + x + accent) % 256;
-      raw[offset + 1] = (seed * 47 + y * 2 + accent) % 256;
-      raw[offset + 2] = (seed * 67 + x + y + accent) % 256;
-    }
-  }
+function makePngFromRaw(width: number, height: number, raw: Buffer): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -71,6 +57,120 @@ function makePng(width: number, height: number, seed: number, label: string): Bu
     pngChunk("IDAT", deflateSync(raw)),
     pngChunk("IEND", Buffer.alloc(0))
   ]);
+}
+
+function setPixel(raw: Buffer, width: number, height: number, x: number, y: number, color: [number, number, number]): void {
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+  const offset = y * (width * 3 + 1) + 1 + x * 3;
+  raw[offset] = color[0];
+  raw[offset + 1] = color[1];
+  raw[offset + 2] = color[2];
+}
+
+function fillRect(raw: Buffer, width: number, height: number, x: number, y: number, w: number, h: number, color: [number, number, number]): void {
+  const left = Math.max(0, Math.floor(x));
+  const top = Math.max(0, Math.floor(y));
+  const right = Math.min(width, Math.ceil(x + w));
+  const bottom = Math.min(height, Math.ceil(y + h));
+  for (let py = top; py < bottom; py += 1) {
+    for (let px = left; px < right; px += 1) setPixel(raw, width, height, px, py, color);
+  }
+}
+
+function fillCircle(raw: Buffer, width: number, height: number, cx: number, cy: number, radius: number, color: [number, number, number]): void {
+  const r2 = radius * radius;
+  for (let y = Math.floor(cy - radius); y <= Math.ceil(cy + radius); y += 1) {
+    for (let x = Math.floor(cx - radius); x <= Math.ceil(cx + radius); x += 1) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (dx * dx + dy * dy <= r2) setPixel(raw, width, height, x, y, color);
+    }
+  }
+}
+
+function fillRoundedRect(raw: Buffer, width: number, height: number, x: number, y: number, w: number, h: number, r: number, color: [number, number, number]): void {
+  fillRect(raw, width, height, x + r, y, w - 2 * r, h, color);
+  fillRect(raw, width, height, x, y + r, w, h - 2 * r, color);
+  fillCircle(raw, width, height, x + r, y + r, r, color);
+  fillCircle(raw, width, height, x + w - r, y + r, r, color);
+  fillCircle(raw, width, height, x + r, y + h - r, r, color);
+  fillCircle(raw, width, height, x + w - r, y + h - r, r, color);
+}
+
+function strokeRect(raw: Buffer, width: number, height: number, x: number, y: number, w: number, h: number, thickness: number, color: [number, number, number]): void {
+  fillRect(raw, width, height, x, y, w, thickness, color);
+  fillRect(raw, width, height, x, y + h - thickness, w, thickness, color);
+  fillRect(raw, width, height, x, y, thickness, h, color);
+  fillRect(raw, width, height, x + w - thickness, y, thickness, h, color);
+}
+
+function initRawCanvas(width: number, height: number, seed: number): Buffer {
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width * 3 + 1);
+    raw[row] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const offset = row + 1 + x * 3;
+      const v = Math.floor(18 + (x / width) * 16 + (y / height) * 22 + (seed % 7));
+      raw[offset] = Math.min(42, v);
+      raw[offset + 1] = Math.min(55, v + 8);
+      raw[offset + 2] = Math.min(76, v + 20);
+    }
+  }
+  return raw;
+}
+
+function drawUiCard(raw: Buffer, width: number, height: number, x: number, y: number, w: number, h: number, seed: number): void {
+  const card: [number, number, number] = [240, 247, 255];
+  const cardShadow: [number, number, number] = [4, 12, 24];
+  const accentA: [number, number, number] = seed % 2 ? [14, 165, 233] : [168, 85, 247];
+  const accentB: [number, number, number] = seed % 2 ? [45, 212, 191] : [251, 113, 133];
+  fillRoundedRect(raw, width, height, x + 12, y + 14, w, h, 28, cardShadow);
+  fillRoundedRect(raw, width, height, x, y, w, h, 28, card);
+  strokeRect(raw, width, height, x + 8, y + 8, w - 16, h - 16, 3, [148, 163, 184]);
+  fillCircle(raw, width, height, x + 54, y + 52, 22, accentA);
+  fillRect(raw, width, height, x + 92, y + 34, w * 0.38, 18, [71, 85, 105]);
+  fillRect(raw, width, height, x + 92, y + 66, w * 0.28, 12, [148, 163, 184]);
+  for (let i = 0; i < 4; i += 1) {
+    const rowY = y + 128 + i * 44;
+    fillRoundedRect(raw, width, height, x + 42, rowY, w - 84, 20, 10, i % 2 ? accentB : accentA);
+    fillRoundedRect(raw, width, height, x + 42, rowY + 24, w - 130 - i * 12, 10, 5, [203, 213, 225]);
+  }
+  fillRoundedRect(raw, width, height, x + w - 128, y + h - 82, 76, 38, 16, accentA);
+}
+
+function drawLogoPlaceholder(raw: Buffer, width: number, height: number): void {
+  fillRoundedRect(raw, width, height, 96, 112, width - 192, height - 224, 44, [226, 232, 240]);
+  strokeRect(raw, width, height, 120, 136, width - 240, height - 272, 5, [14, 165, 233]);
+  fillCircle(raw, width, height, width / 2, 316, 92, [15, 23, 42]);
+  fillCircle(raw, width, height, width / 2, 316, 56, [45, 212, 191]);
+  fillRoundedRect(raw, width, height, 186, 492, width - 372, 62, 28, [14, 165, 233]);
+  fillRoundedRect(raw, width, height, 218, 592, width - 436, 28, 14, [100, 116, 139]);
+  fillRoundedRect(raw, width, height, 252, 642, width - 504, 24, 12, [148, 163, 184]);
+}
+
+function drawObjectMaterial(raw: Buffer, width: number, height: number): void {
+  fillCircle(raw, width, height, width / 2, 410, 146, [14, 165, 233]);
+  fillCircle(raw, width, height, width / 2 + 36, 370, 86, [45, 212, 191]);
+  fillRoundedRect(raw, width, height, 170, 610, 380, 88, 36, [226, 232, 240]);
+  fillRoundedRect(raw, width, height, 218, 642, 284, 24, 12, [71, 85, 105]);
+}
+
+function makeMockMaterialPng(width: number, height: number, seed: number, family: string): Buffer {
+  const raw = initRawCanvas(width, height, seed);
+  if (family === "media_cards" || family === "live_action_montage" || family === "unknown") {
+    drawUiCard(raw, width, height, 116 + (seed % 3) * 10, 120, 448, 300, seed);
+    drawUiCard(raw, width, height, 84, 376, 514, 318, seed + 2);
+    drawUiCard(raw, width, height, 148, 650, 420, 220, seed + 4);
+  } else if (family === "brand_cta") {
+    drawLogoPlaceholder(raw, width, height);
+  } else if (family === "object_motion" || family === "poster_layout") {
+    drawObjectMaterial(raw, width, height);
+  } else {
+    drawUiCard(raw, width, height, 96, 160, 528, 520, seed);
+    fillRoundedRect(raw, width, height, 160, 740, 400, 58, 24, [14, 165, 233]);
+  }
+  return makePngFromRaw(width, height, raw);
 }
 
 function candidatePath(prefix: string, filename: string): string {
@@ -186,7 +286,7 @@ export const mockProvider: AigcMaterialProvider = {
       if (brief.assetType === "copy") {
         await writeFile(filePath, `${prompt}\n`, "utf8");
       } else {
-        await writeFile(filePath, makePng(720, 960, index + brief.id.length, `${brief.visualFormFamily} ${index + 1}`));
+        await writeFile(filePath, makeMockMaterialPng(720, 960, index + brief.id.length, brief.visualFormFamily));
       }
       candidates.push({
         id: `generated_${brief.slotId}_${String(index + 1).padStart(2, "0")}`.replace(/[^a-zA-Z0-9_.-]/g, "_"),

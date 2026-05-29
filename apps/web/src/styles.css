@@ -404,6 +404,47 @@ textarea {
   grid-template-columns: 1fr;
 }
 
+.aigc-gap-fill-card,
+.aigc-result-card {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-left: 4px solid #7c3aed;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+}
+
+.aigc-gap-fill-card strong,
+.aigc-result-card strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.aigc-gap-fill-card span,
+.aigc-result-card span,
+.aigc-gap-fill-card small {
+  color: #475569;
+  display: block;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.toggle-row {
+  align-items: center;
+  color: #172033;
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 8px;
+}
+
+.toggle-row input {
+  min-height: auto;
+}
+
 .json-preview {
   background: #101827;
   border-radius: 8px;

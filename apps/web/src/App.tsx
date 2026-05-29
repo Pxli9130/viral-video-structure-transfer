@@ -202,6 +202,7 @@ const strategyDisplay: Record<string, string> = {
   packaging_overlay: "包装补全",
   reuse_with_crop_zoom: "裁切缩放复用",
   aigc_placeholder: "AIGC 占位",
+  aigc_generated_asset: "AIGC 生成素材",
   source_video_mapped: "目标素材已匹配"
 };
 
@@ -332,6 +333,8 @@ function AppContent() {
   const [materialCta, setMaterialCta] = useState("Upload. Analyze. Remix.");
   const [materialFeatureCopy, setMaterialFeatureCopy] = useState("Analyze sample videos\nInduce reusable slots\nDetect missing assets\nRender editable timelines");
   const [materialManifest, setMaterialManifest] = useState<TargetMaterialManifestResponse | null>(null);
+  const [allowAigcGapFill, setAllowAigcGapFill] = useState(false);
+  const [allowExternalAigcProvider, setAllowExternalAigcProvider] = useState(false);
 
   const selectedTemplate = useMemo(
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
@@ -361,6 +364,7 @@ function AppContent() {
   const generationClips = safeArray(generation?.timeline?.clips);
   const managedTargetAssets = materialManifest?.targetAssets ?? [];
   const managedBlockedAssets = materialManifest?.blockedAssets ?? [];
+  const aigcMaterialFill = generation?.aigcMaterialFill;
 
   async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
     setApiState("loading");
@@ -604,9 +608,10 @@ function AppContent() {
     });
   }
 
-  async function generate() {
+  async function generate(options: { forceAigc?: boolean } = {}) {
     if (!project) return;
     await run(async () => {
+      const useAigcGapFill = options.forceAigc ?? allowAigcGapFill;
       const request: GenerationRequest = {
         projectId: project.id,
         inputMode: sourceAssetId ? "video_plus_prompt" : "prompt_only",
@@ -625,7 +630,9 @@ function AppContent() {
           hookIntensity: "strong",
           packagingStyle,
           ctaStyle: "direct",
-          allowAigcPlaceholder: true
+          allowAigcPlaceholder: true,
+          allowAigcMaterialGeneration: useAigcGapFill,
+          allowExternalAigcProvider: useAigcGapFill && allowExternalAigcProvider
         },
         constraints: {
           noSampleVisualCopy: true
@@ -643,6 +650,11 @@ function AppContent() {
       setScorecard(null);
       setReplacementResult(null);
     });
+  }
+
+  async function generateWithAigcGapFill() {
+    setAllowAigcGapFill(true);
+    await generate({ forceAigc: true });
   }
 
   async function renderTimeline() {
@@ -1080,12 +1092,76 @@ function AppContent() {
                 <span className="step">步骤 5</span>
                 <h2>重构规划器</h2>
               </div>
-              <button onClick={generate} disabled={!project || !templates.length || apiState === "loading"}>
-                生成重构方案
-              </button>
+              <div className="button-row">
+                <button onClick={() => generate()} disabled={!project || !templates.length || apiState === "loading"}>
+                  生成重构方案
+                </button>
+                <button onClick={generateWithAigcGapFill} disabled={!project || !templates.length || apiState === "loading"}>
+                  AIGC 补缺口并生成
+                </button>
+              </div>
+            </div>
+            <div className="aigc-gap-fill-card">
+              <div>
+                <strong>可选 AIGC 素材补全</strong>
+                <span>默认关闭。开启后，缺失视觉槽位会先生成 MaterialGenerationBrief，再用安全 provider 生成候选素材，通过质量检查后作为 <code>aigc_generated_material</code> 进入 slot matching。</span>
+              </div>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={allowAigcGapFill}
+                  onChange={(event) => setAllowAigcGapFill(event.target.checked)}
+                />
+                启用 AIGC gap fill
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={allowExternalAigcProvider}
+                  disabled={!allowAigcGapFill}
+                  onChange={(event) => setAllowExternalAigcProvider(event.target.checked)}
+                />
+                允许外部 provider（Seedream，需要服务端 .env，可能产生费用）
+              </label>
+              <small>未勾选外部 provider 时，API 使用 deterministic mock_provider，不会外呼。样例帧不会发送给外部 provider。</small>
             </div>
             {generation ? (
               <>
+                {aigcMaterialFill && (
+                  <div className="aigc-result-card">
+                    <div>
+                      <strong>AIGC material fill</strong>
+                      <span>
+                        provider: {aigcMaterialFill.provider} · generated target assets: {aigcMaterialFill.generatedTargetAssets.length} · external calls: {aigcMaterialFill.externalProviderUsed ? "yes" : "no"} · sample frames sent: {aigcMaterialFill.sampleFramesSentExternally ? "yes" : "no"}
+                      </span>
+                    </div>
+                    <div className="result-grid compact-grid">
+                      <table>
+                        <thead><tr><th>brief</th><th>family</th><th>type</th><th>count</th></tr></thead>
+                        <tbody>
+                          {aigcMaterialFill.briefs.map((brief) => (
+                            <tr key={brief.id}><td>{brief.slotId}</td><td>{brief.visualFormFamily}</td><td>{brief.assetType}</td><td>{brief.count}</td></tr>
+                          ))}
+                          {!aigcMaterialFill.briefs.length && <tr><td colSpan={4}>没有可生成的缺口。</td></tr>}
+                        </tbody>
+                      </table>
+                      <table>
+                        <thead><tr><th>candidate</th><th>usable</th><th>vlm</th><th>issues</th></tr></thead>
+                        <tbody>
+                          {aigcMaterialFill.quality.map((item) => (
+                            <tr key={item.candidateId}>
+                              <td>{item.candidateId}</td>
+                              <td>{item.usable ? "yes" : "no"}</td>
+                              <td>{item.vlmStatus}</td>
+                              <td>{item.issues?.join(", ") || "none"}</td>
+                            </tr>
+                          ))}
+                          {!aigcMaterialFill.quality.length && <tr><td colSpan={4}>尚无质量检查结果。</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
                 <div className="result-grid">
                   <div>
                     <h3>槽位映射</h3>

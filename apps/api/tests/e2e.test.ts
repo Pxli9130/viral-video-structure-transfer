@@ -180,6 +180,38 @@ describe("E2E pipeline (mock adapters)", () => {
     expect(Array.isArray(generateRes.body.data.generation.replacementSlots)).toBe(true);
   });
 
+  it("runs optional AIGC gap fill through the generation API without external calls by default", async () => {
+    const generateRes = await api
+      .post("/api/generations")
+      .send({
+        projectId,
+        inputMode: "prompt_only",
+        selectedTemplateIds: [templateId],
+        prompt: "主题：AI 视频结构迁移工具\nCTA：立即上传素材",
+        target: { vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15, outputMode: "storyboard_preview" },
+        controls: {
+          pace: "fast",
+          hookIntensity: "strong",
+          packagingStyle: "mg_motion",
+          allowAigcPlaceholder: true,
+          allowAigcMaterialGeneration: true
+        }
+      })
+      .expect(201);
+
+    const fill = generateRes.body.data.generation.aigcMaterialFill;
+    expect(fill.enabled).toBe(true);
+    expect(fill.provider).toBe("mock_provider");
+    expect(fill.externalProviderUsed).toBe(false);
+    expect(fill.sampleFramesSentExternally).toBe(false);
+    expect(fill.briefs.length).toBeGreaterThan(0);
+    expect(fill.generatedTargetAssets.length).toBeGreaterThan(0);
+    expect(fill.generatedTargetAssets.every((asset: { metadata?: { materialRole?: string } }) => asset.metadata?.materialRole === "aigc_generated_material")).toBe(true);
+    expect(
+      generateRes.body.data.generation.fillPlan.some((action: { strategy: string }) => action.strategy === "aigc_generated_asset")
+    ).toBe(true);
+  });
+
   it("binds an uploaded replacement asset to a gap slot and regenerates", async () => {
     const replacementUploadRes = await api
       .post(`/api/projects/${projectId}/assets`)

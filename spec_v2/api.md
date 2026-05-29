@@ -83,6 +83,49 @@ List assets.
 
 Get asset detail.
 
+### POST `/projects/:projectId/target-material-manifests`
+
+Normalize uploaded/managed assets into a target material pool for structure-transfer generation.
+
+This endpoint is the API-backed material intake path. It does not accept arbitrary local paths. Manifest entries reference managed `assetId` values previously created through `POST /projects/:projectId/assets`.
+
+Request:
+
+```json
+{
+  "schemaVersion": "target-material-manifest-v1",
+  "brandName": "Viral Structure Engine",
+  "cta": "Upload. Analyze. Remix.",
+  "features": ["Analyze sample videos", "Induce reusable slots"],
+  "assets": [
+    { "assetId": "asset_card_01", "kind": "image", "role": "media_card" },
+    { "assetId": "asset_logo", "kind": "logo", "role": "brand_logo" }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "schemaVersion": "target-material-manifest-v1",
+  "projectId": "project_123",
+  "brandName": "Viral Structure Engine",
+  "cta": "Upload. Analyze. Remix.",
+  "features": ["Analyze sample videos", "Induce reusable slots"],
+  "targetAssets": [],
+  "assetEvidence": [],
+  "blockedAssets": [],
+  "materialPolicy": {
+    "source": "managed_upload",
+    "externalPathsAllowed": false,
+    "sampleReferenceUse": "structure_evidence_only"
+  }
+}
+```
+
+Public refs use safe managed identifiers such as `asset://managed/<assetId>`. Renderer adapters resolve actual server-side file paths internally.
+
 ---
 
 ## 4. Video analysis
@@ -199,10 +242,45 @@ Example:
     "pace": "fast",
     "hookIntensity": "strong",
     "packagingStyle": "mg_motion",
-    "ctaStyle": "direct"
+    "ctaStyle": "direct",
+    "allowAigcMaterialGeneration": false,
+    "allowExternalAigcProvider": false
   }
 }
 ```
+
+Optional AIGC material-fill request from the web reconstruction planner:
+
+```json
+{
+  "projectId": "project_123",
+  "inputMode": "video_plus_prompt",
+  "sourceVideo": { "assetId": "asset_src_123" },
+  "selectedTemplateIds": ["template_123"],
+  "prompt": "主题：AI 视频结构迁移工具；CTA：立即上传素材",
+  "target": {
+    "vertical": "b2b_marketing_mg",
+    "aspectRatio": "9:16",
+    "targetDurationSec": 15,
+    "outputMode": "storyboard_preview"
+  },
+  "controls": {
+    "pace": "fast",
+    "hookIntensity": "strong",
+    "packagingStyle": "mg_motion",
+    "allowAigcPlaceholder": true,
+    "allowAigcMaterialGeneration": true,
+    "allowExternalAigcProvider": false
+  }
+}
+```
+
+Rules:
+
+- `allowAigcMaterialGeneration=true` enables generation briefs and generated-material matching.
+- `allowExternalAigcProvider=false` keeps the provider at deterministic `mock_provider`.
+- `allowExternalAigcProvider=true` allows the API to use `AIGC_IMAGE_PROVIDER` from `.env` when configured; sample frames are still not sent.
+- Generated material is returned as `materialRole="aigc_generated_material"`, not as a user upload.
 
 Response:
 
@@ -213,6 +291,23 @@ Response:
     "generationId": "gen_123",
     "jobId": "job_456",
     "status": "completed"
+  }
+}
+```
+
+When AIGC material fill runs, the full `generation` object in the response includes:
+
+```json
+{
+  "aigcMaterialFill": {
+    "enabled": true,
+    "provider": "mock_provider",
+    "externalProviderUsed": false,
+    "sampleFramesSentExternally": false,
+    "briefs": ["...MaterialGenerationBrief"],
+    "candidates": ["...GeneratedAssetCandidate"],
+    "quality": ["...GeneratedAssetQualityResult"],
+    "generatedTargetAssets": ["...TargetAssetInput with materialRole=aigc_generated_material"]
   }
 }
 ```

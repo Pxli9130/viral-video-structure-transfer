@@ -223,11 +223,14 @@ Verification:
 - [ ] T11.7 Build Reconstruction Planner view.
 - [ ] T11.8 Build Result Compare / Preview view.
 - [ ] T11.9 Add visible status for mock/real provider mode.
+- [x] T11.10 Add explicit optional AIGC gap-fill control in Reconstruction Planner.
+- [x] T11.11 Show AIGC brief/candidate/quality summary, external-call status, and sample-frame-sent status after generation.
 
 Verification:
 
 - [ ] Full flow can be completed from UI.
 - [ ] Result page clearly shows extraction, atoms, mapping, gaps, fill plan, and output.
+- [x] UI exposes AIGC as opt-in, not as a hidden default generation side effect.
 
 ---
 

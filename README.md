@@ -1,157 +1,172 @@
-# Viral Video Structure Transfer Engine — Final Spec v1.2
+# 爆款结构迁移引擎
 
-中文名：**爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
+**Viral Video Structure Transfer Engine / 爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
 
-The system learns reusable creative structures from high-performing short videos, stores them as a knowledge base of `StructureTemplate` + `KnowledgeAtom`, and applies them to a new source video plus a user prompt to produce a reconstructed short-video plan, browser preview, and (when FFmpeg is available) an MP4 demo.
-
-The current hardening path also includes an evidence-driven motion-graph case:
+这个项目不是“输入一句话直接生成一条视频”的通用视频生成器。它的核心目标是：
 
 ```text
-sample/reference video
-→ deterministic visual evidence
-→ induced open-world visual slots
-→ material-pool policy
-→ target asset matching
-→ proxy fill or target-asset replacement
-→ renderer capability selection
-→ MP4 + timeline previews + evaluator gates
+样例/参考视频
+→ 确定性证据提取
+→ 开放世界槽位归纳
+→ 目标素材匹配
+→ 素材缺口检测
+→ 填充计划 / 可替换槽位
+→ 渲染能力选择
+→ 代理或目标素材 MP4
+→ 预览帧 / contact sheet
+→ 评估器 / corpus 回归 / 产品演示
 ```
 
-The sample video is structure evidence only by default. Generated outputs use target/user material, authorized reusable assets, or procedural renderer output; sample frames/audio/text are not copied into target material unless explicitly authorized.
+默认安全边界：
 
-For the current implementation state, architecture, usage, artifact layout, and tooling, see [Current Project Guide](./CURRENT_PROJECT_GUIDE.md).
+- 样例视频只提供结构证据，不默认复制样例帧、音频、文字或品牌。
+- 目标素材、用户上传素材、授权可复用素材、程序化渲染和明确标记的 AIGC 生成素材才可进入输出。
+- mock/no-path 素材不能满足视觉槽位。
+- 素材缺失时必须产出 gap report、fill plan、replacement slots 或代理渲染。
+- AIGC 素材补全是可选能力，不默认调用外部 provider。
 
-## Spec v1.2 documents
+当前实现状态、评审结论和 artifact 证据见：
 
-- [Requirements](./spec_v2/requirements.md)
-- [System Design](./spec_v2/design.md)
-- [API Specification](./spec_v2/api.md)
-- [Implementation Tasks](./spec_v2/tasks.md)
-- [Test Plan](./spec_v2/test-plan.md)
-- [Demo Playbook](./spec_v2/demo-playbook.md)
-- [Source Alignment](./spec_v2/source-alignment.md)
-- [JSON Schemas](./spec_v2/schemas/)
-- [Latest SDE hardening review](./docs/artifacts/review/sde_hardening_review.md) — current readiness verdict, reviewed artifacts, and remaining gaps.
+- [当前项目指南](./CURRENT_PROJECT_GUIDE.md)
+- [SDE hardening review](./docs/artifacts/review/sde_hardening_review.md)
+- [SDE harness completion review](./docs/artifacts/review/sde_harness_completion_review.md)
 
-The deprecated `specs_v1/` and `spec_v1_1/` directories are kept for traceability but are superseded by `spec_v2/`.
+## 文档入口
 
-## Repo layout
+- [需求说明](./spec_v2/requirements.md)
+- [系统设计](./spec_v2/design.md)
+- [API 说明](./spec_v2/api.md)
+- [任务拆分](./spec_v2/tasks.md)
+- [测试计划](./spec_v2/test-plan.md)
+- [演示脚本](./spec_v2/demo-playbook.md)
+- [Schema](./spec_v2/schemas/)
+
+旧版 `specs_v1/` 和 `spec_v1_1/` 仅保留作历史追踪，当前以 `spec_v2/` 为准。
+
+## 目录结构
 
 ```text
 apps/
-  api/      # Node.js + TypeScript + Express, adapter wiring, spec v1.2 routes
-  web/      # React + Vite + TypeScript, 6-step workspace + dashboard rail
+  api/       Node.js + TypeScript + Express，API、adapter、renderer 接入
+  web/       React + Vite + TypeScript，工作台 UI
 packages/
-  shared/   # Inline JSON schemas, types, validators, mock pipeline, adapter interfaces
-  renderer/ # HtmlPreviewRenderer + MockRenderer (browser-safe)
+  shared/    类型、schema、planner、slot induction、AIGC material fill
+  renderer/  HTML preview / renderer contract
 scripts/
-  seed-demo.mjs        # Build a seeded humidifier demo into storage/db + storage/demo/
-  validate-schemas.mjs # AJV-validate every fixture and DB row
-  analyze-visual-evidence.py              # deterministic visual evidence for motion_graph_case
-  run-motion-graph-case.mjs               # proxy + target-asset motion graph showcase
-  generate-motion-graph-target-assets.mjs # deterministic target asset fixture generator
-  python/              # Python helpers (ffprobe, keyframes, faster-whisper, easyocr)
+  analyze-visual-evidence.py               motion_graph_case 确定性视觉证据分析
+  run-motion-graph-case.mjs                proxy / target assets / partial / malformed / AIGC 模式
+  generate-motion-graph-target-assets.mjs  确定性目标素材 fixture
+  check-artifact-hygiene.mjs               public artifact 泄漏扫描
 docs/
-  fixtures/motion_graph_target_assets/    # generated user-material fixture for target adaptation
-  artifacts/                              # reviewable case/demo/corpus outputs
+  fixtures/motion_graph_target_assets/     motion graph 目标素材 fixture + manifests
+  artifacts/                               可评审输出、报告、MP4、contact sheets
 storage/
   uploads/, generated/, db/, demo/
 ```
 
-## Local run (mock + FFmpeg auto-fallback)
+## 本地环境
 
-```bash
-# 1. Install JS deps
-npm install
-
-# 2. Build shared + renderer, then start API and web together
-npm run dev
-```
-
-Open:
-
-- Web app: <http://localhost:5173>
-- API health: <http://localhost:3000/healthz>
-
-Demo flow inside the UI:
-
-1. Open or create a project on the Dashboard rail (default vertical: `b2b_marketing_mg`).
-2. **Step 1 Sample Learning** → `Upload Sample` (.mov/.mp4). With `VLM_PROVIDER=gemini` set, Gemini analyses the whole video and the StructureTemplate name + segment intents + atoms are derived from the actual video content, not a static template. `Analyze Mock Sample` is also available for offline testing.
-3. **Step 2 Structure Review** → 5 uploaded samples yield 5 distinctly named templates (e.g. *“Learned MG Structure · Cascading cards stacked together, transitioning into rapid splits…”*).
-4. **Step 3 Knowledge Base** → atoms are unique per source video (each template contributes 6 base atoms whose names come from VLM `structure.hook/climax/cta/sellingPoints/rhythm/subtitleDensity`, plus up to 4 extra atoms derived from `reusable_patterns`).
-5. **Step 4 Source Video + Prompt** → `Upload Source` for a real video. The dropdown auto-selects the most recent real upload; a yellow banner warns when no source is selected or when the seeded mock is still selected.
-6. **Step 5 Reconstruction Planner** → click `Generate Reconstruction`. With Gemini-enriched source-side tags every required slot typically matches a real shot (smoke test: 6/6 matched, 8/8 clips use real source footage).
-7. **Step 6 Result & Render** → choose a renderer target (`HTML preview`, `Mock preview`, `FFmpeg MP4`, `Remotion` placeholder, `HyperFrames` placeholder) and `Render`. The FFmpeg path cuts source shots, scales to 9:16 720p, overlays subtitles via `drawtext`, and concatenates a real `.mp4`.
-8. Export Request / Timeline / Report JSON; the report can be Markdown via `?format=markdown`.
-
-## Conda environment `viral`
-
-FFmpeg-based analysis and rendering, plus optional Python ASR/OCR/VLM helpers, run inside a dedicated conda env so the Node app can shell out reproducibly.
-
-The env is already provisioned at `~/anaconda3/envs/viral` and contains `python 3.11`, `ffmpeg`, `ffprobe`. To extend it with optional adapters:
+推荐使用已有 conda 环境 `viral`。FFmpeg、ffprobe、Python 辅助脚本、可选 OCR/ASR 都从这里走。
 
 ```bash
 conda activate viral
-pip install faster-whisper        # enables ASR_PROVIDER=faster_whisper
-pip install easyocr               # enables OCR_PROVIDER=easyocr
+npm install
+npm run build
 ```
 
-Override discovery via env vars if needed:
+可选 Python 能力：
+
+```bash
+pip install faster-whisper   # ASR_PROVIDER=faster_whisper
+pip install easyocr          # OCR_PROVIDER=easyocr
+```
+
+如果 conda 路径不同：
 
 ```bash
 CONDA_BASE=/path/to/anaconda3
 VIRAL_CONDA_ENV=viral
 ```
 
-When `VIDEO_TOOL=ffmpeg`, the API uses `scripts/python/ffprobe_metadata.py` and `scripts/python/extract_keyframes.py` through `apps/api/src/adapters/condaPython.ts`. Failures degrade gracefully back to deterministic mock analysis with warnings on the analysis result.
-
-## NPM scripts
+## 启动应用
 
 ```bash
-npm run dev              # build shared/renderer, then run api + web concurrently
-npm run dev:api          # backend only
-npm run dev:web          # frontend only
-npm run build            # build all workspaces
-npm run typecheck        # tsc --noEmit across workspaces
-npm test                 # shared + api vitest suites
-npm run seed:demo        # produce storage/db/app.json + storage/demo/*.json fixtures
-npm run validate:schemas # AJV-validate fixtures + DB rows
-npm run demo:product     # write docs/artifacts/product_demo/index.html
-npm run regression:corpus:strict # corpus gates, including motion_graph asset-mode gates
+npm run dev
 ```
 
-`npm run dev` requires Node 18+ (the project uses `--experimental-vm-modules`-friendly ESM). If you have multiple Node installs, point `npm` at the right one (e.g. `nvm use 22`). When the default JSON backend is used and `storage/db/app.json` is missing, API startup automatically runs the demo seed before the store is opened. SQLite mode does not auto-write the JSON demo DB; run `npm run seed:demo` explicitly if you want those fixtures.
+打开：
 
-The FFmpeg/Python path is designed to use the conda env `viral`:
+- Web: <http://localhost:5173>
+- API health: <http://localhost:3000/healthz>
+
+基础 UI 流程：
+
+1. 创建或打开项目。
+2. 上传样例视频，分析结构。
+3. 查看 StructureTemplate 和 KnowledgeAtom。
+4. 上传源视频并输入需求。
+5. 在“重构规划器”里生成重构计划、slot mapping、gap report、fill plan。
+6. 可选：点击 **AIGC 补缺口并生成**，把缺失视觉槽位转成生成 brief，经质量检查后作为 `aigc_generated_material` 进入同一套匹配/渲染链路。
+7. 选择 HTML preview / FFmpeg MP4 / Remotion / HyperFrames 等 renderer。
+8. 导出 request、timeline、report、scorecard。
+
+## 常用命令
 
 ```bash
-CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral npm run dev:api
-```
-
-## Motion graph target-asset adaptation demo
-
-This is the current judge-visible structure-transfer slice. It does not require VLM/API keys and does not call paid AIGC/video generation.
-
-```bash
-# Build first so the case script can import workspace dist files.
 npm run build
-
-# Generate deterministic fixture assets, if they do not already exist.
-node scripts/generate-motion-graph-target-assets.mjs
-
-# Proxy mode: proves evidence → induced slots → family-specific proxy render.
-node scripts/run-motion-graph-case.mjs
-
-# Target asset mode: proves proxy slots can be replaced by target/user material.
-node scripts/run-motion-graph-case.mjs --with-target-assets
-
-# Regression/product checks.
+npm test
+npm run validate:schemas
 npm run regression:corpus:strict
 VVST_REUSE_IGF_FIXTURE=1 npm run demo:product
 node scripts/check-product-demo-page.mjs
+node scripts/check-artifact-hygiene.mjs
 ```
 
-Target fixture:
+如果 `npm test` 在受限 sandbox 中报 `listen EPERM: operation not permitted 0.0.0.0`，这是 API e2e 测试需要本地 socket 绑定导致的环境限制；在允许本地绑定的环境中重跑即可。
+
+## Motion Graph 结构迁移演示
+
+这是当前最强的 SDE/MLE harness 路径，专门证明系统不是只展示静态 JSON 或通用 B2B 模板。
+
+```bash
+# 代理模式：无目标素材，输出 family-specific proxy
+node scripts/run-motion-graph-case.mjs
+
+# 完整目标素材 fixture：卡片图、logo、copy 替换代理槽位
+node scripts/run-motion-graph-case.mjs --with-target-assets
+
+# 部分素材压力：只有 2 张卡片 + copy，无 logo
+node scripts/run-motion-graph-case.mjs --with-partial-target-assets
+
+# malformed 素材压力：外部路径、零字节、错误角色等必须被阻断
+node scripts/run-motion-graph-case.mjs --with-malformed-target-assets
+
+# 本地 manifest 输入：脚本模式支持 path manifest
+node scripts/run-motion-graph-case.mjs --target-assets-manifest docs/fixtures/motion_graph_target_assets/manifest.json
+```
+
+主要输出：
+
+```text
+docs/artifacts/motion_graph_case/visual-evidence.json
+docs/artifacts/motion_graph_case/induced-slots.json
+docs/artifacts/motion_graph_case/selected-template.json
+docs/artifacts/motion_graph_case/asset-evidence.json
+docs/artifacts/motion_graph_case/slot-asset-matches.json
+docs/artifacts/motion_graph_case/fill-plan.proxy.json
+docs/artifacts/motion_graph_case/fill-plan.with-assets.json
+docs/artifacts/motion_graph_case/replacement-slots.proxy.json
+docs/artifacts/motion_graph_case/replacement-slots.with-assets.json
+docs/artifacts/motion_graph_case/render_proxy.mp4
+docs/artifacts/motion_graph_case/render_with_assets.mp4
+docs/artifacts/motion_graph_case/render_partial_assets.mp4
+docs/artifacts/motion_graph_case/render_malformed_assets.mp4
+docs/artifacts/motion_graph_case/before_after_contact_sheet.png
+docs/artifacts/motion_graph_case/partial_assets_contact_sheet.png
+docs/artifacts/motion_graph_case/evaluation.motion_graph.json
+```
+
+目标素材 fixture：
 
 ```text
 docs/fixtures/motion_graph_target_assets/
@@ -161,138 +176,147 @@ docs/fixtures/motion_graph_target_assets/
   card_03.png
   card_04.png
   copy.json
+  manifest.json
+  manifest.partial.json
+  manifest.malformed.json
 ```
 
-Primary outputs:
+当前主流程 slot mapping：
+
+| 诱导槽位 | 满足方式 |
+|---|---|
+| `media_cards` | 目标 image_set，至少 4 张卡片 |
+| `kinetic_typography` | 目标品牌名 / copy |
+| `ui_showcase` | 目标 feature copy list |
+| `geometric_mg` | 程序化 neon geometry，不需要外部素材 |
+| `brand_cta` | 目标 logo + CTA；缺 logo 时走 placeholder/proxy |
+
+Corpus fixture：`test_videos/corpus/009_motion_graph_card_stack/fixture.json`。
+
+## Managed Material Intake API
+
+浏览器/API 模式不要求用户把本地路径暴露给 public artifacts。流程是：
 
 ```text
-docs/artifacts/motion_graph_case/visual-evidence.json
-docs/artifacts/motion_graph_case/induced-slots.json
-docs/artifacts/motion_graph_case/asset-evidence.json
-docs/artifacts/motion_graph_case/slot-asset-matches.json
-docs/artifacts/motion_graph_case/fill-plan.proxy.json
-docs/artifacts/motion_graph_case/fill-plan.with-assets.json
-docs/artifacts/motion_graph_case/render_proxy.mp4
-docs/artifacts/motion_graph_case/render_with_assets.mp4
-docs/artifacts/motion_graph_case/before_after_contact_sheet.png
-docs/artifacts/motion_graph_case/evaluation.motion_graph.json
+POST /api/projects/:projectId/assets
+→ POST /api/projects/:projectId/target-material-manifests
+→ 返回 normalized targetAssets / assetEvidence / blockedAssets
 ```
 
-Current asset-mode slot mapping:
+API manifest 使用 `assetId`，不使用任意本地路径：
 
-| Induced family | Target fulfillment |
-|---|---|
-| `media_cards` | target image set, 4 cards |
-| `kinetic_typography` | target brand/copy |
-| `ui_showcase` | target feature copy list |
-| `geometric_mg` | procedural renderer, no external asset required |
-| `brand_cta` | target logo + CTA |
-
-The corresponding corpus fixture is `test_videos/corpus/009_motion_graph_card_stack/fixture.json`.
-
-## Adapter map (NFR-001)
-
-All providers are isolated behind interfaces in `packages/shared/src/adapters.ts`. Default wiring lives in `apps/api/src/adapters/index.ts`:
-
-| Concern       | Default (mock-friendly)      | Real implementation                                    | Toggle                                |
-|---------------|------------------------------|--------------------------------------------------------|---------------------------------------|
-| Video analysis | `MockVideoToolAdapter`      | `FFmpegVideoToolAdapter` (ffprobe + keyframes)         | `VIDEO_TOOL=mock` or `ffmpeg`         |
-| AI / LLM       | `MockAIAdapter` (heuristic revise) | `OpenAICompatibleAIAdapter` — generic OpenAI-style or Volcano Ark Doubao Seed 2.0 lite (real `extractStructure`, `reviseInstruction`, `judgeGeneration`)         | `AI_PROVIDER=mock` / `openai_compatible` / `ark_doubao` |
-| ASR            | `DisabledASRAdapter`        | `FasterWhisperASRAdapter` via conda viral              | `ASR_PROVIDER=faster_whisper`         |
-| OCR            | `DisabledOCRAdapter`        | `EasyOCRAdapter` via conda viral                       | `OCR_PROVIDER=easyocr`                |
-| VLM            | `DisabledVLMAdapter`        | `KeyframeHeuristicVLMAdapter` (heuristic) **or** `GeminiVLMAdapter` (Google Gemini, real video understanding) | `VLM_PROVIDER=heuristic` or `gemini` |
-| Renderer       | `HtmlPreviewRenderer`       | `FFmpegRenderer` (real MP4, family-specific motion graph proxies, target asset card/logo rendering), `RemotionRenderer` (bundles `apps/api/remotion/` + renderMedia), `HyperFramesRenderer` (deterministic JSON manifest stub) | per-request `rendererTarget` field    |
-| Storage        | `JsonStorageBackend` (single JSON file) | `SqliteStorageBackend` (better-sqlite3 with one table per collection) | `STORAGE_BACKEND=json` or `sqlite`    |
-
-`MockRenderer` lives in `apps/api/src/adapters/renderers.ts` alongside the real renderers; both the Remotion entry (`apps/api/remotion/index.tsx`) and the HyperFrames manifest writer are wired so the API returns a usable artefact for every renderer target.
-
-## Enabling the Ark Doubao Seed 2.0 lite LLM (real `extractStructure` + natural-language revise + LLM scoring)
-
-`OpenAICompatibleAIAdapter` speaks the OpenAI-compatible chat-completions protocol. Volcano Engine Ark Doubao Seed 2.0 lite is supported with a dedicated alias:
-
-```bash
-# in your repo-root .env (the assets/ packet ships a contest EP + key — do NOT commit)
-AI_PROVIDER=ark_doubao
-ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3   # default
-ARK_API_KEY=<your_ark_key>
-ARK_MODEL=ep-20260508213828-7ntjl                       # the EP id you were issued
+```json
+{
+  "schemaVersion": "target-material-manifest-v1",
+  "brandName": "Viral Structure Engine",
+  "cta": "Upload. Analyze. Remix.",
+  "features": ["Analyze sample videos", "Induce reusable slots"],
+  "assets": [
+    { "assetId": "uploaded_card_01", "kind": "image", "role": "media_card" },
+    { "assetId": "uploaded_logo", "kind": "logo", "role": "brand_logo" }
+  ]
+}
 ```
 
-What the LLM does once enabled:
+响应中的素材引用使用安全 ID，例如 `asset://managed/<assetId>`；真实服务器路径只在 renderer 内部解析，不进入 public JSON/HTML。
 
-- **`extractStructure`** asks the model for a strict-JSON `TemplateEnrichment` (template name, hook/body/proof/cta intents, 6 atom names, packaging style, rhythm pace, quality rationale) and merges it into the deterministic fallback template. Schema validation is preserved; if the LLM returns bad JSON the fallback runs unchanged.
-- **`reviseInstruction`** turns natural-language edits (e.g. "开头更抓人一些") into `Partial<GenerationControls>` + optional `promptAddendum`. The `/api/generations/:id/revise` endpoint applies the patch and re-runs the pipeline.
-- **`judgeGeneration`** (used by `/api/generations/:id/scorecard`) returns a 0-100 score across hook/clarity/packaging/rhythm/cta which is merged 50/50 with the deterministic heuristic scorecard.
+## 可选 AIGC 素材补全
 
-Without a key the heuristic fallbacks still work end-to-end. To use a generic OpenAI-compatible endpoint instead, set `AI_PROVIDER=openai_compatible` and fill the `OPENAI_COMPATIBLE_*` env vars.
+AIGC Material Fill 是可选路径，默认关闭。它用于“用户没有足够素材”时，把缺口变成结构化生成 brief，再生成候选素材、做质量检查、注册为 `aigc_generated_material`，最后进入同一个 slot matcher / fill plan / renderer。
 
-## Enabling Gemini VLM (optional but powerful)
+浏览器入口：
 
-Set up once:
+- Web 工作台的“步骤 5 / 重构规划器”提供 **AIGC 补缺口并生成**按钮。
+- 面板里有“启用 AIGC gap fill”开关。
+- “允许外部 provider（Seedream）”是独立开关；不勾选时只使用 deterministic `mock_provider`。
+- API 请求会设置 `controls.allowAigcMaterialGeneration=true`；外部 provider 还需要 `controls.allowExternalAigcProvider=true`。
+- 结果面板会展示 brief、candidate、quality/VLM 状态、external calls、sample frames sent 等字段。
+
+默认 CI/demo provider 是 deterministic `mock_provider`，不会调用外部 API。真实图片生成可使用 Seedream 5.0 Lite，但必须显式允许外部 provider：
 
 ```bash
-# in your repo-root .env
+# mock provider：不需要外部 key
+node scripts/run-motion-graph-case.mjs --with-aigc-materials
+
+# .env 指定 provider，显式允许外部调用
+node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
+```
+
+Seedream 配置示例，`.env` 不要提交：
+
+```bash
+AIGC_MATERIAL_FILL_ENABLED=false
+AIGC_IMAGE_PROVIDER=volcengine_seedream
+AIGC_IMAGE_WATERMARK=false
+
+SEEDREAM_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+SEEDREAM_ARK_API_KEY=<your_seedream_key>
+SEEDREAM_ARK_MODEL=doubao-seedream-5-0-260128
+SEEDREAM_IMAGE_ENDPOINT=/images/generations
+SEEDREAM_RESPONSE_FORMAT=url
+SEEDREAM_IMAGE_SIZE=2K
+SEEDREAM_STREAM=false
+SEEDREAM_WATERMARK=false
+```
+
+Gemini VLM 可作为生成素材质量 gate：
+
+```bash
 VLM_PROVIDER=gemini
-VLM_MODEL=gemini-flash-latest   # or gemini-2.5-flash if your account has video access
-GEMINI_API_KEY=<your_key_from_aistudio.google.com>
+VLM_MODEL=gemini-flash-latest
+GEMINI_VLM_FALLBACK_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=<your_gemini_key>
 ```
 
-When `VLM_PROVIDER=gemini` is set:
-- Every sample/source analysis runs the local FFmpeg pipeline (metadata + keyframes) **and** asks Gemini to describe the whole video with strict-JSON output (video_summary, shots, structure, rhythm, packaging, reusable_patterns, material_gaps_for_new_video).
-- The VLM result is merged back into the shot list: tags are blended (e.g. `["background"]` → `["background","product_like","usage_scene"]`), `notes` is augmented with the VLM's `visual` description per shot, and `analyzerMode` is upgraded to `ffmpeg_vlm_asr`.
-- **The same VLM result is also threaded into `StructureExtractionRequest` so the template itself reflects the real video**: template name from `videoSummary`/`structure.hook`, segment intents from `structure.{hook,setup,sellingPoints,climax,cta}`, rhythm pace and `peakTimeRatio` from `rhythm.avgShotLength`, packaging fields from `packaging.{subtitleDensity,titleCards,stickers,coverStyle}`, plus 6 base atoms with VLM-derived names and 0–4 extra atoms drawn from `reusable_patterns`. Multiple uploads now produce visibly different templates and a non-duplicating knowledge base.
-- Slot matching, gap detection and the FFmpeg renderer all benefit from the richer tags; in our final smoke test the source-matched slot count went from 2/6 (FFmpeg only) to **6/6** once Gemini covered both the sample-learning side and the source-understanding side.
+AIGC 输出：
 
-Behind the scenes [apps/api/src/adapters/gemini.ts](apps/api/src/adapters/gemini.ts) sends ≤18 MB files inline as base64 (no async file processing required) and falls back to the Files API + state polling for larger uploads. Failures are caught per-step and surfaced on the analysis row's `warnings`; the rest of the pipeline keeps running on FFmpeg-only data.
-
-## Multi-version, revise, scorecard (P1 进阶能力)
-
-Once you have a generation id (`generation_xxx`) you can drive the post-generation features end-to-end via the API:
-
-```bash
-# 4 named variants in one call (高点击/高转化/高节奏/高质感)
-curl -s -X POST http://localhost:3000/api/generations/$GEN/variants -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
-
-# Natural-language revise (mutates controls + re-runs generation)
-curl -s -X POST http://localhost:3000/api/generations/$GEN/revise -H 'Content-Type: application/json' \
-  -d '{"instruction":"开头更抓人一些，节奏更快，CTA 更直接"}' | python3 -m json.tool
-
-# Scorecard (heuristic + optional LLM judge)
-curl -s -X POST http://localhost:3000/api/generations/$GEN/scorecard -H 'Content-Type: application/json' \
-  -d '{"skipLlm":false}' | python3 -m json.tool
+```text
+docs/artifacts/motion_graph_case/aigc-material-briefs.json
+docs/artifacts/motion_graph_case/generated-assets/
+docs/artifacts/motion_graph_case/generated-asset-candidates.json
+docs/artifacts/motion_graph_case/generated-asset-quality.json
+docs/artifacts/motion_graph_case/asset-evidence.aigc.json
+docs/artifacts/motion_graph_case/slot-asset-matches.aigc.json
+docs/artifacts/motion_graph_case/fill-plan.aigc.json
+docs/artifacts/motion_graph_case/replacement-slots.aigc.json
+docs/artifacts/motion_graph_case/render_aigc_materials.mp4
+docs/artifacts/motion_graph_case/aigc_materials_contact_sheet.png
 ```
 
-Heuristic revise (without an LLM key) recognises hook intensity, pace, subtitle density, CTA style, and "把商品信息提前" instructions. With `AI_PROVIDER=ark_doubao` the LLM does the parsing instead.
+AIGC 安全策略：
 
-## Running the test suites
+- 默认不生成、不外呼。
+- 外部 provider 必须显式勾选 UI 开关，或在脚本模式下传 `--allow-external-aigc`。
+- 样例帧不会发给外部 provider。
+- Seedream 图片请求默认 `watermark=false`。
+- 不伪造真实品牌 logo；`brand_cta` 缺 logo 时生成 placeholder/copy 或要求用户上传。
+- 生成素材必须带 provenance，标记为 `aigc_generated_material`，不能冒充用户上传素材。
 
-```bash
-npm test                # shared unit + api storage/openai/e2e suites
-npm run test:unit       # shared only
-npm run test:e2e        # HTTP integration pipeline via supertest (mock adapters)
-npm run validate:schemas
-# optional: bundle-only smoke for the Remotion entry (no Chromium download)
-cd apps/api && RUN_REMOTION_BUNDLE_TEST=true npx vitest run tests/remotion-bundle.test.ts
-```
+## Provider 配置摘要
 
-## Switching to SQLite storage
+| 能力 | 默认 | 真实实现 | 开关 |
+|---|---|---|---|
+| 视频分析 | mock | FFmpeg / ffprobe / keyframes | `VIDEO_TOOL=mock|ffmpeg` |
+| LLM | heuristic | Ark Doubao / OpenAI-compatible | `AI_PROVIDER=mock|ark_doubao|openai_compatible` |
+| VLM | disabled | Gemini video/material review | `VLM_PROVIDER=gemini` |
+| ASR | disabled | faster-whisper | `ASR_PROVIDER=faster_whisper` |
+| OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
+| AIGC image material | disabled/mock | Volcengine Seedream 5.0 Lite | `AIGC_IMAGE_PROVIDER=volcengine_seedream` + explicit flag |
+| Renderer | HTML/mock | FFmpeg / Remotion / HyperFrames stub | request `rendererTarget` |
+| Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
 
-```bash
-STORAGE_BACKEND=sqlite npm run dev:api
-```
+## 仍需人工配置的内容
 
-JSON remains the default. The SQLite backend creates `storage/db/app.sqlite` and stores one table per collection (`projects`, `assets`, `jobs`, `analyses`, `templates`, `atoms`, `generations`, `renders`) with `(id PRIMARY KEY, json TEXT)`. Round-trip is verified by `apps/api/tests/storage.test.ts`.
+- Ark Doubao / OpenAI-compatible LLM key：用于结构抽取、自然语言修改、LLM scorecard。
+- Gemini key：用于真实 VLM 视频理解和 AIGC 素材质量 gate。
+- Seedream key：用于可选外部图片素材生成。
+- faster-whisper / easyocr：按需安装到 conda env `viral`。
+- Remotion Chromium：第一次真实 Remotion render 会下载浏览器缓存。
 
-## What still needs a human
+## 当前限制
 
-These items are intentionally left for the user (cost or external setup):
-
-- **Volcano Ark Doubao key** (`AI_PROVIDER=ark_doubao` + `ARK_API_KEY` + `ARK_MODEL`): contest assets ship an EP + key — copy them into your local `.env` (kept out of git via `.gitignore`).
-- **Generic OpenAI-compatible key** (`AI_PROVIDER=openai_compatible` + `OPENAI_COMPATIBLE_*`): use this instead if you have a non-Ark endpoint.
-- **Gemini VLM key**: set `VLM_PROVIDER=gemini` + `GEMINI_API_KEY` to enable real video understanding (see section above). Without it, video analysis works via FFmpeg only.
-- **faster-whisper / easyocr** Python packages: optional, pip install inside `viral` when desired.
-- **Remotion headless Chromium**: the first `rendererTarget=remotion` render auto-downloads a headless Chromium (~150 MB) into `~/.cache/remotion`.
-
-## Primary vertical
-
-**B-end marketing / MG-style short promo videos** — the FFmpegRenderer is tuned for 9:16 720p with title-bar overlays, hard cuts, generated cards, family-specific motion-graph proxies, and target card/logo adaptation. Other verticals (vlog, talking-head, beat_cut, short_drama, ecommerce) round-trip through the same pipeline but trigger a UI warning that they are best-effort.
+- 外部 AIGC 目前只用于图片素材生成；不默认生成整段视频。
+- Seedance/视频生成 provider 仍是后续 P1 能力，不是当前默认路径。
+- Gemini 只作为质量 gate，不是唯一事实来源。
+- motion_graph 的确定性 analyzer 仍只接入 motion graph case，未扩展到 editing/marketing/corpus 全量视频。
+- 浏览器已有 AIGC gap-fill 按钮和基础结果面板；更完整的拖拽上传、人工审核/选择生成候选、批量素材管理仍是产品化工作。

@@ -95,6 +95,8 @@ Core Services
   ├─ TargetAssetMatchingService
   ├─ GapDetectionService
   ├─ GapFillService
+  ├─ AigcMaterialPlanner
+  ├─ AigcMaterialQualityGate
   ├─ RendererCapabilityService
   ├─ ReconstructionPlannerService
   ├─ TimelineValidationService
@@ -125,6 +127,13 @@ Adapters
   │   ├─ FFmpegRenderer
   │   ├─ RemotionRenderer
   │   └─ HyperFramesRenderer
+  ├─ AigcMaterialProvider
+  │   ├─ mock_provider
+  │   ├─ local_folder_provider
+  │   ├─ volcengine_seedream
+  │   ├─ ark_seedance_provider_stub
+  │   ├─ image_provider
+  │   └─ copy_provider
   └─ StorageAdapter
       ├─ LocalJsonStorage
       └─ SQLiteStorage
@@ -186,7 +195,7 @@ Adapters
 5. Preview regenerates.
 ```
 
-### 4.4 Flow D — motion-graph evidence and target-asset adaptation
+### 4.4 Flow D — motion-graph evidence, material intake, and target-asset adaptation
 
 This flow is the current SDE/MLE hardening showcase. It is intentionally scoped to `motion_graph_case`; editing/marketing/corpus analyzer expansion is not assumed by this slice.
 
@@ -206,10 +215,12 @@ This flow is the current SDE/MLE hardening showcase. It is intentionally scoped 
 4. The motion-graph template is renamed to a learned motion-graph structure and uses induced slots as the primary flow.
 5. The material policy blocks sample/reference frames as target material.
 6. Proxy mode leaves visual assets missing and renders family-specific proxies.
-7. Target-asset mode loads docs/fixtures/motion_graph_target_assets/ and matches assets to slots.
-8. Fill planning switches matched slots from proxy placeholders to target-material/procedural fulfillment.
-9. FFmpegRenderer renders target card stack, target feature list, target kinetic copy, procedural neon geometry, and target logo/CTA hold.
-10. The case writes MP4s, before/after contact sheet, slot-match artifacts, and evaluation gates.
+7. Target-asset mode loads `docs/fixtures/motion_graph_target_assets/` or a `--target-assets-manifest` file and matches assets to slots.
+8. Managed API intake uses `POST /api/projects/:projectId/assets` followed by `POST /api/projects/:projectId/target-material-manifests`; public responses use safe refs such as `asset://managed/<assetId>`, while renderer path resolution stays server-side.
+9. Partial and malformed modes prove insufficient/invalid material remains weak or blocked rather than being falsely matched.
+10. Fill planning switches matched slots from proxy placeholders to target-material/procedural fulfillment.
+11. FFmpegRenderer renders target card stack, target feature list, target kinetic copy, procedural neon geometry, and target logo/CTA hold.
+12. The case writes MP4s, before/after contact sheets, slot-match artifacts, blocked-material reports, and evaluation gates.
 ```
 
 Active commands:
@@ -217,9 +228,46 @@ Active commands:
 ```bash
 node scripts/run-motion-graph-case.mjs
 node scripts/run-motion-graph-case.mjs --with-target-assets
+node scripts/run-motion-graph-case.mjs --with-partial-target-assets
+node scripts/run-motion-graph-case.mjs --with-malformed-target-assets
+node scripts/run-motion-graph-case.mjs --target-assets-manifest docs/fixtures/motion_graph_target_assets/manifest.json
 ```
 
 Primary outputs are under `docs/artifacts/motion_graph_case/`.
+
+### 4.5 Flow E — optional AIGC material fill
+
+This flow is optional and only runs when explicitly requested. It fills missing visual material without copying sample frames.
+
+```text
+1. User either clicks the web "AIGC 补缺口并生成" action or runs an explicit AIGC script mode.
+2. UI/API sets controls.allowAigcMaterialGeneration=true.
+3. External providers remain disabled unless controls.allowExternalAigcProvider=true or the script receives --allow-external-aigc.
+4. GapReportItem and induced slots identify missing/weak visual material.
+5. AigcMaterialPlanner creates MaterialGenerationBrief records only when AIGC fill is enabled.
+6. Provider registry selects deterministic mock_provider by default, or Volcengine Seedream when explicitly configured and allowed.
+7. Provider generates candidate image material into generated-assets storage.
+8. Deterministic quality checks verify file/type/non-empty/path hygiene.
+9. Gemini VLM may review candidates with strict JSON; sample frames are not sent.
+10. Usable candidates are registered as target assets with materialRole="aigc_generated_material".
+11. Asset matcher and fill planner select aigc_generated_asset strategies for matching slots.
+12. Renderer writes the AIGC render and contact sheet/artifacts.
+```
+
+Active commands:
+
+```bash
+node scripts/run-motion-graph-case.mjs --with-aigc-materials
+node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
+```
+
+Safety rules:
+
+- AIGC material fill is disabled by default.
+- External providers require explicit opt-in through `allowExternalAigcProvider` or `--allow-external-aigc`.
+- Seedream image generation uses `watermark=false` for review artifacts.
+- Generated assets are labeled as generated material, not user-provided material.
+- Brand/logo gaps create placeholders or ask-user-upload actions; they do not fabricate a real logo.
 
 ---
 
