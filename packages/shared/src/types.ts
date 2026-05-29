@@ -118,8 +118,19 @@ export type FillStrategy =
   | "reorder_structure"
   | "procedural_generation"
   | "aigc_placeholder"
+  | "aigc_generated_asset"
   | "proxy_placeholder"
   | "user_asset_replace";
+
+export type AigcMaterialProviderId =
+  | "mock_provider"
+  | "local_folder_provider"
+  | "ark_seedance_provider_stub"
+  | "image_provider"
+  | "copy_provider"
+  | "none";
+export type AigcMaterialAssetType = "image" | "image_set" | "short_video" | "copy" | "logo_placeholder";
+export type GeneratedAssetCandidateType = "image" | "video" | "copy";
 
 export interface MotionSpec {
   type: "spin" | "scale" | "crop_zoom" | "ribbon_follow" | "pulse" | "slide" | "cascade" | "none";
@@ -195,6 +206,97 @@ export interface InducedVisualSlot {
   replacementPolicy: SlotReplacementPolicy;
   confidence: number;
   status: InducedSlotStatus;
+}
+
+export interface AigcMaterialFillConfig {
+  enabled: boolean;
+  provider: AigcMaterialProviderId;
+  maxAssetsPerRun: number;
+  maxCostUsd?: number;
+  allowExternalUpload: boolean;
+  allowSampleFramesToProvider: boolean;
+  requireUserApprovalBeforeRender: boolean;
+  cacheEnabled: boolean;
+}
+
+export interface MaterialGenerationBrief {
+  id: string;
+  projectId: string;
+  generationId: string;
+  slotId: string;
+  visualFormFamily: VisualFormFamily | "poster_layout";
+  visualForm: ReplacementVisualForm;
+  assetType: AigcMaterialAssetType;
+  count: number;
+  targetTheme: string;
+  targetBrand?: string;
+  targetAudience?: string;
+  copyContext?: string[];
+  promptPack?: string[];
+  styleConstraints: {
+    aspectRatio: AspectRatio | (string & {});
+    palette?: string[];
+    colorPalette?: string[];
+    mood?: string;
+    noTextUnlessRequested: boolean;
+    avoidSampleLookalike: true;
+  };
+  structureConstraints: {
+    intendedRendererCapability: string;
+    motionPattern: string;
+    slotRole: string;
+    durationSec?: number;
+  };
+  negativePrompts: string[];
+  evidenceRefs: {
+    sampleEvidenceFrameIds: string[];
+    note: "sample evidence is for structure only; do not copy visual content";
+  };
+  privacyPolicy: {
+    externalUploadAllowed: boolean;
+    sampleFramesAllowedToProvider: boolean;
+    targetAssetsAllowedToProvider: boolean;
+  };
+}
+
+export interface GeneratedAssetQualityResult {
+  candidateId: string;
+  slotId: string;
+  usable: boolean;
+  slotFitScore?: number;
+  targetThemeFitScore?: number;
+  noSampleCopyScore?: number;
+  textArtifactRisk?: number;
+  deterministicChecks: Array<{ id: string; passed: boolean; value?: unknown }>;
+  vlmStatus: "not_configured" | "skipped_infra" | "not_run" | "ok" | "failed";
+  issues: string[];
+}
+
+export interface GeneratedAssetCandidate {
+  id: string;
+  briefId: string;
+  slotId: string;
+  provider: AigcMaterialProviderId;
+  model: string;
+  type: GeneratedAssetCandidateType;
+  materialRole: "aigc_generated_material";
+  path: string;
+  prompt: string;
+  negativePrompt?: string;
+  provenance: {
+    generatedAt: string;
+    userApproved: boolean;
+    externalProviderUsed: boolean;
+    sampleFramesSentExternally: boolean;
+    targetAssetsSentExternally: boolean;
+  };
+  quality: {
+    vlmScore?: number;
+    slotFitScore?: number;
+    noSampleCopyScore?: number;
+    usable?: boolean;
+    issues?: string[];
+  };
 }
 
 export interface ReplacementSlot {
@@ -508,6 +610,7 @@ export interface GenerationControls {
   packagingStyle?: "clean" | "bold" | "mg_motion";
   ctaStyle?: "soft" | "direct";
   allowAigcPlaceholder?: boolean;
+  allowAigcMaterialGeneration?: boolean;
   creativeMode?: CreativeOutputMode;
   subtitleDensity?: "minimal" | "medium" | "dense";
   stylePreset?: "sample_like" | "clean_premium" | "white_poster" | "bold_mg";
@@ -647,7 +750,7 @@ export interface RendererInstruction {
   atom?: MotionAtomSpec["type"] | string;
   strategy?: FillStrategy;
   requiredInputs?: string[];
-  fulfilledBy?: "target_asset" | "source_video" | "procedural_generation" | "aigc_stub" | "text_or_copy" | "proxy_placeholder" | "user_asset";
+  fulfilledBy?: "target_asset" | "source_video" | "procedural_generation" | "aigc_stub" | "aigc_generated_material" | "text_or_copy" | "proxy_placeholder" | "user_asset";
   ribbonMotion?: RibbonMotionGeometry;
   placeholderSpec?: PlaceholderSpec;
   replacementSlotId?: string;

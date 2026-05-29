@@ -2122,9 +2122,12 @@ export function createFillPlan(
       const selectedAssets = targetAssetsForIds(request, mapping.selectedTargetAssetIds ?? (mapping.selectedTargetAssetId ? [mapping.selectedTargetAssetId] : []));
       const selectedAsset = selectedAssets[0] ?? targetAssetForId(request, mapping.selectedTargetAssetId);
       const targetCopy = textFromTargetAsset(selectedAsset);
+      const selectedAssetsGenerated = selectedAssets.length > 0 && selectedAssets.every((asset) => asset.metadata?.materialRole === "aigc_generated_material" || asset.tags?.includes("aigc_generated_material"));
       const strategy: FillStrategy =
         mapping.visualFormFamily === "media_cards" || mapping.visualFormFamily === "brand_cta"
-          ? "user_asset_replace"
+          ? selectedAssetsGenerated
+            ? "aigc_generated_asset"
+            : "user_asset_replace"
           : mapping.visualFormFamily === "ui_showcase" || mapping.visualFormFamily === "kinetic_typography" || mapping.visualFormFamily === "geometric_mg"
             ? "procedural_generation"
             : "proxy_placeholder";
@@ -2151,7 +2154,7 @@ export function createFillPlan(
           renderer: "remotion_mg",
           fallbackRenderer: "ffmpeg_compose",
           strategy,
-          fulfilledBy: strategy === "user_asset_replace" ? "target_asset" : "procedural_generation",
+          fulfilledBy: strategy === "aigc_generated_asset" ? "aigc_generated_material" : strategy === "user_asset_replace" ? "target_asset" : "procedural_generation",
           requiredInputs:
             mapping.visualFormFamily === "media_cards"
               ? ["target_image_set", "slot_motion"]
@@ -2162,7 +2165,7 @@ export function createFillPlan(
                   : mapping.visualFormFamily === "kinetic_typography"
                     ? ["target_copy", "typography_timing"]
                     : ["procedural_shape_motif"],
-          replacementSlotId: strategy === "user_asset_replace" ? mapping.slotId : undefined,
+          replacementSlotId: strategy === "user_asset_replace" || strategy === "aigc_generated_asset" ? mapping.slotId : undefined,
           boundAssetId: selectedAsset?.id,
           targetAssetIds: selectedAssets.map((asset) => asset.id),
           replacementAssetKind: selectedAsset?.kind ?? "image",
@@ -2177,7 +2180,7 @@ export function createFillPlan(
           featureList: Array.isArray(selectedAsset?.metadata?.features) ? selectedAsset?.metadata?.features : undefined,
           brandName: typeof selectedAsset?.metadata?.brandName === "string" ? selectedAsset.metadata.brandName : undefined,
           cta: typeof selectedAsset?.metadata?.cta === "string" ? selectedAsset.metadata.cta : undefined,
-          materialSource: mapping.visualFormFamily === "geometric_mg" ? "procedural_not_required" : "target_material"
+          materialSource: strategy === "aigc_generated_asset" ? "aigc_generated_material" : mapping.visualFormFamily === "geometric_mg" ? "procedural_not_required" : "target_material"
         }
       };
       return [{
@@ -2344,6 +2347,7 @@ function clipTypeForFill(strategy: FillStrategy | undefined): TimelineClipType {
   if (strategy === "packaging_overlay") return "generated_card";
   if (strategy === "procedural_generation") return "generated_card";
   if (strategy === "aigc_placeholder") return "placeholder";
+  if (strategy === "aigc_generated_asset") return "generated_card";
   if (strategy === "proxy_placeholder") return "placeholder";
   if (strategy === "user_asset_replace") return "image";
   return "generated_card";
@@ -2433,6 +2437,8 @@ function replacementSlotsFromGapReport(gapReport: GapReportItem[], fillPlan: Fil
       const status: ReplacementSlot["status"] =
         fill?.strategy === "user_asset_replace" && boundAssetId
           ? "user_replaced"
+          : fill?.strategy === "aigc_generated_asset" && boundAssetId
+            ? "rendered"
           : fill?.strategy === "procedural_generation"
             ? "proxy_generated"
             : "proxy_generated";
@@ -2455,7 +2461,7 @@ function replacementSlotsFromGapReport(gapReport: GapReportItem[], fillPlan: Fil
     });
   const seen = new Set(fromGaps.map((slot) => slot.slotId));
   const fromBoundActions = fillPlan
-    .filter((action) => action.strategy === "user_asset_replace" && !seen.has(action.rendererInstructions?.replacementSlotId ?? action.slotId))
+    .filter((action) => (action.strategy === "user_asset_replace" || action.strategy === "aigc_generated_asset") && !seen.has(action.rendererInstructions?.replacementSlotId ?? action.slotId))
     .map((action) => {
       const instructions = action.rendererInstructions ?? {};
       const slotId = instructions.replacementSlotId ?? action.slotId;
@@ -2463,7 +2469,7 @@ function replacementSlotsFromGapReport(gapReport: GapReportItem[], fillPlan: Fil
         slotId,
         semanticLabel: `Replacement slot ${slotId}`,
         visualForm: "product_card" as const,
-        status: "user_replaced" as const,
+        status: (action.strategy === "aigc_generated_asset" ? "rendered" : "user_replaced") as ReplacementSlot["status"],
         placeholderSpec: instructions.placeholderSpec as PlaceholderSpec | undefined,
         acceptedAssetTypes: ["image", "video", "gif", "logo", "copy", "glb", "lottie"] as ReplacementSlot["acceptedAssetTypes"],
         boundAssetId: typeof instructions.boundAssetId === "string" ? instructions.boundAssetId : undefined,
@@ -2505,7 +2511,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       const slot = template.requiredSlots.find((item) => item.id === slotId);
       const mappingForSlot = mappings.find((item) => item.slotId === slotId);
       const fillForSlot = fillPlan.find((item) => item.slotId === slotId);
-      const replacementFill = fillForSlot?.strategy === "user_asset_replace";
+      const replacementFill = fillForSlot?.strategy === "user_asset_replace" || fillForSlot?.strategy === "aigc_generated_asset";
       const proxyFill = fillForSlot?.strategy === "proxy_placeholder";
       const proceduralFill = fillForSlot?.strategy === "procedural_generation";
       const familyRendererFill = Boolean(
@@ -2564,7 +2570,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             applyMotionFromSlot: fillForSlot?.rendererInstructions?.applyMotionFromSlot
           },
           style: {
-            fillStrategy: "user_asset_replace",
+            fillStrategy: fillForSlot?.strategy ?? "user_asset_replace",
             replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId ?? slotId,
             placeholderSpec: fillForSlot?.rendererInstructions?.placeholderSpec,
             targetAssetIds,
@@ -2697,7 +2703,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             ? `Uses target ${mappingForSlot?.selectedTargetAssetKind ?? "asset"} ${targetAssetId}`
             : `Uses source shot ${sourceShotId ?? "unknown"}`
           : replacementFill && targetAssetIds?.length
-            ? `Uses target asset set ${targetAssetIds.join(", ")}`
+            ? fillForSlot?.strategy === "aigc_generated_asset"
+              ? `Uses AIGC generated asset set ${targetAssetIds.join(", ")}`
+              : `Uses target asset set ${targetAssetIds.join(", ")}`
           : `Uses ${strategy} fill`,
         packaging: template.packaging.titleCardStyle ?? "default packaging",
         rationale: mappingForSlot?.reason ?? "Reconstructed by deterministic planner."

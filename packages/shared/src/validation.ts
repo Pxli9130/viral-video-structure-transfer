@@ -2,9 +2,12 @@ import Ajv2020 from "ajv/dist/2020.js";
 import type { ValidateFunction } from "ajv";
 import {
   assetAnalysisSchema,
+  aigcMaterialFillConfigSchema,
+  generatedAssetCandidateSchema,
   generationRequestSchema,
   jobSchema,
   knowledgeAtomSchema,
+  materialGenerationBriefSchema,
   projectSchema,
   structureTemplateSchema,
   timelineSchema
@@ -22,6 +25,9 @@ const schemaMap = {
   knowledge_atom: knowledgeAtomSchema,
   structure: structureTemplateSchema,
   generation_request: generationRequestSchema,
+  aigc_material_fill_config: aigcMaterialFillConfigSchema,
+  material_generation_brief: materialGenerationBriefSchema,
+  generated_asset_candidate: generatedAssetCandidateSchema,
   timeline: timelineSchema,
   job: jobSchema
 } as const;
@@ -68,6 +74,18 @@ export function validateStructureTemplate(value: unknown): ValidationResult {
 
 export function validateGenerationRequest(value: unknown): ValidationResult {
   return runValidator("generation_request", value);
+}
+
+export function validateAigcMaterialFillConfig(value: unknown): ValidationResult {
+  return runValidator("aigc_material_fill_config", value);
+}
+
+export function validateMaterialGenerationBrief(value: unknown): ValidationResult {
+  return runValidator("material_generation_brief", value);
+}
+
+export function validateGeneratedAssetCandidate(value: unknown): ValidationResult {
+  return runValidator("generated_asset_candidate", value);
 }
 
 export function validateTimeline(value: unknown): ValidationResult {

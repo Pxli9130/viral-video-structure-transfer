@@ -437,6 +437,24 @@ const motionGraphRenderAssetCheckArtifact = await readJsonArtifact({
   description: "motion_graph deterministic pixel-level target asset render check.",
   fallback: {}
 });
+const motionGraphAigcBriefsArtifact = await readJsonArtifact({
+  title: "motion_graph_case/aigc-material-briefs.json",
+  filePath: path.join(motionGraphCaseDir, "aigc-material-briefs.json"),
+  description: "Optional AIGC material fill briefs.",
+  fallback: []
+});
+const motionGraphAigcCandidatesArtifact = await readJsonArtifact({
+  title: "motion_graph_case/generated-asset-candidates.json",
+  filePath: path.join(motionGraphCaseDir, "generated-asset-candidates.json"),
+  description: "Optional AIGC generated material candidates.",
+  fallback: []
+});
+const motionGraphAigcQualityArtifact = await readJsonArtifact({
+  title: "motion_graph_case/generated-asset-quality.json",
+  filePath: path.join(motionGraphCaseDir, "generated-asset-quality.json"),
+  description: "Optional AIGC generated material quality gates.",
+  fallback: []
+});
 
 const generationByArtifactKey = {};
 const evaluationByArtifactKey = {};
@@ -485,6 +503,9 @@ const motionGraphMalformedSlotAssetMatches = motionGraphMalformedSlotAssetMatche
 const motionGraphMalformedBlocked = motionGraphMalformedBlockedArtifact.data ?? {};
 const motionGraphEvaluation = motionGraphEvaluationArtifact.data ?? {};
 const motionGraphRenderAssetCheck = motionGraphRenderAssetCheckArtifact.data ?? {};
+const motionGraphAigcBriefs = motionGraphAigcBriefsArtifact.data ?? [];
+const motionGraphAigcCandidates = motionGraphAigcCandidatesArtifact.data ?? [];
+const motionGraphAigcQuality = motionGraphAigcQualityArtifact.data ?? [];
 const primaryGeneration =
   generationByArtifactKey.high_fidelity?.data ??
   generationByArtifactKey.main?.data ??
@@ -1659,9 +1680,11 @@ function motionGraphTargetAdaptationSection() {
   const renderWithAssets = path.join(motionGraphCaseDir, "render_with_assets.mp4");
   const renderPartial = path.join(motionGraphCaseDir, "render_partial_assets.mp4");
   const renderMalformed = path.join(motionGraphCaseDir, "render_malformed_assets.mp4");
+  const renderAigc = path.join(motionGraphCaseDir, "render_aigc_materials.mp4");
   const beforeAfter = path.join(motionGraphCaseDir, "before_after_contact_sheet.png");
   const partialSheet = path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png");
   const malformedSheet = path.join(motionGraphCaseDir, "malformed_assets_contact_sheet.png");
+  const aigcSheet = path.join(motionGraphCaseDir, "aigc_materials_contact_sheet.png");
   const slotFamilySummary = Array.isArray(motionGraphCase.inducedSlots)
     ? motionGraphCase.inducedSlots.map((slot) => slot.visualFormFamily).filter(Boolean)
     : [];
@@ -1672,6 +1695,15 @@ function motionGraphTargetAdaptationSection() {
     .join("");
   const blockedRows = (motionGraphMalformedBlocked.blockedManifestAssets ?? [])
     .map((asset) => `<tr><td>${esc(asset.id ?? asset.assetId ?? "unknown")}</td><td>${esc(asset.kind ?? "")}</td><td>${esc(asset.role ?? "")}</td><td>${esc(asset.reason ?? "")}</td></tr>`)
+    .join("");
+  const aigcBriefRows = (Array.isArray(motionGraphAigcBriefs) ? motionGraphAigcBriefs : [])
+    .map((brief) => `<tr><td>${esc(brief.visualFormFamily)}</td><td>${esc(brief.assetType)}</td><td>${esc(brief.count)}</td><td>${esc(brief.privacyPolicy?.sampleFramesAllowedToProvider)}</td></tr>`)
+    .join("");
+  const aigcCandidateRows = (Array.isArray(motionGraphAigcCandidates) ? motionGraphAigcCandidates : [])
+    .map((candidate) => `<tr><td>${esc(candidate.id)}</td><td>${esc(candidate.provider)}</td><td>${esc(candidate.path)}</td><td>${candidate.quality?.usable ? "usable" : "blocked"}</td><td>${candidate.provenance?.externalProviderUsed ? "yes" : "no"}</td></tr>`)
+    .join("");
+  const aigcQualityRows = (Array.isArray(motionGraphAigcQuality) ? motionGraphAigcQuality : [])
+    .map((quality) => `<tr><td>${esc(quality.candidateId)}</td><td>${quality.usable ? "usable" : "not usable"}</td><td>${esc(quality.vlmStatus)}</td><td>${esc((quality.issues ?? []).join("; ") || "none")}</td></tr>`)
     .join("");
   return `<section class="motion-graph-adaptation" id="motion-graph-target-adaptation" data-section="motion-graph-target-adaptation">
     <div class="section-heading">
@@ -1701,6 +1733,30 @@ function motionGraphTargetAdaptationSection() {
       <article class="panel-card">
         <h3>Malformed Assets Video</h3>
         ${existsSync(renderMalformed) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderMalformed))}"></video>` : missingCard("Malformed assets", "render_malformed_assets.mp4 missing")}
+      </article>
+      <article class="panel-card">
+        <h3>AIGC Generated Materials Video</h3>
+        ${existsSync(renderAigc) ? `<video controls preload="metadata" src="${esc(hrefFromDemo(renderAigc))}"></video>` : missingCard("AIGC generated materials", "render_aigc_materials.mp4 missing")}
+      </article>
+    </div>
+    <div class="compare-grid optional-aigc-material-fill" data-motion-graph-aigc-material-fill="optional-aigc-material-fill" style="margin-top:12px">
+      <article class="panel-card">
+        <h3>Optional AIGC Material Fill</h3>
+        <p>AIGC material fill is optional. Default runs do not generate external material.</p>
+        <p>This demo uses deterministic <code>mock_provider</code>. External generation requires user opt-in.</p>
+        <p class="evidence">Sample evidence is used for structure only, not copied. Generated assets are clearly labeled as AI-generated material.</p>
+      </article>
+      <article class="panel-card">
+        <h3>Material Briefs</h3>
+        <table data-motion-graph-aigc-table="briefs"><thead><tr><th>family</th><th>asset</th><th>count</th><th>sample frames allowed</th></tr></thead><tbody>${aigcBriefRows}</tbody></table>
+      </article>
+      <article class="panel-card">
+        <h3>Generated Candidates</h3>
+        <table data-motion-graph-aigc-table="candidates"><thead><tr><th>candidate</th><th>provider</th><th>path</th><th>quality</th><th>external</th></tr></thead><tbody>${aigcCandidateRows}</tbody></table>
+      </article>
+      <article class="panel-card">
+        <h3>Quality Gate</h3>
+        <table data-motion-graph-aigc-table="quality"><thead><tr><th>candidate</th><th>usable</th><th>VLM</th><th>issues</th></tr></thead><tbody>${aigcQualityRows}</tbody></table>
       </article>
     </div>
     <div class="compare-grid managed-material-intake" data-motion-graph-managed-material-intake="managed-material-intake" style="margin-top:12px">
@@ -1752,6 +1808,10 @@ function motionGraphTargetAdaptationSection() {
         ${existsSync(malformedSheet) ? `<img src="${esc(hrefFromDemo(malformedSheet))}" alt="motion graph malformed assets contact sheet" />` : missingCard("malformed_assets_contact_sheet.png", "missing")}
       </article>
       <article class="panel-card">
+        <h3>AIGC Materials Contact Sheet</h3>
+        ${existsSync(aigcSheet) ? `<img src="${esc(hrefFromDemo(aigcSheet))}" alt="motion graph AIGC materials contact sheet" />` : missingCard("aigc_materials_contact_sheet.png", "missing")}
+      </article>
+      <article class="panel-card">
         <h3>Raw JSON</h3>
         <details>
           <summary>Open artifacts</summary>
@@ -1787,13 +1847,18 @@ function artifactGalleryCards() {
     registerArtifact({ title: "motion_graph_case/render_proxy.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_proxy.mp4"), description: "Motion graph proxy mode output." }),
     registerArtifact({ title: "motion_graph_case/render_with_assets.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_with_assets.mp4"), description: "Motion graph target asset adaptation output." }),
     registerArtifact({ title: "motion_graph_case/render_partial_assets.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_partial_assets.mp4"), description: "Motion graph partial asset stress output." }),
+    registerArtifact({ title: "motion_graph_case/render_aigc_materials.mp4", type: "video", filePath: path.join(motionGraphCaseDir, "render_aigc_materials.mp4"), description: "Motion graph optional AIGC material fill output." }),
     registerArtifact({ title: "motion_graph_case/contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "contact_sheet.png"), description: "动态图形案例联系表。" }),
     registerArtifact({ title: "motion_graph_case/before_after_contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "before_after_contact_sheet.png"), description: "Proxy versus with-target-assets contact sheet." }),
     registerArtifact({ title: "motion_graph_case/partial_assets_contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png"), description: "Proxy versus partial-target-assets contact sheet." }),
+    registerArtifact({ title: "motion_graph_case/aigc_materials_contact_sheet.png", type: "image", filePath: path.join(motionGraphCaseDir, "aigc_materials_contact_sheet.png"), description: "Proxy versus optional AIGC generated materials contact sheet." }),
     registerArtifact({ title: "motion_graph_case/induced-slots.json", type: "json", filePath: path.join(motionGraphCaseDir, "induced-slots.json"), description: "开放世界归纳槽位清单。" }),
     registerArtifact({ title: "motion_graph_case/asset-evidence.json", type: "json", filePath: path.join(motionGraphCaseDir, "asset-evidence.json"), description: "Motion graph target asset evidence." }),
     registerArtifact({ title: "motion_graph_case/slot-asset-matches.json", type: "json", filePath: path.join(motionGraphCaseDir, "slot-asset-matches.json"), description: "Motion graph slot asset matching table." }),
     registerArtifact({ title: "motion_graph_case/evaluation.motion_graph.json", type: "json", filePath: path.join(motionGraphCaseDir, "evaluation.motion_graph.json"), description: "Motion graph evaluator gates." }),
+    registerArtifact({ title: "motion_graph_case/aigc-material-briefs.json", type: "json", filePath: path.join(motionGraphCaseDir, "aigc-material-briefs.json"), description: "Optional AIGC material fill briefs." }),
+    registerArtifact({ title: "motion_graph_case/generated-asset-candidates.json", type: "json", filePath: path.join(motionGraphCaseDir, "generated-asset-candidates.json"), description: "Optional AIGC generated material candidates." }),
+    registerArtifact({ title: "motion_graph_case/generated-asset-quality.json", type: "json", filePath: path.join(motionGraphCaseDir, "generated-asset-quality.json"), description: "Optional AIGC generated material quality gates." }),
     registerArtifact({ title: "timeline.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.json"), description: "默认时间线 JSON。" }),
     registerArtifact({ title: "timeline.high_fidelity.json", type: "json", filePath: path.join(marketingArtifactDir, "timeline.high_fidelity.json"), description: "高保真时间线 JSON。" }),
     registerArtifact({ title: "generation.main.json", type: "json", filePath: path.join(marketingArtifactDir, "generation.main.json"), description: "最终创意生成 JSON。" }),
@@ -1911,16 +1976,21 @@ const manifest = scrubObject({
     renderWithAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_with_assets.mp4")),
     renderPartialAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_partial_assets.mp4")),
     renderMalformedAssets: hrefFromDemo(path.join(motionGraphCaseDir, "render_malformed_assets.mp4")),
+    renderAigcMaterials: hrefFromDemo(path.join(motionGraphCaseDir, "render_aigc_materials.mp4")),
     contactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "contact_sheet.png")),
     beforeAfterContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "before_after_contact_sheet.png")),
     partialAssetsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "partial_assets_contact_sheet.png")),
     malformedAssetsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "malformed_assets_contact_sheet.png")),
+    aigcMaterialsContactSheet: hrefFromDemo(path.join(motionGraphCaseDir, "aigc_materials_contact_sheet.png")),
     assetEvidence: hrefFromDemo(path.join(motionGraphCaseDir, "asset-evidence.json")),
     slotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.json")),
     malformedSlotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.malformed.json")),
     malformedBlockedMaterialReport: hrefFromDemo(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")),
     renderAssetCheck: hrefFromDemo(path.join(motionGraphCaseDir, "render-asset-check.json")),
     evaluation: hrefFromDemo(path.join(motionGraphCaseDir, "evaluation.motion_graph.json")),
+    aigcMaterialBriefs: hrefFromDemo(path.join(motionGraphCaseDir, "aigc-material-briefs.json")),
+    generatedAssetCandidates: hrefFromDemo(path.join(motionGraphCaseDir, "generated-asset-candidates.json")),
+    generatedAssetQuality: hrefFromDemo(path.join(motionGraphCaseDir, "generated-asset-quality.json")),
     inducedSlots: Array.isArray(motionGraphCase.inducedSlots) ? motionGraphCase.inducedSlots.map((slot) => ({ id: slot.id, family: slot.visualFormFamily, status: slot.status })) : [],
     targetAssets: Array.isArray(motionGraphAssetEvidence.targetAssets) ? motionGraphAssetEvidence.targetAssets.map((asset) => ({ id: asset.assetId, type: asset.type, role: asset.role, renderable: asset.renderable })) : [],
     slotAssetMapping: Array.isArray(motionGraphSlotAssetMatches) ? motionGraphSlotAssetMatches.map((match) => ({ family: match.visualFormFamily, status: match.status, matchKind: match.matchKind, selectedAssetIds: match.selectedAssetIds, missingCount: match.missingCount })) : [],

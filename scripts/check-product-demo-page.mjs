@@ -267,6 +267,18 @@ if (existsSync(path.join(motionGraphCaseDir, "render_malformed_assets.mp4")) && 
   failures.push("Motion graph malformed-assets render exists but product demo does not link it.");
 }
 
+if (existsSync(path.join(motionGraphCaseDir, "render_aigc_materials.mp4")) && !html.includes("motion_graph_case/render_aigc_materials.mp4")) {
+  failures.push("Motion graph AIGC-materials render exists but product demo does not link it.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "aigc-material-briefs.json")) && !/data-motion-graph-aigc-material-fill="optional-aigc-material-fill"/.test(html)) {
+  failures.push("Product demo missing Optional AIGC Material Fill section.");
+}
+
+if (existsSync(path.join(motionGraphCaseDir, "generated-asset-quality.json")) && !/data-motion-graph-aigc-table="quality"/.test(html)) {
+  failures.push("Product demo missing AIGC generated-material quality table.");
+}
+
 if (slotReplacementDemo?.after?.fillStrategy !== "user_asset_replace") {
   failures.push("slot-replacement-demo.json must show user_asset_replace after state.");
 }
