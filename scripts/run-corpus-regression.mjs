@@ -626,6 +626,7 @@ function motionGraphArtifactGates(options = {}) {
   const malformedBlockedReport = readJsonIfExists(path.join(mgDir, "blocked-material-report.malformed.json"));
   const previewManifest = readJsonIfExists(path.join(mgDir, "preview_frames", "manifest.json"));
   const evaluation = readJsonIfExists(path.join(mgDir, "evaluation.motion_graph.json"));
+  const renderAssetCheck = readJsonIfExists(path.join(mgDir, "render-asset-check.json"));
   const slotFamilies = new Set((Array.isArray(inducedSlots) ? inducedSlots : []).map((slot) => slot.visualFormFamily));
   const evalGate = (id) => (evaluation?.gates ?? []).find((gate) => gate.id === id)?.passed === true;
   const capabilityIds = new Set((Array.isArray(fillPlan) ? fillPlan : []).map((action) => action.capabilityId ?? action.rendererInstructions?.capabilityId).filter(Boolean));
@@ -794,6 +795,11 @@ function motionGraphArtifactGates(options = {}) {
         id: "brand_cta_missing_without_valid_logo",
         passed: evalGate("brand_cta_missing_without_valid_logo") === true || (Array.isArray(malformedSlotAssetMatches) && malformedSlotAssetMatches.find((match) => match.visualFormFamily === "brand_cta")?.status === "missing"),
         detail: JSON.stringify((malformedSlotAssetMatches ?? []).find((match) => match.visualFormFamily === "brand_cta") ?? null)
+      },
+      {
+        id: "render_asset_pixel_check_passed",
+        passed: renderAssetCheck?.passed === true,
+        detail: renderAssetCheck ? JSON.stringify(renderAssetCheck.gates?.map((gate) => `${gate.id}:${gate.passed}`) ?? []) : "missing render-asset-check.json"
       }
     );
   }

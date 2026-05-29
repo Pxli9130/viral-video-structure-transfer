@@ -431,6 +431,12 @@ const motionGraphEvaluationArtifact = await readJsonArtifact({
   description: "motion_graph deterministic evaluator gates.",
   fallback: {}
 });
+const motionGraphRenderAssetCheckArtifact = await readJsonArtifact({
+  title: "motion_graph_case/render-asset-check.json",
+  filePath: path.join(motionGraphCaseDir, "render-asset-check.json"),
+  description: "motion_graph deterministic pixel-level target asset render check.",
+  fallback: {}
+});
 
 const generationByArtifactKey = {};
 const evaluationByArtifactKey = {};
@@ -478,6 +484,7 @@ const motionGraphSlotAssetMatches = motionGraphSlotAssetMatchesArtifact.data ?? 
 const motionGraphMalformedSlotAssetMatches = motionGraphMalformedSlotAssetMatchesArtifact.data ?? [];
 const motionGraphMalformedBlocked = motionGraphMalformedBlockedArtifact.data ?? {};
 const motionGraphEvaluation = motionGraphEvaluationArtifact.data ?? {};
+const motionGraphRenderAssetCheck = motionGraphRenderAssetCheckArtifact.data ?? {};
 const primaryGeneration =
   generationByArtifactKey.high_fidelity?.data ??
   generationByArtifactKey.main?.data ??
@@ -1647,6 +1654,7 @@ function motionGraphTargetAdaptationSection() {
   const targetAssets = Array.isArray(motionGraphAssetEvidence.targetAssets) ? motionGraphAssetEvidence.targetAssets : [];
   const matches = Array.isArray(motionGraphSlotAssetMatches) ? motionGraphSlotAssetMatches : [];
   const gates = Array.isArray(motionGraphEvaluation.gates) ? motionGraphEvaluation.gates : [];
+  const pixelGates = Array.isArray(motionGraphRenderAssetCheck.gates) ? motionGraphRenderAssetCheck.gates : [];
   const renderProxy = path.join(motionGraphCaseDir, "render_proxy.mp4");
   const renderWithAssets = path.join(motionGraphCaseDir, "render_with_assets.mp4");
   const renderPartial = path.join(motionGraphCaseDir, "render_partial_assets.mp4");
@@ -1724,6 +1732,10 @@ function motionGraphTargetAdaptationSection() {
       <article class="panel-card">
         <h3>Evaluator Gates</h3>
         <div class="gate-grid">${gates.map((gate) => `<span class="gate ${gate.passed ? "pass" : "fail"}" title="${esc(gate.comment ?? "")}">${esc(gate.id)}: ${gate.passed ? "pass" : "fail"}</span>`).join("")}</div>
+      </article>
+      <article class="panel-card">
+        <h3>Pixel Asset Check</h3>
+        <div class="gate-grid">${pixelGates.map((gate) => `<span class="gate ${gate.passed ? "pass" : "fail"}">${esc(gate.id)}: ${gate.passed ? "pass" : "fail"}</span>`).join("") || badge("render-asset-check missing", "warning")}</div>
       </article>
     </div>
     <div class="compare-grid" style="margin-top:12px">
@@ -1907,6 +1919,7 @@ const manifest = scrubObject({
     slotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.json")),
     malformedSlotAssetMatches: hrefFromDemo(path.join(motionGraphCaseDir, "slot-asset-matches.malformed.json")),
     malformedBlockedMaterialReport: hrefFromDemo(path.join(motionGraphCaseDir, "blocked-material-report.malformed.json")),
+    renderAssetCheck: hrefFromDemo(path.join(motionGraphCaseDir, "render-asset-check.json")),
     evaluation: hrefFromDemo(path.join(motionGraphCaseDir, "evaluation.motion_graph.json")),
     inducedSlots: Array.isArray(motionGraphCase.inducedSlots) ? motionGraphCase.inducedSlots.map((slot) => ({ id: slot.id, family: slot.visualFormFamily, status: slot.status })) : [],
     targetAssets: Array.isArray(motionGraphAssetEvidence.targetAssets) ? motionGraphAssetEvidence.targetAssets.map((asset) => ({ id: asset.assetId, type: asset.type, role: asset.role, renderable: asset.renderable })) : [],

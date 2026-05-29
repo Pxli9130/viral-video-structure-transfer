@@ -265,7 +265,7 @@ function relativeFixturePath(filename) {
 }
 
 async function ensureTargetAssetFixture() {
-  const required = ["logo.png", "card_01.png", "card_02.png", "card_03.png", "card_04.png", "copy.json", "manifest.json", "manifest.partial.json", "manifest.malformed.json"];
+  const required = ["logo.png", "card_01.png", "card_02.png", "card_03.png", "card_04.png", "blocked_wrong_role.png", "copy.json", "manifest.json", "manifest.partial.json", "manifest.malformed.json"];
   if (required.every((filename) => existsSync(path.join(targetFixtureDir, filename)))) return;
   await run(process.execPath, [path.join(repoRoot, "scripts", "generate-motion-graph-target-assets.mjs")]);
 }

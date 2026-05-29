@@ -255,6 +255,10 @@ if (existsSync(path.join(motionGraphCaseDir, "blocked-material-report.malformed.
   failures.push("Product demo missing blocked malformed material table.");
 }
 
+if (existsSync(path.join(motionGraphCaseDir, "render-asset-check.json")) && !html.includes("Pixel Asset Check")) {
+  failures.push("Product demo missing motion graph pixel asset check summary.");
+}
+
 if (existsSync(path.join(motionGraphCaseDir, "render_with_assets.mp4")) && !html.includes("motion_graph_case/render_with_assets.mp4")) {
   failures.push("Motion graph with-assets render exists but product demo does not link it.");
 }

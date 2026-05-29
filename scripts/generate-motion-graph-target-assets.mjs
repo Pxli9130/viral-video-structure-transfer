@@ -111,6 +111,20 @@ async function renderLogo() {
   await run(ffmpegBin, ["-y", "-f", "lavfi", "-i", filter, "-frames:v", "1", path.join(fixtureDir, "logo.png")]);
 }
 
+async function renderBlockedWrongRoleAsset() {
+  const filter = [
+    "color=c=0xff00a8:s=720x960:d=1",
+    "format=rgba",
+    "drawbox=x=0:y=0:w=720:h=960:color=0xffff00@0.92:t=34",
+    "drawbox=x=70:y=120:w=580:h=720:color=0x111827@0.90:t=fill",
+    "drawbox=x=96:y=146:w=528:h=668:color=0xff00a8@0.96:t=12",
+    drawText("BLOCKED", 70, 290, "0xffff00", true),
+    drawText("WRONG ROLE", 54, 430, "white", true),
+    drawText("MUST NOT RENDER", 34, 650, "0xffff00")
+  ].join(",");
+  await run(ffmpegBin, ["-y", "-f", "lavfi", "-i", filter, "-frames:v", "1", path.join(fixtureDir, "blocked_wrong_role.png")]);
+}
+
 async function main() {
   await mkdir(fixtureDir, { recursive: true });
   await writeFile(path.join(fixtureDir, "copy.json"), `${JSON.stringify(copy, null, 2)}\n`, "utf8");
@@ -215,7 +229,7 @@ async function main() {
         id: "wrong_role_visual",
         kind: "image",
         role: "unclassified_visual",
-        path: "card_03.png"
+        path: "blocked_wrong_role.png"
       },
       {
         id: "no_path_visual",
@@ -245,6 +259,7 @@ async function main() {
     await renderCard(index + 1, copy.features[index], colors[index], accents[index]);
   }
   await renderLogo();
+  await renderBlockedWrongRoleAsset();
   console.log(`Generated motion graph target assets at ${path.relative(repoRoot, fixtureDir)}`);
 }
 
