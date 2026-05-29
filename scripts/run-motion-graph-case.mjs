@@ -256,6 +256,8 @@ function sanitizeAigcProviderError(error) {
   return message
     .replace(/ark-[0-9A-Za-z_-]+/g, "ark-***")
     .replace(/AIza[0-9A-Za-z_-]+/g, "AIza***")
+    .replace(/account\s+\[[^\]]+\]/gi, "account [redacted]")
+    .replace(/Request id:\s*[0-9A-Za-z_-]+/gi, "Request id: redacted")
     .replace(/GEMINI_API_KEY=[^\s]+/g, "GEMINI_API_KEY=***")
     .replace(/SEEDREAM_ARK_API_KEY=[^\s]+/g, "SEEDREAM_ARK_API_KEY=***")
     .slice(0, 500);

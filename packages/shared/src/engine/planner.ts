@@ -2323,8 +2323,25 @@ function polishedPosterCopy(slotType: SlotType, brief: ParsedBrief): string {
   return cleanTitle;
 }
 
+function promptLooksChinese(brief: ParsedBrief, request: GenerationRequest): boolean {
+  const joined = [request.prompt, brief.topic, brief.productName, brief.targetAudience, ...brief.sellingPoints, brief.cta].join("\n");
+  const cjk = (joined.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const latin = (joined.match(/[A-Za-z]/g) ?? []).length;
+  return cjk > 0 && cjk >= latin * 0.2;
+}
+
 function subtitleForSlot(slotType: SlotType, brief: ParsedBrief, request: GenerationRequest): string {
   if (isFinalCreativeMode(request)) return polishedPosterCopy(slotType, brief);
+  const zh = promptLooksChinese(brief, request);
+  if (zh) {
+    if (slotType === "cta_visual") return brief.cta;
+    if (slotType === "usage_scene") return `${brief.targetAudience} 使用场景`;
+    if (slotType === "comparison" || slotType === "proof_visual") return `${brief.sellingPoints[0]} 对比更清楚`;
+    if (slotType === "hook_visual") return `${brief.productName} · ${brief.sellingPoints[0]}`;
+    if (slotType === "product_closeup") return brief.sellingPoints[0];
+    if (slotType === "subtitle_text" || slotType === "title_card") return brief.sellingPoints[1] ?? brief.topic;
+    return brief.topic;
+  }
   if (slotType === "cta_visual") return brief.cta;
   if (slotType === "usage_scene") return `${brief.productName} fits ${brief.targetAudience}`;
   if (slotType === "comparison" || slotType === "proof_visual") return `${brief.sellingPoints[0]} with clearer everyday value`;
@@ -2668,12 +2685,19 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
           style: { card: template.packaging.titleCardStyle, role, strategy }
         });
       }
-      layers.push({
+      const hasDuplicateBaseText = layers.some((layer) =>
+        layer.kind === "base_visual" &&
+        typeof layer.text === "string" &&
+        layer.text.trim() === subtitle.trim()
+      );
+      const addSubtitleLayer = request.controls?.subtitleGenerationMode !== "off" && subtitle.trim().length > 0 && !hasDuplicateBaseText;
+      if (addSubtitleLayer) layers.push({
         id: stableId("layer_subtitle", clipId, subtitle),
         kind: "subtitle",
         text: subtitle,
         style: { position: "lower_third", density: request.controls?.subtitleDensity ?? "high" }
       });
+      const clipSubtitle = request.controls?.subtitleGenerationMode === "off" ? "" : subtitle;
       if (slot?.slotType === "cta_visual") {
         layers.push({
           id: stableId("layer_cta_overlay", clipId),
@@ -2693,7 +2717,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         sourceShotId,
         visualIntent: slot?.description ?? segment.intent,
         scriptText: segment.scriptPattern ?? segment.intent,
-        subtitleText: subtitle,
+        subtitleText: clipSubtitle,
         transitionIn: cursor === 0 ? "none" : "hard_cut",
         transitionOut: "hard_cut",
         layers,
@@ -2768,6 +2792,10 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         ctaStyle: request.controls?.ctaStyle ?? "direct",
         creativeMode: request.controls?.creativeMode ?? "explainable_demo",
         subtitleDensity: request.controls?.subtitleDensity ?? "dense",
+        subtitleGenerationMode: request.controls?.subtitleGenerationMode ?? "prompt_only",
+        subtitleStyle: template.packaging.subtitleStyle,
+        titleCardStyle: template.packaging.titleCardStyle,
+        subtitleStyleSource: "sample_template_packaging",
         stylePreset: request.controls?.stylePreset ?? (request.controls?.creativeMode === "high_fidelity_style" ? "sample_like" : "bold_mg"),
         ctaTiming: request.controls?.ctaTiming ?? "default",
         noSampleVisualCopy: request.constraints?.noSampleVisualCopy ?? true,

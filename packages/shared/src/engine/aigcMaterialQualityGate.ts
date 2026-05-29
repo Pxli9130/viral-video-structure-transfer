@@ -65,6 +65,11 @@ export async function checkGeneratedMaterialCandidate(input: {
   candidate: GeneratedAssetCandidate;
   rootDir?: string;
   vlmAvailable?: boolean;
+  vlmReview?: (input: {
+    brief: MaterialGenerationBrief;
+    candidate: GeneratedAssetCandidate;
+    filePath: string;
+  }) => Promise<{ usable?: boolean; slotFitScore?: number; targetThemeFitScore?: number; noSampleCopyScore?: number; textArtifactRisk?: number; issues?: string[] }>;
 }): Promise<GeneratedAssetQualityResult> {
   const filePath = resolveCandidatePath(input.candidate, input.rootDir);
   const deterministicChecks: GeneratedAssetQualityResult["deterministicChecks"] = [];
@@ -108,17 +113,37 @@ export async function checkGeneratedMaterialCandidate(input: {
   });
   if (!noSampleCopy) issues.push("sample frames were allowed or sent externally");
 
-  const usable = deterministicChecks.every((check) => check.passed);
+  const deterministicUsable = deterministicChecks.every((check) => check.passed);
+  let vlmStatus: GeneratedAssetQualityResult["vlmStatus"] = input.vlmAvailable ? "not_run" : "skipped_infra";
+  let vlmScores: Partial<GeneratedAssetQualityResult> = {};
+  if (deterministicUsable && input.vlmAvailable && input.vlmReview) {
+    try {
+      const review = await input.vlmReview({ brief: input.brief, candidate: input.candidate, filePath });
+      if (review.usable === false) issues.push(...(review.issues ?? ["VLM review marked generated asset unusable"]));
+      else if (review.issues?.length) issues.push(...review.issues);
+      vlmScores = {
+        slotFitScore: review.slotFitScore,
+        targetThemeFitScore: review.targetThemeFitScore,
+        noSampleCopyScore: review.noSampleCopyScore,
+        textArtifactRisk: review.textArtifactRisk
+      };
+      vlmStatus = "ok";
+    } catch (error) {
+      vlmStatus = "failed";
+      issues.push(`VLM review failed: ${(error as Error).message}`);
+    }
+  }
+  const usable = deterministicUsable && vlmStatus !== "failed" && !issues.some((issue) => /unusable/i.test(issue));
   return {
     candidateId: input.candidate.id,
     slotId: input.candidate.slotId,
     usable,
-    slotFitScore: usable ? 0.82 : 0.2,
-    targetThemeFitScore: usable ? 0.78 : 0.2,
-    noSampleCopyScore: noSampleCopy ? 1 : 0,
-    textArtifactRisk: input.brief.styleConstraints.noTextUnlessRequested ? 0.08 : 0.18,
+    slotFitScore: vlmScores.slotFitScore ?? (usable ? 0.82 : 0.2),
+    targetThemeFitScore: vlmScores.targetThemeFitScore ?? (usable ? 0.78 : 0.2),
+    noSampleCopyScore: vlmScores.noSampleCopyScore ?? (noSampleCopy ? 1 : 0),
+    textArtifactRisk: vlmScores.textArtifactRisk ?? (input.brief.styleConstraints.noTextUnlessRequested ? 0.08 : 0.18),
     deterministicChecks,
-    vlmStatus: input.vlmAvailable ? "not_run" : "skipped_infra",
+    vlmStatus,
     issues
   };
 }
@@ -128,6 +153,11 @@ export async function checkGeneratedMaterials(input: {
   candidates: GeneratedAssetCandidate[];
   rootDir?: string;
   vlmAvailable?: boolean;
+  vlmReview?: (input: {
+    brief: MaterialGenerationBrief;
+    candidate: GeneratedAssetCandidate;
+    filePath: string;
+  }) => Promise<{ usable?: boolean; slotFitScore?: number; targetThemeFitScore?: number; noSampleCopyScore?: number; textArtifactRisk?: number; issues?: string[] }>;
 }): Promise<GeneratedAssetQualityResult[]> {
   const briefById = new Map(input.briefs.map((brief) => [brief.id, brief]));
   const results: GeneratedAssetQualityResult[] = [];
@@ -144,7 +174,13 @@ export async function checkGeneratedMaterials(input: {
       });
       continue;
     }
-    results.push(await checkGeneratedMaterialCandidate({ brief, candidate, rootDir: input.rootDir, vlmAvailable: input.vlmAvailable }));
+    results.push(await checkGeneratedMaterialCandidate({
+      brief,
+      candidate,
+      rootDir: input.rootDir,
+      vlmAvailable: input.vlmAvailable,
+      vlmReview: input.vlmReview
+    }));
   }
   return results;
 }

@@ -443,6 +443,7 @@ export const generationRequestSchema = {
         allowAigcMaterialGeneration: { type: "boolean" },
         allowExternalAigcProvider: { type: "boolean" },
         creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] },
+        subtitleGenerationMode: { enum: ["off", "prompt_only", "ark_doubao"] },
         subtitleDensity: { enum: ["minimal", "medium", "dense"] },
         stylePreset: { enum: ["sample_like", "clean_premium", "white_poster", "bold_mg"] },
         ctaTiming: { enum: ["early", "default", "late"] },

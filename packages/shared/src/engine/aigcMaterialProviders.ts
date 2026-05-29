@@ -246,6 +246,27 @@ function retryableSeedreamStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+function sanitizeSeedreamErrorText(text: string): string {
+  return text
+    .replace(/account\s+\[[^\]]+\]/gi, "account [redacted]")
+    .replace(/Request id:\s*[0-9A-Za-z_-]+/gi, "Request id: redacted")
+    .replace(/ark-[0-9A-Za-z_-]+/g, "ark-***")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "AIza***")
+    .slice(0, 700);
+}
+
+function seedreamErrorMessage(status: number | string, text: string): string {
+  const sanitized = sanitizeSeedreamErrorText(text);
+  try {
+    const payload = JSON.parse(sanitized) as { error?: { code?: string; message?: string; type?: string } };
+    const code = payload.error?.code ? `${payload.error.code}: ` : "";
+    const message = payload.error?.message ?? sanitized;
+    return `volcengine_seedream image generation failed with HTTP ${status} (${code}${message}).`;
+  } catch {
+    return `volcengine_seedream image generation failed with HTTP ${status}${sanitized ? ` (${sanitized})` : ""}.`;
+  }
+}
+
 function imageGenerationUrl(config: SeedreamProviderConfig): string {
   const base = config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`;
   return new URL(config.endpoint.replace(/^\//, ""), base).toString();
@@ -368,7 +389,8 @@ export const volcengineSeedreamProvider: AigcMaterialProvider = {
         await sleep(config.retryDelayMs * Math.max(1, attempt + 1));
       }
       if (!response?.ok) {
-        throw new Error(`volcengine_seedream image generation failed with HTTP ${response?.status ?? "unknown"}.`);
+        const responseText = response ? await response.text().catch(() => "") : "";
+        throw new Error(seedreamErrorMessage(response?.status ?? "unknown", responseText));
       }
       const payload = await response.json();
       let fileBuffer: Buffer;

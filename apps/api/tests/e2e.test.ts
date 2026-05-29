@@ -212,6 +212,37 @@ describe("E2E pipeline (mock adapters)", () => {
     ).toBe(true);
   });
 
+  it("renders generated AIGC target assets through FFmpeg instead of falling back to tiny text cards", async () => {
+    const generateRes = await api
+      .post("/api/generations")
+      .send({
+        projectId,
+        inputMode: "prompt_only",
+        selectedTemplateIds: [templateId],
+        prompt: "主题：AI 视频结构迁移工具\n卖点：结构拆解、缺口补全、时间线渲染\nCTA：立即上传素材",
+        target: { vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15, outputMode: "storyboard_preview" },
+        controls: {
+          pace: "fast",
+          hookIntensity: "strong",
+          packagingStyle: "mg_motion",
+          allowAigcPlaceholder: true,
+          allowAigcMaterialGeneration: true,
+          subtitleGenerationMode: "prompt_only"
+        }
+      })
+      .expect(201);
+
+    const generation = generateRes.body.data.generation;
+    expect(generation.aigcMaterialFill.generatedTargetAssets.length).toBeGreaterThan(0);
+    const renderRes = await api
+      .post(`/api/generations/${generation.id}/render`)
+      .send({ rendererTarget: "ffmpeg" })
+      .expect(201);
+    const outputPath = renderRes.body.data.render.outputPath as string;
+    const stat = await fs.stat(outputPath);
+    expect(stat.size).toBeGreaterThan(150_000);
+  }, 60_000);
+
   it("falls back to mock AIGC material when an external provider fails", async () => {
     const previousProvider = process.env.AIGC_IMAGE_PROVIDER;
     process.env.AIGC_IMAGE_PROVIDER = "image_provider";

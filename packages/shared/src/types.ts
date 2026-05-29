@@ -614,6 +614,7 @@ export interface GenerationControls {
   allowAigcMaterialGeneration?: boolean;
   allowExternalAigcProvider?: boolean;
   creativeMode?: CreativeOutputMode;
+  subtitleGenerationMode?: "off" | "prompt_only" | "ark_doubao";
   subtitleDensity?: "minimal" | "medium" | "dense";
   stylePreset?: "sample_like" | "clean_premium" | "white_poster" | "bold_mg";
   ctaTiming?: "early" | "default" | "late";

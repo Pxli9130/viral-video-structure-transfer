@@ -305,6 +305,42 @@ describe("optional AIGC material fill", () => {
     }
   });
 
+  it("marks generated asset VLM review as ok when a configured reviewer accepts it", async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), "vvst-aigc-vlm-test-"));
+    try {
+      const [brief] = createMaterialGenerationBriefs({
+        gapReport: [{ slotId: "slot_media_cards", status: "missing", severity: "high", reason: "missing", impact: "missing", visualFormFamily: "media_cards", visualForm: "stacked_media_cards", missingCount: 1, rendererCandidates: ["card_stack_motion"], sourceEvidence: mediaCardsSlot.sourceEvidence }],
+        inducedSlots: [mediaCardsSlot],
+        request: request(true),
+        config: { enabled: true, provider: "mock_provider", maxAssetsPerRun: 1, allowExternalUpload: false, allowSampleFramesToProvider: false, requireUserApprovalBeforeRender: false, cacheEnabled: true }
+      });
+      const candidates = await getAigcMaterialProvider("mock_provider").generate(brief, {
+        outputDir: temp,
+        publicPathPrefix: temp,
+        now: "2026-01-01T00:00:00.000Z"
+      });
+      const quality = await checkGeneratedMaterials({
+        briefs: [brief],
+        candidates: [candidates[0]],
+        rootDir: process.cwd(),
+        vlmAvailable: true,
+        vlmReview: async () => ({
+          usable: true,
+          slotFitScore: 0.9,
+          targetThemeFitScore: 0.86,
+          noSampleCopyScore: 0.98,
+          textArtifactRisk: 0.04,
+          issues: []
+        })
+      });
+      expect(quality[0].vlmStatus).toBe("ok");
+      expect(quality[0].usable).toBe(true);
+      expect(quality[0].slotFitScore).toBe(0.9);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it("generated target material can drive aigc_generated_asset fill actions", () => {
     const analysis = buildMockVideoAnalysis({ assetId: "sample", projectId: "project_aigc_test", purpose: "sample", durationSec: 15 });
     const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_aigc_test");

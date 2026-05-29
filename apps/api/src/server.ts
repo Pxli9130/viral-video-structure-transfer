@@ -776,10 +776,32 @@ function selectTemplateForGeneration(db: Database, request: GenerationRequest): 
   };
 }
 
-function buildAssetResolver(db: Database): AssetPathResolver {
+function pathWithin(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveTargetAssetPath(targetAsset: TargetAssetInput): string | undefined {
+  if (!targetAsset.path || /^https?:\/\//i.test(targetAsset.path)) return undefined;
+  const absolute = path.isAbsolute(targetAsset.path)
+    ? path.resolve(targetAsset.path)
+    : path.resolve(repoRoot, targetAsset.path);
+  const allowedRoots = [storageRoot, path.join(repoRoot, "docs", "fixtures")];
+  return allowedRoots.some((root) => pathWithin(root, absolute)) ? absolute : undefined;
+}
+
+function buildAssetResolver(db: Database, generation?: GenerationResult): AssetPathResolver {
+  const targetAssetsById = new Map((generation?.request.targetAssets ?? []).map((asset) => [asset.id, asset]));
   return {
     resolve(assetId: string) {
-      return db.assets.find((asset) => asset.id === assetId)?.path;
+      const targetAsset = targetAssetsById.get(assetId);
+      if (targetAsset) return resolveTargetAssetPath(targetAsset);
+      const managedAsset = db.assets.find((asset) => asset.id === assetId);
+      if (!managedAsset?.path) return undefined;
+      if (managedAsset.role === "example_video" && generation?.request.constraints?.sampleAssetReuse !== "authorized") {
+        return undefined;
+      }
+      return managedAsset.path;
     }
   };
 }
@@ -1276,6 +1298,8 @@ function sanitizeAigcProviderError(error: unknown): string {
   return message
     .replace(/ark-[A-Za-z0-9-]+/g, "ark-***")
     .replace(/AIza[0-9A-Za-z_-]+/g, "AIza***")
+    .replace(/account\s+\[[^\]]+\]/gi, "account [redacted]")
+    .replace(/Request id:\s*[0-9A-Za-z_-]+/gi, "Request id: redacted")
     .replace(/GEMINI_API_KEY=[^\s]+/g, "GEMINI_API_KEY=***")
     .replace(/SEEDREAM_ARK_API_KEY=[^\s]+/g, "SEEDREAM_ARK_API_KEY=***")
     .slice(0, 500);
@@ -1313,6 +1337,28 @@ function targetAssetFromGeneratedCandidate(input: {
       quality: input.quality,
       provenance: input.candidate.provenance
     }
+  };
+}
+
+async function reviewGeneratedMaterialWithVlm(input: {
+  brief: MaterialGenerationBrief;
+  candidate: GeneratedAssetCandidate;
+  filePath: string;
+}): Promise<{ usable: boolean; slotFitScore: number; targetThemeFitScore: number; noSampleCopyScore: number; textArtifactRisk: number; issues: string[] }> {
+  if (!adapters.vlmAdapter.available) {
+    throw new Error("VLM adapter is not configured");
+  }
+  const review = await adapters.vlmAdapter.describeFrames([{ path: input.filePath, timeSec: 0 }]);
+  const description = review[0]?.description ?? "";
+  const tags = review[0]?.tags ?? [];
+  const hasWatermarkRisk = /watermark|logo|platform|douyin|tiktok|抖音|水印/i.test(description);
+  return {
+    usable: review.length > 0 && !hasWatermarkRisk,
+    slotFitScore: tags.length ? 0.86 : 0.78,
+    targetThemeFitScore: 0.8,
+    noSampleCopyScore: input.candidate.provenance.sampleFramesSentExternally ? 0 : 0.96,
+    textArtifactRisk: /text|caption|文字|字幕/i.test(description) ? 0.22 : 0.08,
+    issues: hasWatermarkRisk ? ["VLM review found possible watermark/platform mark"] : []
   };
 }
 
@@ -1382,7 +1428,8 @@ async function applyAigcMaterialFill(input: {
     briefs,
     candidates,
     rootDir: repoRoot,
-    vlmAvailable: false
+    vlmAvailable: adapters.vlmAdapter.available,
+    vlmReview: adapters.vlmAdapter.available ? reviewGeneratedMaterialWithVlm : undefined
   });
   const briefById = new Map(briefs.map((brief) => [brief.id, brief]));
   const qualityById = new Map(quality.map((item) => [item.candidateId, item]));
@@ -1446,6 +1493,108 @@ async function applyAigcMaterialFill(input: {
       quality,
       generatedTargetAssets
     }
+  };
+}
+
+type SubtitleCue = {
+  clipId: string;
+  text: string;
+  language: "zh" | "en";
+  placement: "lower_third" | "center" | "none";
+};
+
+type SubtitleCapableAiAdapter = AdapterSet["aiAdapter"] & {
+  generateSubtitles?: (input: { generation: GenerationResult; language: "zh" | "en" }) => Promise<SubtitleCue[]>;
+};
+
+function subtitleLanguageForPrompt(prompt: string): "zh" | "en" {
+  const cjk = (prompt.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const latin = (prompt.match(/[A-Za-z]/g) ?? []).length;
+  return cjk > 0 && cjk >= latin * 0.2 ? "zh" : "en";
+}
+
+function promptAllowsBilingual(prompt: string): boolean {
+  return /bilingual|中英|双语|英文.*中文|中文.*英文/i.test(prompt);
+}
+
+function normalizeSubtitleText(text: string, language: "zh" | "en", allowBilingual: boolean): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact || allowBilingual) return compact;
+  if (language === "zh") {
+    return compact
+      .replace(/\b[A-Za-z][A-Za-z\s-]{1,}\b/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+  return compact.replace(/[\u3400-\u9fff]+/g, "").replace(/\s{2,}/g, " ").trim();
+}
+
+async function applySubtitleGeneration(generation: GenerationResult): Promise<GenerationResult> {
+  const mode = generation.request.controls?.subtitleGenerationMode ?? "prompt_only";
+  const language = subtitleLanguageForPrompt(generation.request.prompt);
+  const allowBilingual = promptAllowsBilingual(generation.request.prompt);
+  let cues: SubtitleCue[] = [];
+  if (mode === "ark_doubao") {
+    const ai = adapters.aiAdapter as SubtitleCapableAiAdapter;
+    if (ai.available && ai.generateSubtitles) {
+      try {
+        cues = await ai.generateSubtitles({ generation, language });
+      } catch (error) {
+        generation = {
+          ...generation,
+          warnings: [...generation.warnings, `Ark Doubao subtitle generation failed: ${sanitizeAigcProviderError(error)}`]
+        };
+      }
+    }
+  }
+  const cueByClipId = new Map(cues.map((cue) => [cue.clipId, cue]));
+  const subtitleByClipId = new Map<string, string>();
+  const clips = generation.timeline.clips.map((clip) => {
+    const cue = cueByClipId.get(clip.id);
+    const rawText = mode === "off" ? "" : (cue?.text ?? clip.subtitleText ?? "");
+    const text = normalizeSubtitleText(rawText, language, allowBilingual);
+    const baseLayers = clip.layers.filter((layer) => layer.kind !== "subtitle");
+    const duplicateBaseText = baseLayers.some((layer) =>
+      layer.kind === "base_visual" &&
+      typeof layer.text === "string" &&
+      normalizeSubtitleText(layer.text, language, allowBilingual) === text
+    );
+    const visualFormFamily = clip.visualFormFamily ?? String(baseLayers.find((layer) => layer.style?.visualFormFamily)?.style?.visualFormFamily ?? "");
+    const placement = visualFormFamily === "kinetic_typography" ? "center" : "lower_third";
+    const learnedSubtitleStyle = generation.timeline.renderPlan?.adapterOptions?.subtitleStyle;
+    const learnedSubtitleSource = generation.timeline.renderPlan?.adapterOptions?.subtitleStyleSource;
+    const subtitleLayer = mode !== "off" && text && !duplicateBaseText
+      ? [{
+          id: stableId("layer_subtitle", clip.id, text),
+          kind: "subtitle" as const,
+          text,
+          style: {
+            position: placement,
+            density: generation.request.controls?.subtitleDensity ?? generation.timeline.renderPlan?.adapterOptions?.subtitleDensity ?? "medium",
+            generatedBy: mode,
+            learnedSubtitleStyle,
+            learnedSubtitleSource,
+            sampleTextCopied: false
+          }
+        }]
+      : [];
+    subtitleByClipId.set(clip.id, text);
+    return {
+      ...clip,
+      subtitleText: text,
+      layers: [...baseLayers, ...subtitleLayer]
+    };
+  });
+  return {
+    ...generation,
+    timeline: {
+      ...generation.timeline,
+      clips
+    },
+    storyboard: generation.storyboard.map((item) => ({
+      ...item,
+      subtitle: subtitleByClipId.get(item.clipId) ?? item.subtitle
+    }))
   };
 }
 
@@ -1523,6 +1672,7 @@ async function runGeneration(
       baseGeneration: generation,
       generationIdSalt: options.variantLabel
     });
+    generation = await applySubtitleGeneration(generation);
     if (options.variantLabel) {
       generation = {
         ...generation,
@@ -2093,7 +2243,7 @@ app.post(
         : "ViralReconstruction";
       const renderer = selectRenderer(target, {
         generatedDir,
-        assetResolver: buildAssetResolver(db),
+        assetResolver: buildAssetResolver(db, generation),
         remotionEntryPoint,
         remotionCompositionId
       });

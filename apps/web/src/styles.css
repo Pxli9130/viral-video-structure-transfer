@@ -472,6 +472,40 @@ textarea {
   width: min(260px, 100%);
 }
 
+.render-status {
+  overflow-wrap: anywhere;
+}
+
+.render-status a {
+  color: #0f766e;
+  font-weight: 800;
+}
+
+.render-preview {
+  align-items: start;
+  display: grid;
+  min-width: 0;
+}
+
+.render-material-note {
+  border: 1px solid #d8e1e8;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.render-material-note.ok {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.render-material-note.warn {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
 table {
   border-collapse: collapse;
   table-layout: fixed;
