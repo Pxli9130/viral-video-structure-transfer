@@ -1,5 +1,6 @@
 import {
   buildFallbackTemplate,
+  nameTimestamp,
   parseNaturalLanguageEdit,
   type AIAdapter,
   type GenerationControls,
@@ -337,9 +338,14 @@ function mergeEnrichment(baseline: StructureTemplate, enrichment: TemplateEnrich
     return { ...atom, name: truncate(llmName, 80) };
   });
 
+  // Keep the original sample filename + per-run timestamp in the name even after LLM enrichment,
+  // so templates stay browsable by sample (and the golden naming requirement holds).
+  const sampleSuffix = baseline.sourceAssetFilename
+    ? ` · ${baseline.sourceAssetFilename} · ${nameTimestamp(baseline.createdAt)}`
+    : "";
   return {
     ...baseline,
-    name: enrichment.templateName ? truncate(`LLM · ${enrichment.templateName}`, 120) : baseline.name,
+    name: enrichment.templateName ? truncate(`LLM · ${enrichment.templateName}${sampleSuffix}`, 160) : baseline.name,
     segments,
     structureAtoms: atoms,
     rhythm: enrichment.pace ? { ...baseline.rhythm, pace: enrichment.pace } : baseline.rhythm,

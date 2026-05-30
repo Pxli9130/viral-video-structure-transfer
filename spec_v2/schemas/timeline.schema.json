@@ -39,7 +39,6 @@
     },
     "rendererTarget": {
       "enum": [
-        "mock_preview",
         "html_preview",
         "ffmpeg",
         "remotion",

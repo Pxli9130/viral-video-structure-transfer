@@ -124,6 +124,7 @@ export type FillStrategy =
 
 export type AigcMaterialProviderId =
   | "mock_provider"
+  | "google_gemini_image"
   | "local_folder_provider"
   | "volcengine_seedream"
   | "ark_seedance_provider_stub"
@@ -484,6 +485,8 @@ export interface VisualEvidenceTimeline {
 export interface VideoAnalysisResult {
   id: string;
   assetId: string;
+  /** Original uploaded sample filename (e.g. "editing.mov"), threaded for human-readable naming. */
+  sourceFilename?: string;
   projectId: string;
   purpose: AnalysisPurpose;
   metadata: {
@@ -623,6 +626,8 @@ export interface StructureTemplate {
   name: string;
   vertical: Vertical;
   sourceSampleIds: string[];
+  /** Original sample filename surfaced in the template name (e.g. "editing.mov"). */
+  sourceAssetFilename?: string;
   videoType?: string;
   visualStyle?: VisualStyleSpec;
   excludeSegments?: ExcludeSegment[];
@@ -648,6 +653,8 @@ export interface TemplateRecord {
   id: string;
   projectId: string;
   sourceAssetId: string;
+  /** Original sample filename for KB display (e.g. "editing.mov"). */
+  sourceAssetFilename?: string;
   name: string;
   vertical: Vertical;
   template: StructureTemplate;

@@ -1198,9 +1198,16 @@ async function runFixture(entry, args) {
   await mkdir(reportDir, { recursive: true });
   await mkdir(path.join(reportDir, "frames"), { recursive: true });
 
+  const gates = [];
+
+  // Fixtures this ribbon/motif-centric harness can't evaluate (e.g. beat_cut) opt out cleanly.
+  if (entry.fixture.skip === true || entry.fixture.skipCorpusHarness === true) {
+    gates.push({ id: "skipped", passed: true, detail: entry.fixture.skipReason ?? "fixture opted out of the ribbon corpus harness" });
+    return { id: entry.id, status: "SKIPPED", gates, fixture: entry.fixture, analysis: null, frames: [] };
+  }
+
   const videoPath = resolveVideoPath(entry.fixture, entry.dir);
   const isSynthetic = (entry.fixture.input.license === "synthetic");
-  const gates = [];
 
   // Resolve video path / sha256.
   let videoStatus = "present";
@@ -1238,13 +1245,17 @@ async function runFixture(entry, args) {
     // For synthetic videos the sha will change with each regeneration; update fingerprint silently.
     gates.push({ id: "sha256_match", passed: true, detail: `synthetic; current sha256=${actualSha.slice(0, 12)}…` });
   } else {
-    const matched = expectedSha === actualSha;
+    const matched = Boolean(expectedSha) && expectedSha === actualSha;
     gates.push({
       id: "sha256_match",
-      passed: matched,
-      detail: matched ? `sha256 matches (${actualSha.slice(0, 12)}…)` : `expected ${expectedSha.slice(0, 12)}…, got ${actualSha.slice(0, 12)}…`
+      passed: expectedSha ? matched : true,
+      detail: !expectedSha
+        ? `no expected sha256 declared; current=${actualSha.slice(0, 12)}…`
+        : matched
+          ? `sha256 matches (${actualSha.slice(0, 12)}…)`
+          : `expected ${String(expectedSha).slice(0, 12)}…, got ${actualSha.slice(0, 12)}…`
     });
-    if (!matched && !entry.fixture.input.videoIsReference) {
+    if (expectedSha && !matched && !entry.fixture.input.videoIsReference) {
       // For non-reference fixtures, sha mismatch means video was tampered.
       return { id: entry.id, status: "FAIL", gates, fixture: entry.fixture, analysis: null, frames: [] };
     }

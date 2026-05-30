@@ -11,8 +11,10 @@ import {
   buildFallbackTemplate,
   generateMigrationResult,
   getAigcMaterialProvider,
+  fileTimestamp,
   nowIso,
   parsePromptToBrief,
+  sanitizeNameToken,
   stableId,
   validateAssetAnalysis,
   validateGenerationRequest,
@@ -74,6 +76,7 @@ const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_us
 const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "hyperframes"];
 const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "mock_provider",
+  "google_gemini_image",
   "local_folder_provider",
   "volcengine_seedream",
   "ark_seedance_provider_stub",
@@ -81,7 +84,7 @@ const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "copy_provider",
   "none"
 ]);
-const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
+const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["google_gemini_image", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
 
 const repoRoot =
   path.basename(process.cwd()) === "api" && path.basename(path.dirname(process.cwd())) === "apps"
@@ -207,8 +210,16 @@ function assertFound<T>(value: T | undefined, label: string): T {
   return value;
 }
 
+/** Compact, timestamped server log. Set VVST_LOG=quiet to silence stage logs. */
+function logStage(scope: string, message: string): void {
+  if (process.env.VVST_LOG === "quiet") return;
+  const t = new Date().toISOString().slice(11, 23);
+  console.log(`[${t}] [${scope}] ${message}`);
+}
+
 function createJob(projectId: string | undefined, type: JobType, inputSummary: Record<string, unknown>, stepNames: string[]): Job {
   const timestamp = nowIso();
+  logStage(`job:${type}`, `▶ start · steps=[${stepNames.join(", ")}] · ${JSON.stringify(inputSummary).slice(0, 160)}`);
   return {
     id: stableId("job", projectId ?? "global", type, JSON.stringify(inputSummary), timestamp),
     projectId,
@@ -234,22 +245,27 @@ function advanceJob(job: Job, stepName: string, status: JobStep["status"], messa
     : steps.some((step) => step.status === "failed")
       ? "failed"
       : "running";
+  const icon = status === "completed" ? "✓" : status === "failed" ? "✗" : status === "skipped" ? "⤼" : "…";
+  logStage(`job:${job.type}`, `${icon} ${stepName} → ${status}${message ? ` · ${message}` : ""} [${progress}%]`);
   return { ...job, steps, progress, status: overallStatus, updatedAt: timestamp };
 }
 
 function completeJob(job: Job, outputRefs: Record<string, unknown>): Job {
+  logStage(`job:${job.type}`, `✓ completed · ${JSON.stringify(outputRefs).slice(0, 160)}`);
   const steps = job.steps.map((step) => (step.status === "queued" || step.status === "running" ? { ...step, status: "completed" as const } : step));
   return { ...job, steps, progress: 100, status: "completed", outputRefs, updatedAt: nowIso() };
 }
 
 function failJob(job: Job, error: unknown): Job {
   const timestamp = nowIso();
+  const msg = error instanceof Error ? error.message : String(error);
+  logStage(`job:${job.type}`, `✗ FAILED · ${msg}`);
   return {
     ...job,
     status: "failed",
     progress: Math.max(job.progress, 50),
-    error: { message: error instanceof Error ? error.message : String(error) },
-    steps: job.steps.map((step) => (step.status === "queued" || step.status === "running" ? { ...step, status: "failed" as const, message: error instanceof Error ? error.message : String(error) } : step)),
+    error: { message: msg },
+    steps: job.steps.map((step) => (step.status === "queued" || step.status === "running" ? { ...step, status: "failed" as const, message: msg } : step)),
     updatedAt: timestamp
   };
 }
@@ -639,6 +655,8 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
       fps: toNumber(body?.fps, undefined as unknown as number)
     });
   }
+  // Thread the original uploaded filename so templates/KB/render names are human-readable.
+  analysis = { ...analysis, sourceFilename: asset.filename };
   job = advanceJob(job, "metadata_extraction", "completed");
   job = advanceJob(job, "keyframe_or_shot_split", "completed");
 
@@ -745,6 +763,7 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
       id: template.id,
       projectId: project.id,
       sourceAssetId: asset.id,
+      sourceAssetFilename: asset.filename,
       name: template.name,
       vertical: template.vertical,
       template,
@@ -878,6 +897,18 @@ function buildAssetResolver(db: Database, generation?: GenerationResult): AssetP
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "8mb" }));
+// Request logger: method/path on entry, status + duration on finish (skip static + healthz noise).
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path.startsWith("/generated") || req.path === "/healthz") return next();
+  const startedAt = Date.now();
+  logStage("http", `→ ${req.method} ${req.path}`);
+  res.on("finish", () => {
+    const ms = Date.now() - startedAt;
+    const icon = res.statusCode >= 500 ? "✗" : res.statusCode >= 400 ? "⚠" : "←";
+    logStage("http", `${icon} ${req.method} ${req.path} ${res.statusCode} (${ms}ms)`);
+  });
+  next();
+});
 app.use("/generated", express.static(generatedDir));
 
 app.get("/healthz", (_req, res) => {
@@ -1404,7 +1435,18 @@ async function applyAigcMaterialFill(input: {
   const providerId = aigcProviderForRequest(input.request);
   const externalProvider = EXTERNAL_AIGC_PROVIDERS.has(providerId);
   const provider = getAigcMaterialProvider(providerId);
-  const fallbackProvider = getAigcMaterialProvider("mock_provider");
+  // Backup external provider (e.g. Ark/Seedream in China) — used ONLY if the primary external
+  // provider fails. No mock fallback: if both fail, the error surfaces.
+  const backupProviderId = process.env.AIGC_IMAGE_BACKUP_PROVIDER as AigcMaterialProviderId | undefined;
+  const useBackup = Boolean(
+    externalProvider &&
+      backupProviderId &&
+      backupProviderId !== providerId &&
+      EXTERNAL_AIGC_PROVIDERS.has(backupProviderId) &&
+      AIGC_PROVIDER_IDS.has(backupProviderId)
+  );
+  const backupProvider = useBackup && backupProviderId ? getAigcMaterialProvider(backupProviderId) : undefined;
+  let usedProviderId: AigcMaterialProviderId = providerId;
   const briefs = createMaterialGenerationBriefs({
     gapReport: input.baseGeneration.gapReport,
     fillPlan: input.baseGeneration.fillPlan,
@@ -1439,15 +1481,23 @@ async function applyAigcMaterialFill(input: {
     } catch (error) {
       const reason = sanitizeAigcProviderError(error);
       providerErrors.push(`${providerId}: ${reason}`);
-      if (!externalProvider || providerId === "mock_provider") throw error;
-      providerFallbackReason = `External AIGC provider ${providerId} failed (${reason}); used deterministic mock_provider fallback.`;
-      const generated = await fallbackProvider.generate(brief, {
-        outputDir,
-        publicPathPrefix,
-        env: process.env,
-        allowExternalProviderCall: false
-      });
-      candidates.push(...generated);
+      // No mock fallback: surface the failure unless a real backup provider is configured.
+      if (!backupProvider || !backupProviderId) throw error;
+      try {
+        const generated = await backupProvider.generate(brief, {
+          outputDir,
+          publicPathPrefix,
+          env: process.env,
+          allowExternalProviderCall: true
+        });
+        usedProviderId = backupProviderId;
+        providerFallbackReason = `Primary AIGC provider ${providerId} failed (${reason}); used backup ${backupProviderId}.`;
+        candidates.push(...generated);
+      } catch (backupError) {
+        const backupReason = sanitizeAigcProviderError(backupError);
+        providerErrors.push(`${backupProviderId}: ${backupReason}`);
+        throw new Error(`AIGC image generation failed on primary ${providerId} (${reason}) and backup ${backupProviderId} (${backupReason}).`);
+      }
     }
   }
 
@@ -1504,12 +1554,12 @@ async function applyAigcMaterialFill(input: {
       ...generation.warnings,
       ...(providerFallbackReason ? [providerFallbackReason] : []),
       briefs.length
-        ? `AIGC material fill used ${providerFallbackReason ? "mock_provider fallback" : providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
+        ? `AIGC material fill used ${usedProviderId}${providerFallbackReason ? " (backup)" : ""}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
         : "AIGC material fill was enabled, but no eligible missing visual slots produced generation briefs."
     ],
     aigcMaterialFill: {
       enabled: true,
-      provider: providerFallbackReason ? "mock_provider" : providerId,
+      provider: usedProviderId,
       requestedProvider: providerId,
       providerFallbackReason,
       providerErrors,
@@ -1746,10 +1796,51 @@ async function handleGeneration(req: Request, res: Response): Promise<void> {
     return;
   }
   const request = req.body as GenerationRequest;
+  const analyzerMode = req.body.analyzerMode as AnalyzerMode | "auto" | undefined;
+
+  // Async mode: the full pipeline (source analysis + AIGC + render-prep) can take minutes —
+  // longer than a client's HTTP header timeout. Return a jobId immediately and let the client
+  // poll GET /api/jobs/:jobId (→ outputRefs.generationId) then GET /api/generations/:id.
+  if (req.body.async === true || req.query.async === "true") {
+    let job = createJob(request.projectId, "generation", { async: true, prompt: request.prompt.slice(0, 120) }, ["generation"]);
+    job = { ...job, status: "running", progress: 5, updatedAt: nowIso() };
+    await store.update((draft) => draft.jobs.push(job));
+    const jobId = job.id;
+    void (async () => {
+      try {
+        const freshDb = await store.read();
+        const outcome = await runGeneration(freshDb, request, { analyzerMode });
+        await persistGenerationOutcome(outcome);
+        await store.update((draft) => {
+          const idx = draft.jobs.findIndex((j) => j.id === jobId);
+          const done: Job = {
+            ...(idx >= 0 ? draft.jobs[idx] : job),
+            status: "completed",
+            progress: 100,
+            steps: [{ name: "generation", status: "completed" }],
+            outputRefs: { generationId: outcome.generation.id },
+            updatedAt: nowIso()
+          };
+          if (idx >= 0) draft.jobs[idx] = done;
+          else draft.jobs.push(done);
+        });
+        logStage("job:generation", `✓ async generation completed · generationId=${outcome.generation.id}`);
+      } catch (error) {
+        await store.update((draft) => {
+          const idx = draft.jobs.findIndex((j) => j.id === jobId);
+          const failed = failJob(idx >= 0 ? draft.jobs[idx] : job, error);
+          if (idx >= 0) draft.jobs[idx] = failed;
+          else draft.jobs.push(failed);
+        });
+        logStage("job:generation", `✗ async generation FAILED · ${(error as Error).message}`);
+      }
+    })();
+    ok(res, { jobId, status: "running", async: true }, 202);
+    return;
+  }
+
   const db = await store.read();
-  const outcome = await runGeneration(db, request, {
-    analyzerMode: req.body.analyzerMode as AnalyzerMode | "auto" | undefined
-  });
+  const outcome = await runGeneration(db, request, { analyzerMode });
   await persistGenerationOutcome(outcome);
   ok(
     res,
@@ -2271,11 +2362,26 @@ app.post(
       const remotionCompositionId = process.env.REMOTION_COMPOSITION_ID?.trim()
         ? process.env.REMOTION_COMPOSITION_ID.trim()
         : "ViralReconstruction";
+      // User-facing output filename: theme_sampleName_timestamp (no random hash).
+      const renderBrief = parsePromptToBrief(generation.request);
+      const sampleAsset = generation.request.sampleReferenceAssetId
+        ? db.assets.find((a) => a.id === generation.request.sampleReferenceAssetId)
+        : undefined;
+      const sampleName =
+        sampleAsset?.filename ??
+        db.templates.find((t) => generation.selectedTemplateIds.includes(t.id))?.sourceAssetFilename ??
+        "sample";
+      // Use just the first clause of the theme (split on common CN/EN separators) for a tidy filename.
+      const themeRaw = (renderBrief.topic || generation.request.prompt).split(/[；;，,。:：\n]/).map((s) => s.trim()).find(Boolean) ?? "video";
+      const themeToken = sanitizeNameToken(themeRaw, 24);
+      const sampleToken = sanitizeNameToken(sampleName, 24);
+      const outputBasename = `${themeToken}_${sampleToken}_${fileTimestamp(nowIso())}`;
       const renderer = selectRenderer(target, {
         generatedDir,
         assetResolver: buildAssetResolver(db, generation),
         remotionEntryPoint,
-        remotionCompositionId
+        remotionCompositionId,
+        outputBasename
       });
       let output = await renderer.render({ ...generation.timeline, rendererTarget: target }, generation.id);
       if (target === "html_preview") {
@@ -2328,11 +2434,18 @@ export { app, store, adapters };
 if (process.env.VVST_NO_LISTEN !== "true") {
   const port = Number(process.env.APP_PORT ?? 3000);
   await ensureStorageDirs();
-  app.listen(port, () => {
+  const httpServer = app.listen(port, () => {
     console.log(`VVST API v1.2 listening on http://localhost:${port}`);
     console.log(`Storage directory: ${storageRoot}`);
     console.log(
       `Adapters → video:${adapters.videoTool.name}, ai:${adapters.aiAdapter.name}, asr:${adapters.asrAdapter.name}, ocr:${adapters.ocrAdapter.name}, vlm:${adapters.vlmAdapter.name}, storage:${store.backendName}`
     );
   });
+  // Long synchronous routes (analyze/generate/render) can exceed Node's default request/header
+  // timeouts; disable them so the server never cuts off an in-flight pipeline. Prefer async mode
+  // (POST /api/generations { async: true } → poll GET /api/jobs/:jobId) for very long runs.
+  httpServer.requestTimeout = 0;
+  httpServer.headersTimeout = 0;
+  httpServer.timeout = 0;
+  httpServer.keepAliveTimeout = 75_000;
 }

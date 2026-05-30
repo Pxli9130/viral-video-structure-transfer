@@ -1,6 +1,8 @@
 {
   "id": "010_editing_beatcut",
   "title": "Beat-cut editing tutorial (editing.mov) — evidence-first structure transfer",
+  "skip": true,
+  "skipReason": "beat_cut case; the ribbon/motif corpus harness can't evaluate it. Verified by scripts/evaluate-render-quality.mjs + scripts/run-editing-beatcut-e2e.mjs + editingMovBeatCutGolden.test.ts instead.",
   "input": {
     "filename": "../../editing.mov",
     "durationSecRange": [110, 125]

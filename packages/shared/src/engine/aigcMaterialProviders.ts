@@ -440,6 +440,109 @@ export const volcengineSeedreamProvider: AigcMaterialProvider = {
   }
 };
 
+interface GeminiImageConfig {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  maxRetries: number;
+  retryDelayMs: number;
+}
+
+/** Redact any leaked Google API key (AIza…) from a provider error string. */
+function redactGoogleKey(text: string): string {
+  return text.replace(/AIza[0-9A-Za-z_-]{10,}/g, "AIza***");
+}
+
+export function resolveGeminiImageConfig(env?: Record<string, string | undefined>): GeminiImageConfig {
+  const e = env ?? process.env;
+  const apiKey = e.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is required for google_gemini_image.");
+  const model = e.GEMINI_IMAGE_MODEL ?? e.AIGC_IMAGE_MODEL ?? "gemini-2.5-flash-image";
+  const baseUrl = (e.GEMINI_API_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
+  return { apiKey, model, baseUrl, maxRetries: 2, retryDelayMs: 1200 };
+}
+
+/**
+ * Google Gemini native image generation (Nano Banana, default gemini-2.5-flash-image) via the
+ * AI Studio Gemini API. Primary AIGC image provider; uses the same GEMINI_API_KEY as the VLM but
+ * is a SEPARATE request (text-only prompt → inlineData image). Sample frames are never sent.
+ */
+export const googleGeminiImageProvider: AigcMaterialProvider = {
+  id: "google_gemini_image",
+  kind: "image",
+  async generate(brief, context) {
+    if (brief.assetType === "copy" || brief.assetType === "short_video") {
+      throw new Error(`google_gemini_image only supports image generation; got ${brief.assetType}.`);
+    }
+    if (brief.privacyPolicy.sampleFramesAllowedToProvider) {
+      throw new Error("google_gemini_image refuses briefs that allow sample frames to be sent externally.");
+    }
+    if (context.allowExternalProviderCall !== true) {
+      throw new Error("google_gemini_image requires explicit external-provider opt-in.");
+    }
+    await mkdir(context.outputDir, { recursive: true });
+    const config = resolveGeminiImageConfig(context.env);
+    const fetchImpl = context.fetchImpl ?? fetch;
+    const generatedAt = context.now ?? new Date().toISOString();
+    const count = maxCandidateCount(brief);
+    const url = `${config.baseUrl}/models/${config.model}:generateContent`;
+    const candidates: GeneratedAssetCandidate[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const prompt = brief.promptPack?.[index] ?? brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated material`;
+      const negative = brief.negativePrompts.join("; ");
+      const fullPrompt = negative ? `${prompt}\n\nDo NOT include: ${negative}` : prompt;
+      let response: Response | undefined;
+      for (let attempt = 0; attempt <= config.maxRetries; attempt += 1) {
+        response = await fetchImpl(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: fullPrompt }] }],
+            generationConfig: { responseModalities: ["TEXT", "IMAGE"] }
+          })
+        });
+        if (response.ok || ![429, 500, 503].includes(response.status) || attempt >= config.maxRetries) break;
+        await sleep(config.retryDelayMs * Math.max(1, attempt + 1));
+      }
+      if (!response?.ok) {
+        const text = response ? await response.text().catch(() => "") : "";
+        throw new Error(`google_gemini_image generation failed with HTTP ${response?.status ?? "unknown"}: ${redactGoogleKey(text).slice(0, 200)}`);
+      }
+      const payload = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }> };
+      const parts = payload.candidates?.[0]?.content?.parts ?? [];
+      const imgPart = parts.find((p) => p.inlineData?.data);
+      if (!imgPart?.inlineData?.data) throw new Error("google_gemini_image response did not include an inlineData image part.");
+      const mime = imgPart.inlineData.mimeType ?? "image/png";
+      const extension = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : "png";
+      const fileBuffer = Buffer.from(imgPart.inlineData.data, "base64");
+      const filename = `${brief.slotId}_${brief.assetType}_${String(index + 1).padStart(2, "0")}_gemini.${extension}`.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      const filePath = path.join(context.outputDir, filename);
+      await writeFile(filePath, fileBuffer);
+      candidates.push({
+        id: `generated_${brief.slotId}_${String(index + 1).padStart(2, "0")}`.replace(/[^a-zA-Z0-9_.-]/g, "_"),
+        briefId: brief.id,
+        slotId: brief.slotId,
+        provider: "google_gemini_image",
+        model: config.model,
+        type: "image",
+        materialRole: "aigc_generated_material",
+        path: candidatePath(context.publicPathPrefix, filename),
+        prompt,
+        negativePrompt: negative,
+        provenance: {
+          generatedAt,
+          userApproved: false,
+          externalProviderUsed: true,
+          sampleFramesSentExternally: false,
+          targetAssetsSentExternally: false
+        },
+        quality: { usable: undefined, issues: [] }
+      });
+    }
+    return candidates;
+  }
+};
+
 function disabledProvider(id: AigcMaterialProviderId): AigcMaterialProvider {
   return {
     id,
@@ -452,6 +555,7 @@ function disabledProvider(id: AigcMaterialProviderId): AigcMaterialProvider {
 
 export const AIGC_MATERIAL_PROVIDER_REGISTRY: Record<AigcMaterialProviderId, AigcMaterialProvider> = {
   mock_provider: mockProvider,
+  google_gemini_image: googleGeminiImageProvider,
   local_folder_provider: disabledProvider("local_folder_provider"),
   volcengine_seedream: volcengineSeedreamProvider,
   ark_seedance_provider_stub: disabledProvider("ark_seedance_provider_stub"),

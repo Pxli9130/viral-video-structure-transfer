@@ -103,37 +103,36 @@ Core Services
   ├─ RenderService
   └─ ExportService
 
-Adapters
-  ├─ AIAdapter
-  │   ├─ MockAIAdapter
+Adapters (real providers only; no runtime mock — a failed provider raises a real error)
+  ├─ AIAdapter (text LLM, a separate request from the VLM)
+  │   ├─ GeminiAIAdapter (default; gemini-2.5-flash)
   │   ├─ OpenAICompatibleAdapter
-  │   └─ DoubaoCompatibleAdapter
+  │   └─ DoubaoCompatibleAdapter (Ark Doubao, backup)
   ├─ VLMAdapter
   │   ├─ DisabledVLMAdapter
-  │   └─ KeyframeVLMAdapter
+  │   └─ KeyframeVLMAdapter (Gemini gemini-2.5-pro)
   ├─ ASRAdapter
   │   ├─ DisabledASRAdapter
   │   └─ FasterWhisperAdapter
   ├─ OCRAdapter
   │   ├─ DisabledOCRAdapter
-  │   └─ OCRProviderAdapter
+  │   └─ OCRProviderAdapter (EasyOCR)
   ├─ VideoToolAdapter
-  │   ├─ MockVideoToolAdapter
   │   ├─ FFmpegAdapter
   │   └─ OpenCVAdapter
   ├─ RendererAdapter
   │   ├─ HtmlPreviewRenderer
-  │   ├─ MockRenderer
   │   ├─ FFmpegRenderer
   │   ├─ RemotionRenderer
   │   └─ HyperFramesRenderer
   ├─ AigcMaterialProvider
-  │   ├─ mock_provider
+  │   ├─ google_gemini_image (primary; gemini-2.5-flash-image / "Nano Banana")
+  │   ├─ volcengine_seedream (backup)
   │   ├─ local_folder_provider
-  │   ├─ volcengine_seedream
   │   ├─ ark_seedance_provider_stub
   │   ├─ image_provider
-  │   └─ copy_provider
+  │   ├─ copy_provider
+  │   └─ mock_provider (deterministic; CI/scripts only, never in the live generation path)
   └─ StorageAdapter
       ├─ LocalJsonStorage
       └─ SQLiteStorage
@@ -245,7 +244,7 @@ This flow is optional and only runs when explicitly requested. It fills missing 
 3. External providers remain disabled unless controls.allowExternalAigcProvider=true or the script receives --allow-external-aigc.
 4. GapReportItem and induced slots identify missing/weak visual material.
 5. AigcMaterialPlanner creates MaterialGenerationBrief records only when AIGC fill is enabled.
-6. Provider registry selects deterministic mock_provider by default, or Volcengine Seedream when explicitly configured and allowed.
+6. When external providers are allowed, the live API path uses real image providers in order: google_gemini_image (primary) → volcengine_seedream (backup) → a real error. It never silently falls back to a mock in the live generation path; mock_provider is reserved for CI/script determinism.
 7. Provider generates candidate image material into generated-assets storage.
 8. Deterministic quality checks verify file/type/non-empty/path hygiene.
 9. Gemini VLM may review candidates with strict JSON; sample frames are not sent.
@@ -542,7 +541,7 @@ For induced visual slots, fill plan behavior is slot-family specific:
 
 ```ts
 interface RendererAdapter {
-  target: "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+  target: "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
   render(timeline: Timeline, options?: RenderOptions): Promise<RenderResult>;
 }
 ```
@@ -566,8 +565,8 @@ Implemented and used by the motion-graph artifact path:
 - create text-card images/video snippets;
 - overlay subtitles or drawtext;
 - concat into 9:16 MP4.
-- render family-specific motion-graph proxies;
-- render target image sets as card stacks;
+- render family-specific motion-graph cards (`media_cards`, `ui_showcase`, `kinetic_typography`, `geometric_mg`, `brand_cta`, `object_motion`, `live_action_montage`). These are **real procedural cards**, not debug placeholders: each shows a clean CJK family header (媒体卡片 / 功能展示 / 动态文字 / 霓虹几何 / 品牌 CTA …) plus the clip's real copy (`subtitleText`/`visualIntent`/target copy). Debug words (`proxy`/`placeholder`/`占位`/`代理`) are stripped from any label before drawing, so no rendered frame ever shows "…PROXY"/"…PLACEHOLDER" text.
+- render target image sets as card stacks (real generated/uploaded images; empty slots show only an outline, no debug text);
 - render target logo + CTA holds.
 - sample one real still per clip from its rendered segment into `storage/generated/previews/<renderId>/clip_<n>.png`, returned as `RenderOutput.clipPreviewFrames` (`{ clipId, previewFrame }[]`) so the web timeline preview shows actual frames instead of gradient placeholders. Extraction is non-fatal: a missing still falls back to the placeholder card.
 - **Beat-cut style primitives** (driven by `clip.motionPrimitive` + `clip.beatTimestamps` + `renderPlan.beatGrid`): `neon_hero_intro`, `beat_text_card`, `tutorial_rule_card`, `action_montage`, `impact_flash_stamp`, `motivation_cta` — dark background, bold center CJK typography, red/yellow emphasis, beat-synced flashes and hard cuts. No placeholder/proxy text reaches a beat-cut output.

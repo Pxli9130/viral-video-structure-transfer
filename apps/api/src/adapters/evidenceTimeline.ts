@@ -40,9 +40,17 @@ export async function analyzeEvidenceTimeline(
   ];
   if (opts.runOcr) args.push("--ocr");
   if (opts.runAsr) args.push("--asr", "--asr-model", opts.asrModel ?? "tiny");
+  const startedAt = Date.now();
+  console.log(`[evidence] ▶ analyzing ${asset.filename} (PySceneDetect scene cuts + librosa beat grid + keyframes)…`);
   await runPython(EVIDENCE_SCRIPT, args, { timeoutMs: opts.timeoutMs ?? 240000 });
   const raw = await fs.readFile(outPath, "utf8");
-  return JSON.parse(raw) as VisualEvidenceTimeline;
+  const timeline = JSON.parse(raw) as VisualEvidenceTimeline;
+  console.log(
+    `[evidence] ✓ ${asset.filename}: ${timeline.shots.length} shots, ${timeline.sceneCuts.length} cuts, ` +
+      `${timeline.beatGrid.beats.length} beats (bpm=${timeline.beatGrid.bpm ?? "n/a"}), ` +
+      `blackBg=${timeline.stats.blackBgRatio ?? "n/a"} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`
+  );
+  return timeline;
 }
 
 /**

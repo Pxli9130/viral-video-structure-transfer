@@ -67,6 +67,33 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Turn an arbitrary string (theme, filename, CJK title) into a safe filename token:
+ * keep letters/digits/CJK, collapse everything else to "_", drop a trailing extension,
+ * cap length codepoint-safely. Deterministic (no clock/hash).
+ */
+export function sanitizeNameToken(input: string, maxLen = 40): string {
+  const token = (input ?? "")
+    .normalize("NFKC")
+    .replace(/\.[A-Za-z0-9]{1,5}$/, "")
+    .replace(/[^\p{L}\p{N}_]+/gu, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const capped = [...token].slice(0, maxLen).join("");
+  return capped || "untitled";
+}
+
+/** ISO minute precision ("2026-05-29T00:00Z"): stable within a run, differentiates repeat analyses. */
+export function nameTimestamp(iso: string): string {
+  const base = (iso && iso.length >= 16 ? iso.slice(0, 16) : new Date(0).toISOString().slice(0, 16)) + "Z";
+  return base;
+}
+
+/** Compact filename timestamp ("20260529T143052Z") for user-facing render output files. */
+export function fileTimestamp(iso: string): string {
+  return (iso || nowIso()).replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -836,11 +863,11 @@ function shortLabel(text: string, max = 70): string {
   return (lastStop > max / 2 ? slice.slice(0, lastStop) : slice).trim() + "…";
 }
 
-function nameFromVlm(vlm: VLMVideoAnalysis | undefined, fallback: string): string {
-  if (!vlm) return fallback;
-  const seed = vlm.structure?.hook || vlm.videoSummary;
-  if (!seed) return fallback;
-  return `Learned MG Structure · ${shortLabel(seed, 80)}`;
+function nameFromVlm(vlm: VLMVideoAnalysis | undefined, fallback: string, sampleLabel: string, ts: string): string {
+  const seed = vlm?.structure?.hook || vlm?.videoSummary;
+  const base = !vlm || !seed ? fallback : `Learned MG Structure · ${shortLabel(seed, 80)}`;
+  // Always surface the original sample filename + a per-run timestamp so the KB is browsable.
+  return `${base} · ${sampleLabel} · ${ts}`;
 }
 
 function qualityRationaleFromVlm(vlm: VLMVideoAnalysis | undefined): string {
@@ -855,17 +882,24 @@ function qualityRationaleFromVlm(vlm: VLMVideoAnalysis | undefined): string {
     .join(" ");
 }
 
-/** Derive a human-readable source label (filename when discoverable) for template naming. */
+/** Derive the original sample filename for template naming, e.g. "editing.mov". */
 function deriveSampleLabel(analysis: VideoAnalysisResult): string {
+  // 1. The real uploaded filename, threaded from Asset.filename in production.
+  if (analysis.sourceFilename && analysis.sourceFilename.trim()) return analysis.sourceFilename.trim();
   const candidates = [
     (analysis.primaryMotif?.evidence as Record<string, unknown> | undefined)?.source,
     analysis.evidenceTimeline?.sourceAssetId,
     analysis.assetId
-  ]
-    .filter((v): v is string => typeof v === "string");
+  ].filter((v): v is string => typeof v === "string");
+  // 2. A literal filename inside any candidate string.
   for (const c of candidates) {
     const m = c.match(/[\w.-]+\.(mov|mp4|webm|mkv|avi|m4v)/i);
     if (m) return m[0];
+  }
+  // 3. Recover a filename from underscore-encoded asset ids like "asset_editing_mov_sample" → "editing.mov".
+  for (const c of candidates) {
+    const m = c.match(/([a-z0-9][a-z0-9-]*)_(mov|mp4|webm|mkv|avi|m4v)(?:_|$)/i);
+    if (m) return `${m[1]}.${m[2].toLowerCase()}`;
   }
   return "sample";
 }
@@ -902,8 +936,10 @@ export function buildBeatCutTemplate(
 ): StructureTemplate {
   const durationSec = analysis.metadata.durationSec;
   const templateId = stableId("template", analysis.assetId, durationSec, "beat_cut");
-  const createdAt = nowIso();
+  // Name timestamp comes from the analysis time (deterministic for fixtures), not a fresh clock.
+  const createdAt = analysis.createdAt ?? nowIso();
   const sampleLabel = deriveSampleLabel(analysis);
+  const ts = nameTimestamp(createdAt);
   const ev = analysis.evidenceTimeline;
 
   const requiredSlots: RequiredSlot[] = BEAT_CUT_SLOT_SPECS.map((spec) => ({
@@ -969,7 +1005,8 @@ export function buildBeatCutTemplate(
   const template: StructureTemplate = {
     id: templateId,
     projectId,
-    name: `Learned Beat-Cut Editing Tutorial Structure · ${sampleLabel}`,
+    name: `Learned Beat-Cut Editing Tutorial Structure · ${sampleLabel} · ${ts}`,
+    sourceAssetFilename: sampleLabel,
     vertical,
     sourceSampleIds: [analysis.assetId],
     videoType: "beat_cut",
@@ -1022,12 +1059,15 @@ export function buildFallbackTemplate(
   const excludeSegments = excludeSegmentsFromVlm(vlm, durationSec);
   const templateId = stableId("template", analysis.assetId, durationSec, vertical);
   const owningProject = projectId ?? analysis.projectId;
-  const createdAt = nowIso();
+  const createdAt = analysis.createdAt ?? nowIso();
+  const sampleLabel = deriveSampleLabel(analysis);
+  const ts = nameTimestamp(createdAt);
   const defaultName = "B2B MG Promo Structure: Hook Body Proof CTA";
   const template: StructureTemplate = {
     id: templateId,
     projectId: owningProject,
-    name: nameFromVlm(vlm, defaultName),
+    name: nameFromVlm(vlm, defaultName, sampleLabel, ts),
+    sourceAssetFilename: sampleLabel,
     vertical,
     sourceSampleIds: [analysis.assetId],
     videoType: detectVideoType(vlm, vertical, analysis),

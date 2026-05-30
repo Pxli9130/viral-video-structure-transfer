@@ -146,7 +146,7 @@ video
 实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
 
 ```bash
-# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini, ASR_PROVIDER=faster_whisper, OCR_PROVIDER=easyocr, AI_PROVIDER=ark_doubao）
+# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini(gemini-2.5-pro), AI_PROVIDER=gemini(gemini-2.5-flash, Ark Doubao 为 backup), ASR_PROVIDER=faster_whisper, OCR_PROVIDER=easyocr）
 npm run build && node apps/api/dist/server.js
 
 # 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
@@ -171,7 +171,7 @@ npm run eval:model-understanding -- --sample test_videos/editing.mov
 这是当前最强的 SDE/MLE harness 路径，专门证明系统不是只展示静态 JSON 或通用 B2B 模板。
 
 ```bash
-# 代理模式：无目标素材，输出 family-specific proxy
+# 无目标素材：输出 family-specific 程序化卡片（干净中文族名 + 真实文案，无 PROXY/PLACEHOLDER/占位 debug 文字）
 node scripts/run-motion-graph-case.mjs
 
 # 完整目标素材 fixture：卡片图、logo、copy 替换代理槽位
@@ -270,27 +270,37 @@ AIGC Material Fill 是可选路径，默认关闭。它用于“用户没有足�
 
 - Web 工作台的“步骤 5 / 重构规划器”提供 **AIGC 补缺口并生成**按钮。
 - 面板里有“启用 AIGC gap fill”开关。
-- “允许外部 provider（Seedream）”是独立开关；不勾选时只使用 deterministic `mock_provider`。
+- “允许外部 provider”是独立开关；**不勾选时 live API 不调用任何外部图片 provider**（缺口保留为程序化卡片，不生成图片）。
 - API 请求会设置 `controls.allowAigcMaterialGeneration=true`；外部 provider 还需要 `controls.allowExternalAigcProvider=true`。
 - 结果面板会展示 brief、candidate、quality/VLM 状态、external calls、sample frames sent 等字段。
 
-默认 CI/demo provider 是 deterministic `mock_provider`，不会调用外部 API。真实图片生成可使用 Seedream 5.0 Lite，但必须显式允许外部 provider：
+允许外部 provider 后，live API 按顺序尝试真实 provider：`google_gemini_image`（首选，Gemini 2.5 Flash Image / “Nano Banana”）→ `volcengine_seedream`（backup）→ **真实报错**。它**不会**在 live 链路里回退到 mock；`mock_provider` 只保留给 CI/脚本的确定性产物：
 
 ```bash
-# mock provider：不需要外部 key
+# 确定性 mock provider（仅脚本/CI，不外呼）
 node scripts/run-motion-graph-case.mjs --with-aigc-materials
 
 # .env 指定 provider，显式允许外部调用
 node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
+
+# 端到端实跑：editing/motion 样例 → 真实 Gemini AIGC 图片 + 字幕 → 渲染 → 落到 docs/artifacts/full_pipeline_aigc_*/
+node scripts/run-full-pipeline-aigc-demo.mjs --sample test_videos/motion_graph_1.mov --theme "AI 短视频结构迁移引擎"
 ```
 
-Seedream 配置示例，`.env` 不要提交：
+> 真实生成（Gemini chunk + AIGC + 渲染）可能超过客户端 HTTP 超时。长任务用异步：`POST /api/generations?async=true` 立即返回 `202 {jobId}`，再轮询 `GET /api/jobs/:jobId` 拿 `outputRefs.generationId`，最后 `GET /api/generations/:id`。上面的脚本已内置该轮询。
+
+Provider 配置示例，`.env` 不要提交：
 
 ```bash
 AIGC_MATERIAL_FILL_ENABLED=false
-AIGC_IMAGE_PROVIDER=volcengine_seedream
-AIGC_IMAGE_WATERMARK=false
 
+# 首选：Google Gemini Nano Banana（AI Studio 可达）
+AIGC_IMAGE_PROVIDER=google_gemini_image
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+GEMINI_API_KEY=<your_gemini_key>
+
+# backup：Volcengine Seedream
+AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream
 SEEDREAM_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 SEEDREAM_ARK_API_KEY=<your_seedream_key>
 SEEDREAM_ARK_MODEL=doubao-seedream-5-0-260128
@@ -301,11 +311,11 @@ SEEDREAM_STREAM=false
 SEEDREAM_WATERMARK=false
 ```
 
-Gemini VLM 可作为生成素材质量 gate：
+Gemini VLM 既驱动视频理解，也作为生成素材质量 gate：
 
 ```bash
 VLM_PROVIDER=gemini
-VLM_MODEL=gemini-flash-latest
+VLM_MODEL=gemini-2.5-pro
 GEMINI_VLM_FALLBACK_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=<your_gemini_key>
 ```
@@ -329,23 +339,24 @@ AIGC 安全策略：
 
 - 默认不生成、不外呼。
 - 外部 provider 必须显式勾选 UI 开关，或在脚本模式下传 `--allow-external-aigc`。
-- 样例帧不会发给外部 provider。
+- 允许后 live 链路按 `google_gemini_image → volcengine_seedream → 真实报错` 顺序调用真实 provider，绝不在 live 链路回退 mock。
+- 样例帧不会发给外部 provider（`sampleFramesSentExternally=false`）。
 - Seedream 图片请求默认 `watermark=false`。
-- 不伪造真实品牌 logo；`brand_cta` 缺 logo 时生成 placeholder/copy 或要求用户上传。
+- 不伪造真实品牌 logo；`brand_cta` 缺 logo 时生成程序化卡片/copy 或要求用户上传。
 - 生成素材必须带 provenance，标记为 `aigc_generated_material`，不能冒充用户上传素材。
 
 ## Provider 配置摘要
 
 | 能力 | 默认 | 真实实现 | 开关 |
 |---|---|---|---|
-| 视频分析 | mock | FFmpeg / ffprobe / keyframes | `VIDEO_TOOL=mock|ffmpeg` |
+| 视频分析 | FFmpeg（mock 已删除） | FFmpeg / ffprobe / keyframes（失败直接报错） | `VIDEO_TOOL=ffmpeg` |
 | 证据分析器 | 自动（有 conda 时） | PySceneDetect 切点 + librosa 鼓点 + 关键帧/视觉族（`scripts/analyze-evidence-timeline.py`） | 随分析自动运行，失败非致命 |
-| LLM（文本增强/改写/评分） | 真实必填（mock 已删除） | Gemini / Ark Doubao / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`（未知值直接报错，不再回退 mock） |
-| VLM | disabled | Gemini video/material review | `VLM_PROVIDER=gemini` |
+| LLM（文本增强/改写/评分） | `gemini`（gemini-2.5-flash；mock 已删除） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`（未知值直接报错，不再回退 mock） |
+| VLM | disabled | Gemini gemini-2.5-pro（视频理解 + 素材质量 gate） | `VLM_PROVIDER=gemini` |
 | ASR | disabled | faster-whisper | `ASR_PROVIDER=faster_whisper` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
-| AIGC image material | disabled/mock | Volcengine Seedream 5.0 Lite | `AIGC_IMAGE_PROVIDER=volcengine_seedream` + explicit flag |
-| Renderer | HTML/mock | FFmpeg / Remotion / HyperFrames stub | request `rendererTarget` |
+| AIGC image material | disabled | Google Gemini Image gemini-2.5-flash-image（首选）→ Volcengine Seedream（backup）→ 真实报错 | `AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
+| Renderer | FFmpeg（mock 已删除） | FFmpeg / Remotion / HyperFrames stub（程序化卡片，无 debug 文字） | request `rendererTarget` |
 | Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
 
 ## 仍需人工配置的内容
@@ -365,4 +376,5 @@ AIGC 安全策略：
 - **已删除所有 mock 适配器**（MockAIAdapter / MockVideoToolAdapter / MockRenderer / `mock_preview` / 文本 mock 样例分析）。真实 provider 失败时直接报错，绝不伪造结果。`AI_PROVIDER` 现支持 `gemini`（默认，文本 LLM 与 Gemini VLM 是**分离的不同 request**）/ `ark_doubao` / `openai_compatible`；因示例 `ARK_API_KEY` 401，已切到 `AI_PROVIDER=gemini`，`aiEnrichmentStatus=ok`。（`buildMockVideoAnalysis` 仅作为单元测试/seed/case 脚本的确定性 fixture，不在运行链路中。）
 - beat-cut renderer / 真实帧目前在 FFmpeg MP4 路径最完整；Remotion 组件尚未镜像全部 beat-cut primitives（ImpactFlashStamp 等）。
 - 浏览器已有 AIGC gap-fill 按钮和基础结果面板；更完整的拖拽上传、人工审核/选择生成候选、批量素材管理仍是产品化工作。
-- 时间线预览的真实帧目前只在 FFmpeg MP4 渲染路径生成；HTML preview / mock / Remotion / HyperFrames 仍回退到占位卡（Remotion 后续可从最终 MP4 按 `clip.startSec` 抽帧统一支持）。
+- 时间线预览的真实帧目前只在 FFmpeg MP4 渲染路径生成；HTML preview / Remotion / HyperFrames 仍回退到占位卡（Remotion 后续可从最终 MP4 按 `clip.startSec` 抽帧统一支持）。
+- FFmpeg renderer 的程序化卡片（`media_cards`/`ui_showcase`/`kinetic_typography`/`geometric_mg`/`brand_cta` 等）已改为干净中文族名 + 真实文案，渲染帧不再出现任何 `PROXY`/`PLACEHOLDER`/占位 debug 文字（已逐族渲染验证）。
