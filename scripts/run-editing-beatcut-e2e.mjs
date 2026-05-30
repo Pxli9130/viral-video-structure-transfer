@@ -57,7 +57,7 @@ async function main() {
   const generation = await api("POST", "/api/generations", {
     projectId: project.id,
     inputMode: "video_plus_prompt",
-    prompt: "把这个样例重构成 15 秒同风格短视频，主题换成“爆款结构迁移引擎”：黑底、红黄大字、卡点快剪、动作混剪、结尾行动号召。",
+    prompt: "主题：爆款结构迁移引擎；把这个样例重构成 15 秒同风格短视频：黑底、红黄大字、卡点快剪、动作混剪、结尾行动号召。",
     sourceVideo: { assetId: sampleAsset.id },
     sampleReferenceAssetId: sampleAsset.id,
     selectedTemplateIds: template ? [template.id] : undefined,

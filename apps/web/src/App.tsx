@@ -555,11 +555,16 @@ function AppContent() {
   }, [generation?.id]);
 
   async function createProject() {
+    const defaultName = `结构迁移项目 ${projects.length + 1}`;
+    // Prompt the user to type a project name at the start; blank/accept → use our default.
+    const input = typeof window !== "undefined" ? window.prompt("项目名称（可直接使用默认名）", defaultName) : defaultName;
+    if (input === null) return; // user cancelled
+    const name = input.trim() || defaultName;
     await run(async () => {
       const created = await api<Project>("/api/projects", {
         method: "POST",
         body: JSON.stringify({
-          name: `B2B MG Project ${projects.length + 1}`,
+          name,
           vertical: "b2b_marketing_mg" satisfies Vertical,
           aspectRatio: "9:16",
           targetDurationSec: 15
@@ -901,7 +906,6 @@ function AppContent() {
                 </label>
               </div>
             </div>
-            <p className="hint">上传真实样例视频进行分析（已移除文本 Mock 样例：真实视频或报错，不再伪造）。</p>
             {sampleAnalysis && (
               sampleVideo ? (
                 <div className="analysis-summary">

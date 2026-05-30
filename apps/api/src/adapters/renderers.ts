@@ -452,6 +452,8 @@ export interface FFmpegRendererOptions {
   generatedDir: string;
   assetResolver: AssetPathResolver;
   preferSourceClips?: boolean;
+  /** User-facing output file basename ("theme_sampleName_timestamp", already sanitized). renderId stays the internal key. */
+  outputBasename?: string;
 }
 
 export class FFmpegRenderer implements RendererAdapter {
@@ -500,7 +502,9 @@ export class FFmpegRenderer implements RendererAdapter {
     const silentPath = path.join(workDir, `${renderId}.silent.mp4`);
     await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-movflags", "+faststart", silentPath]);
 
-    const outputPath = path.join(this.opts.generatedDir, `${renderId}.mp4`);
+    // User-facing filename = theme_sampleName_timestamp (no random hash); renderId stays the internal key.
+    const outputBase = this.opts.outputBasename?.trim() || renderId;
+    const outputPath = path.join(this.opts.generatedDir, `${outputBase}.mp4`);
     const renderQualityWarnings: string[] = [];
     const totalDuration = timeline.durationSec || timeline.clips.reduce((sum, c) => sum + Math.max(0.5, c.durationSec), 0);
     const audioAdded = await this.addAudioTrack(silentPath, outputPath, timeline, totalDuration, warnings);
@@ -969,6 +973,8 @@ export interface RemotionRendererOptions {
   compositionId?: string;
   browserExecutable?: string;
   assetResolver?: AssetPathResolver;
+  /** User-facing output basename ("theme_sampleName_timestamp"); renderId stays the internal key. */
+  outputBasename?: string;
 }
 
 export class RemotionRenderer implements RendererAdapter {
@@ -982,7 +988,7 @@ export class RemotionRenderer implements RendererAdapter {
 
   async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
     const renderId = stableId("render_remotion", generationId, timeline.id);
-    const outputPath = path.join(this.opts.generatedDir, `${renderId}.mp4`);
+    const outputPath = path.join(this.opts.generatedDir, `${this.opts.outputBasename?.trim() || renderId}.mp4`);
     const entryPoint = this.opts.entryPoint ?? path.resolve(process.cwd(), "remotion", "index.tsx");
 
     if (!existsSync(entryPoint)) {
@@ -1219,7 +1225,8 @@ export const RendererRegistry: Record<RendererBackend, RendererRegistryEntry> = 
         generatedDir: opts.generatedDir,
         entryPoint: opts.remotionEntryPoint,
         compositionId: opts.remotionCompositionId,
-        assetResolver: opts.assetResolver
+        assetResolver: opts.assetResolver,
+        outputBasename: opts.outputBasename
       })
   },
   ffmpeg_compose: {

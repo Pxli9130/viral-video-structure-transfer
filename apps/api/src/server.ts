@@ -11,8 +11,10 @@ import {
   buildFallbackTemplate,
   generateMigrationResult,
   getAigcMaterialProvider,
+  fileTimestamp,
   nowIso,
   parsePromptToBrief,
+  sanitizeNameToken,
   stableId,
   validateAssetAnalysis,
   validateGenerationRequest,
@@ -639,6 +641,8 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
       fps: toNumber(body?.fps, undefined as unknown as number)
     });
   }
+  // Thread the original uploaded filename so templates/KB/render names are human-readable.
+  analysis = { ...analysis, sourceFilename: asset.filename };
   job = advanceJob(job, "metadata_extraction", "completed");
   job = advanceJob(job, "keyframe_or_shot_split", "completed");
 
@@ -745,6 +749,7 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
       id: template.id,
       projectId: project.id,
       sourceAssetId: asset.id,
+      sourceAssetFilename: asset.filename,
       name: template.name,
       vertical: template.vertical,
       template,
@@ -2271,11 +2276,26 @@ app.post(
       const remotionCompositionId = process.env.REMOTION_COMPOSITION_ID?.trim()
         ? process.env.REMOTION_COMPOSITION_ID.trim()
         : "ViralReconstruction";
+      // User-facing output filename: theme_sampleName_timestamp (no random hash).
+      const renderBrief = parsePromptToBrief(generation.request);
+      const sampleAsset = generation.request.sampleReferenceAssetId
+        ? db.assets.find((a) => a.id === generation.request.sampleReferenceAssetId)
+        : undefined;
+      const sampleName =
+        sampleAsset?.filename ??
+        db.templates.find((t) => generation.selectedTemplateIds.includes(t.id))?.sourceAssetFilename ??
+        "sample";
+      // Use just the first clause of the theme (split on common CN/EN separators) for a tidy filename.
+      const themeRaw = (renderBrief.topic || generation.request.prompt).split(/[；;，,。:：\n]/).map((s) => s.trim()).find(Boolean) ?? "video";
+      const themeToken = sanitizeNameToken(themeRaw, 24);
+      const sampleToken = sanitizeNameToken(sampleName, 24);
+      const outputBasename = `${themeToken}_${sampleToken}_${fileTimestamp(nowIso())}`;
       const renderer = selectRenderer(target, {
         generatedDir,
         assetResolver: buildAssetResolver(db, generation),
         remotionEntryPoint,
-        remotionCompositionId
+        remotionCompositionId,
+        outputBasename
       });
       let output = await renderer.render({ ...generation.timeline, rendererTarget: target }, generation.id);
       if (target === "html_preview") {

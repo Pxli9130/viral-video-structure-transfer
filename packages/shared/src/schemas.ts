@@ -56,6 +56,7 @@ export const assetAnalysisSchema = {
   properties: {
     id: { type: "string" },
     assetId: { type: "string" },
+    sourceFilename: { type: "string" },
     projectId: { type: "string" },
     purpose: { enum: ["sample", "source"] },
     metadata: {
