@@ -1,8 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  buildFallbackTemplate,
-  buildMockVideoAnalysis,
   nowIso,
   stableId,
   type AIAdapter,
@@ -12,8 +10,6 @@ import {
   type GenerationRequest,
   type OCRAdapter,
   type RendererTarget,
-  type StructureExtractionRequest,
-  type StructureTemplate,
   type TranscriptSegment,
   type VLMAdapter,
   type VideoAnalysisResult,
@@ -21,28 +17,12 @@ import {
 } from "@vvst/shared";
 import { runPython, hasCondaEnv } from "./condaPython.js";
 import { GeminiVLMAdapter } from "./gemini.js";
-import { OpenAICompatibleAIAdapter, heuristicRevise } from "./openaiCompatible.js";
+import { GeminiAIAdapter } from "./geminiAi.js";
+import { OpenAICompatibleAIAdapter } from "./openaiCompatible.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
 const pythonScripts = path.join(repoRoot, "scripts", "python");
-
-export class MockVideoToolAdapter implements VideoToolAdapter {
-  readonly name = "MockVideoToolAdapter";
-
-  async analyze(asset: Asset, projectId: string, purpose: "sample" | "source", options?: AnalyzeVideoOptions): Promise<VideoAnalysisResult> {
-    return buildMockVideoAnalysis({
-      assetId: asset.id,
-      projectId,
-      filename: asset.filename,
-      purpose,
-      durationSec: options?.durationHintSec,
-      width: options?.width,
-      height: options?.height,
-      fps: options?.fps
-    });
-  }
-}
 
 export class FFmpegVideoToolAdapter implements VideoToolAdapter {
   readonly name = "FFmpegVideoToolAdapter";
@@ -109,30 +89,12 @@ export class FFmpegVideoToolAdapter implements VideoToolAdapter {
       shotCandidates = parsed.shots ?? [];
       durationSec = Number(parsed.durationSec ?? durationSec) || durationSec;
     } catch (error) {
-      warnings.push(`keyframe extraction failed: ${(error as Error).message}; falling back to mock shot grid.`);
-    }
-
-    if (durationSec <= 0) {
-      warnings.push("Duration unknown; defaulting to 15s mock.");
-      durationSec = 15;
+      // No mock fallback: surface the real failure (mock removed).
+      throw new Error(`FFmpeg keyframe/shot extraction failed for asset ${asset.id} (${asset.path ?? "no path"}): ${(error as Error).message}`);
     }
 
     if (shotCandidates.length === 0 || keyframeOutputs.length === 0) {
-      const fallback = buildMockVideoAnalysis({
-        assetId: asset.id,
-        projectId,
-        filename: asset.filename,
-        purpose,
-        durationSec,
-        width: width ?? options?.width,
-        height: height ?? options?.height,
-        fps: fps ?? options?.fps
-      });
-      return {
-        ...fallback,
-        warnings: [...warnings, ...fallback.warnings],
-        analyzerMode: warnings.length === 0 ? "ffmpeg" : "mock"
-      };
+      throw new Error(`FFmpeg analyzer produced no shots/keyframes for asset ${asset.id} (${asset.path ?? "no path"}); a real video file is required (mock removed).`);
     }
 
     const shots = shotCandidates.map((shot, index) => ({
@@ -178,20 +140,6 @@ export class FFmpegVideoToolAdapter implements VideoToolAdapter {
   }
 }
 
-export class MockAIAdapter implements AIAdapter {
-  readonly name = "MockAIAdapter";
-  readonly available = true;
-
-  async extractStructure(request: StructureExtractionRequest): Promise<StructureTemplate> {
-    return buildFallbackTemplate(request.analysis, request.vertical, request.projectId, request.vlm);
-  }
-
-  async reviseInstruction(input: { generationId: string; instruction: string }) {
-    const { patchedControls, summary } = heuristicRevise(input.instruction, input.generationId);
-    const { promptAddendum, ...controls } = patchedControls;
-    return { summary, patchedControls: controls, promptAddendum };
-  }
-}
 
 export { OpenAICompatibleAIAdapter };
 
@@ -285,12 +233,18 @@ export interface AdapterSet {
 }
 
 export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): AdapterSet {
-  const videoTool = env.VIDEO_TOOL === "mock"
-    ? new MockVideoToolAdapter()
-    : new FFmpegVideoToolAdapter(generatedDir);
-  const aiProvider = (env.AI_PROVIDER ?? "mock").toLowerCase();
+  // Mock adapters removed: always use the real FFmpeg analyzer. A real failure surfaces as an error.
+  const videoTool = new FFmpegVideoToolAdapter(generatedDir);
+  const aiProvider = (env.AI_PROVIDER ?? "gemini").toLowerCase();
   let aiAdapter: AIAdapter;
-  if (aiProvider === "openai_compatible") {
+  if (aiProvider === "gemini") {
+    // Gemini-backed text LLM (structure enrichment / revise / scorecard). Separate request
+    // from the Gemini VLM (video understanding); model defaults to AI_GEMINI_MODEL, then VLM_MODEL.
+    aiAdapter = new GeminiAIAdapter({
+      apiKey: env.GEMINI_API_KEY,
+      model: env.AI_GEMINI_MODEL ?? env.VLM_MODEL
+    });
+  } else if (aiProvider === "openai_compatible") {
     aiAdapter = new OpenAICompatibleAIAdapter({
       baseUrl: env.OPENAI_COMPATIBLE_BASE_URL,
       apiKey: env.OPENAI_COMPATIBLE_API_KEY,
@@ -303,7 +257,8 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
       model: env.ARK_MODEL ?? env.OPENAI_COMPATIBLE_MODEL
     });
   } else {
-    aiAdapter = new MockAIAdapter();
+    // No mock AI adapter: require a real provider. Fail loudly on misconfiguration.
+    throw new Error(`AI_PROVIDER must be one of gemini|ark_doubao|openai_compatible (got "${aiProvider}"; mock removed)`);
   }
   const asrAdapter = env.ASR_PROVIDER === "faster_whisper" ? new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" }) : new DisabledASRAdapter();
   const ocrAdapter = env.OCR_PROVIDER === "easyocr" ? new EasyOCRAdapter() : new DisabledOCRAdapter();
@@ -317,9 +272,9 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
 }
 
 export { GeminiVLMAdapter };
+export { GeminiAIAdapter };
 
 export const RENDERER_TARGETS_ENV: Record<string, RendererTarget> = {
-  mock_preview: "mock_preview",
   html_preview: "html_preview",
   ffmpeg: "ffmpeg",
   remotion: "remotion",

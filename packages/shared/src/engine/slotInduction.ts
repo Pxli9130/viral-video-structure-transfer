@@ -15,6 +15,7 @@ import type {
   StructureSegment,
   StructureTemplate,
   VideoAnalysisResult,
+  VisualEvidenceTimeline,
   VisualFormFamily
 } from "../types.js";
 
@@ -324,13 +325,78 @@ function stableSlotId(family: VisualFormFamily, role: SegmentRole, index: number
   return `auto_slot_${role}_${family}_${String(index).padStart(3, "0")}`;
 }
 
-function sourceEvidenceForFamily(family: VisualFormFamily, confidence: number, texts: string[]): SlotSourceEvidence {
+/** Time region (fractions of duration) where a segment role's shots typically live. */
+function roleRegion(role: SegmentRole): [number, number] {
+  switch (role) {
+    case "hook":
+      return [0, 0.2];
+    case "setup":
+      return [0.05, 0.32];
+    case "proof":
+      return [0.55, 0.92];
+    case "cta":
+      return [0.8, 1];
+    case "transition":
+      return [0, 1];
+    default:
+      return [0.15, 0.78];
+  }
+}
+
+/**
+ * Build slot evidence from the deterministic evidence timeline. Bind the real keyframe ids /
+ * paths / time range / beat alignment using a cascade: shots whose family matches the slot,
+ * else shots in the slot's role time-region, else the nearest available shots — so frameIds is
+ * never hardcoded empty when an evidence timeline exists.
+ */
+export function bindSlotEvidence(
+  role: SegmentRole,
+  family: VisualFormFamily,
+  confidence: number,
+  texts: string[],
+  evidence?: VisualEvidenceTimeline
+): SlotSourceEvidence {
   const summary = texts.find((text) => text.length > 12) ?? family;
+  if (!evidence || evidence.shots.length === 0) {
+    return { confidence, frameIds: [], textEvidence: texts.slice(0, 4), summary };
+  }
+  let matches = evidence.shots.filter((shot) => shot.family === family);
+  let signal = "evidence_analyzer:family";
+  if (matches.length === 0) {
+    const [lo, hi] = roleRegion(role);
+    const loSec = lo * evidence.durationSec;
+    const hiSec = hi * evidence.durationSec;
+    matches = evidence.shots.filter((shot) => {
+      const mid = (shot.startSec + shot.endSec) / 2;
+      return mid >= loSec && mid <= hiSec;
+    });
+    signal = "evidence_analyzer:role_region";
+  }
+  if (matches.length === 0) {
+    matches = evidence.shots.slice(0, 3);
+    signal = "evidence_analyzer:nearest";
+  }
+  const frameIds = matches.flatMap((shot) => shot.keyframeIds).slice(0, 8);
+  const framePaths = matches.flatMap((shot) => shot.evidencePaths ?? []).slice(0, 8);
+  const startSec = Math.min(...matches.map((shot) => shot.startSec));
+  const endSec = Math.max(...matches.map((shot) => shot.endSec));
+  const ocrTexts = matches.flatMap((shot) => shot.ocrText ?? []);
+  const asrTexts = matches.flatMap((shot) => shot.asrText ?? []);
+  const beatAligned = matches.some((shot) => shot.beatAligned);
+  const evidenceKinds = ["visual"];
+  if (ocrTexts.length) evidenceKinds.push("ocr");
+  if (asrTexts.length) evidenceKinds.push("asr");
+  if (beatAligned) evidenceKinds.push("beat");
+  const mergedTexts = [...texts, ...ocrTexts, ...asrTexts].filter(Boolean);
   return {
     confidence,
-    frameIds: [],
-    textEvidence: texts.slice(0, 4),
-    summary
+    timeRange: [Number(startSec.toFixed(3)), Number(endSec.toFixed(3))],
+    frameIds,
+    framePaths,
+    textEvidence: mergedTexts.slice(0, 6),
+    summary,
+    signalSource: signal,
+    evidenceKinds
   };
 }
 
@@ -414,7 +480,7 @@ export function induceSlotsFromAnalysis(
       motionPattern: motionForFamily(spec.family),
       layoutRelation: layoutForFamily(spec.family),
       assetRequirement,
-      sourceEvidence: sourceEvidenceForFamily(spec.family, confidence, texts.filter((text) => spec.strong.some((pattern) => pattern.test(text)) || spec.weak.some((pattern) => pattern.test(text)))),
+      sourceEvidence: bindSlotEvidence(role, spec.family, confidence, texts.filter((text) => spec.strong.some((pattern) => pattern.test(text)) || spec.weak.some((pattern) => pattern.test(text))), analysis?.evidenceTimeline),
       rendererCandidates: capability ? [capability.id, capability.fallbackRenderer] : ["generic_asset_proxy"],
       fallbackStrategies: fallbackStrategiesForFamily(spec.family),
       replacementPolicy: {
@@ -526,7 +592,16 @@ export function augmentTemplateWithInducedSlots(
   const requiredInduced = inducedSlots.filter((slot) => slot.status === "required");
   const inducedRequiredSlots = requiredInduced.map(requiredSlotFromInducedSlot);
   const existingIds = new Set(inducedRequiredSlots.map((slot) => slot.id));
-  const secondarySlots = template.requiredSlots.filter((slot) => !existingIds.has(slot.id) && !coarseSlotOverridden(slot, inducedSlots));
+  const evidence = analysis?.evidenceTimeline;
+  // Bind evidence (by role region) to the deterministic secondary required slots so the
+  // template's slots cite real frames/timestamps instead of carrying empty evidence.
+  const secondarySlots = template.requiredSlots
+    .filter((slot) => !existingIds.has(slot.id) && !coarseSlotOverridden(slot, inducedSlots))
+    .map((slot) =>
+      (slot.sourceEvidence?.frameIds?.length ?? 0) > 0 || !evidence
+        ? slot
+        : { ...slot, sourceEvidence: bindSlotEvidence(slot.role, slot.visualFormFamily ?? "unknown", slot.confidence ?? 0.5, slot.preferredTags ?? [], evidence) }
+    );
   let segments = template.segments;
   for (const slot of inducedRequiredSlots) {
     segments = addSlotToSegment(segments, slot.role, slot.id);

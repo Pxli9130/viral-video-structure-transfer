@@ -107,7 +107,7 @@ npm run dev
 4. 上传源视频并输入需求。
 5. 在“重构规划器”里生成重构计划、slot mapping、gap report、fill plan。
 6. 可选：点击 **AIGC 补缺口并生成**，把缺失视觉槽位转成生成 brief，经质量检查后作为 `aigc_generated_material` 进入同一套匹配/渲染链路。
-7. 选择 HTML preview / FFmpeg MP4 / Remotion / HyperFrames 等 renderer。
+7. 选择 HTML preview / FFmpeg MP4 / Remotion / HyperFrames 等 renderer。用 FFmpeg MP4 渲染后，“时间线预览”卡片会显示每个片段在对应时间戳的**真实渲染帧**（从渲染分段抽帧，存到 `storage/generated/previews/<renderId>/clip_<n>.png`，随 `RenderOutput.clipPreviewFrames` 返回），而不是绿色渐变占位图。
 8. 导出 request、timeline、report、scorecard。
 
 ## 常用命令
@@ -123,6 +123,48 @@ node scripts/check-artifact-hygiene.mjs
 ```
 
 如果 `npm test` 在受限 sandbox 中报 `listen EPERM: operation not permitted 0.0.0.0`，这是 API e2e 测试需要本地 socket 绑定导致的环境限制；在允许本地绑定的环境中重跑即可。
+
+## Evidence-first 结构迁移（beat_cut / editing.mov）
+
+针对 `editing.mov` 这类**快剪 / 剪辑教学**样例，pipeline 改成「先用确定性工具抽证据，再让模型做语义解释，最后让 renderer 执行学到的视觉语法」：
+
+```text
+video
+→ ffprobe 元数据
+→ PySceneDetect 场景切点 + 每镜头关键帧/视觉族标签（scripts/analyze-evidence-timeline.py）
+→ librosa 鼓点网格（BPM / beats / onsets）
+→ OCR / ASR 文本按时间戳绑定到镜头
+→ VisualEvidenceTimeline（每个 induced/required 槽位带 frameIds + timeRange + 证据缩略图）
+→ Gemini VLM（被证据 grounding，不再自由发挥）→ Doubao/Ark 合并
+→ beat_cut StructureTemplate（neon hero → kinetic rule cards → beat-sync montage → impact flash → CTA）
+→ style-locked renderer（黑底、红黄大字、卡点硬切、动作混剪、红色 CTA ticker）+ 音频
+→ 渲染质量 gate（无 placeholder、有音频/卡点、证据覆盖 ≥70%）
+```
+
+`beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。
+
+实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
+
+```bash
+# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini, ASR_PROVIDER=faster_whisper, OCR_PROVIDER=easyocr, AI_PROVIDER=ark_doubao）
+npm run build && node apps/api/dist/server.js
+
+# 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
+npm run e2e:editing-beatcut
+
+# 3) 渲染质量 gate（beat_cut 严格模式）
+npm run eval:render-quality -- --render storage/generated/<renderId>.mp4 \
+  --template /tmp/editing_e2e/template.json --generation /tmp/editing_e2e/generation.json \
+  --sample test_videos/editing.mov --expect-video-type beat_cut --strict
+
+# 4) 单独跑证据分析器 / 模型 provider 评测
+npm run analyze:evidence -- --video test_videos/editing.mov --out /tmp/ev.json --frames-dir /tmp/ev_frames
+npm run eval:model-understanding -- --sample test_videos/editing.mov
+```
+
+输出（`storage/generated/` 渲染产物 + `docs/artifacts/model_eval/`）：beat_cut MP4（黑底大字 + 卡点 + 音频）、按 clip 抽帧的真实预览、`docs/artifacts/model_eval/editing_mov_model_eval.{json,md}`（heuristic / Gemini / Ark 对比，失败可见）。
+
+验收：`packages/shared/src/__tests__/editingMovBeatCutGolden.test.ts`（golden 模板/时间线/风格锁）+ `scripts/evaluate-render-quality.mjs`（10/10 gate）。
 
 ## Motion Graph 结构迁移演示
 
@@ -297,7 +339,8 @@ AIGC 安全策略：
 | 能力 | 默认 | 真实实现 | 开关 |
 |---|---|---|---|
 | 视频分析 | mock | FFmpeg / ffprobe / keyframes | `VIDEO_TOOL=mock|ffmpeg` |
-| LLM | heuristic | Ark Doubao / OpenAI-compatible | `AI_PROVIDER=mock|ark_doubao|openai_compatible` |
+| 证据分析器 | 自动（有 conda 时） | PySceneDetect 切点 + librosa 鼓点 + 关键帧/视觉族（`scripts/analyze-evidence-timeline.py`） | 随分析自动运行，失败非致命 |
+| LLM（文本增强/改写/评分） | 真实必填（mock 已删除） | Gemini / Ark Doubao / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`（未知值直接报错，不再回退 mock） |
 | VLM | disabled | Gemini video/material review | `VLM_PROVIDER=gemini` |
 | ASR | disabled | faster-whisper | `ASR_PROVIDER=faster_whisper` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
@@ -318,5 +361,8 @@ AIGC 安全策略：
 - 外部 AIGC 目前只用于图片素材生成；不默认生成整段视频。
 - Seedance/视频生成 provider 仍是后续 P1 能力，不是当前默认路径。
 - Gemini 只作为质量 gate，不是唯一事实来源。
-- motion_graph 的确定性 analyzer 仍只接入 motion graph case，未扩展到 editing/marketing/corpus 全量视频。
+- evidence-first beat_cut pipeline 已接入实时 API（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa 产出 beat_cut MP4 并通过 10/10 gate）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
+- **已删除所有 mock 适配器**（MockAIAdapter / MockVideoToolAdapter / MockRenderer / `mock_preview` / 文本 mock 样例分析）。真实 provider 失败时直接报错，绝不伪造结果。`AI_PROVIDER` 现支持 `gemini`（默认，文本 LLM 与 Gemini VLM 是**分离的不同 request**）/ `ark_doubao` / `openai_compatible`；因示例 `ARK_API_KEY` 401，已切到 `AI_PROVIDER=gemini`，`aiEnrichmentStatus=ok`。（`buildMockVideoAnalysis` 仅作为单元测试/seed/case 脚本的确定性 fixture，不在运行链路中。）
+- beat-cut renderer / 真实帧目前在 FFmpeg MP4 路径最完整；Remotion 组件尚未镜像全部 beat-cut primitives（ImpactFlashStamp 等）。
 - 浏览器已有 AIGC gap-fill 按钮和基础结果面板；更完整的拖拽上传、人工审核/选择生成候选、批量素材管理仍是产品化工作。
+- 时间线预览的真实帧目前只在 FFmpeg MP4 渲染路径生成；HTML preview / mock / Remotion / HyperFrames 仍回退到占位卡（Remotion 后续可从最终 MP4 按 `clip.startSec` 抽帧统一支持）。

@@ -1,0 +1,39 @@
+{
+  "id": "010_editing_beatcut",
+  "title": "Beat-cut editing tutorial (editing.mov) — evidence-first structure transfer",
+  "input": {
+    "filename": "../../editing.mov",
+    "durationSecRange": [110, 125]
+  },
+  "skipIf": { "missingVideo": true },
+  "videoType": "beat_cut",
+  "expectations": {
+    "evidenceTimeline": {
+      "minSceneCuts": 30,
+      "beatGridStatus": "ok",
+      "bpmRange": [120, 175],
+      "minBlackBgRatio": 0.4,
+      "familiesAnyOf": ["object_motion", "kinetic_typography", "live_action_montage", "brand_cta"]
+    },
+    "template": {
+      "videoTypeEquals": "beat_cut",
+      "minSlotEvidenceCoverage": 0.7,
+      "aiEnrichmentNot": "failed"
+    },
+    "render": {
+      "aspectRatio": "9:16",
+      "audioPresentOrSilentPolicy": true,
+      "noPlaceholderText": true,
+      "minDarkBgRatio": 0.35,
+      "beatAlignedOrHardCut": true,
+      "motionPrimitivesAnyOf": ["neon_hero_intro", "beat_text_card", "tutorial_rule_card", "action_montage", "motivation_cta"]
+    }
+  },
+  "negativeExpectations": {
+    "videoTypeNot": ["b2b_marketing_mg", "motion_graphic_marketing_poster"],
+    "noPlaceholderStrings": ["proxy", "placeholder", "插槽", "占位"]
+  },
+  "verifiedBy": "scripts/evaluate-render-quality.mjs --expect-video-type beat_cut --strict",
+  "e2e": "scripts/run-editing-beatcut-e2e.mjs",
+  "notes": "Self-reconstruction diagnostic: editing.mov -> evidence-first beat_cut template -> style-locked render. Verified end-to-end through the real API by run-editing-beatcut-e2e.mjs and gated by evaluate-render-quality.mjs (10/10 gates). The legacy ribbon-centric corpus harness (run-corpus-regression.mjs) does not evaluate beat_cut motifs; this fixture is the spec + gate reference for that case."
+}

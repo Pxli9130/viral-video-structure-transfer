@@ -27,6 +27,10 @@
     "regression:corpus": "node scripts/run-corpus-regression.mjs",
     "regression:corpus:refresh": "node scripts/run-corpus-regression.mjs --refresh-corpus",
     "regression:corpus:strict": "node scripts/run-corpus-regression.mjs --strict",
+    "eval:render-quality": "node scripts/evaluate-render-quality.mjs",
+    "eval:model-understanding": "node scripts/evaluate-model-understanding.mjs",
+    "e2e:editing-beatcut": "node scripts/run-editing-beatcut-e2e.mjs",
+    "analyze:evidence": "node -e \"const {spawnSync}=require('node:child_process');const a=process.argv.slice(1);const py=process.env.CONDA_BASE?`${process.env.CONDA_BASE}/envs/${process.env.VIRAL_CONDA_ENV||'viral'}/bin/python`:'python3';process.exit(spawnSync(py,['scripts/analyze-evidence-timeline.py',...a],{stdio:'inherit'}).status||0)\" --",
     "corpus:generate": "node -e \"const {spawnSync}=require('node:child_process');const r=spawnSync(process.env.CONDA_BASE? `${process.env.CONDA_BASE}/envs/${process.env.VIRAL_CONDA_ENV||'viral'}/bin/python` : 'python3', ['scripts/generate-synthetic-corpus.py','--root','test_videos/corpus'],{stdio:'inherit'});process.exit(r.status||0)\"",
     "typecheck": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run typecheck --workspaces"
   },

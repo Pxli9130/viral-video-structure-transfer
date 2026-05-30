@@ -18,7 +18,7 @@ export interface OpenAICompatibleConfig {
   timeoutMs?: number;
 }
 
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 interface TemplateEnrichment {
   templateName?: string;
@@ -68,9 +68,10 @@ export interface GeneratedSubtitleCue {
 const DEFAULT_TIMEOUT = 30_000;
 
 export class OpenAICompatibleAIAdapter implements AIAdapter {
-  readonly name = "OpenAICompatibleAIAdapter";
-  readonly available: boolean;
-  private readonly config: Required<Pick<OpenAICompatibleConfig, "baseUrl" | "apiKey" | "model">> & { timeoutMs: number };
+  // name/available are mutable so transport-swapping subclasses (e.g. GeminiAIAdapter) can set them.
+  name = "OpenAICompatibleAIAdapter";
+  available: boolean;
+  protected readonly config: Required<Pick<OpenAICompatibleConfig, "baseUrl" | "apiKey" | "model">> & { timeoutMs: number };
 
   constructor(config: OpenAICompatibleConfig) {
     this.available = Boolean(config.baseUrl && config.apiKey && config.model);
@@ -84,13 +85,24 @@ export class OpenAICompatibleAIAdapter implements AIAdapter {
 
   async extractStructure(request: StructureExtractionRequest): Promise<StructureTemplate> {
     const baseline = buildFallbackTemplate(request.analysis, request.vertical, request.projectId, request.vlm);
-    if (!this.available) return baseline;
+    if (!this.available) return { ...baseline, aiEnrichmentStatus: request.vlm ? "ok" : "skipped" };
     try {
       const enrichment = await this.requestTemplateEnrichment(request, baseline);
-      return mergeEnrichment(baseline, enrichment);
+      return { ...mergeEnrichment(baseline, enrichment), aiEnrichmentStatus: "ok", aiEnrichmentError: undefined };
     } catch (error) {
-      const warning = `OpenAI-compatible LLM failed (${(error as Error).message}); using deterministic fallback.`;
-      return { ...baseline, qualityRationale: `${baseline.qualityRationale} | ${warning}` };
+      // Surface the LLM failure (never silently hide it), but do not downgrade a template the
+      // VLM already enriched to "failed": only a template with NO AI enrichment at all is "failed".
+      const message = (error as Error).message;
+      const vlmEnriched = Boolean(request.vlm);
+      const warning = vlmEnriched
+        ? `OpenAI-compatible LLM polish failed (${message}); kept VLM-enriched template.`
+        : `OpenAI-compatible LLM failed (${message}); using deterministic fallback.`;
+      return {
+        ...baseline,
+        qualityRationale: `${baseline.qualityRationale} | ${warning}`,
+        aiEnrichmentStatus: vlmEnriched ? "ok" : "failed",
+        aiEnrichmentError: message
+      };
     }
   }
 
@@ -231,7 +243,12 @@ export class OpenAICompatibleAIAdapter implements AIAdapter {
     return parsed;
   }
 
-  private async chat(messages: ChatMessage[], json: boolean): Promise<string> {
+  /**
+   * Transport primitive. Subclasses (e.g. GeminiAIAdapter) override this to call a different
+   * backend while reusing all the prompt-building / parsing / merge logic above. The default
+   * implementation calls an OpenAI-compatible /chat/completions endpoint.
+   */
+  protected async chat(messages: ChatMessage[], json: boolean): Promise<string> {
     const url = `${this.config.baseUrl}/chat/completions`;
     const body: Record<string, unknown> = {
       model: this.config.model,

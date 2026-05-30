@@ -51,6 +51,7 @@ import {
 } from "@vvst/shared";
 import { buildAdapterSet, type AdapterSet } from "./adapters/index.js";
 import { selectRenderer, type AssetPathResolver } from "./adapters/renderers.js";
+import { analyzeEvidenceTimeline, bindAnalysisTextToEvidence } from "./adapters/evidenceTimeline.js";
 import { buildDatabaseStore, type Database, emptyDatabase as makeEmptyDatabase } from "./storage/index.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
@@ -70,7 +71,7 @@ const ASSET_ROLES: AssetRole[] = [
   "render_output"
 ];
 const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_user_uploaded", "demo_only", "unknown"];
-const RENDERER_TARGETS: RendererTarget[] = ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"];
+const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "hyperframes"];
 const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "mock_provider",
   "local_folder_provider",
@@ -596,6 +597,26 @@ async function normalizeManagedTargetAsset(params: {
   };
 }
 
+/** Compact, model-readable summary of the deterministic evidence timeline for VLM grounding. */
+function summarizeEvidenceForPrompt(ev: import("@vvst/shared").VisualEvidenceTimeline): string {
+  const fam = new Map<string, number>();
+  for (const shot of ev.shots) fam.set(String(shot.family), (fam.get(String(shot.family)) ?? 0) + 1);
+  const families = [...fam.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}×${v}`).join(", ");
+  const fast = (ev.stats.fastZones ?? []).slice(0, 5).map(([a, b]) => `${a}-${b}s`).join(", ");
+  const ocrSamples = ev.shots.flatMap((s) => s.ocrText ?? []).filter(Boolean).slice(0, 8);
+  return [
+    `- duration: ${ev.durationSec}s, hasAudio: ${ev.hasAudio}`,
+    `- scene cuts: ${ev.sceneCuts.length} (cutDensity ${ev.stats.cutDensity ?? "n/a"}/s, avgShot ${ev.stats.avgShotDurationSec ?? "n/a"}s, medianShot ${ev.stats.medianShotDurationSec ?? "n/a"}s)`,
+    `- audio beat grid: ${ev.beatGrid.status === "ok" ? `${ev.beatGrid.bpm} BPM, ${ev.beatGrid.beats.length} beats` : ev.beatGrid.status}`,
+    `- black-background ratio: ${ev.stats.blackBgRatio ?? "n/a"}, text-card density: ${ev.stats.textCardDensity ?? "n/a"}`,
+    `- dominant palette: ${(ev.stats.dominantPalette ?? []).join(", ")}`,
+    `- shot families (deterministic): ${families}`,
+    fast ? `- fast-cut zones: ${fast}` : "",
+    ocrSamples.length ? `- on-screen text (OCR): ${ocrSamples.join(" | ")}` : "",
+    `Hint: fast cuts + audio beats + dark background + montage strongly indicate video_type="beat_cut".`
+  ].filter(Boolean).join("\n");
+}
+
 async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisPurpose, mode: AnalyzerMode | "auto", body: Request["body"]): Promise<{ job: Job; analysis: VideoAnalysisResult; templateRecord?: TemplateRecord; vlm?: VLMVideoAnalysis }> {
   let job = createJob(project.id, "analysis", { assetId: asset.id, purpose, mode }, [
     "metadata_extraction",
@@ -607,39 +628,40 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
   ]);
 
   job = { ...job, status: "running", progress: 5, updatedAt: nowIso() };
-  const analyzer = mode === "mock" || (mode === "auto" && process.env.VIDEO_TOOL === "mock") ? "mock" : adapters.videoTool.name;
+  const analyzer = adapters.videoTool.name;
   let analysis: VideoAnalysisResult;
-  if (analyzer === "mock") {
-    analysis = await new (await import("./adapters/index.js")).MockVideoToolAdapter().analyze(asset, project.id, purpose, {
+  {
+    // No mock fallback: a real analyzer failure must surface (mock adapters removed).
+    analysis = await adapters.videoTool.analyze(asset, project.id, purpose, {
       durationHintSec: toNumber(body?.durationSec, project.targetDurationSec),
-      width: toNumber(body?.width, project.aspectRatio === "9:16" ? 720 : 1280),
-      height: toNumber(body?.height, project.aspectRatio === "9:16" ? 1280 : 720),
-      fps: toNumber(body?.fps, 30)
+      width: toNumber(body?.width, undefined as unknown as number),
+      height: toNumber(body?.height, undefined as unknown as number),
+      fps: toNumber(body?.fps, undefined as unknown as number)
     });
-  } else {
-    try {
-      analysis = await adapters.videoTool.analyze(asset, project.id, purpose, {
-        durationHintSec: toNumber(body?.durationSec, project.targetDurationSec),
-        width: toNumber(body?.width, undefined as unknown as number),
-        height: toNumber(body?.height, undefined as unknown as number),
-        fps: toNumber(body?.fps, undefined as unknown as number)
-      });
-    } catch (error) {
-      // Auto-fallback to mock if real analyzer fails.
-      job = advanceJob(job, "metadata_extraction", "completed", `analyzer fallback: ${(error as Error).message}`);
-      const fallback = new (await import("./adapters/index.js")).MockVideoToolAdapter();
-      analysis = await fallback.analyze(asset, project.id, purpose, {
-        durationHintSec: toNumber(body?.durationSec, project.targetDurationSec)
-      });
-    }
   }
   job = advanceJob(job, "metadata_extraction", "completed");
   job = advanceJob(job, "keyframe_or_shot_split", "completed");
 
+  // Evidence-first analyzer runs BEFORE the VLM so the model is grounded in deterministic
+  // signals (scene cuts + beat grid + dark-bg/family stats) rather than free-form guessing.
+  let evidenceContext: string | undefined;
+  if (analyzer !== "mock" && asset.path) {
+    try {
+      const evidence = await analyzeEvidenceTimeline(asset, { generatedDir });
+      if (evidence) {
+        analysis = { ...analysis, evidenceTimeline: evidence };
+        evidenceContext = summarizeEvidenceForPrompt(evidence);
+        job = advanceJob(job, "metadata_extraction", "completed", `evidence: ${evidence.shots.length} shots, ${evidence.beatGrid.beats.length} beats, bpm=${evidence.beatGrid.bpm ?? "n/a"}, blackBg=${evidence.stats.blackBgRatio ?? "n/a"}`);
+      }
+    } catch (error) {
+      analysis = { ...analysis, warnings: [...analysis.warnings, `Evidence analyzer failure: ${(error as Error).message}`] };
+    }
+  }
+
   let vlmResult: VLMVideoAnalysis | undefined;
   if (adapters.vlmAdapter.available && adapters.vlmAdapter.describeVideo && asset.path) {
     try {
-      vlmResult = await adapters.vlmAdapter.describeVideo(asset, { purpose });
+      vlmResult = await adapters.vlmAdapter.describeVideo(asset, { purpose, evidenceContext });
       analysis = mergeVlmIntoAnalysis(analysis, vlmResult);
       job = advanceJob(job, "vlm_video_understanding", "completed", `vlm=${adapters.vlmAdapter.name}`);
     } catch (error) {
@@ -696,6 +718,12 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
     job = advanceJob(job, "ocr_keyframe_text", "skipped", adapters.ocrAdapter.name);
   }
 
+  // Bind the freshly-produced ASR transcript + OCR rows into the evidence-timeline shots
+  // by timestamp overlap, so each shot carries its spoken/printed text for induction.
+  if (analysis.evidenceTimeline) {
+    analysis = { ...analysis, evidenceTimeline: bindAnalysisTextToEvidence(analysis.evidenceTimeline, analysis) };
+  }
+
   const analysisValidation = validateAssetAnalysis(analysis);
   if (!analysisValidation.valid) {
     throw new HttpError(500, "VALIDATION_ERROR", "VideoAnalysisResult failed schema validation", analysisValidation.errors);
@@ -741,39 +769,80 @@ function isSeedTemplate(record: TemplateRecord): boolean {
   return record.sourceAssetId.startsWith("demo_") || /seed|fallback/i.test(record.name);
 }
 
-function selectTemplateForGeneration(db: Database, request: GenerationRequest): { record: TemplateRecord; reason: string } {
+/** Fraction of a template's slots (required + induced) that carry frame/timestamp evidence. */
+function templateEvidenceCoverage(record: TemplateRecord): number {
+  const slots = [...record.template.requiredSlots, ...(record.template.inducedSlots ?? [])];
+  if (slots.length === 0) return 0;
+  const withEvidence = slots.filter((slot) => {
+    const ev = slot.sourceEvidence;
+    return Boolean((ev?.frameIds?.length ?? 0) > 0 || ev?.timeRange);
+  });
+  return withEvidence.length / slots.length;
+}
+
+function isGenericB2BFallback(record: TemplateRecord): boolean {
+  return /B2B MG Promo Structure/i.test(record.template.name) || record.template.aiEnrichmentStatus === "failed";
+}
+
+/**
+ * Score a candidate template for a generation. Same-source-asset match dominates; an
+ * evidence-backed, non-fallback, AI-enriched, videoType-matching template beats a stale
+ * generic B2B scaffold. Index is a recency tiebreak (later templates score slightly higher).
+ */
+function scoreTemplate(record: TemplateRecord, request: GenerationRequest, index: number): number {
+  let score = 0;
+  if (templateMatchesSample(record, request.sampleReferenceAssetId)) score += 100;
+  if (record.vertical === request.target.vertical) score += 8;
+  if (!isSeedTemplate(record)) score += 20;
+  score += templateEvidenceCoverage(record) * 20;
+  const coverage = templateEvidenceCoverage(record);
+  score += coverage > 0 ? 10 : -10;
+  if (record.template.aiEnrichmentStatus === "ok") score += 10;
+  else if (record.template.aiEnrichmentStatus === "failed") score += -15;
+  if (isGenericB2BFallback(record)) score -= 12;
+  score += index / 1000;
+  return score;
+}
+
+function selectTemplateForGeneration(
+  db: Database,
+  request: GenerationRequest
+): { record: TemplateRecord; reason: string; warning?: string } {
   const projectTemplates = db.templates.filter((template) => template.projectId === request.projectId);
   const selectedId = request.selectedTemplateIds?.[0];
   if (selectedId) {
     const record = assertFound(projectTemplates.find((template) => template.id === selectedId), "Selected template");
     return {
       record,
-      reason: `explicit selectedTemplateIds picked ${record.id}; sourceAssetId=${record.sourceAssetId}; sourceSampleIds=${record.template.sourceSampleIds.join(",") || "none"}.`
+      reason: `explicit selectedTemplateIds picked ${record.id}; videoType=${record.template.videoType ?? "n/a"}; sourceAssetId=${record.sourceAssetId}.`,
+      warning: isGenericB2BFallback(record) ? `Selected template ${record.id} is a generic/evidence-poor fallback.` : undefined
     };
   }
 
-  const sampleMatch = [...projectTemplates].reverse().find((template) => templateMatchesSample(template, request.sampleReferenceAssetId));
-  if (sampleMatch) {
-    return {
-      record: sampleMatch,
-      reason: `current sample match picked ${sampleMatch.id}; sampleReferenceAssetId=${request.sampleReferenceAssetId}; matched sourceAssetId/sourceSampleIds=${sampleMatch.sourceAssetId}/${sampleMatch.template.sourceSampleIds.join(",")}; seed B2B fallback was not primary because a learned template matches the active sample.`
-    };
+  if (projectTemplates.length === 0) {
+    throw new HttpError(404, "NOT_FOUND", "Template for project not found");
   }
 
-  const latestNonSeed = [...projectTemplates].reverse().find((template) => template.vertical === request.target.vertical && !isSeedTemplate(template));
-  if (latestNonSeed) {
-    return {
-      record: latestNonSeed,
-      reason: `latest non-seed learned template picked ${latestNonSeed.id}; sourceAssetId=${latestNonSeed.sourceAssetId}; no explicit template and no current-sample template matched.`
-    };
-  }
+  const ranked = projectTemplates
+    .map((record, index) => ({ record, score: scoreTemplate(record, request, index) }))
+    .sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  const record = best.record;
+  const coverage = Math.round(templateEvidenceCoverage(record) * 100);
+  const sampleMatched = templateMatchesSample(record, request.sampleReferenceAssetId);
+  const fallbackPicked = isGenericB2BFallback(record) || isSeedTemplate(record);
 
-  const verticalCandidate = [...projectTemplates].reverse().find((template) => template.vertical === request.target.vertical);
-  const record = assertFound(verticalCandidate ?? projectTemplates.at(-1), "Template for project");
-  return {
-    record,
-    reason: `seed B2B fallback picked ${record.id}; no explicit, current-sample, or non-seed learned template was available.`
-  };
+  const reason = `scored selection picked ${record.id} (score=${best.score.toFixed(2)}); videoType=${record.template.videoType ?? "n/a"}; sampleMatch=${sampleMatched}; evidenceCoverage=${coverage}%; aiEnrichment=${record.template.aiEnrichmentStatus ?? "n/a"}; sourceAssetId=${record.sourceAssetId}.`;
+
+  let warning: string | undefined;
+  if (fallbackPicked) {
+    warning = `Picked an evidence-poor/fallback template (${record.id}); no stronger evidence-backed template was available for this sample.`;
+  } else if (request.sampleReferenceAssetId && !sampleMatched) {
+    warning = `No template learned from the active sample (${request.sampleReferenceAssetId}); using the best-scoring template ${record.id} instead.`;
+  } else if (record.template.aiEnrichmentStatus === "failed") {
+    warning = `Template ${record.id} was built with a failed AI enrichment (${record.template.aiEnrichmentError ?? "unknown"}).`;
+  }
+  return { record, reason, warning };
 }
 
 function pathWithin(parent: string, candidate: string): boolean {
@@ -1029,57 +1098,15 @@ app.post(
 
 app.post(
   "/api/samples/analyze",
-  asyncRoute(async (req, res) => {
-    const db = await store.read();
-    const project = typeof req.body.projectId === "string"
-      ? assertFound(db.projects.find((item) => item.id === req.body.projectId), "Project")
-      : {
-          id: stableId("project", "demo", nowIso()),
-          name: "Demo Structure Transfer Project",
-          vertical: "b2b_marketing_mg" as Vertical,
-          aspectRatio: "9:16" as AspectRatio,
-          targetDurationSec: toNumber(req.body.durationSec, 15),
-          createdAt: nowIso(),
-          updatedAt: nowIso()
-        };
-    const asset: Asset = {
-      id: stableId("asset", project.id, "example", req.body.sampleName ?? "sample"),
-      projectId: project.id,
-      role: "example_video",
-      type: "video",
-      filename: String(req.body.sampleName ?? "sample-description.mp4"),
-      text: String(req.body.description ?? "Mock sample video description"),
-      mimeType: "video/mp4",
-      sourcePolicy: "demo_only",
-      metadata: { mock: true },
-      tags: ["example"],
-      status: "ready",
-      createdAt: nowIso()
-    };
-    const { job, analysis, templateRecord, vlm } = await runAnalysisJob(asset, project, "sample", "mock", req.body);
-    await store.update((draft) => {
-      if (!draft.projects.some((item) => item.id === project.id)) draft.projects.push(project);
-      if (!draft.assets.some((item) => item.id === asset.id)) draft.assets.push(asset);
-      draft.jobs.push(job);
-      draft.analyses = draft.analyses.filter((item) => !(item.assetId === asset.id && item.purpose === "sample"));
-      draft.analyses.push({
-        id: analysis.id,
-        projectId: project.id,
-        assetId: asset.id,
-        purpose: "sample",
-        video: analysis,
-        template: templateRecord?.template,
-        vlm,
-        createdAt: nowIso()
-      });
-      if (templateRecord) {
-        draft.templates = draft.templates.filter((item) => item.id !== templateRecord.id);
-        draft.templates.push(templateRecord);
-        draft.atoms = draft.atoms.filter((atom) => atom.templateId !== templateRecord.id);
-        draft.atoms.push(...templateRecord.template.structureAtoms);
-      }
-    });
-    ok(res, { project, asset, jobId: job.id, analysisId: analysis.id, status: job.status, analysis, template: templateRecord?.template }, 201);
+  asyncRoute(async (_req, res) => {
+    // This endpoint used to fabricate a text-only "mock" sample analysis (no real video).
+    // Mock removed: a real video file is required. Upload it, then analyze it.
+    fail(
+      res,
+      400,
+      "MOCK_REMOVED",
+      "Text-only sample analysis was removed (no mock). Upload a real video via POST /api/projects/:projectId/assets (field 'file', role 'example_video'), then POST /api/assets/:assetId/analyze."
+    );
   })
 );
 
@@ -1673,6 +1700,9 @@ async function runGeneration(
       generationIdSalt: options.variantLabel
     });
     generation = await applySubtitleGeneration(generation);
+    if (templateSelection.warning) {
+      generation = { ...generation, warnings: [`template_selection: ${templateSelection.warning}`, ...generation.warnings] };
+    }
     if (options.variantLabel) {
       generation = {
         ...generation,

@@ -569,6 +569,19 @@ Implemented and used by the motion-graph artifact path:
 - render family-specific motion-graph proxies;
 - render target image sets as card stacks;
 - render target logo + CTA holds.
+- sample one real still per clip from its rendered segment into `storage/generated/previews/<renderId>/clip_<n>.png`, returned as `RenderOutput.clipPreviewFrames` (`{ clipId, previewFrame }[]`) so the web timeline preview shows actual frames instead of gradient placeholders. Extraction is non-fatal: a missing still falls back to the placeholder card.
+- **Beat-cut style primitives** (driven by `clip.motionPrimitive` + `clip.beatTimestamps` + `renderPlan.beatGrid`): `neon_hero_intro`, `beat_text_card`, `tutorial_rule_card`, `action_montage`, `impact_flash_stamp`, `motivation_cta` — dark background, bold center CJK typography, red/yellow emphasis, beat-synced flashes and hard cuts. No placeholder/proxy text reaches a beat-cut output.
+- **Audio**: per `renderPlan.audioPolicy` — `sample_bgm` (carry authorized sample audio when `sampleAssetReuse=authorized`), `synth_beat` (generate a beat-aligned click track at the timeline BPM), or `silent`. `RenderOutput.renderQualityWarnings` flags `no_audio`/`placeholder_detected`/`no_source_clips`/`weak_style_transfer`.
+
+### 9.3a Evidence-first beat-cut pipeline
+
+For fast-cut / editing-tutorial samples (`videoType=beat_cut`), perception is deterministic-first:
+
+1. `scripts/analyze-evidence-timeline.py` extracts a `VisualEvidenceTimeline` — PySceneDetect `ContentDetector` scene cuts, librosa beat grid (BPM/beats/onsets), per-shot keyframes + visual/style tags, black-bg/cut-density/palette stats. Frames are served under `/generated/evidence/<assetId>/` (safe paths, never absolute).
+2. The timeline is attached to `VideoAnalysisResult.evidenceTimeline` **before** the VLM call, and a compact summary grounds Gemini (so it cites cuts/beats/families instead of free-form guessing). ASR/OCR text is then bound to shots by timestamp.
+3. `videoType=beat_cut` is decided by the deterministic evidence (fast cuts + audio beats + dark bg + montage), not VLM keywords, so it survives LLM failure. `buildBeatCutTemplate` emits named evidence-bound slots (`slot_rotating_hero_object_intro`, `slot_kinetic_text_card_sequence`, `slot_tutorial_rule_card`, `slot_beat_sync_action_montage`, `slot_impact_flash_stamp`, `slot_cta_end_slate`) with renderer candidates + frame/timestamp evidence.
+4. AI enrichment failure is surfaced via `StructureTemplate.aiEnrichmentStatus` (`ok|failed|skipped`) + `aiEnrichmentError`; template selection (`scoreTemplate`) penalizes evidence-poor/failed-enrichment templates and exposes `selectedTemplateReason` + a UI warning.
+5. `scripts/evaluate-render-quality.mjs` gates the output (videoType, ≥70% slot frame-evidence, no placeholder strings, audio present, dark-bg/cut-density match sample, beat-aligned cuts). Golden regression: `packages/shared/src/__tests__/editingMovBeatCutGolden.test.ts` + `test_fixtures/expected_editing_mov_case/`.
 
 ### 9.4 Remotion renderer
 

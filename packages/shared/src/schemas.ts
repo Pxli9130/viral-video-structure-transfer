@@ -129,7 +129,8 @@ export const assetAnalysisSchema = {
       properties: {
         ribbonMotion: ribbonMotionGeometrySchema
       }
-    }
+    },
+    evidenceTimeline: { type: "object", additionalProperties: true }
   }
 } as const;
 
@@ -576,7 +577,7 @@ export const timelineSchema = {
     generationId: { type: "string" },
     durationSec: { type: "number", minimum: 0 },
     aspectRatio: { enum: ["9:16", "16:9", "1:1"] },
-    rendererTarget: { enum: ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"] },
+    rendererTarget: { enum: ["html_preview", "ffmpeg", "remotion", "hyperframes"] },
     clips: {
       type: "array",
       minItems: 1,
