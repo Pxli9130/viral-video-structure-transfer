@@ -488,7 +488,7 @@ export const aigcMaterialFillConfigSchema = {
   additionalProperties: false,
   properties: {
     enabled: { type: "boolean" },
-    provider: { enum: ["mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    provider: { enum: ["mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
     maxAssetsPerRun: { type: "number", minimum: 0 },
     maxCostUsd: { type: "number", minimum: 0 },
     allowExternalUpload: { type: "boolean" },
@@ -553,7 +553,7 @@ export const generatedAssetCandidateSchema = {
     id: { type: "string" },
     briefId: { type: "string" },
     slotId: { type: "string" },
-    provider: { enum: ["mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    provider: { enum: ["mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
     model: { type: "string" },
     type: { enum: ["image", "video", "copy"] },
     materialRole: { const: "aigc_generated_material" },

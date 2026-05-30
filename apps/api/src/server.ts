@@ -76,6 +76,7 @@ const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_us
 const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "hyperframes"];
 const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "mock_provider",
+  "google_gemini_image",
   "local_folder_provider",
   "volcengine_seedream",
   "ark_seedance_provider_stub",
@@ -83,7 +84,7 @@ const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "copy_provider",
   "none"
 ]);
-const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
+const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["google_gemini_image", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
 
 const repoRoot =
   path.basename(process.cwd()) === "api" && path.basename(path.dirname(process.cwd())) === "apps"
@@ -1434,7 +1435,18 @@ async function applyAigcMaterialFill(input: {
   const providerId = aigcProviderForRequest(input.request);
   const externalProvider = EXTERNAL_AIGC_PROVIDERS.has(providerId);
   const provider = getAigcMaterialProvider(providerId);
-  const fallbackProvider = getAigcMaterialProvider("mock_provider");
+  // Backup external provider (e.g. Ark/Seedream in China) — used ONLY if the primary external
+  // provider fails. No mock fallback: if both fail, the error surfaces.
+  const backupProviderId = process.env.AIGC_IMAGE_BACKUP_PROVIDER as AigcMaterialProviderId | undefined;
+  const useBackup = Boolean(
+    externalProvider &&
+      backupProviderId &&
+      backupProviderId !== providerId &&
+      EXTERNAL_AIGC_PROVIDERS.has(backupProviderId) &&
+      AIGC_PROVIDER_IDS.has(backupProviderId)
+  );
+  const backupProvider = useBackup && backupProviderId ? getAigcMaterialProvider(backupProviderId) : undefined;
+  let usedProviderId: AigcMaterialProviderId = providerId;
   const briefs = createMaterialGenerationBriefs({
     gapReport: input.baseGeneration.gapReport,
     fillPlan: input.baseGeneration.fillPlan,
@@ -1469,15 +1481,23 @@ async function applyAigcMaterialFill(input: {
     } catch (error) {
       const reason = sanitizeAigcProviderError(error);
       providerErrors.push(`${providerId}: ${reason}`);
-      if (!externalProvider || providerId === "mock_provider") throw error;
-      providerFallbackReason = `External AIGC provider ${providerId} failed (${reason}); used deterministic mock_provider fallback.`;
-      const generated = await fallbackProvider.generate(brief, {
-        outputDir,
-        publicPathPrefix,
-        env: process.env,
-        allowExternalProviderCall: false
-      });
-      candidates.push(...generated);
+      // No mock fallback: surface the failure unless a real backup provider is configured.
+      if (!backupProvider || !backupProviderId) throw error;
+      try {
+        const generated = await backupProvider.generate(brief, {
+          outputDir,
+          publicPathPrefix,
+          env: process.env,
+          allowExternalProviderCall: true
+        });
+        usedProviderId = backupProviderId;
+        providerFallbackReason = `Primary AIGC provider ${providerId} failed (${reason}); used backup ${backupProviderId}.`;
+        candidates.push(...generated);
+      } catch (backupError) {
+        const backupReason = sanitizeAigcProviderError(backupError);
+        providerErrors.push(`${backupProviderId}: ${backupReason}`);
+        throw new Error(`AIGC image generation failed on primary ${providerId} (${reason}) and backup ${backupProviderId} (${backupReason}).`);
+      }
     }
   }
 
@@ -1534,12 +1554,12 @@ async function applyAigcMaterialFill(input: {
       ...generation.warnings,
       ...(providerFallbackReason ? [providerFallbackReason] : []),
       briefs.length
-        ? `AIGC material fill used ${providerFallbackReason ? "mock_provider fallback" : providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
+        ? `AIGC material fill used ${usedProviderId}${providerFallbackReason ? " (backup)" : ""}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
         : "AIGC material fill was enabled, but no eligible missing visual slots produced generation briefs."
     ],
     aigcMaterialFill: {
       enabled: true,
-      provider: providerFallbackReason ? "mock_provider" : providerId,
+      provider: usedProviderId,
       requestedProvider: providerId,
       providerFallbackReason,
       providerErrors,
