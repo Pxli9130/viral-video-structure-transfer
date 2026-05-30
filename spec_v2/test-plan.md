@@ -239,6 +239,8 @@ Strong demo passes if:
 - [x] real ffprobe or FFmpeg analysis works on at least one uploaded video;
 - [x] FFmpeg MP4 render artefact produced (latest: `storage/generated/render_mp4_tofpa6.mp4`);
 - [x] FFmpeg render returns `clipPreviewFrames` (one real still per clip under `storage/generated/previews/<renderId>/`) and the Step 6 timeline preview renders them by clip id instead of gradient placeholders (verified end-to-end against real `ffmpeg`);
+- [x] **Evidence-first beat_cut**: `editing.mov` driven through the real API (Gemini + faster-whisper + easyocr + PySceneDetect + librosa) yields `videoType=beat_cut`, evidence-bound slots (≥70% with frame/timestamp evidence), a style-locked 15s MP4 (6 beat-cut primitives incl. `impact_flash_stamp`, audio, no placeholder strings), and passes `node scripts/evaluate-render-quality.mjs --expect-video-type beat_cut --strict` (10/10 gates). Golden unit test `editingMovBeatCutGolden.test.ts` passes; full `@vvst/shared` suite is 56/56. Driven by `npm run e2e:editing-beatcut`;
+- [x] AI-enrichment failures are visible (`aiEnrichmentStatus=failed`, e.g. Ark 401) and never silently become a clean B2B template; `npm run eval:model-understanding` compares heuristic/Gemini/Ark with failures surfaced;
 - [x] Remotion MP4 render path bundled and ready (composition compiles in 4s; renderMedia downloads headless Chromium on first call);
 - [x] HyperFrames JSON manifest produced as deterministic stub artefact;
 - [x] demo video shows the final product flow (recorded outside the repo).

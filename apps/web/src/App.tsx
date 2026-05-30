@@ -264,7 +264,6 @@ const severityDisplay: Record<string, string> = {
 
 const rendererDisplay: Record<string, string> = {
   html_preview: "HTML 预览",
-  mock_preview: "Mock 预览",
   ffmpeg: "FFmpeg MP4",
   remotion: "Remotion（占位）",
   hyperframes: "HyperFrames（占位）",
@@ -358,7 +357,6 @@ function AppContent() {
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBaseResponse | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
-  const [sampleDescription, setSampleDescription] = useState("B2B MG 宣传片：强钩子、产品价值、证明卡片、CTA。");
   const [sampleAssetId, setSampleAssetId] = useState<string>("");
   const [sampleAnalysis, setSampleAnalysis] = useState<ExampleAnalysis | null>(null);
   const [sourceAssetId, setSourceAssetId] = useState<string>("");
@@ -414,6 +412,53 @@ function AppContent() {
   const generationCandidates = safeArray(generation?.sourceUnderstanding?.candidates);
   const generationStoryboard = safeArray(generation?.storyboard);
   const generationClips = safeArray(generation?.timeline?.clips);
+  // Evidence-first KB view: slots (induced + required) that cite real frame/timestamp evidence.
+  const usedSlotIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of safeArray(generation?.slotMapping)) if (m?.slotId) ids.add(m.slotId);
+    for (const c of safeArray(generation?.timeline?.clips)) if (c?.replacementSlotId) ids.add(c.replacementSlotId);
+    return ids;
+  }, [generation]);
+  const templateEvidenceRows = useMemo(() => {
+    if (!selectedTemplate) return [] as Array<{ id: string; family: string; role: string; confidence?: number; kinds: string[]; timeRange?: number[]; thumb?: string; signal?: string; summary?: string; used: boolean }>;
+    const slots = [...safeArray(selectedTemplate.inducedSlots), ...safeArray(selectedTemplate.requiredSlots)] as unknown as Array<Record<string, unknown>>;
+    const seen = new Set<string>();
+    const rows = [];
+    for (const slot of slots) {
+      const id = String(slot.id ?? "");
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const ev = slot.sourceEvidence as { confidence?: number; evidenceKinds?: string[]; timeRange?: number[]; framePaths?: string[]; signalSource?: string; summary?: string } | undefined;
+      if (!ev || (!(ev.framePaths?.length) && !ev.timeRange)) continue;
+      rows.push({
+        id,
+        family: String(slot.visualFormFamily ?? slot.visualForm ?? "—"),
+        role: String(slot.role ?? "—"),
+        confidence: ev.confidence,
+        kinds: safeArray(ev.evidenceKinds),
+        timeRange: ev.timeRange,
+        thumb: ev.framePaths?.[0] ? publicAssetUrl(String(ev.framePaths[0])) : undefined,
+        signal: ev.signalSource,
+        summary: ev.summary,
+        used: usedSlotIds.has(id)
+      });
+    }
+    return rows;
+  }, [selectedTemplate, usedSlotIds]);
+  const templateCoveragePct = useMemo(() => {
+    if (!selectedTemplate) return 0;
+    const slots = [...safeArray(selectedTemplate.inducedSlots), ...safeArray(selectedTemplate.requiredSlots)] as unknown as Array<Record<string, unknown>>;
+    const uniq = new Map<string, Record<string, unknown>>();
+    for (const s of slots) uniq.set(String(s.id), s);
+    const all = [...uniq.values()];
+    if (!all.length) return 0;
+    const withEv = all.filter((s) => {
+      const ev = s.sourceEvidence as { framePaths?: string[]; timeRange?: number[] } | undefined;
+      return (ev?.framePaths?.length ?? 0) > 0 || ev?.timeRange;
+    });
+    return Math.round((withEv.length / all.length) * 100);
+  }, [selectedTemplate]);
+  const selectionWarnings = safeArray(generation?.warnings).filter((w) => w.startsWith("template_selection"));
   const renderedClipFrames = useMemo(() => {
     const map = new Map<string, string>();
     for (const entry of safeArray(renderResult?.clipPreviewFrames)) {
@@ -528,28 +573,6 @@ function AppContent() {
       setGeneration(null);
       setRenderResult(null);
       await refreshProject(created.id);
-    });
-  }
-
-  async function analyzeMockSample() {
-    if (!project) return;
-    await run(async () => {
-      const response = await api<AnalyzeResponse>("/api/samples/analyze", {
-        method: "POST",
-        body: JSON.stringify({
-          projectId: project.id,
-          sampleName: "b2b-mg-sample.mp4",
-          description: sampleDescription,
-          durationSec: project.targetDurationSec,
-          width: 720,
-          height: 1280,
-          fps: 30
-        })
-      });
-      if (response.template) setSelectedTemplateId(response.template.id);
-      setSampleAssetId(response.asset.id);
-      setSampleAnalysis(response.analysis);
-      await refreshProject(project.id);
     });
   }
 
@@ -872,19 +895,13 @@ function AppContent() {
                 <h2>样例学习</h2>
               </div>
               <div className="button-row">
-                <button onClick={analyzeMockSample} disabled={!project || apiState === "loading"}>
-                  分析 Mock 样例
-                </button>
                 <label className="file-button">
                   上传样例
                   <input type="file" accept="video/mp4,video/quicktime,video/*" onChange={(event) => uploadAndAnalyze(event.target.files?.[0] ?? null, "example_video")} />
                 </label>
               </div>
             </div>
-            <label>
-              样例描述兜底
-              <textarea value={sampleDescription} onChange={(event) => setSampleDescription(event.target.value)} />
-            </label>
+            <p className="hint">上传真实样例视频进行分析（已移除文本 Mock 样例：真实视频或报错，不再伪造）。</p>
             {sampleAnalysis && (
               sampleVideo ? (
                 <div className="analysis-summary">
@@ -1005,19 +1022,54 @@ function AppContent() {
             <div className="panel-heading">
               <div>
                 <span className="step">步骤 3</span>
-                <h2>知识库</h2>
+                <h2>知识库 · 证据视图</h2>
               </div>
               {knowledgeBase && <button onClick={() => downloadJson("knowledge-base.json", knowledgeBase)}>导出知识库</button>}
             </div>
+            {selectedTemplate && (
+              <div className="kb-badges">
+                <span className={`kb-badge ${selectedTemplate.videoType === "beat_cut" ? "ok" : ""}`}>类型 · {selectedTemplate.videoType ?? "未分类"}</span>
+                <span className={`kb-badge ${selectedTemplate.aiEnrichmentStatus === "ok" ? "ok" : selectedTemplate.aiEnrichmentStatus === "failed" ? "warn" : ""}`}>AI 增强 · {selectedTemplate.aiEnrichmentStatus ?? "n/a"}</span>
+                <span className={`kb-badge ${templateCoveragePct >= 70 ? "ok" : "warn"}`}>证据覆盖 · {templateCoveragePct}%</span>
+                {selectedTemplate.rhythm?.bpm ? <span className="kb-badge">节奏 · {Math.round(selectedTemplate.rhythm.bpm)} BPM</span> : null}
+              </div>
+            )}
+            {selectionWarnings.length > 0 && (
+              <div className="kb-warning">{selectionWarnings.map((w, i) => <p key={i}>⚠️ {w.replace("template_selection: ", "")}</p>)}</div>
+            )}
+            {generation?.selectedTemplateReason && (
+              <p className="kb-reason">选模依据：{generation.selectedTemplateReason}</p>
+            )}
             <div className="asset-list knowledge-scroll">
-              {knowledgeAtoms.map((atom) => (
-                <article key={`${atom.templateId}-${atom.id}`}>
-                  <strong>{roleLabel(atom.role)} · {atom.category}: {atom.name}</strong>
-                  <span>{atom.description}</span>
+              {templateEvidenceRows.map((row) => (
+                <article key={row.id} className={`kb-evidence-row${row.used ? " used" : ""}`}>
+                  {row.thumb ? <img className="kb-evidence-thumb" src={row.thumb} alt={row.family} /> : <div className="kb-evidence-thumb empty" />}
+                  <div className="kb-evidence-body">
+                    <strong>{roleLabel(row.role)} · {row.family}{row.used ? " ✓ 已用于本次生成" : ""}</strong>
+                    <span>
+                      {row.timeRange ? `${row.timeRange[0]}–${row.timeRange[1]}s` : "—"}
+                      {typeof row.confidence === "number" ? ` · 置信度 ${row.confidence.toFixed(2)}` : ""}
+                      {row.kinds.length ? ` · ${row.kinds.join("/")}` : ""}
+                    </span>
+                    {row.summary ? <small>{row.summary}</small> : null}
+                  </div>
                 </article>
               ))}
-              {!knowledgeAtoms.length && <p className="empty">样例学习后，结构原子会出现在这里。</p>}
+              {!templateEvidenceRows.length && <p className="empty">分析样例后，带帧/时间戳证据的可复用槽位会出现在这里。</p>}
             </div>
+            {knowledgeAtoms.length > 0 && (
+              <details className="kb-atoms-details">
+                <summary>结构原子（{knowledgeAtoms.length}）</summary>
+                <div className="asset-list">
+                  {knowledgeAtoms.map((atom) => (
+                    <article key={`${atom.templateId}-${atom.id}`}>
+                      <strong>{roleLabel(atom.role)} · {atom.category}: {atom.name}</strong>
+                      <span>{atom.description}</span>
+                    </article>
+                  ))}
+                </div>
+              </details>
+            )}
           </section>
 
           <section className="panel">
@@ -1386,7 +1438,6 @@ function AppContent() {
                   渲染目标
                   <select value={rendererTarget} onChange={(event) => setRendererTarget(event.target.value as RendererTarget)}>
                     <option value="html_preview">HTML 预览</option>
-                    <option value="mock_preview">Mock 预览</option>
                     <option value="ffmpeg">FFmpeg MP4</option>
                     <option value="remotion">Remotion（占位）</option>
                     <option value="hyperframes">HyperFrames（占位）</option>

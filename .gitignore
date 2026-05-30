@@ -30,3 +30,5 @@ test_videos/manual/
 marketing_demo/
 CURRENT_PROJECT_GUIDE.md
 .claude/commands/review-reference-material.md
+test_fixtures/expected_editing_mov_case/
+packages/shared/src/__tests__/fixtures/

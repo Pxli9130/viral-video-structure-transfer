@@ -3,7 +3,7 @@ import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
-import { HtmlPreviewRenderer, MockRenderer } from "@vvst/renderer";
+import { HtmlPreviewRenderer } from "@vvst/renderer";
 import {
   nowIso,
   stableId,
@@ -16,7 +16,7 @@ import {
   type TimelineClip
 } from "@vvst/shared";
 
-export { HtmlPreviewRenderer, MockRenderer };
+export { HtmlPreviewRenderer };
 
 function resolveFfmpegBin(): string {
   const explicit = process.env.FFMPEG_PATH;
@@ -472,6 +472,9 @@ export class FFmpegRenderer implements RendererAdapter {
     const textStyle = drawTextStyle(timeline);
     const segmentFiles: string[] = [];
     const warnings: string[] = [];
+    let sourceClipCount = 0;
+    let primitiveClipCount = 0;
+    let placeholderClipCount = 0;
 
     for (let index = 0; index < timeline.clips.length; index += 1) {
       const clip = timeline.clips[index];
@@ -479,6 +482,9 @@ export class FFmpegRenderer implements RendererAdapter {
       const subtitle = escapeDrawText(clip.subtitleText ?? clip.visualIntent ?? "");
       const duration = Math.max(0.5, clip.durationSec);
       const usedSource = await this.renderClip(clip, segmentPath, { width, height, fps, duration, subtitle, warnings, timeline, textStyle });
+      if (usedSource) sourceClipCount += 1;
+      else if (clip.motionPrimitive) primitiveClipCount += 1;
+      else placeholderClipCount += 1;
       if (!usedSource && (this.opts.preferSourceClips ?? false)) {
         warnings.push(`Clip ${clip.id}: no usable source asset; fell back to generated card.`);
       }
@@ -491,8 +497,25 @@ export class FFmpegRenderer implements RendererAdapter {
 
     const listPath = path.join(workDir, "concat.txt");
     await fs.writeFile(listPath, segmentFiles.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n"), "utf8");
+    const silentPath = path.join(workDir, `${renderId}.silent.mp4`);
+    await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-movflags", "+faststart", silentPath]);
+
     const outputPath = path.join(this.opts.generatedDir, `${renderId}.mp4`);
-    await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-movflags", "+faststart", outputPath]);
+    const renderQualityWarnings: string[] = [];
+    const totalDuration = timeline.durationSec || timeline.clips.reduce((sum, c) => sum + Math.max(0.5, c.durationSec), 0);
+    const audioAdded = await this.addAudioTrack(silentPath, outputPath, timeline, totalDuration, warnings);
+    if (!audioAdded) {
+      await fs.copyFile(silentPath, outputPath);
+      if ((timeline.renderPlan?.audioPolicy ?? "silent") !== "silent") renderQualityWarnings.push("no_audio");
+    }
+
+    // Quality signals for the gate / UI.
+    const isBeatCut = timeline.renderPlan?.beatGrid?.status === "ok" || timeline.renderPlan?.audioPolicy === "synth_beat" || timeline.renderPlan?.audioPolicy === "sample_bgm";
+    if (placeholderClipCount > 0) renderQualityWarnings.push("placeholder_detected");
+    if (isBeatCut && sourceClipCount === 0) renderQualityWarnings.push("no_source_clips");
+    if (isBeatCut && primitiveClipCount + sourceClipCount < Math.ceil(timeline.clips.length * 0.6)) {
+      renderQualityWarnings.push("weak_style_transfer");
+    }
 
     const clipPreviewFrames = await this.extractClipPreviewFrames(timeline.clips, segmentFiles, renderId, warnings);
 
@@ -504,9 +527,58 @@ export class FFmpegRenderer implements RendererAdapter {
       outputPath,
       previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
       clipPreviewFrames,
+      renderQualityWarnings: renderQualityWarnings.length ? renderQualityWarnings : undefined,
       error: warnings.length ? warnings.join(" | ") : undefined,
       createdAt: nowIso()
     };
+  }
+
+  /**
+   * Mux an audio track onto the silent render per renderPlan.audioPolicy:
+   *  - sample_bgm: carry the authorized sample/source audio (looped to duration);
+   *  - synth_beat: generate a beat-aligned click track at the timeline BPM;
+   *  - silent: no audio.
+   * Returns true when an audio track was written to finalPath.
+   */
+  private async addAudioTrack(
+    silentPath: string,
+    finalPath: string,
+    timeline: Timeline,
+    durationSec: number,
+    warnings: string[]
+  ): Promise<boolean> {
+    const policy = timeline.renderPlan?.audioPolicy ?? "silent";
+    if (policy === "silent") return false;
+    const dur = Math.max(1, durationSec).toFixed(2);
+    try {
+      if (policy === "sample_bgm") {
+        const audioRef = timeline.renderPlan?.audioRef;
+        const audioFile = audioRef ? this.opts.assetResolver.resolve(audioRef) : undefined;
+        if (audioFile && existsSync(audioFile)) {
+          await runFfmpeg([
+            "-y", "-i", silentPath, "-stream_loop", "-1", "-i", audioFile,
+            "-map", "0:v:0", "-map", "1:a:0", "-t", dur,
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", finalPath
+          ]);
+          return true;
+        }
+        warnings.push(`Audio policy sample_bgm but audioRef ${audioRef ?? "n/a"} did not resolve; falling back to synth beat.`);
+      }
+      // synth_beat (and sample_bgm fallback): generate a beat-aligned click track.
+      const bpm = timeline.renderPlan?.beatGrid?.bpm ?? 120;
+      const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+      // Decaying click every beat + a softer low kick — audible beat grid, no copyrighted audio.
+      const click = `aevalsrc='0.45*sin(2*PI*1180*t)*exp(-16*mod(t\\,${beatInterval}))+0.35*sin(2*PI*220*t)*exp(-9*mod(t\\,${beatInterval}))':s=44100:d=${dur}`;
+      await runFfmpeg([
+        "-y", "-i", silentPath, "-f", "lavfi", "-i", click,
+        "-map", "0:v:0", "-map", "1:a:0", "-t", dur,
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", finalPath
+      ]);
+      return true;
+    } catch (error) {
+      warnings.push(`Audio mux failed (${(error as Error).message}); writing silent video.`);
+      return false;
+    }
   }
 
   /**
@@ -640,7 +712,88 @@ export class FFmpegRenderer implements RendererAdapter {
         options.warnings.push(`Clip ${clip.id}: source render failed (${(error as Error).message}); using card.`);
       }
     }
+    // Beat-cut style program: render the learned visual grammar (dark bg, bold center
+    // typography, beat-synced flashes/cuts) instead of a generic proxy placeholder card.
+    if (clip.motionPrimitive) {
+      return this.renderBeatCutPrimitive(clip, segmentPath, options, clip.motionPrimitive);
+    }
     return this.renderGeneratedCard(clip, segmentPath, options);
+  }
+
+  /**
+   * Render a named beat-cut style primitive as a self-contained lavfi segment:
+   * dark background + bold center text + red emphasis + a beat-synced white flash
+   * (and per-primitive accents). Returns false (no source asset was consumed).
+   */
+  private async renderBeatCutPrimitive(
+    clip: TimelineClip,
+    segmentPath: string,
+    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle },
+    primitive: string
+  ): Promise<boolean> {
+    const { width: W, height: H, duration } = options;
+    const bpm = options.timeline.renderPlan?.beatGrid?.bpm ?? 120;
+    const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+    // Only draw clean copy (clip.subtitleText); never leak the English slot-description visualIntent.
+    const text = options.subtitle;
+    const tokens = clip.styleTokens ?? [];
+    const redEmphasis = tokens.includes("red_emphasis") || primitive === "motivation_cta";
+
+    const filters: string[] = ["format=yuv420p"];
+    // Beat-synced full-frame flash (pulses on every beat).
+    const flashAlpha = primitive === "action_montage" ? "0.22" : "0.14";
+    const flashColor = redEmphasis && primitive === "action_montage" ? "0xef4444" : "0xffffff";
+    filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=${flashColor}@${flashAlpha}:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
+
+    if (primitive === "neon_hero_intro") {
+      const R = Math.round(Math.min(W, H) * 0.22);
+      const box = Math.round(Math.min(W, H) * 0.14);
+      filters.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.85)':y='(ih-${box})/2+${R}*cos(2*PI*t*0.85)':w=${box}:h=${box}:color=0x22d3ee@0.85:t=fill`);
+      filters.push(`drawbox=x='(iw-${Math.round(box * 0.6)})/2+${R}*sin(2*PI*t*0.85+1.6)':y='(ih-${Math.round(box * 0.6)})/2+${R}*cos(2*PI*t*0.85+1.6)':w=${Math.round(box * 0.6)}:h=${Math.round(box * 0.6)}:color=0xef4444@0.75:t=fill`);
+    } else if (primitive === "action_montage") {
+      // energetic shifting bars + diagonal sweep
+      for (let i = 0; i < 3; i += 1) {
+        const y = Math.round(H * (0.2 + i * 0.22));
+        filters.push(`drawbox=x='mod(t*${Math.round(W * (1.4 + i * 0.4))}\\,iw)-${Math.round(W * 0.3)}':y=${y}:w=${Math.round(W * 0.3)}:h=${Math.round(H * 0.04)}:color=${i % 2 ? "0xf97316" : "0x22d3ee"}@0.8:t=fill`);
+      }
+      filters.push(`drawbox=x='mod(t*${Math.round(W * 1.9)}\\,iw)':y=0:w=8:h=ih:color=0xffffff@0.5:t=fill`);
+    } else if (primitive === "motivation_cta") {
+      filters.push(`drawbox=x=0:y=${Math.round(H * 0.86)}:w=iw:h=${Math.round(H * 0.07)}:color=0xb91c1c@0.92:t=fill`);
+    } else if (primitive === "impact_flash_stamp") {
+      // strong red impact stamp pulsing hard on every beat + diagonal speed lines
+      filters.push(`drawbox=x=${Math.round(W * 0.5)}-${Math.round(W * 0.18)}:y=${Math.round(H * 0.42)}:w=${Math.round(W * 0.36)}:h=${Math.round(W * 0.36)}:color=0xef4444@0.85:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.09)'`);
+      filters.push(`drawbox=x='mod(t*${Math.round(W * 2.2)}\\,iw)':y=0:w=10:h=ih:color=0xfbbf24@0.6:t=fill`);
+    } else {
+      // beat_text_card / tutorial_rule_card: red underline accent below the text
+      filters.push(`drawbox=x=${Math.round(W * 0.18)}:y=${Math.round(H * 0.6)}:w=${Math.round(W * 0.64)}:h=${Math.round(H * 0.012)}:color=0xef4444@0.9:t=fill`);
+    }
+
+    if (primitive === "tutorial_rule_card") {
+      const label = escapeDrawText("剪辑要点 / RULE");
+      filters.push(`drawtext=${FONT_FILE_ARG}text='${label}':fontcolor=0xfbbf24:fontsize=${Math.round(H * 0.028)}:x=(w-text_w)/2:y=${Math.round(H * 0.34)}:box=0`);
+    }
+
+    if (text) {
+      const big = primitive === "motivation_cta" || primitive === "neon_hero_intro";
+      const rawLen = (clip.subtitleText ?? clip.visualIntent ?? "").length || 1;
+      // Fit single-line CJK text within ~88% of the frame width (drawtext has no auto-wrap).
+      const widthFit = Math.floor((W * 0.88) / rawLen);
+      const fontSize = Math.max(Math.round(H * 0.03), Math.min(Math.round(H * (big ? 0.07 : 0.055)), widthFit));
+      const yExpr = primitive === "neon_hero_intro" ? `${Math.round(H * 0.72)}` : "(h-text_h)/2";
+      const fontColor = redEmphasis ? "0xfca5a5" : "white";
+      const boxColor = primitive === "motivation_cta" ? "0x7f1d1d@0.0" : "black@0.35";
+      // subtle beat pulse: a brief enlarged shadow copy on the beat
+      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${fontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=${yExpr}:box=1:boxcolor=${boxColor}:boxborderw=24`);
+    }
+
+    const lavfi = `color=c=0x05060a:s=${W}x${H}:d=${duration.toFixed(2)},${filters.join(",")}`;
+    await runFfmpeg([
+      "-y", "-f", "lavfi", "-i", lavfi,
+      "-t", duration.toFixed(2), "-r", String(options.fps),
+      "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+      segmentPath
+    ]);
+    return false;
   }
 
   private async renderMediaCardAssetStack(
@@ -1101,8 +1254,6 @@ export function selectRenderer(target: RendererTarget, opts: RendererSelectOptio
       return selectRendererBackend("remotion_mg", opts);
     case "hyperframes":
       return new HyperFramesRenderer({ generatedDir: opts.generatedDir });
-    case "mock_preview":
-      return new MockRenderer();
     case "html_preview":
     default:
       return new HtmlPreviewRenderer();

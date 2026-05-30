@@ -45,7 +45,7 @@ import type {
   VideoAnalysisResult,
   Vertical
 } from "../types.js";
-import { augmentTemplateWithInducedSlots, clickToReplaceForFamily, primaryRendererCapabilityForFamily } from "./slotInduction.js";
+import { augmentTemplateWithInducedSlots, bindSlotEvidence, clickToReplaceForFamily, induceSlotsFromAnalysis, primaryRendererCapabilityForFamily } from "./slotInduction.js";
 import {
   validateAssetAnalysis,
   validateGenerationRequest,
@@ -646,10 +646,19 @@ function paceFromAvg(avg: number | undefined): RhythmSpec["pace"] {
   return "mixed";
 }
 
-function buildRhythm(durationSec: number, vlm?: VLMVideoAnalysis): RhythmSpec {
-  const avg = vlm?.rhythm?.avgShotLength ?? round(durationSec / 5);
+function buildRhythm(durationSec: number, vlm?: VLMVideoAnalysis, analysis?: VideoAnalysisResult): RhythmSpec {
+  const ev = analysis?.evidenceTimeline;
+  const evAvg = ev?.stats?.avgShotDurationSec;
+  const avg = evAvg ?? vlm?.rhythm?.avgShotLength ?? round(durationSec / 5);
   const peakRatio = vlm?.rhythm?.peakTimeRatio ?? 0.7;
+  const bpm = ev?.beatGrid?.status === "ok" ? ev.beatGrid.bpm : undefined;
+  const beatCount = ev?.beatGrid?.beats?.length;
+  const evFast = ev?.stats?.fastZones?.length
+    ? `fast zones: ${ev.stats.fastZones.slice(0, 4).map(([a, b]) => `${a}-${b}s`).join(", ")}`
+    : null;
   const beatNotes = [
+    bpm ? `~${bpm} BPM beat grid` : null,
+    evFast,
     vlm?.rhythm?.notes,
     vlm?.rhythm?.fastSections?.length ? `fast: ${vlm.rhythm.fastSections.join(", ")}` : null,
     vlm?.rhythm?.peakMoments?.length ? `peaks: ${vlm.rhythm.peakMoments.join(", ")}` : null
@@ -660,6 +669,8 @@ function buildRhythm(durationSec: number, vlm?: VLMVideoAnalysis): RhythmSpec {
     pace: paceFromAvg(avg),
     averageShotDurationSec: round(avg),
     peakTimeRatio: peakRatio,
+    bpm: bpm ?? undefined,
+    beatCount: beatCount ?? undefined,
     notes: beatNotes
   };
 }
@@ -717,10 +728,31 @@ function videoTypeFromVlm(vlm: VLMVideoAnalysis | undefined, vertical: Vertical)
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+  // beat_cut is determined by the deterministic evidence timeline (cuts + beats + dark bg
+  // + montage), not by VLM keywords like "montage" which also appear in MG promos.
   if (/motion|mg|poster|ribbon|title card|动态海报|海报|彩带/.test(haystack)) return "motion_graphic_marketing_poster";
   if (/talking|口播|person|face/.test(haystack)) return "talking_head";
   if (/vlog/.test(haystack)) return "vlog";
   return vertical;
+}
+
+/**
+ * Determine videoType with the deterministic evidence timeline taking priority over the
+ * VLM summary: fast cuts + an audio beat grid + dark background + an action montage are a
+ * strong, hallucination-proof signal of a beat_cut / editing-tutorial sample.
+ */
+function detectVideoType(vlm: VLMVideoAnalysis | undefined, vertical: Vertical, analysis?: VideoAnalysisResult): string {
+  const ev = analysis?.evidenceTimeline;
+  if (ev) {
+    const beats = ev.beatGrid?.beats?.length ?? 0;
+    const hasBeatAudio = ev.beatGrid?.status === "ok" && beats >= 20;
+    const fast = (ev.stats?.medianShotDurationSec ?? 99) < 2.6 || (ev.stats?.cutDensity ?? 0) > 0.22;
+    const dark = (ev.stats?.blackBgRatio ?? 0) > 0.4;
+    const montage = ev.shots?.some((shot) => shot.family === "live_action_montage") ?? false;
+    const score = (fast ? 1 : 0) + (dark ? 1 : 0) + (montage ? 1 : 0) + (hasBeatAudio ? 1 : 0);
+    if (score >= 3) return "beat_cut";
+  }
+  return videoTypeFromVlm(vlm, vertical);
 }
 
 function colorProgressionFromText(text: string | undefined): string[] | undefined {
@@ -823,12 +855,169 @@ function qualityRationaleFromVlm(vlm: VLMVideoAnalysis | undefined): string {
     .join(" ");
 }
 
+/** Derive a human-readable source label (filename when discoverable) for template naming. */
+function deriveSampleLabel(analysis: VideoAnalysisResult): string {
+  const candidates = [
+    (analysis.primaryMotif?.evidence as Record<string, unknown> | undefined)?.source,
+    analysis.evidenceTimeline?.sourceAssetId,
+    analysis.assetId
+  ]
+    .filter((v): v is string => typeof v === "string");
+  for (const c of candidates) {
+    const m = c.match(/[\w.-]+\.(mov|mp4|webm|mkv|avi|m4v)/i);
+    if (m) return m[0];
+  }
+  return "sample";
+}
+
+/** Beat-cut required slots (ids/roles/families/renderer candidates) — the learned editing-tutorial grammar. */
+const BEAT_CUT_SLOT_SPECS: Array<{
+  id: string;
+  role: SegmentRole;
+  slotType: SlotType;
+  family: VisualFormFamily;
+  candidates: string[];
+  label: string;
+  motif: string;
+}> = [
+  { id: "slot_rotating_hero_object_intro", role: "hook", slotType: "hook_visual", family: "object_motion", candidates: ["neon_hero_intro", "rotating_object_proxy"], label: "霓虹旋转主视觉开场", motif: "rotating neon hero object intro on dark background" },
+  { id: "slot_kinetic_text_card_sequence", role: "setup", slotType: "title_card", family: "kinetic_typography", candidates: ["beat_text_card", "kinetic_text_card"], label: "动效文字卡序列", motif: "kinetic black title card sequence with bold center text" },
+  { id: "slot_tutorial_rule_card", role: "body", slotType: "title_card", family: "kinetic_typography", candidates: ["tutorial_rule_card", "beat_text_card"], label: "剪辑要点规则卡", motif: "tutorial rule cards explaining the editing technique" },
+  { id: "slot_beat_sync_action_montage", role: "proof", slotType: "proof_visual", family: "live_action_montage", candidates: ["action_montage", "hero_montage_proxy"], label: "卡点动作混剪", motif: "beat-sync action montage with hard cuts and crop zooms" },
+  { id: "slot_impact_flash_stamp", role: "transition", slotType: "transition", family: "live_action_montage", candidates: ["impact_flash_stamp", "beat_text_card"], label: "冲击闪切印记", motif: "red impact flash stamp on the strongest beats" },
+  { id: "slot_cta_end_slate", role: "cta", slotType: "cta_visual", family: "brand_cta", candidates: ["motivation_cta", "logo_cta_hold", "text_logo_card"], label: "行动号召收尾卡", motif: "motivation CTA end slate hold" }
+];
+
+/**
+ * Build a beat-cut / editing-tutorial StructureTemplate: the learned visual grammar with
+ * named, evidence-bound slots (hero intro, kinetic rule cards, beat-sync montage, impact
+ * flash, CTA), a 152-BPM-style rhythm, and clean (non-placeholder) naming. Sample frames
+ * remain evidence only.
+ */
+export function buildBeatCutTemplate(
+  analysis: VideoAnalysisResult,
+  vertical: Vertical,
+  projectId: string,
+  vlm?: VLMVideoAnalysis
+): StructureTemplate {
+  const durationSec = analysis.metadata.durationSec;
+  const templateId = stableId("template", analysis.assetId, durationSec, "beat_cut");
+  const createdAt = nowIso();
+  const sampleLabel = deriveSampleLabel(analysis);
+  const ev = analysis.evidenceTimeline;
+
+  const requiredSlots: RequiredSlot[] = BEAT_CUT_SLOT_SPECS.map((spec) => ({
+    id: spec.id,
+    role: spec.role,
+    slotType: spec.slotType,
+    required: true,
+    description: `${spec.label} · ${spec.motif}`,
+    preferredTags: [spec.family, spec.role],
+    fallbackStrategies: ["procedural_generation", "user_asset_replace"],
+    visualForm: spec.candidates[0],
+    visualFormFamily: spec.family,
+    modality: spec.family === "kinetic_typography" ? "text" : spec.family === "brand_cta" ? "logo" : "video_clip",
+    rendererCandidates: spec.candidates,
+    sourceEvidence: bindSlotEvidence(spec.role, spec.family, 0.82, [spec.motif, spec.label], ev),
+    confidence: 0.82,
+    semanticLabel: spec.label,
+    clickToReplace: true
+  }));
+
+  const segRatios: Array<[SegmentRole, number, number, string]> = [
+    ["hook", 0, 0.16, "slot_rotating_hero_object_intro"],
+    ["setup", 0.16, 0.36, "slot_kinetic_text_card_sequence"],
+    ["body", 0.36, 0.55, "slot_tutorial_rule_card"],
+    ["proof", 0.55, 0.74, "slot_beat_sync_action_montage"],
+    ["transition", 0.74, 0.86, "slot_impact_flash_stamp"],
+    ["cta", 0.86, 1, "slot_cta_end_slate"]
+  ];
+  const segments: StructureSegment[] = segRatios.map(([role, startRatio, endRatio, slotId], i) => ({
+    id: `seg_beatcut_${i}_${role}`,
+    role,
+    startRatio,
+    endRatio,
+    intent: requiredSlots.find((s) => s.id === slotId)?.description ?? role,
+    scriptPattern: requiredSlots.find((s) => s.id === slotId)?.semanticLabel ?? role,
+    slots: [slotId],
+    recommendedDurationSec: round((endRatio - startRatio) * (analysis.metadata.durationSec ? 15 : 15))
+  }));
+
+  const bpm = ev?.beatGrid?.status === "ok" ? ev.beatGrid.bpm : undefined;
+  const atomDefs: Array<[SegmentRole, KnowledgeAtom["category"], string, string]> = [
+    ["hook", "hook_pattern", "Neon rotating hero-object intro", "Open on a dark rotating neon hero object before any text."],
+    ["body", "rhythm_pattern", `${bpm ? Math.round(bpm) : 152} BPM beat-cut rhythm`, "Cut on the beat grid; fast 1.4–1.8s shots with crop-zoom energy."],
+    ["body", "subtitle_style", "Black-bg bold center red/yellow typography", "Center bold Chinese title cards with red/yellow keyword emphasis."],
+    ["setup", "transition_pattern", "Hard cut on every beat", "Use hard cuts aligned to the beat grid, never dissolves."],
+    ["proof", "shot_pattern", "Beat-sync action montage", "Action montage with hard cuts, speed ramps and red impact flash stamps."],
+    ["cta", "cta_pattern", "Motivation end-slate CTA", "Close on a held motivational CTA card, no platform branding."],
+    ["body", "gap_fill_strategy", "Procedural beat-cut card on missing material", "When material is missing, render a procedural beat-cut style card rather than a static placeholder."]
+  ];
+  const structureAtoms: KnowledgeAtom[] = atomDefs.map(([role, category, name, description], i) => ({
+    id: stableId("atom", templateId, role, category, String(i)),
+    projectId,
+    templateId,
+    role,
+    category,
+    name,
+    description,
+    applicableVerticals: ["beat_cut", vertical],
+    usageRules: `Transfer ${name.toLowerCase()} structure only; do not copy sample frames/audio.`,
+    confidence: 0.85
+  }));
+
+  const template: StructureTemplate = {
+    id: templateId,
+    projectId,
+    name: `Learned Beat-Cut Editing Tutorial Structure · ${sampleLabel}`,
+    vertical,
+    sourceSampleIds: [analysis.assetId],
+    videoType: "beat_cut",
+    visualStyle: {
+      background: "dark_tech_black",
+      layout: "center_bold_typography",
+      motionAsset: "beat_synced_cards_and_montage",
+      colorProgression: ["black", "red", "yellow", "white"],
+      typography: "bold_center_cjk_red_yellow_white"
+    },
+    excludeSegments: excludeSegmentsFromVlm(vlm, durationSec),
+    targetDurationSec: 15,
+    segments,
+    requiredSlots,
+    inducedSlots: induceSlotsFromAnalysis(analysis, undefined, structureAtoms, vlm),
+    rhythm: buildRhythm(durationSec, vlm, analysis),
+    packaging: {
+      subtitleStyle: "bold_center_cjk_red_yellow_white",
+      titleCardStyle: "black_bg_kinetic_typography",
+      overlayStyle: "red_impact_flash",
+      transitionStyle: "hard_cut_on_beat",
+      coverStyle: "neon_hero_dark_tech"
+    },
+    structureAtoms,
+    editingTechniques: buildEditingTechniques(),
+    replacementPolicy: {
+      doNotCopySampleVisuals: true,
+      allowedTransfer: ["structure", "rhythm", "packaging", "subtitle_style", "cta_pattern", "transition_pattern"],
+      forbiddenTransfer: ["original_video_frames", "original_audio", "original_voiceover", "person_likeness"]
+    },
+    qualityRationale: `Beat-cut editing-tutorial structure transferred from ${sampleLabel}: neon hero intro → kinetic rule cards → beat-sync action montage → impact flash → motivation CTA, locked to a ${bpm ? Math.round(bpm) : 152} BPM beat grid. Sample frames/audio are structure evidence only and are never copied.`,
+    aiEnrichmentStatus: vlm ? "ok" : "skipped",
+    sourcePolicy: buildSourcePolicy(),
+    createdAt,
+    updatedAt: createdAt
+  };
+  return template;
+}
+
 export function buildFallbackTemplate(
   analysis: VideoAnalysisResult,
   vertical: Vertical = "b2b_marketing_mg",
   projectId?: string,
   vlm?: VLMVideoAnalysis
 ): StructureTemplate {
+  if (detectVideoType(vlm, vertical, analysis) === "beat_cut") {
+    return buildBeatCutTemplate(analysis, vertical, projectId ?? analysis.projectId, vlm);
+  }
   const durationSec = analysis.metadata.durationSec;
   const excludeSegments = excludeSegmentsFromVlm(vlm, durationSec);
   const templateId = stableId("template", analysis.assetId, durationSec, vertical);
@@ -841,13 +1030,13 @@ export function buildFallbackTemplate(
     name: nameFromVlm(vlm, defaultName),
     vertical,
     sourceSampleIds: [analysis.assetId],
-    videoType: videoTypeFromVlm(vlm, vertical),
+    videoType: detectVideoType(vlm, vertical, analysis),
     visualStyle: visualStyleFromVlm(vlm, analysis),
     excludeSegments,
     targetDurationSec: transferableDurationSec(durationSec, excludeSegments),
     segments: buildSegments(vlm),
     requiredSlots: buildRequiredSlots(),
-    rhythm: buildRhythm(durationSec, vlm),
+    rhythm: buildRhythm(durationSec, vlm, analysis),
     packaging: buildPackaging(vlm),
     structureAtoms: buildStructureAtoms(templateId, owningProject, vertical, vlm),
     editingTechniques: buildEditingTechniques(),
@@ -857,6 +1046,7 @@ export function buildFallbackTemplate(
       forbiddenTransfer: ["original_video_frames", "original_audio", "original_voiceover", "person_likeness"]
     },
     qualityRationale: qualityRationaleFromVlm(vlm),
+    aiEnrichmentStatus: vlm ? "ok" : "skipped",
     sourcePolicy: buildSourcePolicy(),
     createdAt,
     updatedAt: createdAt
@@ -2518,10 +2708,72 @@ export interface BuildTimelineInput {
   generationId: string;
 }
 
+const KNOWN_BEAT_PRIMITIVES = new Set([
+  "neon_hero_intro",
+  "beat_text_card",
+  "tutorial_rule_card",
+  "action_montage",
+  "impact_flash_stamp",
+  "motivation_cta"
+]);
+
+/** The beat-cut primitive for a slot = its first renderer candidate that is a known primitive. */
+function beatPrimitiveFromSlot(slot: RequiredSlot | undefined): string | undefined {
+  return slot?.rendererCandidates?.find((candidate) => KNOWN_BEAT_PRIMITIVES.has(candidate));
+}
+
+/** Strip placeholder/proxy strings from a beat-cut clip so the output never shows debug labels. */
+const FORBIDDEN_VISUAL_TEXT = /placeholder|proxy|missing|运动图插槽|B2B MG Promo|generic landing page/i;
+function sanitizeBeatCutLayers(layers: TimelineLayer[], clipId: string): TimelineLayer[] {
+  const cleaned: TimelineLayer[] = layers
+    .filter((layer) => layer.kind !== "base_visual" || Boolean(layer.assetId))
+    .map((layer): TimelineLayer => {
+      const style = layer.style ? { ...layer.style } : undefined;
+      if (style) {
+        delete (style as Record<string, unknown>).placeholderSpec;
+        if (typeof style.fillStrategy === "string" && FORBIDDEN_VISUAL_TEXT.test(style.fillStrategy)) {
+          style.fillStrategy = "procedural_generation";
+        }
+        for (const [key, value] of Object.entries(style)) {
+          if (typeof value === "string" && FORBIDDEN_VISUAL_TEXT.test(value)) delete (style as Record<string, unknown>)[key];
+        }
+      }
+      const text = layer.text && FORBIDDEN_VISUAL_TEXT.test(layer.text) ? undefined : layer.text;
+      return { ...layer, text, style };
+    });
+  if (!cleaned.some((layer) => layer.kind === "background")) {
+    cleaned.unshift({ id: stableId("layer_bg", clipId, "beatcut"), kind: "background", style: { color: "#05060a" } });
+  }
+  return cleaned;
+}
+
+/** Pick the beat-cut style primitive the renderer should draw for a clip (role + family). */
+function beatCutPrimitiveForClip(clip: TimelineClip): string {
+  if (clip.role === "hook") return "neon_hero_intro";
+  if (clip.role === "cta") return "motivation_cta";
+  const fam = clip.visualFormFamily;
+  if (fam === "live_action_montage") return "action_montage";
+  if (fam === "object_motion") return "action_montage";
+  if (fam === "brand_cta") return "motivation_cta";
+  if (fam === "kinetic_typography") return "beat_text_card";
+  if (clip.role === "proof") return "action_montage";
+  return clip.subtitleText ? "tutorial_rule_card" : "beat_text_card";
+}
+
+/** Synthesize a regular beat grid at the transferred BPM (we transfer rhythm, not sample audio). */
+function synthesizeBeatGrid(bpmInput: number | undefined, durationSec: number): { bpm: number; beats: number[] } {
+  const bpm = bpmInput && bpmInput > 40 && bpmInput < 300 ? bpmInput : 120;
+  const interval = 60 / bpm;
+  const beats: number[] = [];
+  for (let t = 0; t < durationSec - 0.001; t += interval) beats.push(Number(t.toFixed(3)));
+  return { bpm, beats };
+}
+
 export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; storyboard: StoryboardItem[] } {
   const { template, request, source, mappings, fillPlan, generationId } = input;
   const totalSec = request.target.targetDurationSec;
   const brief = parsePromptToBrief(request);
+  const isBeatCut = template.videoType === "beat_cut";
   const clips: TimelineClip[] = [];
   const storyboard: StoryboardItem[] = [];
   const mapping: TimelineMappingItem[] = [];
@@ -2722,9 +2974,10 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         transitionOut: "hard_cut",
         layers,
         replacementSlotId: fillForSlot?.rendererInstructions?.replacementSlotId,
-        placeholderSpec: fillForSlot?.rendererInstructions?.placeholderSpec as PlaceholderSpec | undefined,
+        placeholderSpec: isBeatCut ? undefined : (fillForSlot?.rendererInstructions?.placeholderSpec as PlaceholderSpec | undefined),
         gapFillStrategy: strategy,
-        visualFormFamily: slot?.visualFormFamily
+        visualFormFamily: slot?.visualFormFamily,
+        motionPrimitive: isBeatCut ? beatPrimitiveFromSlot(slot) : undefined
       });
 
       storyboard.push({
@@ -2766,6 +3019,54 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   const timelineGapReport = generateGapReport(mappings, { source, template, request });
   const replacementSlots = replacementSlotsFromGapReport(timelineGapReport, fillPlan);
 
+  // Beat-cut style program: decorate clips with the named primitive + style tokens + the
+  // beats that fall inside each clip, so the renderer executes the learned visual grammar
+  // (dark bg, bold center typography, beat-synced hard cuts) instead of generic proxy cards.
+  const synthBeat = synthesizeBeatGrid(template.rhythm.bpm, durationSec);
+  const sampleReuse = request.constraints?.sampleAssetReuse;
+  const audioPolicy: "sample_bgm" | "synth_beat" | "silent" = isBeatCut
+    ? sampleReuse === "authorized"
+      ? "sample_bgm"
+      : "synth_beat"
+    : "silent";
+  const audioRef = audioPolicy === "sample_bgm" ? source.assetId : undefined;
+  // Style tokens are the learned visual grammar; they also surface in explainability views.
+  const baseStyleTokens = ["dark_tech", "black_bg", "red_yellow_white_text", "hard_cut", "beat_pulse", "impact_flash", "beat_sync"];
+  // Clean Chinese copy pool from the brief so beat-cut cards never fall back to English
+  // slot-description text (e.g. "kinetic_typography: kinetic_text_card").
+  const copyPool = [brief.topic, ...brief.sellingPoints].map((t) => (t ?? "").trim()).filter(Boolean);
+  const ctaCopy = brief.cta?.trim() || brief.topic?.trim() || "立即试试 · 上传素材开始重构";
+  let copyCursor = 0;
+  const hasCjk = (text: string | undefined): boolean => Boolean(text && /[一-鿿]/.test(text));
+  const styledClips: TimelineClip[] = isBeatCut
+    ? clips.map((clip) => {
+        const clipEnd = clip.startSec + clip.durationSec;
+        const beatTimestamps = synthBeat.beats
+          .filter((b) => b >= clip.startSec && b < clipEnd)
+          .map((b) => Number((b - clip.startSec).toFixed(3)));
+        let subtitleText = clip.subtitleText;
+        if (!hasCjk(subtitleText)) {
+          if (clip.role === "cta") subtitleText = ctaCopy;
+          else if (clip.role === "hook") subtitleText = brief.topic?.trim() || brief.productName?.trim() || copyPool[0];
+          else subtitleText = copyPool.length ? copyPool[copyCursor++ % copyPool.length] : brief.topic?.trim();
+        }
+        // Keep visualIntent clean (no English slot-description leak into explainability text).
+        const visualIntent = clip.visualIntent && FORBIDDEN_VISUAL_TEXT.test(clip.visualIntent) ? subtitleText : clip.visualIntent;
+        return {
+          ...clip,
+          subtitleText,
+          visualIntent,
+          transitionIn: clip.startSec === 0 ? "none" : "hard_cut",
+          transitionOut: "hard_cut",
+          motionPrimitive: clip.motionPrimitive ?? beatCutPrimitiveForClip(clip),
+          styleTokens: baseStyleTokens,
+          beatTimestamps,
+          placeholderSpec: undefined,
+          layers: sanitizeBeatCutLayers(clip.layers, clip.id)
+        };
+      })
+    : clips;
+
   const timeline: Timeline = {
     id: stableId("timeline", generationId, request.prompt),
     projectId: request.projectId,
@@ -2773,7 +3074,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
     durationSec,
     aspectRatio,
     rendererTarget: "html_preview",
-    clips,
+    clips: styledClips,
     mapping,
     gapReport: timelineGapReport,
     fillPlan,
@@ -2782,8 +3083,11 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       width: aspectRatio === "9:16" ? 720 : 1280,
       height: aspectRatio === "9:16" ? 1280 : 720,
       fps: 30,
-      background: renderBackgroundForControls(request.controls),
+      background: isBeatCut ? "#05060a" : renderBackgroundForControls(request.controls),
       motionAtoms: buildMotionAtoms(fillPlan, request, durationSec),
+      beatGrid: isBeatCut ? { status: "ok", bpm: synthBeat.bpm, beats: synthBeat.beats, source: "synth_from_bpm" } : undefined,
+      audioPolicy,
+      audioRef,
       rendererBackend: "remotion_mg",
       adapterOptions: {
         pace: request.controls?.pace ?? "fast",

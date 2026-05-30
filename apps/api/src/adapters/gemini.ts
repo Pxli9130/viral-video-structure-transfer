@@ -211,7 +211,7 @@ export class GeminiVLMAdapter implements VLMAdapter {
     }));
   }
 
-  async describeVideo(asset: Asset, opts: { mimeType?: string; purpose?: "sample" | "source" } = {}): Promise<VLMVideoAnalysis> {
+  async describeVideo(asset: Asset, opts: { mimeType?: string; purpose?: "sample" | "source"; evidenceContext?: string } = {}): Promise<VLMVideoAnalysis> {
     if (!this.available || !this.client) throw new Error("Gemini VLM is not configured");
     if (!asset.path) throw new Error(`GeminiVLMAdapter requires asset.path for asset ${asset.id}`);
     const fromExt = guessMimeType(asset.filename);
@@ -252,9 +252,15 @@ export class GeminiVLMAdapter implements VLMAdapter {
       videoPart = createPartFromUri(uploaded.uri!, uploaded.mimeType!);
     }
 
+    // Ground the model in deterministic evidence (scene cuts + beat grid + visual stats)
+    // so it aligns its structure to measured signals and cites timestamps, instead of
+    // free-form guessing (esp. for fast beat-cut footage that 1fps sampling under-reads).
+    const groundedPrompt = opts.evidenceContext
+      ? `${STRUCTURE_PROMPT}\n\nDETERMINISTIC EVIDENCE (already measured from this exact video — treat as ground truth; align your shots/structure to it, reuse its timestamps, and set video_type accordingly):\n${opts.evidenceContext}`
+      : STRUCTURE_PROMPT;
     const response = await this.client.models.generateContent({
       model: this.model,
-      contents: createUserContent([videoPart as any, STRUCTURE_PROMPT]),
+      contents: createUserContent([videoPart as any, groundedPrompt]),
       config: { responseMimeType: "application/json" }
     });
     const text = response.text ?? "";

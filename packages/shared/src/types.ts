@@ -13,7 +13,7 @@ export type AssetStatus = "uploaded" | "processing" | "ready" | "failed";
 export type SourcePolicy = "user_authorized" | "open_download_or_user_uploaded" | "demo_only" | "unknown";
 export type AnalysisPurpose = "sample" | "source";
 export type AnalyzerMode = "mock" | "ffmpeg" | "ffmpeg_opencv" | "ffmpeg_vlm_asr";
-export type RendererTarget = "mock_preview" | "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
+export type RendererTarget = "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
 export type RendererBackend = "remotion_mg" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
 export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
 export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
@@ -398,6 +398,89 @@ export interface TranscriptSegment {
   text: string;
 }
 
+/** A still sampled from the source video, used as concrete evidence for slots/atoms. */
+export interface EvidenceFrameRef {
+  id: string;
+  timeSec: number;
+  /** Storage-relative or served path (never an absolute local path in public JSON). */
+  path?: string;
+  family?: VisualFormFamily | string;
+  confidence?: number;
+  reason?: string;
+  evidenceKinds?: string[];
+}
+
+/** Audio beat grid derived deterministically (librosa) from the sample's audio track. */
+export interface BeatGrid {
+  status: "ok" | "skipped" | "no_audio" | "unavailable";
+  bpm?: number;
+  /** Beat onset times in seconds. */
+  beats: number[];
+  /** Strong onset times in seconds (impacts/accents). */
+  onsets?: number[];
+  source?: string;
+}
+
+/** A detected scene cut (PySceneDetect ContentDetector or OpenCV histogram fallback). */
+export interface SceneCut {
+  index: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  detector?: string;
+}
+
+/** One shot in the evidence timeline, carrying the perception signals bound to it. */
+export interface EvidenceShot {
+  shotId: string;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  keyframeIds: string[];
+  cutBefore?: boolean;
+  cutAfter?: boolean;
+  beatAligned?: boolean;
+  ocrText?: string[];
+  asrText?: string[];
+  visualTags: string[];
+  styleTags: string[];
+  family?: VisualFormFamily | string;
+  confidence: number;
+  evidencePaths?: string[];
+}
+
+export interface VisualEvidenceStats {
+  blackBgRatio?: number;
+  dominantPalette?: string[];
+  textCardDensity?: number;
+  /** Cuts per second. */
+  cutDensity?: number;
+  avgShotDurationSec?: number;
+  medianShotDurationSec?: number;
+  fastZones?: Array<[number, number]>;
+}
+
+/**
+ * Deterministic, timestamped evidence the downstream VLM/LLM must cite instead of
+ * hallucinating. Produced by scripts/analyze-visual-evidence.py + analyze-audio-beats.py.
+ */
+export interface VisualEvidenceTimeline {
+  schemaVersion: "visual-evidence-timeline-v1";
+  sourceAssetId?: string;
+  durationSec: number;
+  hasAudio: boolean;
+  shots: EvidenceShot[];
+  sceneCuts: SceneCut[];
+  beatGrid: BeatGrid;
+  evidenceFrames: EvidenceFrameRef[];
+  contactSheetPath?: string;
+  stats: VisualEvidenceStats;
+  ocrStatus: "ok" | "skipped" | "unavailable";
+  asrStatus: "ok" | "skipped" | "unavailable";
+  analyzerMode: string;
+  warnings: string[];
+}
+
 export interface VideoAnalysisResult {
   id: string;
   assetId: string;
@@ -415,6 +498,8 @@ export interface VideoAnalysisResult {
   shots: ShotCandidate[];
   transcript?: TranscriptSegment[];
   ocr?: Array<Record<string, unknown>>;
+  /** Evidence-first timeline (scene cuts + beat grid + frame-bound shots). */
+  evidenceTimeline?: VisualEvidenceTimeline;
   warnings: string[];
   analyzerMode: AnalyzerMode;
   createdAt: string;
@@ -503,6 +588,9 @@ export interface RhythmSpec {
   pace: "slow" | "medium" | "fast" | "mixed";
   averageShotDurationSec: number;
   peakTimeRatio?: number;
+  /** Detected musical tempo (librosa) when the sample has an audio beat. */
+  bpm?: number;
+  beatCount?: number;
   notes?: string;
 }
 
@@ -548,6 +636,9 @@ export interface StructureTemplate {
   editingTechniques: EditingTechnique[];
   replacementPolicy: ReplacementPolicy;
   qualityRationale: string;
+  /** Whether AI (VLM/LLM) enrichment succeeded; "failed" must surface, never masquerade as a clean fallback. */
+  aiEnrichmentStatus?: "ok" | "failed" | "skipped";
+  aiEnrichmentError?: string;
   sourcePolicy: SourcePolicyBlock;
   createdAt: string;
   updatedAt?: string;
@@ -822,6 +913,12 @@ export interface TimelineClip {
   previewFrame?: string;
   sourceEvidenceFrame?: string;
   visualFormFamily?: VisualFormFamily;
+  /** Beat onset times (sec, relative to this clip's start) for beat-synced motion/cuts. */
+  beatTimestamps?: number[];
+  /** Sample-derived style tokens the renderer executes (e.g. dark_bg, bold_center_cn, red_emphasis, hard_cut). */
+  styleTokens?: string[];
+  /** Named beat-cut style primitive the renderer should draw (beat_text_card, neon_hero_intro, action_montage, tutorial_rule_card, motivation_cta). */
+  motionPrimitive?: string;
 }
 
 export interface TimelineMappingItem {
@@ -884,6 +981,12 @@ export interface RenderPlan {
   notes?: string;
   rendererTarget?: RendererTarget;
   rendererBackend?: RendererBackend;
+  /** Beat grid driving beat-synced cuts/pulses across the timeline. */
+  beatGrid?: BeatGrid;
+  /** sample_bgm = carry authorized sample audio; synth_beat = generated click track; silent = no audio. */
+  audioPolicy?: "sample_bgm" | "synth_beat" | "silent";
+  /** Resolved audio source (asset id / managed ref / storage path) honoring audioPolicy + sample reuse rules. */
+  audioRef?: string;
   adapterOptions?: Record<string, unknown>;
 }
 
@@ -977,6 +1080,8 @@ export interface RenderOutput {
   previewHtml?: string;
   /** Real stills sampled from the rendered timeline, one per clip, keyed by clip id. */
   clipPreviewFrames?: RenderClipPreviewFrame[];
+  /** Quality signals: no_audio, placeholder_detected, fallback_template, no_source_clips, weak_style_transfer. */
+  renderQualityWarnings?: string[];
   error?: string;
   createdAt: string;
 }

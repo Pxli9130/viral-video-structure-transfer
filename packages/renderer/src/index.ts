@@ -73,18 +73,3 @@ export class HtmlPreviewRenderer implements RendererAdapter {
     };
   }
 }
-
-export class MockRenderer implements RendererAdapter {
-  target: RendererTarget = "mock_preview";
-
-  async render(timeline: Timeline, generationId: string): Promise<RenderOutput> {
-    return {
-      renderId: stableId("render_mock", generationId, timeline.id),
-      generationId,
-      rendererTarget: this.target,
-      status: "completed",
-      previewHtml: `<p>Mock preview for timeline ${timeline.id} (${timeline.durationSec}s).</p>`,
-      createdAt: nowIso()
-    };
-  }
-}

@@ -124,7 +124,7 @@ export interface VLMAdapter {
   readonly name: string;
   readonly available: boolean;
   describeFrames(frames: Array<{ path: string; timeSec: number }>): Promise<Array<{ timeSec: number; tags: string[]; description: string }>>;
-  describeVideo?(asset: Asset, opts?: { mimeType?: string; purpose?: "sample" | "source" }): Promise<VLMVideoAnalysis>;
+  describeVideo?(asset: Asset, opts?: { mimeType?: string; purpose?: "sample" | "source"; evidenceContext?: string }): Promise<VLMVideoAnalysis>;
 }
 
 export interface AtomQuery {
