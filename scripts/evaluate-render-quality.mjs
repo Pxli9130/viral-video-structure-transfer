@@ -61,6 +61,17 @@ function runEvidence(video) {
   return readJson(outJson);
 }
 
+/** The render-side 60-frame metric pass — the SAME function the analyzer uses on the sample. */
+function runMetrics(video) {
+  if (!existsSync(PYTHON)) return undefined;
+  const res = spawnSync(PYTHON, [
+    path.join(scriptsDir, "analyze-evidence-timeline.py"),
+    "--video", video, "--metrics-only"
+  ], { encoding: "utf8", env: { ...process.env, PATH: `${path.join(condaBase, "envs", condaEnv, "bin")}:${process.env.PATH ?? ""}` } });
+  if (res.status !== 0) return undefined;
+  try { return JSON.parse(res.stdout).metadata; } catch { return undefined; }
+}
+
 const gates = [];
 const warnings = [];
 const evidence = {};
@@ -153,6 +164,47 @@ if (renderEvidence) {
   }
 } else {
   warnings.push("Evidence analyzer unavailable; skipped visual-stats gates.");
+}
+
+// --- v2 moving-material gate set (render-quality-gates-v2): 12 mustPass booleans + metric
+// thresholds. Enforces that the output is a moving-material-aware beat_cut, not static cards. ---
+if (args.gates === "v2") {
+  const TH = { durMin: 14.8, durMax: 15.2, w: 720, h: 1280, minMotionDiffMean: 0.04, minCutLikeCount: 5, minMovingMaterialFamilies: 3, minSlotEvidenceCoverage: 0.8, minLayeredClips: 5 };
+  const clips = timeline?.clips ?? [];
+  const slotIds = new Set((template?.requiredSlots ?? []).map((s) => s.id));
+  const slotFamilies = new Set((template?.requiredSlots ?? []).map((s) => s.visualFormFamily).filter(Boolean));
+  const gapTypes = new Set((generation?.gapReport ?? []).map((g) => g.gapType));
+  const primitives = new Set(clips.map((c) => c.motionPrimitive).filter(Boolean));
+  const hasLayerKind = (k) => clips.some((c) => (c.layers ?? []).some((l) => l.kind === k));
+  const beatClips = clips.filter((c) => (c.beatTimestamps?.length ?? 0) > 0).length;
+  const authorized = (generation?.request ?? generation)?.constraints?.sampleAssetReuse === "authorized";
+
+  gate("v2_videoTypeIsBeatCut", template?.videoType === "beat_cut", `videoType=${template?.videoType}`);
+  gate("v2_noGenericB2BTemplate", !GENERIC_B2B.some((re) => re.test(template?.videoType ?? "") || re.test(template?.name ?? "")), `name=${template?.name ?? "n/a"}`);
+  gate("v2_hasMovingHeroMaterial", slotIds.has("slot_moving_hero_object") || primitives.has("neon_hero_intro") || hasLayerKind("moving_material"), `heroSlot=${slotIds.has("slot_moving_hero_object")} movingLayer=${hasLayerKind("moving_material")}`);
+  gate("v2_hasBackgroundLayerOrGeneratedBgImage", slotIds.has("slot_dark_background") || hasLayerKind("background"), `bgSlot=${slotIds.has("slot_dark_background")} bgLayer=${hasLayerKind("background")}`);
+  gate("v2_hasStoryboardSegmentation", slotIds.has("slot_storyboard_rule_card") || (template?.segments?.length ?? 0) >= 5, `storyboardSlot=${slotIds.has("slot_storyboard_rule_card")} segments=${template?.segments?.length ?? 0}`);
+  gate("v2_hasBgmOrExplicitAudioPolicy", Boolean(astream) || ["sample_bgm", "synth_beat"].includes(audioPolicy) || Boolean(timeline?.renderPlan?.audioPlan), `audio=${Boolean(astream)} policy=${audioPolicy}`);
+  gate("v2_hasBeatAlignedCuts", Boolean(timeline?.renderPlan?.beatGrid?.beats?.length) && beatClips >= Math.ceil(clips.length * 0.6), `beatGrid=${Boolean(timeline?.renderPlan?.beatGrid?.beats?.length)} clipsWithBeats=${beatClips}/${clips.length}`);
+  gate("v2_hasMovingMontageOrHonestGap", primitives.has("action_montage") || gapTypes.has("moving_material_missing"), `montagePrimitive=${primitives.has("action_montage")} movingGap=${gapTypes.has("moving_material_missing")}`);
+  gate("v2_noSampleFrameCopyUnlessAuthorized", clips.every((c) => !c.sourceAssetId) || authorized, `clipsWithSource=${clips.filter((c) => c.sourceAssetId).length} authorized=${authorized}`);
+  gate("v2_exposesSlotEvidenceInKB", (evidence.slotEvidenceCoverage ?? 0) >= TH.minSlotEvidenceCoverage, `coverage=${evidence.slotEvidenceCoverage}`);
+  gate("v2_reportsMissingMovingMaterialAsGap", gapTypes.has("moving_material_missing"), `gapTypes=[${[...gapTypes].join(",")}]`);
+
+  // metric thresholds (render measured by the same 60-frame pass as the sample)
+  const m = runMetrics(render);
+  if (m) {
+    evidence.renderMetrics = m;
+    gate("v2_durationSec", duration >= TH.durMin && duration <= TH.durMax, `duration=${duration.toFixed(3)}`);
+    gate("v2_resolution_720x1280", width === TH.w && height === TH.h, `${width}x${height}`);
+    gate("v2_audioStreamRequired", Boolean(astream), `hasAudio=${Boolean(astream)}`);
+    gate("v2_minMotionDiffMean", (m.motionDiffMean ?? 0) >= TH.minMotionDiffMean, `motionDiffMean=${m.motionDiffMean} (>=${TH.minMotionDiffMean})`, { motionDiffMean: m.motionDiffMean });
+    gate("v2_minCutLikeCount", (m.cutLikeCount ?? 0) >= TH.minCutLikeCount, `cutLikeCount=${m.cutLikeCount} (>=${TH.minCutLikeCount})`, { cutLikeCount: m.cutLikeCount });
+    gate("v2_minLayeredClips", clips.filter((c) => (c.layers?.length ?? 0) >= 2).length >= TH.minLayeredClips, `layeredClips=${clips.filter((c) => (c.layers?.length ?? 0) >= 2).length} (>=${TH.minLayeredClips})`);
+    gate("v2_minMovingMaterialFamilies", slotFamilies.size >= TH.minMovingMaterialFamilies, `families=${slotFamilies.size} [${[...slotFamilies].join(",")}]`);
+  } else {
+    warnings.push("metrics-only analyzer unavailable; skipped v2 metric-threshold gates.");
+  }
 }
 
 const failures = gates.filter((g) => !g.passed).map((g) => g.id);

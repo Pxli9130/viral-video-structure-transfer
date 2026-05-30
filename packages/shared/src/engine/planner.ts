@@ -26,6 +26,7 @@ import type {
   SegmentRole,
   ShotCandidate,
   SlotMapping,
+  SlotModality,
   SlotType,
   SourcePolicyBlock,
   SourceVideoUnderstanding,
@@ -905,7 +906,7 @@ function deriveSampleLabel(analysis: VideoAnalysisResult): string {
 }
 
 /** Beat-cut required slots (ids/roles/families/renderer candidates) — the learned editing-tutorial grammar. */
-const BEAT_CUT_SLOT_SPECS: Array<{
+type BeatCutSlotSpec = {
   id: string;
   role: SegmentRole;
   slotType: SlotType;
@@ -913,13 +914,26 @@ const BEAT_CUT_SLOT_SPECS: Array<{
   candidates: string[];
   label: string;
   motif: string;
-}> = [
-  { id: "slot_rotating_hero_object_intro", role: "hook", slotType: "hook_visual", family: "object_motion", candidates: ["neon_hero_intro", "rotating_object_proxy"], label: "霓虹旋转主视觉开场", motif: "rotating neon hero object intro on dark background" },
-  { id: "slot_kinetic_text_card_sequence", role: "setup", slotType: "title_card", family: "kinetic_typography", candidates: ["beat_text_card", "kinetic_text_card"], label: "动效文字卡序列", motif: "kinetic black title card sequence with bold center text" },
-  { id: "slot_tutorial_rule_card", role: "body", slotType: "title_card", family: "kinetic_typography", candidates: ["tutorial_rule_card", "beat_text_card"], label: "剪辑要点规则卡", motif: "tutorial rule cards explaining the editing technique" },
-  { id: "slot_beat_sync_action_montage", role: "proof", slotType: "proof_visual", family: "live_action_montage", candidates: ["action_montage", "hero_montage_proxy"], label: "卡点动作混剪", motif: "beat-sync action montage with hard cuts and crop zooms" },
-  { id: "slot_impact_flash_stamp", role: "transition", slotType: "transition", family: "live_action_montage", candidates: ["impact_flash_stamp", "beat_text_card"], label: "冲击闪切印记", motif: "red impact flash stamp on the strongest beats" },
-  { id: "slot_cta_end_slate", role: "cta", slotType: "cta_visual", family: "brand_cta", candidates: ["motivation_cta", "logo_cta_hold", "text_logo_card"], label: "行动号召收尾卡", motif: "motivation CTA end slate hold" }
+  modality: SlotModality;
+  /** assetRequirement.type — what kind of material truly fills this slot. */
+  assetType: string;
+  minCount: number;
+  fallbackStrategies: FillStrategy[];
+};
+
+// The 8 v2 beat-cut slots: a moving hero object, a global dark moving background, kinetic +
+// storyboard text cards, a moving-source action montage (with a target→AIGC→procedural fallback
+// ladder), an impact flash, a global BGM beat grid, and a motivation CTA. background + BGM are
+// `global` (span the whole sample) so the renderer cannot quietly drop them.
+const BEAT_CUT_SLOT_SPECS: BeatCutSlotSpec[] = [
+  { id: "slot_moving_hero_object", role: "hook", slotType: "hook_visual", family: "object_motion", candidates: ["neon_hero_intro", "rotating_object_proxy"], label: "霓虹旋转主视觉开场", motif: "rotating neon hero object intro on dark background", modality: "video_clip", assetType: "moving_visual", minCount: 1, fallbackStrategies: ["procedural_generation", "aigc_generated_material", "prompt_copy"] },
+  { id: "slot_dark_background", role: "global", slotType: "background", family: "background", candidates: ["dark_tech_bg_image_or_procedural_motion"], label: "暗黑科技动态背景", motif: "dark tech background with slow light streaks / scanlines", modality: "image", assetType: "image_or_procedural_video", minCount: 1, fallbackStrategies: ["procedural_generation", "aigc_generated_material", "prompt_copy"] },
+  { id: "slot_kinetic_text_card", role: "setup", slotType: "title_card", family: "kinetic_typography", candidates: ["beat_text_card", "kinetic_text_card"], label: "动效文字卡序列", motif: "kinetic black title card sequence with bold center red/yellow text", modality: "text", assetType: "text", minCount: 1, fallbackStrategies: ["procedural_generation", "aigc_generated_material", "prompt_copy"] },
+  { id: "slot_storyboard_rule_card", role: "body", slotType: "title_card", family: "storyboard", candidates: ["tutorial_rule_card", "beat_text_card"], label: "分镜规则卡", motif: "storyboard rule cards: shot=timeline, BGM=cut, subtitle=structure", modality: "text", assetType: "text", minCount: 1, fallbackStrategies: ["procedural_generation", "aigc_generated_material", "prompt_copy"] },
+  { id: "slot_moving_source_montage", role: "proof", slotType: "proof_visual", family: "live_action_montage", candidates: ["action_montage_sequence", "action_montage"], label: "卡点动作混剪", motif: "beat-sync action montage from target moving clips, hard cuts + crop zooms", modality: "video_set", assetType: "moving_visual", minCount: 3, fallbackStrategies: ["target_source_clips_by_motion", "aigc_generated_material", "procedural_dynamic_proxy"] },
+  { id: "slot_impact_flash", role: "transition", slotType: "transition", family: "live_action_montage", candidates: ["impact_flash_stamp", "beat_text_card"], label: "冲击闪切印记", motif: "red impact flash stamp on the strongest beats", modality: "shape", assetType: "procedural", minCount: 1, fallbackStrategies: ["procedural_generation", "aigc_generated_material", "prompt_copy"] },
+  { id: "slot_bgm_grid", role: "global", slotType: "audio", family: "audio", candidates: ["beat_grid_152bpm"], label: "BGM 卡点网格", motif: "BGM beat grid; visual cut points align to onsets", modality: "audio", assetType: "audio", minCount: 1, fallbackStrategies: ["procedural_generation", "prompt_copy"] },
+  { id: "slot_motivation_cta", role: "cta", slotType: "cta_visual", family: "brand_cta", candidates: ["motivation_cta_card", "motivation_cta", "logo_cta_hold"], label: "行动号召收尾卡", motif: "motivation CTA end slate hold", modality: "logo", assetType: "text_or_logo", minCount: 1, fallbackStrategies: ["procedural_generation", "aigc_generated_material", "prompt_copy"] }
 ];
 
 /**
@@ -949,10 +963,11 @@ export function buildBeatCutTemplate(
     required: true,
     description: `${spec.label} · ${spec.motif}`,
     preferredTags: [spec.family, spec.role],
-    fallbackStrategies: ["procedural_generation", "user_asset_replace"],
+    fallbackStrategies: spec.fallbackStrategies,
     visualForm: spec.candidates[0],
     visualFormFamily: spec.family,
-    modality: spec.family === "kinetic_typography" ? "text" : spec.family === "brand_cta" ? "logo" : "video_clip",
+    modality: spec.modality,
+    assetRequirement: { required: true, type: spec.assetType, minCount: spec.minCount },
     rendererCandidates: spec.candidates,
     sourceEvidence: bindSlotEvidence(spec.role, spec.family, 0.82, [spec.motif, spec.label], ev),
     confidence: 0.82,
@@ -960,23 +975,25 @@ export function buildBeatCutTemplate(
     clickToReplace: true
   }));
 
-  const segRatios: Array<[SegmentRole, number, number, string]> = [
-    ["hook", 0, 0.16, "slot_rotating_hero_object_intro"],
-    ["setup", 0.16, 0.36, "slot_kinetic_text_card_sequence"],
-    ["body", 0.36, 0.55, "slot_tutorial_rule_card"],
-    ["proof", 0.55, 0.74, "slot_beat_sync_action_montage"],
-    ["transition", 0.74, 0.86, "slot_impact_flash_stamp"],
-    ["cta", 0.86, 1, "slot_cta_end_slate"]
+  // 6 time-segments; global slots (background, BGM) are referenced across several segments so the
+  // renderer must carry them throughout, matching the v2 ideal template's segment.slots lists.
+  const segDefs: Array<{ role: SegmentRole; startRatio: number; endRatio: number; primary: string; slots: string[] }> = [
+    { role: "hook", startRatio: 0, endRatio: 0.16, primary: "slot_moving_hero_object", slots: ["slot_moving_hero_object", "slot_dark_background", "slot_bgm_grid"] },
+    { role: "setup", startRatio: 0.16, endRatio: 0.36, primary: "slot_kinetic_text_card", slots: ["slot_kinetic_text_card", "slot_dark_background", "slot_bgm_grid"] },
+    { role: "body", startRatio: 0.36, endRatio: 0.55, primary: "slot_storyboard_rule_card", slots: ["slot_storyboard_rule_card", "slot_dark_background", "slot_bgm_grid"] },
+    { role: "proof", startRatio: 0.55, endRatio: 0.74, primary: "slot_moving_source_montage", slots: ["slot_moving_source_montage", "slot_dark_background", "slot_bgm_grid"] },
+    { role: "transition", startRatio: 0.74, endRatio: 0.86, primary: "slot_impact_flash", slots: ["slot_impact_flash", "slot_dark_background", "slot_bgm_grid"] },
+    { role: "cta", startRatio: 0.86, endRatio: 1, primary: "slot_motivation_cta", slots: ["slot_motivation_cta", "slot_bgm_grid"] }
   ];
-  const segments: StructureSegment[] = segRatios.map(([role, startRatio, endRatio, slotId], i) => ({
-    id: `seg_beatcut_${i}_${role}`,
-    role,
-    startRatio,
-    endRatio,
-    intent: requiredSlots.find((s) => s.id === slotId)?.description ?? role,
-    scriptPattern: requiredSlots.find((s) => s.id === slotId)?.semanticLabel ?? role,
-    slots: [slotId],
-    recommendedDurationSec: round((endRatio - startRatio) * (analysis.metadata.durationSec ? 15 : 15))
+  const segments: StructureSegment[] = segDefs.map((seg, i) => ({
+    id: `seg_beatcut_${i}_${seg.role}`,
+    role: seg.role,
+    startRatio: seg.startRatio,
+    endRatio: seg.endRatio,
+    intent: requiredSlots.find((s) => s.id === seg.primary)?.description ?? seg.role,
+    scriptPattern: requiredSlots.find((s) => s.id === seg.primary)?.semanticLabel ?? seg.role,
+    slots: seg.slots,
+    recommendedDurationSec: round((seg.endRatio - seg.startRatio) * 15)
   }));
 
   const bpm = ev?.beatGrid?.status === "ok" ? ev.beatGrid.bpm : undefined;
@@ -1323,7 +1340,8 @@ function preferredTagForSlot(slotType: SlotType): string {
     subtitle_text: "text_card_candidate",
     title_card: "text_card_candidate",
     transition: "background",
-    background: "background"
+    background: "background",
+    audio: "bgm_candidate"
   };
   return map[slotType];
 }
@@ -1571,7 +1589,8 @@ function targetAssetKindsForSlot(slotType: SlotType): TargetAssetKind[] {
     subtitle_text: ["copy", "cta_info"],
     title_card: ["copy", "logo"],
     transition: ["video", "background_image", "image"],
-    background: ["background_image", "image", "video"]
+    background: ["background_image", "image", "video"],
+    audio: []
   };
   return map[slotType];
 }
@@ -1944,6 +1963,12 @@ const SLOT_GAP_LABELS: Record<SlotType, { category: GapCategory; en: string; zh:
     en: "Background / B-roll is missing",
     zh: "缺少背景/铺垫镜头",
     strategies: ["reuse_with_crop_zoom", "aigc_placeholder", "reorder_structure"]
+  },
+  audio: {
+    category: "bgm_missing",
+    en: "BGM / beat grid is missing",
+    zh: "缺少 BGM / 卡点节奏",
+    strategies: ["procedural_generation", "prompt_copy"]
   }
 };
 
@@ -2155,6 +2180,48 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
       fillSource: "procedural_generation",
       fulfilledByBackend: "remotion_mg"
     });
+  }
+
+  // v2 beat-cut honest gaps. The system stays explicit about what it lacks even though it still
+  // renders a credible dynamic output: no real moving footage -> a procedural dynamic montage; no
+  // authorized BGM -> a synthesized beat track. Sample visuals are never copied to "fill" these.
+  if (context.template?.videoType === "beat_cut") {
+    const movingSlots = (context.template.requiredSlots ?? []).filter(
+      (s) => s.assetRequirement?.type === "moving_visual" || s.visualFormFamily === "live_action_montage" || s.visualFormFamily === "object_motion"
+    );
+    // Only a real TARGET moving clip counts as filled — a self-reconstruction match to the sample
+    // does not, because the montage must not copy sample frames.
+    const movingMatched = movingSlots.some((s) => {
+      const m = mappings.find((mm) => mm.slotId === s.id);
+      return m?.status === "matched" && Boolean(m.selectedTargetAssetId || (m.selectedTargetAssetIds?.length ?? 0) > 0);
+    });
+    if (movingSlots.length > 0 && !movingMatched) {
+      slotGaps.push({
+        slotId: "slot_moving_source_montage",
+        status: "missing",
+        severity: "high",
+        reason: "No target moving clips were provided for the beat-cut hero/montage slots; sample frames must not be copied, so a dynamic procedural montage is rendered instead of real footage.",
+        impact: "缺少 moving 素材（动作镜头/主视觉），动作蒙太奇只能用动态程序化代理，无法还原真实影视动作。",
+        gapType: "moving_material_missing",
+        gapLabel: "Moving source material is missing",
+        gapLabelZh: "缺少 moving 素材",
+        recommendedFillStrategies: ["target_source_clips_by_motion", "aigc_generated_material", "procedural_dynamic_proxy"]
+      });
+    }
+    const bgmAuthorized = context.request?.constraints?.sampleAssetReuse === "authorized";
+    if (!bgmAuthorized) {
+      slotGaps.push({
+        slotId: "slot_bgm_grid",
+        status: "weak_match",
+        severity: "medium",
+        reason: "No authorized sample BGM; a synthesized beat track at the detected BPM keeps cuts beat-aligned.",
+        impact: "缺少授权 BGM，使用合成卡点节拍替代；节奏可还原，但音色非原片。",
+        gapType: "bgm_missing",
+        gapLabel: "Authorized BGM is missing (synth beat used)",
+        gapLabelZh: "缺少授权 BGM（已用合成卡点）",
+        recommendedFillStrategies: ["procedural_generation", "prompt_copy"]
+      });
+    }
   }
 
   return slotGaps;
@@ -2787,6 +2854,67 @@ function sanitizeBeatCutLayers(layers: TimelineLayer[], clipId: string): Timelin
   return cleaned;
 }
 
+/**
+ * Build the typed v2 layered-clip contract for a beat-cut clip from its motion primitive:
+ * a global dark moving background, the moving/text/transition material for the primitive, and
+ * (for the montage) a moving_video layer whose assetPolicy forbids copying sample frames. The
+ * renderer reads `kind`/`slotId`/`motion`/`assetPolicy` to drive style-locked motion. Any real
+ * matched source-asset layer on the clip is preserved.
+ */
+function beatCutLayersForClip(
+  clip: TimelineClip,
+  primitive: string,
+  subtitleText: string | undefined,
+  cta: string | undefined
+): TimelineLayer[] {
+  const id = (kind: string) => stableId("layer", clip.id, kind, primitive);
+  const bg = (motion: string): TimelineLayer => ({
+    id: id("bg"), kind: "background", slotId: "slot_dark_background", motion, style: { color: "#05060a" }
+  });
+  const text = (content: string | undefined, motion: string, slotId?: string): TimelineLayer => ({
+    id: id("text"), kind: "text", slotId, text: content, motion,
+    style: { position: "center", emphasis: "red_yellow_white" }
+  });
+  const layers: TimelineLayer[] = [];
+  // Preserve a real matched source-asset visual (target moving clip / image), if any.
+  const realAsset = clip.layers.find((l) => l.kind === "base_visual" && Boolean(l.assetId));
+  switch (primitive) {
+    case "neon_hero_intro":
+      layers.push(bg("slow_light_streaks+scanlines"));
+      layers.push({ id: id("hero"), kind: "moving_material", slotId: "slot_moving_hero_object", motion: "rotate_y+orbit+beat_scale", assetPolicy: "generated/procedural hero object; never sample frames", style: { color: "#22d3ee" } });
+      layers.push(text(subtitleText, "scale_on_beat"));
+      break;
+    case "beat_text_card":
+      layers.push(bg("black_card+red_line"));
+      layers.push(text(subtitleText, "scale_on_beat", "slot_kinetic_text_card"));
+      break;
+    case "tutorial_rule_card":
+      layers.push(bg("black_card"));
+      layers.push(text(subtitleText, "hard_cut_per_line", "slot_storyboard_rule_card"));
+      layers.push({ id: id("bars"), kind: "beat_bars", motion: "per-beat pulse", style: { color: "#fbbf24" } });
+      break;
+    case "action_montage":
+      layers.push(bg("dark_streaks"));
+      layers.push({ id: id("montage"), kind: "moving_video", slotId: "slot_moving_source_montage", motion: "hard-cut / crop-zoom / diagonal wipe", assetPolicy: "target clips or generated/procedural proxy; never sample frames", style: {} });
+      layers.push({ id: id("overlay"), kind: "text_overlay", text: subtitleText, motion: "impact on beat", style: { emphasis: "red_yellow_white" } });
+      break;
+    case "impact_flash_stamp":
+      layers.push(bg("dark"));
+      layers.push({ id: id("flash"), kind: "transition", slotId: "slot_impact_flash", motion: "white flash + red radial stamp on strong beats", style: {} });
+      break;
+    case "motivation_cta":
+      layers.push(bg("dark"));
+      layers.push(text(subtitleText, "final hold + pulse", "slot_motivation_cta"));
+      layers.push({ id: id("ticker"), kind: "ticker", text: cta ?? "剪辑方法迁移，不复制原片内容", motion: "scroll", style: { color: "#b91c1c" } });
+      break;
+    default:
+      layers.push(bg("dark"));
+      layers.push(text(subtitleText, "scale_on_beat"));
+  }
+  if (realAsset) layers.splice(1, 0, realAsset);
+  return layers;
+}
+
 /** Pick the beat-cut style primitive the renderer should draw for a clip (role + family). */
 function beatCutPrimitiveForClip(clip: TimelineClip): string {
   if (clip.role === "hook") return "neon_hero_intro";
@@ -2821,7 +2949,13 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   let cursor = 0;
   for (const segment of template.segments) {
     const segmentDuration = Math.max(0.6, round((segment.endRatio - segment.startRatio) * totalSec));
-    const slotIds = segment.slots.filter((slotId) => template.requiredSlots.some((slot) => slot.id === slotId));
+    // Global slots (background, BGM) are carried as layers / render-plan audio, not as their own
+    // clips — so a segment that lists them does not spawn extra clips for them.
+    const nonGlobalSlots = segment.slots.filter((slotId) =>
+      template.requiredSlots.some((slot) => slot.id === slotId && slot.role !== "global"));
+    const slotIds = nonGlobalSlots.length > 0
+      ? nonGlobalSlots
+      : segment.slots.filter((slotId) => template.requiredSlots.some((slot) => slot.id === slotId));
     const slotsForSegment = slotsForPace(slotIds.length > 0 ? slotIds : segment.slots, template, request.controls);
     const perSlotDuration = round(segmentDuration / Math.max(slotsForSegment.length, 1));
     const segmentClipIds: string[] = [];
@@ -3074,10 +3208,21 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   const baseStyleTokens = ["dark_tech", "black_bg", "red_yellow_white_text", "hard_cut", "beat_pulse", "impact_flash", "beat_sync"];
   // Clean Chinese copy pool from the brief so beat-cut cards never fall back to English
   // slot-description text (e.g. "kinetic_typography: kinetic_text_card").
-  const copyPool = [brief.topic, ...brief.sellingPoints].map((t) => (t ?? "").trim()).filter(Boolean);
-  const ctaCopy = brief.cta?.trim() || brief.topic?.trim() || "立即试试 · 上传素材开始重构";
-  let copyCursor = 0;
   const hasCjk = (text: string | undefined): boolean => Boolean(text && /[一-鿿]/.test(text));
+  const copyPool = [brief.topic, ...brief.sellingPoints].map((t) => (t ?? "").trim()).filter(Boolean);
+  const cjkCopyPool = copyPool.filter(hasCjk);
+  // Per-role Chinese defaults so a beat-cut card never shows English filler when the brief copy
+  // is English (the editing.mov demo grammar: hook -> rules -> storyboard -> montage -> CTA).
+  const beatCutCjkFallback: Partial<Record<SegmentRole, string>> = {
+    hook: "爆款结构 先拆再迁移",
+    setup: "先找钩子 再找节奏",
+    body: "分镜=时间线 字幕=结构",
+    proof: "裁切重排 卡点替换",
+    transition: "卡点冲击 重组",
+    cta: "上传素材 立即生成"
+  };
+  const ctaCopy = hasCjk(brief.cta) ? brief.cta!.trim() : beatCutCjkFallback.cta!;
+  let copyCursor = 0;
   const styledClips: TimelineClip[] = isBeatCut
     ? clips.map((clip) => {
         const clipEnd = clip.startSec + clip.durationSec;
@@ -3087,22 +3232,35 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         let subtitleText = clip.subtitleText;
         if (!hasCjk(subtitleText)) {
           if (clip.role === "cta") subtitleText = ctaCopy;
-          else if (clip.role === "hook") subtitleText = brief.topic?.trim() || brief.productName?.trim() || copyPool[0];
-          else subtitleText = copyPool.length ? copyPool[copyCursor++ % copyPool.length] : brief.topic?.trim();
+          else if (clip.role === "hook") subtitleText = hasCjk(brief.topic) ? brief.topic!.trim() : beatCutCjkFallback.hook;
+          else subtitleText = cjkCopyPool.length ? cjkCopyPool[copyCursor++ % cjkCopyPool.length] : beatCutCjkFallback[clip.role];
+        }
+        // Final guarantee: clean Chinese, single line (drawtext has no auto-wrap). Prefer the
+        // curated per-role copy over a verbose/truncated prompt line so each card reads cleanly.
+        if (!hasCjk(subtitleText) || (subtitleText && subtitleText.length > 16)) {
+          subtitleText = beatCutCjkFallback[clip.role] ?? (hasCjk(subtitleText) ? `${subtitleText!.slice(0, 15)}…` : "爆款结构迁移");
         }
         // Keep visualIntent clean (no English slot-description leak into explainability text).
         const visualIntent = clip.visualIntent && FORBIDDEN_VISUAL_TEXT.test(clip.visualIntent) ? subtitleText : clip.visualIntent;
+        const primitive = clip.motionPrimitive ?? beatCutPrimitiveForClip(clip);
+        // Never copy sample visuals into a beat-cut clip: if the only source is the sample itself
+        // (self-reconstruction), drop it so the renderer draws the style-locked primitive / dynamic
+        // proxy instead of cropping sample frames. Real TARGET assets are kept.
+        const noSampleCopy = request.constraints?.noSampleVisualCopy ?? true;
+        const sampleSourced = Boolean(clip.sourceAssetId) && clip.sourceAssetId === source.assetId;
+        const dropSampleVisual = noSampleCopy && sampleSourced;
         return {
           ...clip,
+          ...(dropSampleVisual ? { sourceAssetId: undefined } : {}),
           subtitleText,
           visualIntent,
           transitionIn: clip.startSec === 0 ? "none" : "hard_cut",
           transitionOut: "hard_cut",
-          motionPrimitive: clip.motionPrimitive ?? beatCutPrimitiveForClip(clip),
+          motionPrimitive: primitive,
           styleTokens: baseStyleTokens,
           beatTimestamps,
           placeholderSpec: undefined,
-          layers: sanitizeBeatCutLayers(clip.layers, clip.id)
+          layers: beatCutLayersForClip(clip, primitive, subtitleText, ctaCopy)
         };
       })
     : clips;
@@ -3128,6 +3286,15 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       beatGrid: isBeatCut ? { status: "ok", bpm: synthBeat.bpm, beats: synthBeat.beats, source: "synth_from_bpm" } : undefined,
       audioPolicy,
       audioRef,
+      audioPlan: isBeatCut
+        ? {
+            policy: audioPolicy === "sample_bgm" ? "sample_bgm" : "synth_beat_unless_sample_authorized",
+            bpm: synthBeat.bpm,
+            required: true,
+            beatGridSec: synthBeat.beats,
+            sfx: ["kick_on_segment_start", "flash_on_strong_beat", "ticker_clicks"]
+          }
+        : undefined,
       rendererBackend: "remotion_mg",
       adapterOptions: {
         pace: request.controls?.pace ?? "fast",

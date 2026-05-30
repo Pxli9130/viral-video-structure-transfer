@@ -131,17 +131,19 @@ node scripts/check-artifact-hygiene.mjs
 ```text
 video
 → ffprobe 元数据
-→ PySceneDetect 场景切点 + 每镜头关键帧/视觉族标签（scripts/analyze-evidence-timeline.py）
+→ PySceneDetect 场景切点 + 每镜头关键帧/视觉族标签 + 每镜头 motionEnergy（Farneback 光流）
 → librosa 鼓点网格（BPM / beats / onsets）
+→ 60 帧 frameMetrics（blackBgRatio / redYellowRatio / motionDiffMean / cutLikeCount）+ movingObjectCandidates
 → OCR / ASR 文本按时间戳绑定到镜头
-→ VisualEvidenceTimeline（每个 induced/required 槽位带 frameIds + timeRange + 证据缩略图）
+→ VisualEvidenceTimeline v2（6 视觉族：object_motion/kinetic_typography/background/storyboard/live_action_montage/bgm）
 → Gemini VLM（被证据 grounding，不再自由发挥）→ Doubao/Ark 合并
-→ beat_cut StructureTemplate（neon hero → kinetic rule cards → beat-sync montage → impact flash → CTA）
-→ style-locked renderer（黑底、红黄大字、卡点硬切、动作混剪、红色 CTA ticker）+ 音频
-→ 渲染质量 gate（无 placeholder、有音频/卡点、证据覆盖 ≥70%）
+→ beat_cut StructureTemplate（8 个 moving-material 槽位：主视觉/背景/文字卡/分镜规则/动作混剪/冲击闪/BGM/CTA）
+→ 分层时间线（layers + slotId/motion/assetPolicy，按真实 152 BPM 卡点）+ 诚实缺口（moving_material_missing / bgm_missing）
+→ style-locked 动态渲染器（黑底动态光带、卡点白闪、BGM EQ 条、硬切混剪、红色冲击星芒、红黄大字、CTA ticker）+ 音频
+→ 渲染质量 gate v2（无 placeholder、有音频、证据覆盖 ≥0.8、motionDiffMean ≥0.04、cutLikeCount ≥5、分层片段 ≥5、moving 缺口已上报）
 ```
 
-`beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。
+`beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。**moving 素材/背景/分镜/BGM 是一等结构槽位 + 渲染契约 + gate**：没有目标动作素材时，动作混剪用高运动的程序化代理（绝不复制样例帧）并上报 `moving_material_missing`，所以输出不会退化成静态卡片。
 
 实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
 
@@ -152,10 +154,10 @@ npm run build && node apps/api/dist/server.js
 # 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
 npm run e2e:editing-beatcut
 
-# 3) 渲染质量 gate（beat_cut 严格模式）
+# 3) 渲染质量 gate v2（beat_cut moving-material 严格模式，27 项）
 npm run eval:render-quality -- --render storage/generated/<renderId>.mp4 \
   --template /tmp/editing_e2e/template.json --generation /tmp/editing_e2e/generation.json \
-  --sample test_videos/editing.mov --expect-video-type beat_cut --strict
+  --sample test_videos/editing.mov --expect-video-type beat_cut --gates v2 --strict
 
 # 4) 单独跑证据分析器 / 模型 provider 评测
 npm run analyze:evidence -- --video test_videos/editing.mov --out /tmp/ev.json --frames-dir /tmp/ev_frames
@@ -164,7 +166,7 @@ npm run eval:model-understanding -- --sample test_videos/editing.mov
 
 输出（`storage/generated/` 渲染产物 + `docs/artifacts/model_eval/`）：beat_cut MP4（黑底大字 + 卡点 + 音频）、按 clip 抽帧的真实预览、`docs/artifacts/model_eval/editing_mov_model_eval.{json,md}`（heuristic / Gemini / Ark 对比，失败可见）。
 
-验收：`packages/shared/src/__tests__/editingMovBeatCutGolden.test.ts`（golden 模板/时间线/风格锁）+ `scripts/evaluate-render-quality.mjs`（10/10 gate）。
+验收：`packages/shared/src/__tests__/editingMovMovingMaterialGolden.test.ts`（v2 确定性 golden：8 槽位/分层时间线/诚实缺口/152 BPM；并证明 gate 有牙——理想渲染过线、修复前的静态渲染不过 motion 线）+ `editingMovBeatCutGolden.test.ts` + `scripts/evaluate-render-quality.mjs --gates v2`（27/27 gate）。v2 测试 oracle 在 `test_fixtures/expected_editing_mov_case_v2/`。
 
 ## Motion Graph 结构迁移演示
 
@@ -372,7 +374,8 @@ AIGC 安全策略：
 - 外部 AIGC 目前只用于图片素材生成；不默认生成整段视频。
 - Seedance/视频生成 provider 仍是后续 P1 能力，不是当前默认路径。
 - Gemini 只作为质量 gate，不是唯一事实来源。
-- evidence-first beat_cut pipeline 已接入实时 API（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa 产出 beat_cut MP4 并通过 10/10 gate）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
+- evidence-first beat_cut pipeline 已接入实时 API 并升级到 **v2 moving-material 版**（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa + 光流 motionEnergy 产出 8 槽位 beat_cut、分层时间线、动态渲染，通过 `--gates v2` 27/27）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
+- v2 本轮聚焦 感知→模板→渲染→gate 闭环；KB 的 moving/背景/BGM/分镜 证据面板、SAM2 物体追踪、AIGC 视频（Seedance）补 moving 素材属于下一轮（当前缺 moving 素材用高运动程序化代理 + 上报 `moving_material_missing`）。
 - **已删除所有 mock 适配器**（MockAIAdapter / MockVideoToolAdapter / MockRenderer / `mock_preview` / 文本 mock 样例分析）。真实 provider 失败时直接报错，绝不伪造结果。`AI_PROVIDER` 现支持 `gemini`（默认，文本 LLM 与 Gemini VLM 是**分离的不同 request**）/ `ark_doubao` / `openai_compatible`；因示例 `ARK_API_KEY` 401，已切到 `AI_PROVIDER=gemini`，`aiEnrichmentStatus=ok`。（`buildMockVideoAnalysis` 仅作为单元测试/seed/case 脚本的确定性 fixture，不在运行链路中。）
 - beat-cut renderer / 真实帧目前在 FFmpeg MP4 路径最完整；Remotion 组件尚未镜像全部 beat-cut primitives（ImpactFlashStamp 等）。
 - 浏览器已有 AIGC gap-fill 按钮和基础结果面板；更完整的拖拽上传、人工审核/选择生成候选、批量素材管理仍是产品化工作。

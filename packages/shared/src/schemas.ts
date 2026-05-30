@@ -143,7 +143,7 @@ const knowledgeAtomBody = {
     id: { type: "string" },
     projectId: { type: "string" },
     templateId: { type: "string" },
-    role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+    role: { enum: ["hook", "setup", "body", "proof", "transition", "cta", "global"] },
     category: {
       enum: [
         "hook_pattern",
@@ -237,7 +237,7 @@ export const structureTemplateSchema = {
         additionalProperties: true,
         properties: {
           id: { type: "string" },
-          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta", "global"] },
           startRatio: { type: "number", minimum: 0, maximum: 1 },
           endRatio: { type: "number", minimum: 0, maximum: 1 },
           intent: { type: "string" },
@@ -255,7 +255,7 @@ export const structureTemplateSchema = {
         additionalProperties: true,
         properties: {
           id: { type: "string" },
-          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta", "global"] },
           slotType: {
             enum: [
               "hook_visual",
@@ -267,7 +267,8 @@ export const structureTemplateSchema = {
               "subtitle_text",
               "title_card",
               "transition",
-              "background"
+              "background",
+              "audio"
             ]
           },
           required: { type: "boolean" },
@@ -285,7 +286,11 @@ export const structureTemplateSchema = {
                 "aigc_placeholder",
                 "aigc_generated_asset",
                 "proxy_placeholder",
-                "user_asset_replace"
+                "user_asset_replace",
+                "aigc_generated_material",
+                "prompt_copy",
+                "target_source_clips_by_motion",
+                "procedural_dynamic_proxy"
               ]
             }
           }
@@ -588,7 +593,7 @@ export const timelineSchema = {
         additionalProperties: true,
         properties: {
           id: { type: "string" },
-          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+          role: { enum: ["hook", "setup", "body", "proof", "transition", "cta", "global"] },
           startSec: { type: "number", minimum: 0 },
           durationSec: { type: "number", minimum: 0 },
           type: { enum: ["video", "image", "text_card", "generated_card", "placeholder"] },
@@ -609,7 +614,7 @@ export const timelineSchema = {
               additionalProperties: true,
               properties: {
                 id: { type: "string" },
-                kind: { enum: ["base_visual", "subtitle", "title_bar", "sticker", "arrow", "highlight", "background", "audio"] },
+                kind: { enum: ["base_visual", "subtitle", "title_bar", "sticker", "arrow", "highlight", "background", "audio", "moving_material", "moving_video", "ticker", "beat_bars", "text", "text_overlay", "transition"] },
                 text: { type: "string" },
                 style: { type: "object" },
                 timing: { type: "object" }
@@ -627,7 +632,11 @@ export const timelineSchema = {
               "aigc_placeholder",
               "aigc_generated_asset",
               "proxy_placeholder",
-              "user_asset_replace"
+              "user_asset_replace",
+              "aigc_generated_material",
+              "prompt_copy",
+              "target_source_clips_by_motion",
+              "procedural_dynamic_proxy"
             ]
           }
         }
@@ -680,7 +689,11 @@ export const timelineSchema = {
               "aigc_placeholder",
               "aigc_generated_asset",
               "proxy_placeholder",
-              "user_asset_replace"
+              "user_asset_replace",
+              "aigc_generated_material",
+              "prompt_copy",
+              "target_source_clips_by_motion",
+              "procedural_dynamic_proxy"
             ]
           },
           reason: { type: "string" },

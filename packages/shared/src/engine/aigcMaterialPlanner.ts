@@ -77,7 +77,10 @@ function promptPackFor(family: VisualFormFamily | "poster_layout", count: number
     brand_cta: "Brand CTA placeholder panel using target copy only, no fabricated logo",
     kinetic_typography: "Short kinetic typography copy, no copied sample wording",
     ui_showcase: "Feature-list copy for target product UI showcase, no sample wording",
-    geometric_mg: "Procedural neon geometry; no generated external asset needed"
+    geometric_mg: "Procedural neon geometry; no generated external asset needed",
+    background: "Original dark-tech background image with subtle light streaks, no copied sample frames, no watermark",
+    storyboard: "Storyboard rule-card copy for the target tutorial structure, no sample wording",
+    audio: "Procedural beat-grid track; no external generated asset needed"
   } satisfies Record<VisualFormFamily | "poster_layout", string>;
   return Array.from({ length: Math.max(1, count) }, (_, index) => `${base[family]} · ${targetTheme} · variant ${index + 1}`);
 }

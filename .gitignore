@@ -32,3 +32,4 @@ CURRENT_PROJECT_GUIDE.md
 .claude/commands/review-reference-material.md
 test_fixtures/expected_editing_mov_case/
 packages/shared/src/__tests__/fixtures/
+ideal_editing_mov_outputs_v2.zip

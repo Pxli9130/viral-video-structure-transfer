@@ -1,0 +1,176 @@
+{
+  "id": "ideal_timeline_editing_mov_v2",
+  "schemaVersion": "timeline-v1.2-plus-layers",
+  "durationSec": 15,
+  "aspectRatio": "9:16",
+  "fps": 30,
+  "bpm": 152,
+  "beatGridSec": [
+    0.0,
+    0.395,
+    0.789,
+    1.184,
+    1.579,
+    1.974,
+    2.368,
+    2.763,
+    3.158,
+    3.553,
+    3.947,
+    4.342,
+    4.737,
+    5.132,
+    5.526,
+    5.921,
+    6.316,
+    6.711,
+    7.105,
+    7.5,
+    7.895,
+    8.289,
+    8.684,
+    9.079,
+    9.474,
+    9.868,
+    10.263,
+    10.658,
+    11.053,
+    11.447,
+    11.842,
+    12.237,
+    12.632,
+    13.026,
+    13.421,
+    13.816,
+    14.211,
+    14.605,
+    15.0
+  ],
+  "audioPlan": {
+    "policy": "synth_beat_unless_sample_authorized",
+    "bpm": 152,
+    "required": true,
+    "sfx": [
+      "kick_on_segment_start",
+      "flash_on_strong_beat",
+      "ticker_clicks"
+    ]
+  },
+  "clips": [
+    {
+      "id": "clip_hook_hero",
+      "startSec": 0,
+      "endSec": 2.4,
+      "role": "hook",
+      "motionPrimitive": "neon_hero_intro",
+      "layers": [
+        {
+          "type": "background",
+          "slotId": "slot_dark_background",
+          "motion": "slow_light_streaks+scanlines"
+        },
+        {
+          "type": "moving_material",
+          "slotId": "slot_moving_hero_object",
+          "motion": "rotate_y+orbit+beat_scale"
+        },
+        {
+          "type": "text",
+          "content": "爆款结构\n先拆再迁移",
+          "style": "center bold red/yellow/white"
+        }
+      ]
+    },
+    {
+      "id": "clip_text_rule_1",
+      "startSec": 2.4,
+      "endSec": 5.4,
+      "role": "setup",
+      "motionPrimitive": "beat_text_card",
+      "layers": [
+        {
+          "type": "background",
+          "slotId": "slot_dark_background",
+          "motion": "black_card+red_line"
+        },
+        {
+          "type": "text",
+          "content": "先找 HOOK\n再找节奏\n最后换素材",
+          "style": "large center CJK, red/yellow emphasis",
+          "motion": "scale_on_beat"
+        }
+      ]
+    },
+    {
+      "id": "clip_rule_card",
+      "startSec": 5.4,
+      "endSec": 8.25,
+      "role": "body",
+      "motionPrimitive": "tutorial_rule_card",
+      "layers": [
+        {
+          "type": "text",
+          "content": "分镜 = 时间线\nBGM = 切点\n字幕 = 结构",
+          "motion": "hard_cut_per_line"
+        },
+        {
+          "type": "beat_bars",
+          "motion": "per-beat pulse"
+        }
+      ]
+    },
+    {
+      "id": "clip_action_montage",
+      "startSec": 8.25,
+      "endSec": 11.1,
+      "role": "proof",
+      "motionPrimitive": "action_montage",
+      "layers": [
+        {
+          "type": "moving_video",
+          "slotId": "slot_moving_source_montage",
+          "motion": "hard-cut / crop-zoom / diagonal wipe",
+          "assetPolicy": "target clips or generated/procedural proxy; never sample frames"
+        },
+        {
+          "type": "text_overlay",
+          "content": "素材缺口? / 裁切重排 / 卡点替换",
+          "motion": "impact on beat"
+        }
+      ]
+    },
+    {
+      "id": "clip_impact",
+      "startSec": 11.1,
+      "endSec": 12.9,
+      "role": "transition",
+      "motionPrimitive": "impact_flash_stamp",
+      "layers": [
+        {
+          "type": "transition",
+          "slotId": "slot_impact_flash",
+          "motion": "white flash + red radial stamp on strong beats"
+        }
+      ]
+    },
+    {
+      "id": "clip_cta",
+      "startSec": 12.9,
+      "endSec": 15,
+      "role": "cta",
+      "motionPrimitive": "motivation_cta",
+      "layers": [
+        {
+          "type": "text",
+          "slotId": "slot_motivation_cta",
+          "content": "上传素材\n立即生成",
+          "motion": "final hold + pulse"
+        },
+        {
+          "type": "ticker",
+          "content": "剪辑方法迁移，不复制原片内容"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "render-quality-gates-v2",
+  "case": "editing.mov beat-cut ideal",
+  "mustPass": {
+    "videoTypeIsBeatCut": true,
+    "noGenericB2BTemplate": true,
+    "hasMovingHeroMaterial": true,
+    "hasBackgroundLayerOrGeneratedBgImage": true,
+    "hasStoryboardSegmentation": true,
+    "hasBgmOrExplicitAudioPolicy": true,
+    "hasBeatAlignedCuts": true,
+    "hasMovingMontageOrHonestGap": true,
+    "noPlaceholderText": true,
+    "noSampleFrameCopyUnlessAuthorized": true,
+    "exposesSlotEvidenceInKB": true,
+    "reportsMissingMovingMaterialAsGap": true
+  },
+  "metricThresholds": {
+    "durationSec": [
+      14.8,
+      15.2
+    ],
+    "resolution": "720x1280",
+    "audioStreamRequired": true,
+    "minMovingMaterialFamilies": 3,
+    "minMotionDiffMean": 0.04,
+    "minCutLikeCount": 5,
+    "minSlotEvidenceCoverage": 0.8,
+    "minLayeredClips": 5
+  },
+  "knownCurrentRisk": "Current output has audio and no placeholder text, but still looks like mostly static title cards; moving materials, target source montage, background image/layer extraction, storyboard granularity and BGM policy need stronger gates."
+}

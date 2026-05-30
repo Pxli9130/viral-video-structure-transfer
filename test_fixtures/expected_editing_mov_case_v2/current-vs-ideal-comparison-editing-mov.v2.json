@@ -1,0 +1,153 @@
+{
+  "createdAt": "2026-05-30T04:30:00Z",
+  "sample": "editing.mov",
+  "currentOutput": "爆款结构迁移引擎_editing_20260530T034448Z.mp4",
+  "idealOutput": "ideal_render_stylelock_v2.mp4",
+  "metrics": {
+    "sample_editing_mov": {
+      "durationSec": 118.212,
+      "sizeBytes": 17220280,
+      "streams": [
+        {
+          "type": "video",
+          "codec": "h264",
+          "width": 1280,
+          "height": 720,
+          "fps": "24/1",
+          "durationSec": 118.208
+        },
+        {
+          "type": "audio",
+          "codec": "aac",
+          "width": null,
+          "height": null,
+          "fps": "0/0",
+          "durationSec": 118.212
+        }
+      ],
+      "hasAudio": true,
+      "hasVideo": true,
+      "blackBgRatio": 0.675,
+      "redYellowRatio": 0.072,
+      "motionDiffMean": 0.199,
+      "cutLikeCount": 26,
+      "sampledFrames": 60
+    },
+    "current_render": {
+      "durationSec": 14.967,
+      "sizeBytes": 416115,
+      "streams": [
+        {
+          "type": "video",
+          "codec": "h264",
+          "width": 720,
+          "height": 1280,
+          "fps": "30/1",
+          "durationSec": 14.967
+        },
+        {
+          "type": "audio",
+          "codec": "aac",
+          "width": null,
+          "height": null,
+          "fps": "0/0",
+          "durationSec": 14.953
+        }
+      ],
+      "hasAudio": true,
+      "hasVideo": true,
+      "blackBgRatio": 0.882,
+      "redYellowRatio": 0.012,
+      "motionDiffMean": 0.025,
+      "cutLikeCount": 0,
+      "sampledFrames": 60
+    },
+    "old_render_lx5e7r": {
+      "durationSec": 15.0,
+      "sizeBytes": 298832,
+      "streams": [
+        {
+          "type": "video",
+          "codec": "h264",
+          "width": 720,
+          "height": 1280,
+          "fps": "30/1",
+          "durationSec": 15.0
+        }
+      ],
+      "hasAudio": false,
+      "hasVideo": true,
+      "blackBgRatio": 0.113,
+      "redYellowRatio": 0.078,
+      "motionDiffMean": 0.081,
+      "cutLikeCount": 7,
+      "sampledFrames": 60
+    },
+    "ideal_render_v2": {
+      "durationSec": 15.0,
+      "sizeBytes": 1948006,
+      "streams": [
+        {
+          "type": "video",
+          "codec": "h264",
+          "width": 720,
+          "height": 1280,
+          "fps": "30/1",
+          "durationSec": 15.0
+        },
+        {
+          "type": "audio",
+          "codec": "aac",
+          "width": null,
+          "height": null,
+          "fps": "0/0",
+          "durationSec": 15.0
+        }
+      ],
+      "hasAudio": true,
+      "hasVideo": true,
+      "blackBgRatio": 0.789,
+      "redYellowRatio": 0.075,
+      "motionDiffMean": 0.195,
+      "cutLikeCount": 19,
+      "sampledFrames": 60
+    }
+  },
+  "qualitativeDiffs": [
+    {
+      "dimension": "模板选择",
+      "current": "beat_cut template selected; much better than earlier B2B fallback",
+      "ideal": "beat_cut + moving-material-aware slots + BGM + background layer + storyboard evidence"
+    },
+    {
+      "dimension": "moving 素材",
+      "current": "has small moving geometric elements but no convincing hero object/source montage",
+      "ideal": "explicit object_motion + live_action_montage slots with motion requirements and fallback gap"
+    },
+    {
+      "dimension": "背景图/bg",
+      "current": "mostly flat dark cards; lacks sampled/generated background layer grammar",
+      "ideal": "dark tech moving background or generated bg image layer is a required slot"
+    },
+    {
+      "dimension": "分镜",
+      "current": "6 macro clips, but visually repetitive title cards",
+      "ideal": "per-shot/layer timeline: hook, setup, rule, montage, flash, CTA; each clip has layer contract"
+    },
+    {
+      "dimension": "BGM",
+      "current": "audio stream exists in latest output, but need verify beat alignment and explain policy",
+      "ideal": "152 BPM beat grid is first-class evidence + timeline + gate"
+    },
+    {
+      "dimension": "效果",
+      "current": "no longer placeholder, but still not close to original sample style; lacks density, live motion, cinematic montage",
+      "ideal": "close enough style-lock baseline without copying sample content"
+    }
+  ],
+  "links": {
+    "sampleContactSheet": "sample_editing_contact_latest.jpg",
+    "currentContactSheet": "current_render_contact_latest.jpg",
+    "idealContactSheet": "ideal_render_stylelock_v2_contact_sheet.jpg"
+  }
+}

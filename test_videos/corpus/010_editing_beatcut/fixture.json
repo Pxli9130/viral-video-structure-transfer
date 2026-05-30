@@ -15,12 +15,21 @@
       "beatGridStatus": "ok",
       "bpmRange": [120, 175],
       "minBlackBgRatio": 0.4,
-      "familiesAnyOf": ["object_motion", "kinetic_typography", "live_action_montage", "brand_cta"]
+      "schemaVersion": "visual-evidence-timeline-v2",
+      "minFrameMetrics": 40,
+      "minMovingObjectCandidates": 1,
+      "familiesAnyOf": ["object_motion", "kinetic_typography", "live_action_montage", "brand_cta"],
+      "familiesMustInclude": ["background", "storyboard", "bgm"]
     },
     "template": {
       "videoTypeEquals": "beat_cut",
-      "minSlotEvidenceCoverage": 0.7,
-      "aiEnrichmentNot": "failed"
+      "minSlotEvidenceCoverage": 0.8,
+      "aiEnrichmentNot": "failed",
+      "requiredSlotsMustInclude": [
+        "slot_moving_hero_object", "slot_dark_background", "slot_kinetic_text_card",
+        "slot_storyboard_rule_card", "slot_moving_source_montage", "slot_impact_flash",
+        "slot_bgm_grid", "slot_motivation_cta"
+      ]
     },
     "render": {
       "aspectRatio": "9:16",
@@ -28,14 +37,20 @@
       "noPlaceholderText": true,
       "minDarkBgRatio": 0.35,
       "beatAlignedOrHardCut": true,
+      "minMotionDiffMean": 0.04,
+      "minCutLikeCount": 5,
+      "minLayeredClips": 5,
       "motionPrimitivesAnyOf": ["neon_hero_intro", "beat_text_card", "tutorial_rule_card", "action_montage", "motivation_cta"]
-    }
+    },
+    "gapsMustInclude": ["moving_material_missing", "bgm_missing"]
   },
   "negativeExpectations": {
     "videoTypeNot": ["b2b_marketing_mg", "motion_graphic_marketing_poster"],
-    "noPlaceholderStrings": ["proxy", "placeholder", "插槽", "占位"]
+    "noPlaceholderStrings": ["proxy", "placeholder", "插槽", "占位"],
+    "staticRenderForbidden": { "motionDiffMeanBelow": 0.04, "cutLikeCountBelow": 5 }
   },
-  "verifiedBy": "scripts/evaluate-render-quality.mjs --expect-video-type beat_cut --strict",
+  "verifiedBy": "scripts/evaluate-render-quality.mjs --expect-video-type beat_cut --gates v2 --strict",
   "e2e": "scripts/run-editing-beatcut-e2e.mjs",
-  "notes": "Self-reconstruction diagnostic: editing.mov -> evidence-first beat_cut template -> style-locked render. Verified end-to-end through the real API by run-editing-beatcut-e2e.mjs and gated by evaluate-render-quality.mjs (10/10 gates). The legacy ribbon-centric corpus harness (run-corpus-regression.mjs) does not evaluate beat_cut motifs; this fixture is the spec + gate reference for that case."
+  "golden": "packages/shared/src/__tests__/editingMovMovingMaterialGolden.test.ts",
+  "notes": "Self-reconstruction diagnostic: editing.mov -> motion-aware evidence-first beat_cut template (8 moving-material slots: hero/background/kinetic/storyboard/moving-montage/impact/BGM/CTA) -> layered, beat-aligned, style-locked render. v2 upgrade adds moving-material/background/storyboard/BGM as first-class slots + gates (minMotionDiffMean/minCutLikeCount/minLayeredClips/minMovingMaterialFamilies) so the output cannot regress to static cards. No target moving clips -> a dynamic procedural montage + an honest moving_material_missing gap (sample frames are never copied). Verified end-to-end through the real API by run-editing-beatcut-e2e.mjs, gated by evaluate-render-quality.mjs --gates v2 (27 gates), and locked deterministically by editingMovMovingMaterialGolden.test.ts. The legacy ribbon-centric corpus harness (run-corpus-regression.mjs) does not evaluate beat_cut motifs; this fixture is the spec + gate reference for that case."
 }

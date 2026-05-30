@@ -27,6 +27,9 @@ export type VisualFormFamily =
   | "object_motion"
   | "live_action_montage"
   | "brand_cta"
+  | "background"
+  | "storyboard"
+  | "audio"
   | "unknown";
 export type SlotModality =
   | "text"
@@ -88,7 +91,7 @@ export type JobType = "analysis" | "template_extraction" | "generation" | "rende
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type StepStatus = "queued" | "running" | "completed" | "failed" | "skipped";
 
-export type SegmentRole = "hook" | "setup" | "body" | "proof" | "transition" | "cta";
+export type SegmentRole = "hook" | "setup" | "body" | "proof" | "transition" | "cta" | "global";
 export type SlotType =
   | "hook_visual"
   | "product_closeup"
@@ -99,7 +102,8 @@ export type SlotType =
   | "subtitle_text"
   | "title_card"
   | "transition"
-  | "background";
+  | "background"
+  | "audio";
 
 export type AtomCategory =
   | "hook_pattern"
@@ -120,7 +124,12 @@ export type FillStrategy =
   | "aigc_placeholder"
   | "aigc_generated_asset"
   | "proxy_placeholder"
-  | "user_asset_replace";
+  | "user_asset_replace"
+  // v2 beat-cut moving-material fallback ladder
+  | "aigc_generated_material"
+  | "prompt_copy"
+  | "target_source_clips_by_motion"
+  | "procedural_dynamic_proxy";
 
 export type AigcMaterialProviderId =
   | "mock_provider"
@@ -431,6 +440,12 @@ export interface SceneCut {
   detector?: string;
 }
 
+/** A multi-family confidence score for a shot/evidence window (v2). */
+export interface EvidenceFamilyScore {
+  family: VisualFormFamily | string;
+  confidence: number;
+}
+
 /** One shot in the evidence timeline, carrying the perception signals bound to it. */
 export interface EvidenceShot {
   shotId: string;
@@ -446,8 +461,40 @@ export interface EvidenceShot {
   visualTags: string[];
   styleTags: string[];
   family?: VisualFormFamily | string;
+  /** v2: optical-flow mean magnitude for this shot (0..1+), motion-blindness fix. */
+  motionEnergy?: number;
+  /** v2: all families scoring above threshold, not only the argmax `family`. */
+  evidenceFamilies?: EvidenceFamilyScore[];
   confidence: number;
   evidencePaths?: string[];
+}
+
+/** v2: a candidate moving foreground region detected by optical flow. */
+export interface MovingObjectCandidate {
+  startSec: number;
+  endSec: number;
+  confidence: number;
+  /** Normalized [x, y, w, h] of the dominant moving region (0..1). */
+  region?: [number, number, number, number];
+  motionEnergy?: number;
+}
+
+/** v2: per-frame metrics sampled over N frames; the single source of truth the gate reuses on the render. */
+export interface FrameMetricSample {
+  timeSec: number;
+  blackBgRatio: number;
+  redYellowRatio: number;
+  motionDiffMean: number;
+  cutLikeCount: number;
+}
+
+/** v2: high-level style fingerprint + transfer policy derived from evidence. */
+export interface DetectedStyle {
+  videoType?: string;
+  bpm?: number;
+  blackBgRatioApprox?: number;
+  mustTransfer?: string[];
+  mustNotCopy?: string[];
 }
 
 export interface VisualEvidenceStats {
@@ -459,6 +506,11 @@ export interface VisualEvidenceStats {
   avgShotDurationSec?: number;
   medianShotDurationSec?: number;
   fastZones?: Array<[number, number]>;
+  /** v2 aggregate frame metrics (means over the sampled frames). */
+  redYellowRatio?: number;
+  motionDiffMean?: number;
+  cutLikeCount?: number;
+  sampledFrames?: number;
 }
 
 /**
@@ -466,8 +518,9 @@ export interface VisualEvidenceStats {
  * hallucinating. Produced by scripts/analyze-visual-evidence.py + analyze-audio-beats.py.
  */
 export interface VisualEvidenceTimeline {
-  schemaVersion: "visual-evidence-timeline-v1";
+  schemaVersion: "visual-evidence-timeline-v1" | "visual-evidence-timeline-v2";
   sourceAssetId?: string;
+  sourceAssetFilename?: string;
   durationSec: number;
   hasAudio: boolean;
   shots: EvidenceShot[];
@@ -476,6 +529,14 @@ export interface VisualEvidenceTimeline {
   evidenceFrames: EvidenceFrameRef[];
   contactSheetPath?: string;
   stats: VisualEvidenceStats;
+  /** v2: 60-frame metric samples; the gate recomputes the same shape on the render to compare. */
+  frameMetrics?: FrameMetricSample[];
+  /** v2: moving foreground regions (optical flow) used to ground moving-material slots. */
+  movingObjectCandidates?: MovingObjectCandidate[];
+  /** v2: rolled-up family→confidence over the whole sample (the 6-family summary). */
+  evidenceFamilies?: EvidenceFamilyScore[];
+  /** v2: style fingerprint + transfer policy. */
+  detectedStyle?: DetectedStyle;
   ocrStatus: "ok" | "skipped" | "unavailable";
   asrStatus: "ok" | "skipped" | "unavailable";
   analyzerMode: string;
@@ -813,7 +874,10 @@ export type GapCategory =
   | "ui_showcase_missing"
   | "geometric_mg_missing"
   | "brand_cta_missing"
-  | "induced_visual_slot_missing";
+  | "induced_visual_slot_missing"
+  // v2 beat-cut honest gaps
+  | "moving_material_missing"
+  | "bgm_missing";
 
 export interface GapReportItem {
   slotId: string;
@@ -888,7 +952,23 @@ export interface StoryboardItem {
 }
 
 export type TimelineClipType = "video" | "image" | "text_card" | "generated_card" | "placeholder";
-export type LayerKind = "base_visual" | "subtitle" | "title_bar" | "sticker" | "arrow" | "highlight" | "background" | "audio";
+export type LayerKind =
+  | "base_visual"
+  | "subtitle"
+  | "title_bar"
+  | "sticker"
+  | "arrow"
+  | "highlight"
+  | "background"
+  | "audio"
+  // v2 beat-cut layered-clip kinds
+  | "moving_material"
+  | "moving_video"
+  | "ticker"
+  | "beat_bars"
+  | "text"
+  | "text_overlay"
+  | "transition";
 
 export interface TimelineLayer {
   id: string;
@@ -898,6 +978,12 @@ export interface TimelineLayer {
   timing?: Record<string, unknown>;
   assetId?: string;
   sourceShotId?: string;
+  /** v2: which required slot this layer realizes (e.g. slot_dark_background). */
+  slotId?: string;
+  /** v2: motion verb for the layer (e.g. "rotate_y+orbit+beat_scale", "hard-cut / crop-zoom"). */
+  motion?: string;
+  /** v2: asset sourcing policy for moving layers (e.g. "target clips or generated/procedural proxy; never sample frames"). */
+  assetPolicy?: string;
 }
 
 export interface TimelineClip {
@@ -994,6 +1080,14 @@ export interface RenderPlan {
   audioPolicy?: "sample_bgm" | "synth_beat" | "silent";
   /** Resolved audio source (asset id / managed ref / storage path) honoring audioPolicy + sample reuse rules. */
   audioRef?: string;
+  /** v2: first-class BGM/beat plan; beat grid + policy + scheduled sfx drive beat-aligned cuts. */
+  audioPlan?: {
+    policy: "synth_beat_unless_sample_authorized" | "sample_bgm" | "synth_beat" | "user_bgm" | "silent";
+    bpm?: number;
+    required?: boolean;
+    beatGridSec?: number[];
+    sfx?: string[];
+  };
   adapterOptions?: Record<string, unknown>;
 }
 

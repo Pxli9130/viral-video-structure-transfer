@@ -36,7 +36,8 @@ export async function analyzeEvidenceTimeline(
     "--out", outPath,
     "--frames-dir", framesDir,
     "--frames-url-prefix", `/generated/evidence/${asset.id}/`,
-    "--source-asset-id", asset.id
+    "--source-asset-id", asset.id,
+    "--source-asset-filename", asset.filename ?? ""
   ];
   if (opts.runOcr) args.push("--ocr");
   if (opts.runAsr) args.push("--asr", "--asr-model", opts.asrModel ?? "tiny");
@@ -45,10 +46,13 @@ export async function analyzeEvidenceTimeline(
   await runPython(EVIDENCE_SCRIPT, args, { timeoutMs: opts.timeoutMs ?? 240000 });
   const raw = await fs.readFile(outPath, "utf8");
   const timeline = JSON.parse(raw) as VisualEvidenceTimeline;
+  const famList = (timeline.evidenceFamilies ?? []).map((f) => f.family).join(",");
   console.log(
     `[evidence] ✓ ${asset.filename}: ${timeline.shots.length} shots, ${timeline.sceneCuts.length} cuts, ` +
       `${timeline.beatGrid.beats.length} beats (bpm=${timeline.beatGrid.bpm ?? "n/a"}), ` +
-      `blackBg=${timeline.stats.blackBgRatio ?? "n/a"} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`
+      `blackBg=${timeline.stats.blackBgRatio ?? "n/a"} motionDiff=${timeline.stats.motionDiffMean ?? "n/a"} ` +
+      `cutLike=${timeline.stats.cutLikeCount ?? "n/a"} families=[${famList}] ` +
+      `moving=${timeline.movingObjectCandidates?.length ?? 0} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`
   );
   return timeline;
 }

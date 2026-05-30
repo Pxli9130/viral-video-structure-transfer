@@ -117,10 +117,10 @@ async function main() {
     renderQualityWarnings: render.render.renderQualityWarnings ?? []
   }, null, 2));
 
-  console.log("\nNext: run the gate:");
+  console.log("\nNext: run the v2 moving-material gate:");
   console.log(`  node scripts/evaluate-render-quality.mjs --render "${render.render.outputPath}" \\`);
   console.log(`    --template ${OUT_DIR}/template.json --generation ${OUT_DIR}/generation.json \\`);
-  console.log(`    --sample ${SAMPLE} --expect-video-type beat_cut --strict`);
+  console.log(`    --sample ${SAMPLE} --expect-video-type beat_cut --gates v2 --strict`);
 }
 
 main().catch((err) => { console.error("E2E FAILED:", err.message); process.exit(1); });

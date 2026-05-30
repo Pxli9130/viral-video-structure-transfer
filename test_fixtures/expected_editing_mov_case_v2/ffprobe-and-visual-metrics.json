@@ -1,0 +1,110 @@
+{
+  "sample_editing_mov": {
+    "durationSec": 118.212,
+    "sizeBytes": 17220280,
+    "streams": [
+      {
+        "type": "video",
+        "codec": "h264",
+        "width": 1280,
+        "height": 720,
+        "fps": "24/1",
+        "durationSec": 118.208
+      },
+      {
+        "type": "audio",
+        "codec": "aac",
+        "width": null,
+        "height": null,
+        "fps": "0/0",
+        "durationSec": 118.212
+      }
+    ],
+    "hasAudio": true,
+    "hasVideo": true,
+    "blackBgRatio": 0.675,
+    "redYellowRatio": 0.072,
+    "motionDiffMean": 0.199,
+    "cutLikeCount": 26,
+    "sampledFrames": 60
+  },
+  "current_render": {
+    "durationSec": 14.967,
+    "sizeBytes": 416115,
+    "streams": [
+      {
+        "type": "video",
+        "codec": "h264",
+        "width": 720,
+        "height": 1280,
+        "fps": "30/1",
+        "durationSec": 14.967
+      },
+      {
+        "type": "audio",
+        "codec": "aac",
+        "width": null,
+        "height": null,
+        "fps": "0/0",
+        "durationSec": 14.953
+      }
+    ],
+    "hasAudio": true,
+    "hasVideo": true,
+    "blackBgRatio": 0.882,
+    "redYellowRatio": 0.012,
+    "motionDiffMean": 0.025,
+    "cutLikeCount": 0,
+    "sampledFrames": 60
+  },
+  "old_render_lx5e7r": {
+    "durationSec": 15.0,
+    "sizeBytes": 298832,
+    "streams": [
+      {
+        "type": "video",
+        "codec": "h264",
+        "width": 720,
+        "height": 1280,
+        "fps": "30/1",
+        "durationSec": 15.0
+      }
+    ],
+    "hasAudio": false,
+    "hasVideo": true,
+    "blackBgRatio": 0.113,
+    "redYellowRatio": 0.078,
+    "motionDiffMean": 0.081,
+    "cutLikeCount": 7,
+    "sampledFrames": 60
+  },
+  "ideal_render_v2": {
+    "durationSec": 15.0,
+    "sizeBytes": 1948006,
+    "streams": [
+      {
+        "type": "video",
+        "codec": "h264",
+        "width": 720,
+        "height": 1280,
+        "fps": "30/1",
+        "durationSec": 15.0
+      },
+      {
+        "type": "audio",
+        "codec": "aac",
+        "width": null,
+        "height": null,
+        "fps": "0/0",
+        "durationSec": 15.0
+      }
+    ],
+    "hasAudio": true,
+    "hasVideo": true,
+    "blackBgRatio": 0.789,
+    "redYellowRatio": 0.075,
+    "motionDiffMean": 0.195,
+    "cutLikeCount": 19,
+    "sampledFrames": 60
+  }
+}

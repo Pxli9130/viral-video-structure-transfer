@@ -153,6 +153,161 @@ def frame_features(img):
     }
 
 
+# A normalized frame-to-frame diff above this looks like a hard cut (tuned on editing.mov).
+CUT_LIKE_THRESHOLD = 0.10
+
+
+def _red_yellow_ratio(img_bgr):
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0].astype(np.float32)
+    s = hsv[:, :, 1].astype(np.float32)
+    v = hsv[:, :, 2].astype(np.float32)
+    red = (((hue < 15) | (hue > 165)) & (s > 90) & (v > 90))
+    yellow = ((hue >= 18) & (hue <= 38) & (s > 90) & (v > 120))
+    return float((red | yellow).mean())
+
+
+def _dark_ratio(img_bgr):
+    v = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)[:, :, 2].astype(np.float32)
+    return float((v < 60).mean())
+
+
+def sample_frame_metrics(video, n=60, width=240):
+    """Sample n evenly-spaced frames; emit per-frame {timeSec, blackBgRatio, redYellowRatio,
+    motionDiffMean(absdiff vs prev /255), cutLikeCount(0/1)} + Farneback flow magnitude per
+    consecutive pair (for per-shot motionEnergy + moving-object candidates). This is the single
+    source of truth the render-quality gate reuses on the rendered MP4."""
+    cap = cv2.VideoCapture(video)
+    if not cap.isOpened():
+        return {"frameMetrics": [], "aggregate": {"sampledFrames": 0}, "flow": []}
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if total <= 1:
+        cap.release()
+        return {"frameMetrics": [], "aggregate": {"sampledFrames": 0}, "flow": []}
+    idxs = [int(round(j * (total - 1) / max(1, n - 1))) for j in range(n)]
+    prev_gray = None
+    frame_metrics = []
+    flow_samples = []
+    diffs = []
+    cut_like = 0
+    for fi in idxs:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+        h0, w0 = frame.shape[:2]
+        if not w0 or not h0:
+            continue
+        small = cv2.resize(frame, (width, max(2, int(round(h0 * (width / float(w0)))))), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        t = round(fi / fps, 3)
+        dark = _dark_ratio(small)
+        ry = _red_yellow_ratio(small)
+        diff = 0.0
+        flow_mag = 0.0
+        region = None
+        is_cut = 0
+        if prev_gray is not None and prev_gray.shape == gray.shape:
+            diff = float(cv2.absdiff(gray, prev_gray).mean()) / 255.0
+            diffs.append(diff)
+            if diff > CUT_LIKE_THRESHOLD:
+                cut_like += 1
+                is_cut = 1
+            try:
+                flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 2, 13, 3, 5, 1.1, 0)
+                mag = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2)
+                flow_mag = float(mag.mean())
+                thr = float(mag.mean() + mag.std())
+                ys, xs = np.where(mag > max(thr, 0.5))
+                if xs.size > 5:
+                    gh, gw = gray.shape
+                    region = [round(float(xs.min()) / gw, 3), round(float(ys.min()) / gh, 3),
+                              round(float(xs.max() - xs.min()) / gw, 3), round(float(ys.max() - ys.min()) / gh, 3)]
+            except Exception:
+                flow_mag = diff
+        frame_metrics.append({
+            "timeSec": t, "blackBgRatio": round(dark, 4), "redYellowRatio": round(ry, 4),
+            "motionDiffMean": round(diff, 4), "cutLikeCount": is_cut,
+        })
+        flow_samples.append({"timeSec": t, "flowMag": flow_mag, "region": region})
+        prev_gray = gray
+    cap.release()
+    agg = {
+        "blackBgRatio": round(float(np.mean([f["blackBgRatio"] for f in frame_metrics])), 4) if frame_metrics else 0.0,
+        "redYellowRatio": round(float(np.mean([f["redYellowRatio"] for f in frame_metrics])), 4) if frame_metrics else 0.0,
+        "motionDiffMean": round(float(np.mean(diffs)), 4) if diffs else 0.0,
+        "cutLikeCount": int(cut_like),
+        "sampledFrames": len(frame_metrics),
+    }
+    return {"frameMetrics": frame_metrics, "aggregate": agg, "flow": flow_samples}
+
+
+def shot_motion_energy(start, end, flow_samples):
+    vals = [s["flowMag"] for s in flow_samples if start <= s["timeSec"] < end]
+    if not vals and flow_samples:
+        nearest = min(flow_samples, key=lambda s: abs(s["timeSec"] - (start + end) / 2.0))
+        vals = [nearest["flowMag"]]
+    return round(float(np.mean(vals)), 4) if vals else 0.0
+
+
+def moving_object_candidates(flow_samples):
+    """Contiguous high-flow sample runs -> moving-region candidates with a representative bbox."""
+    mags = [s["flowMag"] for s in flow_samples]
+    if not mags:
+        return []
+    mean_mag = float(np.mean(mags))
+    thr = max(mean_mag * 1.2, 0.4)
+    out = []
+    cur = None
+    for s in flow_samples:
+        if s["flowMag"] >= thr:
+            if cur is None:
+                cur = {"startSec": s["timeSec"], "endSec": s["timeSec"], "mags": [s["flowMag"]], "region": s.get("region")}
+            else:
+                cur["endSec"] = s["timeSec"]
+                cur["mags"].append(s["flowMag"])
+                if cur.get("region") is None and s.get("region"):
+                    cur["region"] = s.get("region")
+        elif cur is not None:
+            out.append(cur)
+            cur = None
+    if cur is not None:
+        out.append(cur)
+    cands = []
+    for c in out:
+        me = float(np.mean(c["mags"]))
+        cands.append({
+            "startSec": round(c["startSec"], 3), "endSec": round(c["endSec"], 3),
+            "confidence": round(min(1.0, (me / (mean_mag + 1e-6)) * 0.5), 3) if mean_mag else 0.5,
+            "region": c.get("region"), "motionEnergy": round(me, 4),
+        })
+    return cands
+
+
+def family_scores(feat, motion_energy, motion_hi, index, shot_count):
+    """Multi-family confidence scores (0..1) for the 6 v2 visual families. A shot can score in
+    several families; the argmax stays `family` for back-compat, the array is `evidenceFamilies`."""
+    scores = {}
+    is_dark = feat["darkRatio"] > 0.4 or feat["meanV"] < 80
+    high_text = feat["textScore"] > 0.06 and feat["edgeDensity"] > 0.05
+    photographic = feat["meanS"] > 60 and feat["edgeDensity"] > 0.08 and not high_text
+    motion = motion_energy or 0.0
+    if index == 0 or (is_dark and feat["centerV"] > feat["meanV"] * 1.05 and not high_text):
+        scores["object_motion"] = round(min(1.0, 0.55 + motion), 3)
+    if high_text and is_dark:
+        scores["kinetic_typography"] = round(min(1.0, 0.6 + feat["redRatio"] + feat["yellowRatio"]), 3)
+    if high_text and 0 < index < shot_count - 1:
+        scores["storyboard"] = round(min(1.0, 0.5 + feat["textScore"]), 3)
+    if is_dark and feat["edgeDensity"] < 0.08 and not high_text:
+        scores["background"] = round(min(1.0, 0.6 + (0.08 - min(0.08, feat["edgeDensity"])) * 3), 3)
+    if motion_hi or photographic:
+        scores["live_action_montage"] = round(min(1.0, 0.5 + motion * 0.3 + (0.2 if photographic else 0.0)), 3)
+    if index >= shot_count - 1:
+        scores["brand_cta"] = 0.7
+    return scores
+
+
 def classify(feat, index, shot_count):
     """Return (family, visualTags, styleTags) from deterministic features."""
     tags = []
@@ -272,24 +427,59 @@ def run_asr(video, model_name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--frames-dir", required=True)
+    ap.add_argument("--out", default="")
+    ap.add_argument("--frames-dir", default="")
     ap.add_argument("--frames-url-prefix", default="")
     ap.add_argument("--source-asset-id", default="")
+    ap.add_argument("--source-asset-filename", default="")
     ap.add_argument("--ocr", action="store_true")
     ap.add_argument("--asr", action="store_true")
     ap.add_argument("--asr-model", default="tiny")
     ap.add_argument("--max-shots", type=int, default=48)
+    ap.add_argument("--metrics-only", action="store_true",
+                    help="print only ffprobe metadata + 60-frame metrics for an arbitrary mp4 (used by the render-quality gate)")
+    ap.add_argument("--frame-samples", type=int, default=60)
     args = ap.parse_args()
 
     if not os.path.exists(args.video):
         print(json.dumps({"error": f"video not found: {args.video}"}))
+        sys.exit(2)
+
+    # Lightweight mode for the render gate: ffprobe + the same 60-frame metric pass, no
+    # scenedetect/librosa/keyframes. Keeps the sample and the render measured identically.
+    if args.metrics_only:
+        meta_only = ffprobe_metadata(args.video)
+        fm = sample_frame_metrics(args.video, n=args.frame_samples)
+        out_obj = {
+            "ok": True,
+            "metadata": {
+                "durationSec": round(meta_only["durationSec"] or 0.0, 3),
+                "width": meta_only["width"], "height": meta_only["height"],
+                "hasAudio": bool(meta_only["hasAudio"]), "hasVideo": meta_only["width"] is not None,
+                **fm["aggregate"],
+            },
+            "frameMetrics": fm["frameMetrics"],
+        }
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(out_obj, fh, ensure_ascii=False)
+        print(json.dumps(out_obj))
+        return
+
+    if not args.frames_dir or not args.out:
+        print(json.dumps({"error": "--frames-dir and --out are required unless --metrics-only"}))
         sys.exit(2)
     os.makedirs(args.frames_dir, exist_ok=True)
 
     meta = ffprobe_metadata(args.video)
     duration = meta["durationSec"] or 0.0
     warnings = []
+
+    # Motion-aware pass (v2): 60-frame metrics + Farneback flow for per-shot motionEnergy + moving candidates.
+    metrics = sample_frame_metrics(args.video, n=args.frame_samples)
+    flow_samples = metrics["flow"]
+    flow_mags = [s["flowMag"] for s in flow_samples]
+    motion_median = float(np.median(flow_mags)) if flow_mags else 0.0
 
     scenes, detector = detect_scene_cuts(args.video, duration)
     if len(scenes) > args.max_shots:
@@ -338,6 +528,13 @@ def main():
         public_path = (args.frames_url_prefix + frame_name) if args.frames_url_prefix else frame_path
         beat_aligned = any(abs(b - start) < 0.18 for b in beats) if beats else False
         durations.append(end - start)
+        # v2: per-shot motion energy (optical flow) + multi-family scores.
+        m_energy = shot_motion_energy(start, end, flow_samples)
+        motion_hi = bool(m_energy > max(motion_median * 1.25, 0.35))
+        fam_scores = family_scores(feat, m_energy, motion_hi, i, len(scenes)) if feat else {}
+        ev_families = [{"family": k, "confidence": v} for k, v in sorted(fam_scores.items(), key=lambda kv: -kv[1])]
+        if motion_hi and "action_candidate" not in vtags:
+            vtags = vtags + ["action_candidate"]
         evidence_frames.append({
             "id": frame_id,
             "timeSec": round(mid, 3),
@@ -361,6 +558,8 @@ def main():
             "visualTags": vtags,
             "styleTags": stags,
             "family": family,
+            "motionEnergy": m_energy,
+            "evidenceFamilies": ev_families,
             "confidence": round(min(1.0, 0.55 + (feat["edgeDensity"] if feat else 0.0)), 3),
             "evidencePaths": [public_path],
         })
@@ -411,10 +610,33 @@ def main():
     cut_density = round(len(scenes) / duration, 3) if duration else 0.0
     black_bg_ratio = round(dark_count / max(1, len(scenes)), 3)
     text_card_density = round(text_card_count / max(1, len(scenes)), 3)
+    agg = metrics["aggregate"]
+
+    # v2: moving-object candidates (optical flow) + a rolled-up 6-family summary.
+    moving_candidates = moving_object_candidates(flow_samples)
+    fam_summary = {}
+    for shot in shots:
+        for ef in shot.get("evidenceFamilies", []):
+            fam_summary[ef["family"]] = max(fam_summary.get(ef["family"], 0.0), ef["confidence"])
+    if grid.get("status") == "ok" and len(beats) >= 8:
+        fam_summary["bgm"] = round(min(1.0, 0.6 + len(beats) / 400.0), 3)
+    evidence_families = [{"family": k, "confidence": v} for k, v in sorted(fam_summary.items(), key=lambda kv: -kv[1])]
+
+    # v2: deterministic videoType + style fingerprint (survives LLM failure).
+    is_beat_cut = (cut_density > 0.18 or med_shot < 2.6) and black_bg_ratio > 0.4 and grid.get("status") == "ok" and len(beats) >= 20
+    detected_style = {
+        "videoType": "beat_cut" if is_beat_cut else "unknown",
+        "bpm": grid.get("bpm"),
+        "blackBgRatioApprox": agg.get("blackBgRatio", black_bg_ratio),
+        "mustTransfer": ["shot rhythm", "BGM beat grid", "kinetic typography", "moving hero object",
+                         "background layer style", "live-action montage layout", "CTA card pattern"],
+        "mustNotCopy": ["sample frames", "sample audio", "creator watermark", "person likeness"],
+    }
 
     timeline = {
-        "schemaVersion": "visual-evidence-timeline-v1",
+        "schemaVersion": "visual-evidence-timeline-v2",
         "sourceAssetId": args.source_asset_id or None,
+        "sourceAssetFilename": args.source_asset_filename or None,
         "durationSec": round(duration, 3),
         "hasAudio": bool(meta["hasAudio"]),
         "shots": shots,
@@ -427,6 +649,10 @@ def main():
             "source": grid.get("source", "librosa"),
         },
         "evidenceFrames": evidence_frames,
+        "frameMetrics": metrics["frameMetrics"],
+        "movingObjectCandidates": moving_candidates,
+        "evidenceFamilies": evidence_families,
+        "detectedStyle": detected_style,
         "contactSheetPath": None,
         "stats": {
             "blackBgRatio": black_bg_ratio,
@@ -436,17 +662,24 @@ def main():
             "avgShotDurationSec": round(avg_shot, 3),
             "medianShotDurationSec": round(med_shot, 3),
             "fastZones": fast_zones,
+            "redYellowRatio": agg.get("redYellowRatio", 0.0),
+            "motionDiffMean": agg.get("motionDiffMean", 0.0),
+            "cutLikeCount": agg.get("cutLikeCount", 0),
+            "sampledFrames": agg.get("sampledFrames", 0),
         },
         "ocrStatus": ocr_status,
         "asrStatus": asr_status,
-        "analyzerMode": "evidence_timeline_v1",
+        "analyzerMode": "evidence_timeline_v2",
         "warnings": warnings,
     }
 
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(timeline, fh, ensure_ascii=False)
     print(json.dumps({"ok": True, "out": args.out, "shots": len(shots), "beats": len(beats),
-                      "bpm": grid.get("bpm"), "detector": detector, "blackBgRatio": black_bg_ratio}))
+                      "bpm": grid.get("bpm"), "detector": detector, "blackBgRatio": black_bg_ratio,
+                      "motionDiffMean": agg.get("motionDiffMean", 0.0), "cutLikeCount": agg.get("cutLikeCount", 0),
+                      "redYellowRatio": agg.get("redYellowRatio", 0.0),
+                      "families": [f["family"] for f in evidence_families]}))
 
 
 if __name__ == "__main__":

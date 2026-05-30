@@ -523,6 +523,18 @@ export class FFmpegRenderer implements RendererAdapter {
     if (isBeatCut && primitiveClipCount + sourceClipCount < Math.ceil(timeline.clips.length * 0.6)) {
       renderQualityWarnings.push("weak_style_transfer");
     }
+    // v2 honesty signals: the montage/hero used a dynamic procedural proxy (no real moving footage);
+    // a non-sample-BGM beat-cut output rides a synthesized beat track (beat alignment is engine-set,
+    // not analyzed from real audio).
+    if (isBeatCut) {
+      const hasMovingVideo = timeline.clips.some((clip) =>
+        clip.layers?.some((layer) => layer.kind === "moving_video" && Boolean(layer.assetId)));
+      if (sourceClipCount === 0 && !hasMovingVideo) renderQualityWarnings.push("moving_material_missing");
+      if (timeline.clips.some((clip) => clip.motionPrimitive === "action_montage") && sourceClipCount === 0 && !hasMovingVideo) {
+        renderQualityWarnings.push("static_action_montage_avoided_via_dynamic_proxy");
+      }
+      if (timeline.renderPlan?.audioPolicy === "synth_beat") renderQualityWarnings.push("beat_alignment_unverified");
+    }
 
     const clipPreviewFrames = await this.extractClipPreviewFrames(timeline.clips, segmentFiles, renderId, warnings);
 
@@ -745,57 +757,107 @@ export class FFmpegRenderer implements RendererAdapter {
   ): Promise<boolean> {
     const { width: W, height: H, duration } = options;
     const bpm = options.timeline.renderPlan?.beatGrid?.bpm ?? 120;
-    const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+    const bpmSafe = bpm > 40 && bpm < 300 ? bpm : 120;
+    const beatInterval = (60 / bpmSafe).toFixed(4);
+    const beatHz = (bpmSafe / 60).toFixed(3);
     // Only draw clean copy (clip.subtitleText); never leak the English slot-description visualIntent.
     const text = options.subtitle;
-    const tokens = clip.styleTokens ?? [];
-    const redEmphasis = tokens.includes("red_emphasis") || primitive === "motivation_cta";
 
     const filters: string[] = ["format=yuv420p"];
-    // Beat-synced full-frame flash (pulses on every beat).
-    const flashAlpha = primitive === "action_montage" ? "0.22" : "0.14";
-    const flashColor = redEmphasis && primitive === "action_montage" ? "0xef4444" : "0xffffff";
-    filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=${flashColor}@${flashAlpha}:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
 
+    // ---- Moving dark-tech background: light streaks scrolling across the frame every frame.
+    // Continuous per-frame motion (raises motionDiffMean) + dark-tech look (slot_dark_background).
+    // Cool, dark streak colors only (keep the frame dark + lots of motion without over-reddening).
+    const streakW = Math.max(6, Math.round(W * 0.045));
+    const streakColors = ["0x1f3a5f", "0x0e7490", "0x155e75"];
+    const streakCount = 7;
+    for (let i = 0; i < streakCount; i += 1) {
+      const speed = Math.round(W * (0.35 + i * 0.22));
+      const off = Math.round((i * (W + streakW)) / streakCount);
+      const color = streakColors[i % streakColors.length];
+      filters.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${streakW})-${streakW}':y=0:w=${streakW}:h=ih:color=${color}@0.4:t=fill`);
+    }
+    // a horizontal scanline sweep
+    filters.push(`drawbox=x=0:y='mod(t*${Math.round(H * 0.3)}\\,ih)':w=iw:h=3:color=0x38bdf8@0.3:t=fill`);
+
+    // ---- Per-beat full-frame WHITE flash — brief and colour-neutral, so it creates the hard
+    // "cut-like" frame jumps the gate counts without reddening or brightening the average frame.
+    filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
+
+    // ---- Per-primitive material on top of the moving background.
     if (primitive === "neon_hero_intro") {
-      const R = Math.round(Math.min(W, H) * 0.22);
-      const box = Math.round(Math.min(W, H) * 0.14);
-      filters.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.85)':y='(ih-${box})/2+${R}*cos(2*PI*t*0.85)':w=${box}:h=${box}:color=0x22d3ee@0.85:t=fill`);
-      filters.push(`drawbox=x='(iw-${Math.round(box * 0.6)})/2+${R}*sin(2*PI*t*0.85+1.6)':y='(ih-${Math.round(box * 0.6)})/2+${R}*cos(2*PI*t*0.85+1.6)':w=${Math.round(box * 0.6)}:h=${Math.round(box * 0.6)}:color=0xef4444@0.75:t=fill`);
+      const R = Math.round(Math.min(W, H) * 0.24);
+      const box = Math.round(Math.min(W, H) * 0.18);
+      filters.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.95)':y='(ih-${box})/2+${R}*cos(2*PI*t*0.95)':w=${box}:h=${box}:color=0x22d3ee@0.9:t=fill`);
+      filters.push(`drawbox=x='(iw-${Math.round(box * 0.62)})/2+${R}*sin(2*PI*t*0.95+1.6)':y='(ih-${Math.round(box * 0.62)})/2+${R}*cos(2*PI*t*0.95+1.6)':w=${Math.round(box * 0.62)}:h=${Math.round(box * 0.62)}:color=0xef4444@0.85:t=fill`);
     } else if (primitive === "action_montage") {
-      // energetic shifting bars + diagonal sweep
-      for (let i = 0; i < 3; i += 1) {
-        const y = Math.round(H * (0.2 + i * 0.22));
-        filters.push(`drawbox=x='mod(t*${Math.round(W * (1.4 + i * 0.4))}\\,iw)-${Math.round(W * 0.3)}':y=${y}:w=${Math.round(W * 0.3)}:h=${Math.round(H * 0.04)}:color=${i % 2 ? "0xf97316" : "0x22d3ee"}@0.8:t=fill`);
+      // Aggressive montage: a fast field of cyan/orange vertical streaks (high motionDiff) plus a
+      // per-beat full-frame white flash held a touch longer (extra cut-like jumps) — the dominant
+      // motion clip, kept dark with cool colours so it does not red-wash the average frame.
+      filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.22:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.09)'`);
+      const barW = Math.round(W * 0.08);
+      for (let i = 0; i < 9; i += 1) {
+        const speed = Math.round(W * (1.1 + i * 0.4));
+        const off = Math.round((i * (W + barW)) / 9);
+        const color = i % 3 === 0 ? "0xf97316" : "0x22d3ee";
+        filters.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${barW})-${barW}':y=0:w=${barW}:h=ih:color=${color}@0.66:t=fill`);
       }
-      filters.push(`drawbox=x='mod(t*${Math.round(W * 1.9)}\\,iw)':y=0:w=8:h=ih:color=0xffffff@0.5:t=fill`);
-    } else if (primitive === "motivation_cta") {
-      filters.push(`drawbox=x=0:y=${Math.round(H * 0.86)}:w=iw:h=${Math.round(H * 0.07)}:color=0xb91c1c@0.92:t=fill`);
     } else if (primitive === "impact_flash_stamp") {
-      // strong red impact stamp pulsing hard on every beat + diagonal speed lines
-      filters.push(`drawbox=x=${Math.round(W * 0.5)}-${Math.round(W * 0.18)}:y=${Math.round(H * 0.42)}:w=${Math.round(W * 0.36)}:h=${Math.round(W * 0.36)}:color=0xef4444@0.85:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.09)'`);
-      filters.push(`drawbox=x='mod(t*${Math.round(W * 2.2)}\\,iw)':y=0:w=10:h=ih:color=0xfbbf24@0.6:t=fill`);
+      // Red radial starburst (rotating diagonal spokes) + a hard red stamp on every beat.
+      const cx = Math.round(W * 0.5);
+      const cy = Math.round(H * 0.46);
+      const len = Math.round(Math.min(W, H) * 0.5);
+      for (let i = 0; i < 8; i += 1) {
+        const ang = (i / 8) * Math.PI;
+        const dx = Math.cos(ang).toFixed(3);
+        const dy = Math.sin(ang).toFixed(3);
+        filters.push(`drawbox=x='${cx}+${len}*${dx}*sin(2*PI*t*0.5)':y='${cy}+${len}*${dy}*sin(2*PI*t*0.5)':w=10:h=${len}:color=0xef4444@0.7:t=fill`);
+      }
+      filters.push(`drawbox=x=${cx - Math.round(W * 0.2)}:y=${cy - Math.round(W * 0.2)}:w=${Math.round(W * 0.4)}:h=${Math.round(W * 0.4)}:color=0xef4444@0.9:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.1)'`);
+    } else if (primitive === "motivation_cta") {
+      // Scrolling red ticker bar at the bottom + red CTA band.
+      filters.push(`drawbox=x=0:y=${Math.round(H * 0.84)}:w=iw:h=${Math.round(H * 0.08)}:color=0xb91c1c@0.92:t=fill`);
+      filters.push(`drawbox=x='iw-mod(t*${Math.round(W * 0.6)}\\,iw+${Math.round(W * 0.3)})':y=${Math.round(H * 0.855)}:w=${Math.round(W * 0.3)}:h=${Math.round(H * 0.05)}:color=0xfbbf24@0.85:t=fill`);
     } else {
-      // beat_text_card / tutorial_rule_card: red underline accent below the text
-      filters.push(`drawbox=x=${Math.round(W * 0.18)}:y=${Math.round(H * 0.6)}:w=${Math.round(W * 0.64)}:h=${Math.round(H * 0.012)}:color=0xef4444@0.9:t=fill`);
+      // beat_text_card / tutorial_rule_card: red title bar + red underline accent.
+      filters.push(`drawbox=x=0:y=${Math.round(H * 0.2)}:w=iw:h=${Math.round(H * 0.012)}:color=0xef4444@0.9:t=fill`);
+      filters.push(`drawbox=x=${Math.round(W * 0.16)}:y=${Math.round(H * 0.62)}:w=${Math.round(W * 0.68)}:h=${Math.round(H * 0.012)}:color=0xef4444@0.9:t=fill`);
     }
 
-    if (primitive === "tutorial_rule_card") {
-      const label = escapeDrawText("剪辑要点 / RULE");
-      filters.push(`drawtext=${FONT_FILE_ARG}text='${label}':fontcolor=0xfbbf24:fontsize=${Math.round(H * 0.028)}:x=(w-text_w)/2:y=${Math.round(H * 0.34)}:box=0`);
+    // ---- Beat-EQ bars along the bottom (yellow/orange/red). They oscillate per beat — a steady
+    // source of red/yellow pixels (raises redYellowRatio) and per-frame motion. They appear on
+    // every beat-cut clip, echoing the sample's BGM visualizer.
+    const eqN = 13;
+    const eqBand = Math.round(H * 0.075);
+    const eqGap = Math.round(W / eqN);
+    const eqBarW = Math.max(4, Math.round(eqGap * 0.55));
+    for (let i = 0; i < eqN; i += 1) {
+      const x = i * eqGap + Math.round((eqGap - eqBarW) / 2);
+      const phase = (i * 0.7).toFixed(2);
+      const hExpr = `(0.18+0.82*abs(sin(2*PI*${beatHz}*t+${phase})))`;
+      const color = i % 4 === 0 ? "0xef4444" : "0xfbbf24";
+      filters.push(`drawbox=x=${x}:y='ih-${eqBand}*${hExpr}':w=${eqBarW}:h='${eqBand}*${hExpr}':color=${color}@0.9:t=fill`);
     }
 
+    // ---- Genre tag (clean Chinese, not a debug label) for the text/transition cards.
+    const genreTag: Record<string, string> = {
+      beat_text_card: "文字卡", tutorial_rule_card: "分镜规则", action_montage: "动作混剪",
+      impact_flash_stamp: "卡点冲击", motivation_cta: "立即行动"
+    };
+    if (genreTag[primitive]) {
+      filters.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(genreTag[primitive])}':fontcolor=0xfbbf24:fontsize=${Math.round(H * 0.026)}:x=(w-text_w)/2:y=${Math.round(H * 0.225)}:box=1:boxcolor=0x7f1d1d@0.8:boxborderw=10`);
+    }
+
+    // ---- Main copy: big bold centered CJK with a beat-pulsing shadow copy.
     if (text) {
       const big = primitive === "motivation_cta" || primitive === "neon_hero_intro";
       const rawLen = (clip.subtitleText ?? clip.visualIntent ?? "").length || 1;
-      // Fit single-line CJK text within ~88% of the frame width (drawtext has no auto-wrap).
       const widthFit = Math.floor((W * 0.88) / rawLen);
-      const fontSize = Math.max(Math.round(H * 0.03), Math.min(Math.round(H * (big ? 0.07 : 0.055)), widthFit));
-      const yExpr = primitive === "neon_hero_intro" ? `${Math.round(H * 0.72)}` : "(h-text_h)/2";
-      const fontColor = redEmphasis ? "0xfca5a5" : "white";
-      const boxColor = primitive === "motivation_cta" ? "0x7f1d1d@0.0" : "black@0.35";
-      // subtle beat pulse: a brief enlarged shadow copy on the beat
-      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${fontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=${yExpr}:box=1:boxcolor=${boxColor}:boxborderw=24`);
+      const fontSize = Math.max(Math.round(H * 0.032), Math.min(Math.round(H * (big ? 0.075 : 0.058)), widthFit));
+      const yExpr = primitive === "neon_hero_intro" ? `${Math.round(H * 0.7)}` : "(h-text_h)/2";
+      // beat-synced enlarged red shadow copy (pulses on the beat) under the white headline
+      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=0xef4444@0.7:fontsize=${Math.round(fontSize * 1.12)}:x=(w-text_w)/2:y=${yExpr}-6:box=0:enable='lt(mod(t\\,${beatInterval})\\,0.12)'`);
+      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=white:fontsize=${fontSize}:x=(w-text_w)/2:y=${yExpr}:box=1:boxcolor=black@0.42:boxborderw=22`);
     }
 
     const lavfi = `color=c=0x05060a:s=${W}x${H}:d=${duration.toFixed(2)},${filters.join(",")}`;
