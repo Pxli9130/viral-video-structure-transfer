@@ -472,6 +472,8 @@ export class FFmpegRenderer implements RendererAdapter {
     const { width, height } = pickResolution(timeline);
     const fps = timeline.renderPlan?.fps ?? 30;
     const textStyle = drawTextStyle(timeline);
+    const renderStartedAt = Date.now();
+    console.log(`[ffmpeg] ▶ rendering ${timeline.clips.length} clips @ ${width}x${height} ${fps}fps, audio=${timeline.renderPlan?.audioPolicy ?? "silent"}`);
     const segmentFiles: string[] = [];
     const warnings: string[] = [];
     let sourceClipCount = 0;
@@ -523,6 +525,11 @@ export class FFmpegRenderer implements RendererAdapter {
 
     const clipPreviewFrames = await this.extractClipPreviewFrames(timeline.clips, segmentFiles, renderId, warnings);
 
+    console.log(
+      `[ffmpeg] ✓ ${path.basename(outputPath)} (${((Date.now() - renderStartedAt) / 1000).toFixed(1)}s) · ` +
+        `source=${sourceClipCount} primitive=${primitiveClipCount} placeholder=${placeholderClipCount}` +
+        `${renderQualityWarnings.length ? ` · warnings=[${renderQualityWarnings.join(",")}]` : ""}`
+    );
     return {
       renderId,
       generationId,

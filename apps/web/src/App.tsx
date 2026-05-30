@@ -348,9 +348,42 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: strin
   }
 }
 
+const STAGE_HINTS: Record<string, string> = {
+  "上传并分析样例视频": "ffprobe 元数据 → 证据分析(PySceneDetect 场景切点 + librosa 鼓点) → Gemini VLM 理解 → ASR/OCR → 结构抽取",
+  "上传并分析源视频": "ffprobe 元数据 → 关键帧/镜头切分 → 素材理解",
+  "AIGC 补缺口并生成": "槽位匹配 → 缺口检测 → 生成 brief → provider 出图 → 质量门(VLM) → 重新匹配 → 渲染",
+  "重构生成": "选模板 → 源理解 → 槽位匹配 → 缺口报告 → 填充计划 → 时间线",
+  "渲染视频": "逐片段渲染 → 拼接 → 混音 → 抽取每片段预览帧",
+  "生成多版本": "为 4 个版本各跑一遍重构链路",
+  "创建项目": "创建项目记录"
+};
+
+function ProgressBar({ label, elapsedSec }: { label: string; elapsedSec: number }) {
+  const hint = STAGE_HINTS[label];
+  return (
+    <div className="progress-strip" role="status" aria-live="polite">
+      <div className="progress-strip-bar"><span /></div>
+      <div className="progress-strip-text">
+        <strong>{label || "处理中"}…</strong>
+        <span>已用时 {elapsedSec}s · 真实模型/分析处理，可能需要几分钟，请勿关闭页面</span>
+        {hint ? <small>{hint}</small> : null}
+      </div>
+    </div>
+  );
+}
+
 function AppContent() {
   const [apiState, setApiState] = useState<ApiState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [loadingLabel, setLoadingLabel] = useState<string>("");
+  const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    if (apiState !== "loading") return;
+    const id = window.setInterval(() => setNowTick((t) => t + 1), 250);
+    return () => window.clearInterval(id);
+  }, [apiState]);
+  const elapsedSec = loadingStartedAt ? Math.max(0, Math.floor((Date.now() - loadingStartedAt) / 1000)) : 0;
   const [projects, setProjects] = useState<Project[]>([]);
   const [project, setProject] = useState<Project | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -471,16 +504,22 @@ function AppContent() {
   const aigcMaterialFill = generation?.aigcMaterialFill;
   const generationUsesAigcMaterial = Boolean(aigcMaterialFill?.generatedTargetAssets.length);
 
-  async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
+  async function run<T>(work: () => Promise<T>, label = "处理中"): Promise<T | undefined> {
+    setLoadingLabel(label);
+    setLoadingStartedAt(Date.now());
     setApiState("loading");
     setError(null);
+    console.info(`[ui] ▶ ${label}`);
+    const startedAt = Date.now();
     try {
       const result = await work();
       setApiState("idle");
+      console.info(`[ui] ✓ ${label} (${((Date.now() - startedAt) / 1000).toFixed(1)}s)`);
       return result;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       setApiState("error");
+      console.error(`[ui] ✗ ${label} (${((Date.now() - startedAt) / 1000).toFixed(1)}s):`, caught);
       return undefined;
     }
   }
@@ -578,11 +617,12 @@ function AppContent() {
       setGeneration(null);
       setRenderResult(null);
       await refreshProject(created.id);
-    });
+    }, "创建项目");
   }
 
   async function uploadAndAnalyze(file: File | null, role: "example_video" | "source_video") {
     if (!project || !file) return;
+    const uploadLabel = role === "example_video" ? "上传并分析样例视频" : "上传并分析源视频";
     await run(async () => {
       const body = new FormData();
       body.set("file", file);
@@ -603,7 +643,7 @@ function AppContent() {
       }
       if (analysis.template) setSelectedTemplateId(analysis.template.id);
       await refreshProject(project.id);
-    });
+    }, uploadLabel);
   }
 
   async function uploadMotionGraphCards(files: FileList | null) {
@@ -685,33 +725,10 @@ function AppContent() {
     });
   }
 
-  async function addMockSourceVideo() {
-    if (!project) return;
-    await run(async () => {
-      const asset = await api<Asset>(`/api/projects/${project.id}/assets`, {
-        method: "POST",
-        body: JSON.stringify({
-          role: "source_video",
-          type: "video",
-          originalName: "judge-source-video.mp4",
-          tags: "product_like,background",
-          sourcePolicy: "demo_only"
-        })
-      });
-      const analysis = await api<AnalyzeResponse>(`/api/assets/${asset.id}/analyze`, {
-        method: "POST",
-        body: JSON.stringify({ purpose: "source", mode: "mock", durationSec: 30, width: 720, height: 1280 })
-      });
-      setSourceAssetId(asset.id);
-      setSourceAnalysis(analysis.analysis);
-      await refreshProject(project.id);
-    });
-  }
-
   async function generate(options: { forceAigc?: boolean } = {}) {
     if (!project) return;
+    const useAigcGapFill = options.forceAigc ?? allowAigcGapFill;
     await run(async () => {
-      const useAigcGapFill = options.forceAigc ?? allowAigcGapFill;
       const request: GenerationRequest = {
         projectId: project.id,
         inputMode: sourceAssetId ? "video_plus_prompt" : "prompt_only",
@@ -750,7 +767,7 @@ function AppContent() {
       setVariants([]);
       setScorecard(null);
       setReplacementResult(null);
-    });
+    }, useAigcGapFill ? "AIGC 补缺口并生成" : "重构生成");
   }
 
   async function generateWithAigcGapFill() {
@@ -766,7 +783,7 @@ function AppContent() {
         body: JSON.stringify({ rendererTarget })
       });
       setRenderResult(response.render);
-    });
+    }, "渲染视频");
   }
 
   async function reviseGeneration() {
@@ -794,7 +811,7 @@ function AppContent() {
         body: JSON.stringify({})
       });
       setVariants(response.variants);
-    });
+    }, "生成多版本");
   }
 
   async function scoreGeneration() {
@@ -843,6 +860,7 @@ function AppContent() {
         </div>
         <StatusLine state={apiState} error={error} />
       </header>
+      {apiState === "loading" && <ProgressBar label={loadingLabel} elapsedSec={elapsedSec} />}
       <p style={{ background: "#eef2ff", color: "#3730a3", padding: "8px 12px", margin: "0 0 16px", borderRadius: 6, fontSize: 13 }}>
         素材策略提醒：系统只学习可复用的创意结构。样例视频中的画面、音频、旁白和人物肖像默认不会复制进生成结果。上传素材的商业复用权限仍由上传者负责，请在下游使用前确认授权。
       </p>
@@ -1083,9 +1101,6 @@ function AppContent() {
                 <h2>目标素材与提示词</h2>
               </div>
               <div className="button-row">
-                <button onClick={addMockSourceVideo} disabled={!project || apiState === "loading"}>
-                  添加 Mock 目标素材
-                </button>
                 <label className="file-button">
                   上传目标素材
                   <input type="file" accept="video/mp4,video/quicktime,video/*" onChange={(event) => uploadAndAnalyze(event.target.files?.[0] ?? null, "source_video")} />

@@ -209,8 +209,16 @@ function assertFound<T>(value: T | undefined, label: string): T {
   return value;
 }
 
+/** Compact, timestamped server log. Set VVST_LOG=quiet to silence stage logs. */
+function logStage(scope: string, message: string): void {
+  if (process.env.VVST_LOG === "quiet") return;
+  const t = new Date().toISOString().slice(11, 23);
+  console.log(`[${t}] [${scope}] ${message}`);
+}
+
 function createJob(projectId: string | undefined, type: JobType, inputSummary: Record<string, unknown>, stepNames: string[]): Job {
   const timestamp = nowIso();
+  logStage(`job:${type}`, `▶ start · steps=[${stepNames.join(", ")}] · ${JSON.stringify(inputSummary).slice(0, 160)}`);
   return {
     id: stableId("job", projectId ?? "global", type, JSON.stringify(inputSummary), timestamp),
     projectId,
@@ -236,22 +244,27 @@ function advanceJob(job: Job, stepName: string, status: JobStep["status"], messa
     : steps.some((step) => step.status === "failed")
       ? "failed"
       : "running";
+  const icon = status === "completed" ? "✓" : status === "failed" ? "✗" : status === "skipped" ? "⤼" : "…";
+  logStage(`job:${job.type}`, `${icon} ${stepName} → ${status}${message ? ` · ${message}` : ""} [${progress}%]`);
   return { ...job, steps, progress, status: overallStatus, updatedAt: timestamp };
 }
 
 function completeJob(job: Job, outputRefs: Record<string, unknown>): Job {
+  logStage(`job:${job.type}`, `✓ completed · ${JSON.stringify(outputRefs).slice(0, 160)}`);
   const steps = job.steps.map((step) => (step.status === "queued" || step.status === "running" ? { ...step, status: "completed" as const } : step));
   return { ...job, steps, progress: 100, status: "completed", outputRefs, updatedAt: nowIso() };
 }
 
 function failJob(job: Job, error: unknown): Job {
   const timestamp = nowIso();
+  const msg = error instanceof Error ? error.message : String(error);
+  logStage(`job:${job.type}`, `✗ FAILED · ${msg}`);
   return {
     ...job,
     status: "failed",
     progress: Math.max(job.progress, 50),
-    error: { message: error instanceof Error ? error.message : String(error) },
-    steps: job.steps.map((step) => (step.status === "queued" || step.status === "running" ? { ...step, status: "failed" as const, message: error instanceof Error ? error.message : String(error) } : step)),
+    error: { message: msg },
+    steps: job.steps.map((step) => (step.status === "queued" || step.status === "running" ? { ...step, status: "failed" as const, message: msg } : step)),
     updatedAt: timestamp
   };
 }
@@ -883,6 +896,18 @@ function buildAssetResolver(db: Database, generation?: GenerationResult): AssetP
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "8mb" }));
+// Request logger: method/path on entry, status + duration on finish (skip static + healthz noise).
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path.startsWith("/generated") || req.path === "/healthz") return next();
+  const startedAt = Date.now();
+  logStage("http", `→ ${req.method} ${req.path}`);
+  res.on("finish", () => {
+    const ms = Date.now() - startedAt;
+    const icon = res.statusCode >= 500 ? "✗" : res.statusCode >= 400 ? "⚠" : "←";
+    logStage("http", `${icon} ${req.method} ${req.path} ${res.statusCode} (${ms}ms)`);
+  });
+  next();
+});
 app.use("/generated", express.static(generatedDir));
 
 app.get("/healthz", (_req, res) => {
