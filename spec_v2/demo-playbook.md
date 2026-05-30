@@ -195,7 +195,7 @@ Optional AIGC narration:
 Browser UI callout:
 
 ```text
-在 Web 工作台的“步骤 5 / 重构规划器”中，正常按钮是“生成重构方案”；旁边的“AIGC 补缺口并生成”是独立 opt-in。下方开关会显示当前是否启用 AIGC gap fill，以及是否允许外部 provider。默认只走 deterministic mock_provider，不外呼，也不会发送样例帧。结果面板会列出 brief、candidate、quality/VLM status、external calls 和 sample frames sent。
+在 Web 工作台的“步骤 5 / 重构规划器”中，正常按钮是“生成重构方案”；旁边的“AIGC 补缺口并生成”是独立 opt-in。下方开关会显示当前是否启用 AIGC gap fill，以及是否允许外部 provider。默认不外呼、不发送样例帧；勾选“允许外部 provider”后 live 链路按 google_gemini_image → volcengine_seedream → 真实报错 调用真实 provider（不回退 mock，mock_provider 只用于 CI/脚本确定性产物）。结果面板会列出 brief、candidate、quality/VLM status、external calls 和 sample frames sent。
 ```
 
 Expected slot mapping:

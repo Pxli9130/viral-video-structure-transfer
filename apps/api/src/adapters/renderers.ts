@@ -282,38 +282,42 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
   const cta = stringStyleValue(clip, "cta");
   const replacementSlotId = String(clip.replacementSlotId ?? proxyLayer?.style?.replacementSlotId ?? "");
   const familyLabels: Record<string, string> = {
-    media_cards: "Card stack proxy",
-    ui_showcase: "Feature list / UI showcase",
-    kinetic_typography: "Kinetic typography",
-    geometric_mg: "Neon geometry",
-    brand_cta: "Logo / CTA",
-    live_action_montage: "Action montage"
+    media_cards: "媒体卡片",
+    ui_showcase: "功能展示",
+    kinetic_typography: "动态文字",
+    geometric_mg: "霓虹几何",
+    brand_cta: "品牌 CTA",
+    live_action_montage: "动作混剪",
+    object_motion: "主视觉"
   };
-  const labelRaw = String(placeholder.label ?? familyLabels[visualFormFamily] ?? "Rotating hero object placeholder");
-  const isMediaCards = visualFormFamily === "media_cards" || visualForm === "stacked_media_cards" || /card stack|media card|collage/i.test(labelRaw);
-  const isUiShowcase = visualFormFamily === "ui_showcase" || visualForm === "feature_list_ui" || /feature list|ui|tool list/i.test(labelRaw);
-  const isKinetic = visualFormFamily === "kinetic_typography" || visualForm === "kinetic_text_card" || /kinetic|typography|bold text/i.test(labelRaw);
-  const isGeometric = visualFormFamily === "geometric_mg" || visualForm === "neon_geometry_frame" || /neon|geometry|shape/i.test(labelRaw);
-  const isBrandCta = visualFormFamily === "brand_cta" || visualForm === "logo_hold" || /logo|cta|brand/i.test(labelRaw);
+  // Clean display label: prefer the clip's real subtitle/copy; otherwise a clean family name.
+  // Never surface debug words like "proxy"/"placeholder" in the rendered output.
+  const rawLabel = String(placeholder.label ?? familyLabels[visualFormFamily] ?? "主视觉");
+  const cleanLabel = rawLabel.replace(/\s*(proxy|placeholder|占位|代理)\b/gi, "").replace(/\s{2,}/g, " ").trim() || familyLabels[visualFormFamily] || "主视觉";
+  const displayText = clip.subtitleText?.trim() || clip.visualIntent?.trim() || cleanLabel;
+  const isMediaCards = visualFormFamily === "media_cards" || visualForm === "stacked_media_cards" || /card stack|media card|collage/i.test(rawLabel);
+  const isUiShowcase = visualFormFamily === "ui_showcase" || visualForm === "feature_list_ui" || /feature list|ui|tool list/i.test(rawLabel);
+  const isKinetic = visualFormFamily === "kinetic_typography" || visualForm === "kinetic_text_card" || /kinetic|typography|bold text/i.test(rawLabel);
+  const isGeometric = visualFormFamily === "geometric_mg" || visualForm === "neon_geometry_frame" || /neon|geometry|shape/i.test(rawLabel);
+  const isBrandCta = visualFormFamily === "brand_cta" || visualForm === "logo_hold" || /logo|cta|brand/i.test(rawLabel);
   const isRotatingHero =
     visualFormFamily === "object_motion" ||
     replacementSlotId.includes("rotating_hero") ||
     visualForm === "rotating_3d_object" ||
-    /rotating|hero object|helmet|head|logo/i.test(labelRaw);
+    /rotating|hero object|helmet|head|logo/i.test(rawLabel);
   const isMontage =
     visualFormFamily === "live_action_montage" ||
     replacementSlotId.includes("beat_sync") ||
     replacementSlotId.includes("match_cut") ||
     visualForm === "action_montage_sequence" ||
     visualForm === "match_cut_sequence" ||
-    /montage|match|action|beat/i.test(labelRaw);
+    /montage|match|action|beat/i.test(rawLabel);
   const proxyColor = ffmpegColor(placeholder.color, "0xE53935");
   const size = Math.round(Math.min(width, height) * 0.34);
   const x = Math.round((width - size) / 2);
   const y = Math.round(height * 0.27);
   const badgeY = Math.round(y + size + height * 0.05);
-  const label = escapeDrawText(labelRaw);
-  const shapeLabel = escapeDrawText(`PROXY PLACEHOLDER · ${placeholder.shape ?? "shape"}`);
+  const label = escapeDrawText(displayText);
 
   if (isMediaCards) {
     const cardW = Math.round(width * 0.46);
@@ -327,7 +331,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x='${cx - Math.round(cardW * 0.25)}+${spread}':y=${startY + 120}:w=${cardW}:h=${cardH}:color=0x38bdf8@0.78:t=fill`,
       `drawbox=x=${cx - Math.round(cardW * 0.5)}:y=${startY + 24}:w=${cardW}:h=10:color=white@0.72:t=fill`,
       `drawbox=x=${cx - Math.round(cardW * 0.38)}:y=${startY + 82}:w=${Math.round(cardW * 0.62)}:h=8:color=white@0.42:t=fill`,
-      drawTextFilter(escapeDrawText("CARD STACK PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(escapeDrawText("媒体卡片"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
@@ -350,13 +354,13 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
             : `drawbox=x=${panelX + 52}:y=${rowY + 12}:w='${Math.round(panelW * (0.34 + index * 0.06))}+${Math.round(panelW * 0.08)}*gt(sin(2*PI*t*0.8+${index}),0)':h=12:color=0x14b8a6@0.74:t=fill`
         ];
       }),
-      drawTextFilter(escapeDrawText(featureList.length ? "TARGET FEATURE LIST" : "FEATURE LIST PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
-      drawTextFilter(featureList.length ? escapeDrawText("Target feature copy") : label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
+      drawTextFilter(escapeDrawText(featureList.length ? "功能清单" : "功能展示"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
 
   if (isKinetic) {
-    const kineticLabel = escapeDrawText(targetCopy ?? brandName ?? labelRaw);
+    const kineticLabel = escapeDrawText(targetCopy ?? brandName ?? cleanLabel);
     const bandY = Math.round(height * 0.32);
     const bandH = Math.round(height * 0.3);
     const barW = Math.round(width * 0.52);
@@ -368,7 +372,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x='${barX}':y=${midY - 64}:w='${barW}*${scale}':h=12:color=0xf472b6@0.88:t=fill`,
       `drawbox=x='${barX}':y=${midY + 70}:w='${barW}*${scale}':h=12:color=0x38bdf8@0.88:t=fill`,
       `drawbox=x='mod(t*${Math.round(width * 1.1)},iw)':y=${bandY}:w=26:h=${bandH}:color=white@0.1:t=fill`,
-      drawTextFilter(escapeDrawText("KINETIC TYPOGRAPHY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, midY - 150))),
+      drawTextFilter(escapeDrawText("动态文字"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, midY - 150))),
       drawTextFilter(kineticLabel, { ...style, boxColor: "black@0.0", fontColor: "0xf8fafc" }, 52, String(midY - 30))
     ];
   }
@@ -382,7 +386,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x='${gx}+${Math.round(box * 0.16)}*sin(2*PI*t*0.8)':y=${gy + Math.round(box * 0.14)}:w=${Math.round(box * 0.68)}:h=8:color=0x22d3ee@0.88:t=fill`,
       `drawbox=x=${gx + Math.round(box * 0.1)}:y='${gy}+${Math.round(box * 0.16)}*cos(2*PI*t*0.8)':w=8:h=${Math.round(box * 0.78)}:color=0xf97316@0.72:t=fill`,
       `drawbox=x=${gx + Math.round(box * 0.24)}:y=${gy + Math.round(box * 0.24)}:w=${Math.round(box * 0.52)}:h=${Math.round(box * 0.52)}:color=0xffffff@0.08:t=fill`,
-      drawTextFilter(escapeDrawText("NEON GEOMETRY PROXY"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(escapeDrawText("霓虹几何"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
@@ -396,8 +400,8 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x=${lx}:y=${ly}:w=${logo}:h=${logo}:color=${proxyColor}@0.8:t=8`,
       `drawbox=x=${lx + Math.round(logo * 0.22)}:y=${ly + Math.round(logo * 0.44)}:w=${Math.round(logo * 0.56)}:h=${Math.round(logo * 0.13)}:color=${proxyColor}@0.9:t=fill`,
       `drawbox=x=${Math.round(width * 0.2)}:y=${ly + logo + 78}:w=${Math.round(width * 0.6)}:h=48:color=${proxyColor}@0.72:t=fill`,
-      drawTextFilter(escapeDrawText("LOGO / CTA PLACEHOLDER"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
-      drawTextFilter(escapeDrawText(brandName ?? labelRaw), { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY)),
+      drawTextFilter(escapeDrawText("品牌 CTA"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
+      drawTextFilter(escapeDrawText(brandName ?? cleanLabel), { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY)),
       ...(cta ? [drawTextFilter(escapeDrawText(cta), { ...style, boxColor: "black@0.42", fontColor: "white" }, 28, String(badgeY + 78))] : [])
     ];
   }
@@ -415,7 +419,6 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x=${shineX}:y=${y + Math.round(size * 0.12)}:w=${Math.round(size * 0.12)}:h=${Math.round(size * 0.58)}:color=white@0.32:t=fill`,
       `drawbox=x=0:y=${Math.round(height * 0.12)}:w='${Math.round(width * 0.36)}+${Math.round(width * 0.18)}*sin(2*PI*t*2)':h=8:color=${proxyColor}@0.52:t=fill`,
       `drawbox=x=iw-${Math.round(width * 0.46)}:y=${Math.round(height * 0.82)}:w='${Math.round(width * 0.32)}+${Math.round(width * 0.14)}*cos(2*PI*t*2)':h=10:color=0x38bdf8@0.46:t=fill`,
-      drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
@@ -434,7 +437,6 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x=${cardX}:y=${cardY + cardH + 28}:w='${Math.round(cardW * 0.7)}*${pulse}':h=8:color=0x38bdf8@0.78:t=fill`,
       `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w='${Math.round(cardW * 0.62)}*${pulse}':h=8:color=white@0.78:t=fill`,
       `drawbox=x='mod(t*${Math.round(width * 1.8)},iw)':y=${Math.round(height * 0.2)}:w=34:h=${Math.round(height * 0.66)}:color=white@0.14:t=fill`,
-      drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 76))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
@@ -443,7 +445,6 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     `drawbox=x=${x - 18}:y=${y - 18}:w=${size + 36}:h=${size + 36}:color=white@0.16:t=fill`,
     `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=${proxyColor}@0.92:t=fill`,
     `drawbox=x=${x}:y=${y}:w=${size}:h=${size}:color=white@0.86:t=8`,
-    drawTextFilter(shapeLabel, { ...style, boxColor: "black@0.55", fontColor: "white" }, 30, String(Math.max(24, y - 76))),
     drawTextFilter(label, { ...style, boxColor: "black@0.62", fontColor: "white" }, 34, String(badgeY))
   ];
 }
@@ -849,17 +850,13 @@ export class FFmpegRenderer implements RendererAdapter {
         proxyFilters.push(`drawbox=x=${pos.x}:y=${pos.y}:w=${cardW}:h=${cardH}:color=0x334155@0.82:t=fill`);
         proxyFilters.push(`drawbox=x=${pos.x + 12}:y=${pos.y + 12}:w=${cardW - 24}:h=${cardH - 24}:color=0x38bdf8@0.28:t=4`);
       }
-      const missingCount = positions.length - assetPaths.length;
-      filters.push(
-        `[stacked]${proxyFilters.join(",")},${drawTextFilter(`MISSING ${missingCount} CARD PROXY`, { ...options.textStyle, boxColor: "black@0.62", fontColor: "white" }, 26, String(Math.round(options.height * 0.45)))}[partial]`
-      );
+      filters.push(`[stacked]${proxyFilters.join(",")}[partial]`);
       last = "[partial]";
     } else {
       last = "[stacked]";
     }
     const titleStyle = { ...options.textStyle, boxColor: "black@0.62", fontColor: "white" };
-    filters.push(`${last}${drawTextFilter(assetPaths.length >= positions.length ? "TARGET CARD STACK" : "PARTIAL TARGET CARD STACK", titleStyle, 32, String(Math.round(options.height * 0.1)))}[titled]`);
-    filters.push(`[titled]${drawTextFilter(options.subtitle || "Target image set", { ...options.textStyle, boxColor: "black@0.48", fontColor: "white" }, 28, "h-(text_h*2)")} [out]`.replace(" [out]", "[out]"));
+    filters.push(`${last}${drawTextFilter(options.subtitle?.trim() || "媒体卡片", titleStyle, 32, String(Math.round(options.height * 0.1)))}[out]`);
     await runFfmpeg([
       ...inputs,
       "-filter_complex",

@@ -223,6 +223,13 @@ Create reconstruction generation.
 
 Request SHALL validate against `generation-request.schema.json`.
 
+**Execution modes.** By default the call runs the full pipeline synchronously and returns the finished generation. For long runs (real Gemini chunking + AIGC material fill + render can exceed a client HTTP timeout), pass the query param `?async=true`: the API immediately returns `202` with `{ "jobId": "..." }`, runs the pipeline in the background, and the client polls `GET /jobs/:jobId` until `status="completed"`, then reads `outputRefs.generationId` and fetches `GET /generations/:generationId`. The async flag is a query param (not a body field) because the request body schema is `additionalProperties:false`.
+
+```jsonc
+// POST /generations?async=true  -> 202
+{ "ok": true, "data": { "jobId": "job_456", "status": "queued" } }
+```
+
 Example:
 
 ```json
@@ -278,8 +285,8 @@ Optional AIGC material-fill request from the web reconstruction planner:
 Rules:
 
 - `allowAigcMaterialGeneration=true` enables generation briefs and generated-material matching.
-- `allowExternalAigcProvider=false` keeps the provider at deterministic `mock_provider`.
-- `allowExternalAigcProvider=true` allows the API to use `AIGC_IMAGE_PROVIDER` from `.env` when configured; sample frames are still not sent.
+- `allowExternalAigcProvider=false` keeps the live API path from calling any external image provider (no generated images; gaps stay as procedural cards).
+- `allowExternalAigcProvider=true` lets the API call real providers in order: `AIGC_IMAGE_PROVIDER` (default `google_gemini_image` / gemini-2.5-flash-image) → `AIGC_IMAGE_BACKUP_PROVIDER` (default `volcengine_seedream`) → a real error. Sample frames are never sent. The live path does not fall back to a mock.
 - Generated material is returned as `materialRole="aigc_generated_material"`, not as a user upload.
 
 Response:
@@ -301,8 +308,8 @@ When AIGC material fill runs, the full `generation` object in the response inclu
 {
   "aigcMaterialFill": {
     "enabled": true,
-    "provider": "mock_provider",
-    "externalProviderUsed": false,
+    "provider": "google_gemini_image",
+    "externalProviderUsed": true,
     "sampleFramesSentExternally": false,
     "briefs": ["...MaterialGenerationBrief"],
     "candidates": ["...GeneratedAssetCandidate"],
@@ -432,7 +439,6 @@ Request:
 
 Allowed targets:
 
-- `mock_preview` — `MockRenderer`, returns a placeholder RenderOutput; useful for smoke tests.
 - `html_preview` — `HtmlPreviewRenderer`, writes a self-contained HTML preview to `storage/generated/<renderId>.html`.
 - `ffmpeg` — `FFmpegRenderer`, cuts source shots + drawtext overlays + concat into a real 9:16 720p MP4 in `storage/generated/<renderId>.mp4`. It also samples one real still per clip from the rendered segments and returns them as `clipPreviewFrames` (see below) so the web timeline preview shows actual frames instead of gradient placeholders.
 - `remotion` — `RemotionRenderer`, bundles `apps/api/remotion/index.tsx`, feeds the timeline as `inputProps`, and renders MP4 via `@remotion/renderer`. First call may download a headless Chromium.
@@ -497,7 +503,10 @@ Response:
       { "name": "source_analysis", "status": "completed" },
       { "name": "slot_matching", "status": "completed" },
       { "name": "timeline_generation", "status": "completed" }
-    ]
+    ],
+    "outputRefs": { "generationId": "gen_123" }
   }
 }
 ```
+
+On `status="completed"`, `outputRefs.generationId` is the id to fetch via `GET /generations/:generationId`. On `status="failed"`, `error.message` carries the real failure (keys redacted); the job never reports a fabricated success.

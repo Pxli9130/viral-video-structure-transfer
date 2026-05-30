@@ -270,7 +270,7 @@ The system SHOULD provide an extensible renderer path.
 
 **Acceptance criteria**
 
-- RendererAdapter SHALL support at least `html_preview` and `mock_preview` in P0.
+- RendererAdapter SHALL support at least `html_preview` and `ffmpeg` (the `mock_preview` renderer target was removed — a failed render raises a real error rather than returning a placeholder RenderOutput).
 - Strong demo SHOULD implement `ffmpeg` or `remotion` renderer for a simple 9:16 MP4.
 - The renderer SHALL consume Timeline JSON rather than custom hidden state.
 - `hyperframes` MAY be added for HTML/CSS/GSAP style MG animation generation.
@@ -453,7 +453,7 @@ The system SHALL support optional generated material fill for missing visual slo
 - ✅ Quality evaluator scorecard (`POST /api/generations/:id/scorecard`) with heuristic + optional LLM judge merged 50/50.
 - ✅ Motion-graph evidence-driven slot induction and target-asset adaptation demo (`scripts/run-motion-graph-case.mjs --with-target-assets`) with corpus gates.
 - ✅ Motion-graph managed material intake, partial/malformed target material stress, and optional no-watermark Seedream AIGC material fill (`--with-aigc-materials --aigc-provider env --allow-external-aigc`) with generated-asset provenance and Gemini quality gate.
-- ✅ Browser/API optional AIGC gap-fill path: the Reconstruction Planner exposes an explicit AIGC button/toggle, API generation uses `allowAigcMaterialGeneration`, deterministic `mock_provider` is the safe default, and external Seedream remains opt-in.
+- ✅ Browser/API optional AIGC gap-fill path: the Reconstruction Planner exposes an explicit AIGC button/toggle, API generation uses `allowAigcMaterialGeneration`, and external image generation is opt-in. When allowed, the live path uses real providers in order `google_gemini_image` (gemini-2.5-flash-image) → `volcengine_seedream` → real error; `mock_provider` is the deterministic default only for CI/script runs, never the live path.
 
 ### P2 — advanced additions
 
