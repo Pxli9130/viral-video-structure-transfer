@@ -26,6 +26,29 @@ async function api(method, route, body, isForm = false) {
   return json && typeof json === "object" && "data" in json ? json.data : json;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll a generation job until completed; returns the generationId. Throws on failure/timeout. */
+async function pollGenerationJob(jobId, { intervalMs = 3000, timeoutMs = 1_800_000 } = {}) {
+  const startedAt = Date.now();
+  let lastProgress = -1;
+  for (;;) {
+    const job = await api("GET", `/api/jobs/${jobId}`);
+    if (job.progress !== lastProgress) {
+      lastProgress = job.progress;
+      console.log(`  … job ${jobId} ${job.status} ${job.progress ?? 0}%`);
+    }
+    if (job.status === "completed") {
+      const generationId = job.outputRefs?.generationId;
+      if (!generationId) throw new Error(`job ${jobId} completed without a generationId`);
+      return generationId;
+    }
+    if (job.status === "failed") throw new Error(`generation job failed: ${job.error?.message ?? "unknown"}`);
+    if (Date.now() - startedAt > timeoutMs) throw new Error(`generation job ${jobId} timed out after ${timeoutMs}ms`);
+    await sleep(intervalMs);
+  }
+}
+
 async function main() {
   await api("GET", "/healthz");
   console.log("✓ server healthy at", BASE);
@@ -53,8 +76,10 @@ async function main() {
   console.log(`✓ analyzed: videoType=${template?.videoType} aiEnrichment=${template?.aiEnrichmentStatus} `
     + `evidenceShots=${ev?.shots?.length} bpm=${ev?.beatGrid?.bpm} blackBgRatio=${ev?.stats?.blackBgRatio}`);
 
-  // self-reconstruction generation: reuse the authorized sample as source material
-  const generation = await api("POST", "/api/generations", {
+  // self-reconstruction generation, ASYNC: return a jobId immediately, then poll (the full
+  // pipeline can exceed a client HTTP timeout when AIGC/Ark is enabled).
+  console.log("… generating (async; polling job) …");
+  const started = await api("POST", "/api/generations?async=true", {
     projectId: project.id,
     inputMode: "video_plus_prompt",
     prompt: "主题：爆款结构迁移引擎；把这个样例重构成 15 秒同风格短视频：黑底、红黄大字、卡点快剪、动作混剪、结尾行动号召。",
@@ -65,7 +90,8 @@ async function main() {
     controls: { pace: "fast", hookIntensity: "aggressive", packagingStyle: "bold", ctaStyle: "direct", creativeMode: "final_creative" },
     constraints: { noSampleVisualCopy: true, sampleAssetReuse: "authorized" }
   });
-  const gen = generation.generation;
+  const generationId = await pollGenerationJob(started.jobId);
+  const gen = await api("GET", `/api/generations/${generationId}`);
   console.log(`✓ generated ${gen.id}: clips=${gen.timeline.clips.length} audioPolicy=${gen.timeline.renderPlan?.audioPolicy} `
     + `beatGrid=${gen.timeline.renderPlan?.beatGrid?.beats?.length} bpm=${gen.timeline.renderPlan?.beatGrid?.bpm}`);
   console.log("  selectedTemplateReason:", gen.selectedTemplateReason);

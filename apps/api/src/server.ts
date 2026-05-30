@@ -1796,10 +1796,51 @@ async function handleGeneration(req: Request, res: Response): Promise<void> {
     return;
   }
   const request = req.body as GenerationRequest;
+  const analyzerMode = req.body.analyzerMode as AnalyzerMode | "auto" | undefined;
+
+  // Async mode: the full pipeline (source analysis + AIGC + render-prep) can take minutes —
+  // longer than a client's HTTP header timeout. Return a jobId immediately and let the client
+  // poll GET /api/jobs/:jobId (→ outputRefs.generationId) then GET /api/generations/:id.
+  if (req.body.async === true || req.query.async === "true") {
+    let job = createJob(request.projectId, "generation", { async: true, prompt: request.prompt.slice(0, 120) }, ["generation"]);
+    job = { ...job, status: "running", progress: 5, updatedAt: nowIso() };
+    await store.update((draft) => draft.jobs.push(job));
+    const jobId = job.id;
+    void (async () => {
+      try {
+        const freshDb = await store.read();
+        const outcome = await runGeneration(freshDb, request, { analyzerMode });
+        await persistGenerationOutcome(outcome);
+        await store.update((draft) => {
+          const idx = draft.jobs.findIndex((j) => j.id === jobId);
+          const done: Job = {
+            ...(idx >= 0 ? draft.jobs[idx] : job),
+            status: "completed",
+            progress: 100,
+            steps: [{ name: "generation", status: "completed" }],
+            outputRefs: { generationId: outcome.generation.id },
+            updatedAt: nowIso()
+          };
+          if (idx >= 0) draft.jobs[idx] = done;
+          else draft.jobs.push(done);
+        });
+        logStage("job:generation", `✓ async generation completed · generationId=${outcome.generation.id}`);
+      } catch (error) {
+        await store.update((draft) => {
+          const idx = draft.jobs.findIndex((j) => j.id === jobId);
+          const failed = failJob(idx >= 0 ? draft.jobs[idx] : job, error);
+          if (idx >= 0) draft.jobs[idx] = failed;
+          else draft.jobs.push(failed);
+        });
+        logStage("job:generation", `✗ async generation FAILED · ${(error as Error).message}`);
+      }
+    })();
+    ok(res, { jobId, status: "running", async: true }, 202);
+    return;
+  }
+
   const db = await store.read();
-  const outcome = await runGeneration(db, request, {
-    analyzerMode: req.body.analyzerMode as AnalyzerMode | "auto" | undefined
-  });
+  const outcome = await runGeneration(db, request, { analyzerMode });
   await persistGenerationOutcome(outcome);
   ok(
     res,
@@ -2393,11 +2434,18 @@ export { app, store, adapters };
 if (process.env.VVST_NO_LISTEN !== "true") {
   const port = Number(process.env.APP_PORT ?? 3000);
   await ensureStorageDirs();
-  app.listen(port, () => {
+  const httpServer = app.listen(port, () => {
     console.log(`VVST API v1.2 listening on http://localhost:${port}`);
     console.log(`Storage directory: ${storageRoot}`);
     console.log(
       `Adapters → video:${adapters.videoTool.name}, ai:${adapters.aiAdapter.name}, asr:${adapters.asrAdapter.name}, ocr:${adapters.ocrAdapter.name}, vlm:${adapters.vlmAdapter.name}, storage:${store.backendName}`
     );
   });
+  // Long synchronous routes (analyze/generate/render) can exceed Node's default request/header
+  // timeouts; disable them so the server never cuts off an in-flight pipeline. Prefer async mode
+  // (POST /api/generations { async: true } → poll GET /api/jobs/:jobId) for very long runs.
+  httpServer.requestTimeout = 0;
+  httpServer.headersTimeout = 0;
+  httpServer.timeout = 0;
+  httpServer.keepAliveTimeout = 75_000;
 }
