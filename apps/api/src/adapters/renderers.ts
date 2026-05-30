@@ -7,6 +7,7 @@ import { HtmlPreviewRenderer, MockRenderer } from "@vvst/renderer";
 import {
   nowIso,
   stableId,
+  type RenderClipPreviewFrame,
   type RenderOutput,
   type RendererAdapter,
   type RendererBackend,
@@ -227,6 +228,13 @@ function targetAssetIdsForClip(clip: TimelineClip): string[] {
     }
   }
   return Array.from(ids);
+}
+
+function clipUsesAigcGeneratedMaterial(clip: TimelineClip): boolean {
+  return clip.layers.some((layer) =>
+    layer.style?.fillStrategy === "aigc_generated_asset" ||
+    layer.style?.materialSource === "aigc_generated_material"
+  );
 }
 
 function mgMotionDecorationFilters(timeline: Timeline, width: number, height: number): string[] {
@@ -486,6 +494,8 @@ export class FFmpegRenderer implements RendererAdapter {
     const outputPath = path.join(this.opts.generatedDir, `${renderId}.mp4`);
     await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-movflags", "+faststart", outputPath]);
 
+    const clipPreviewFrames = await this.extractClipPreviewFrames(timeline.clips, segmentFiles, renderId, warnings);
+
     return {
       renderId,
       generationId,
@@ -493,9 +503,54 @@ export class FFmpegRenderer implements RendererAdapter {
       status: "completed",
       outputPath,
       previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
+      clipPreviewFrames,
       error: warnings.length ? warnings.join(" | ") : undefined,
       createdAt: nowIso()
     };
+  }
+
+  /**
+   * Sample one real still per clip from its already-rendered segment so the web
+   * timeline preview shows the actual frame at that timestamp instead of a gradient.
+   * Failures are non-fatal: a missing frame just falls back to the placeholder card.
+   */
+  private async extractClipPreviewFrames(
+    clips: TimelineClip[],
+    segmentFiles: string[],
+    renderId: string,
+    warnings: string[]
+  ): Promise<RenderClipPreviewFrame[]> {
+    const frames: RenderClipPreviewFrame[] = [];
+    const frameDir = path.join(this.opts.generatedDir, "previews", renderId);
+    let frameDirReady = false;
+    for (let index = 0; index < clips.length; index += 1) {
+      const clip = clips[index];
+      const segmentPath = segmentFiles[index];
+      if (!segmentPath || !existsSync(segmentPath)) continue;
+      const framePath = path.join(frameDir, `clip_${index + 1}.png`);
+      // Sample near the middle of the segment; clamp to the rendered (>=0.5s) duration.
+      const renderedDuration = Math.max(0.5, clip.durationSec);
+      const seek = Math.max(0.05, Math.min(clip.durationSec / 2, renderedDuration - 0.05));
+      try {
+        if (!frameDirReady) {
+          await fs.mkdir(frameDir, { recursive: true });
+          frameDirReady = true;
+        }
+        await runFfmpeg([
+          "-y",
+          "-ss", seek.toFixed(2),
+          "-i", segmentPath,
+          "-frames:v", "1",
+          "-vf", "scale=240:-2",
+          framePath
+        ]);
+        const relative = path.relative(this.opts.generatedDir, framePath).split(path.sep).join("/");
+        frames.push({ clipId: clip.id, previewFrame: `/generated/${relative}` });
+      } catch (error) {
+        warnings.push(`Clip ${clip.id}: preview frame extraction failed (${(error as Error).message}).`);
+      }
+    }
+    return frames;
   }
 
   private async renderClip(
@@ -505,10 +560,18 @@ export class FFmpegRenderer implements RendererAdapter {
   ): Promise<boolean> {
     const visualFormFamily = String(clip.visualFormFamily ?? styleValueFromClip(clip, "visualFormFamily") ?? "");
     const targetAssetIds = targetAssetIdsForClip(clip);
+    const resolvedTargetAssetPaths = new Map<string, string>();
+    for (const assetId of targetAssetIds) {
+      const resolved = this.opts.assetResolver.resolve(assetId);
+      if (resolved && existsSync(resolved)) resolvedTargetAssetPaths.set(assetId, resolved);
+    }
+    if (clipUsesAigcGeneratedMaterial(clip) && targetAssetIds.length > 0 && resolvedTargetAssetPaths.size === 0) {
+      throw new Error(`Clip ${clip.id}: AIGC generated assets are present in the timeline but none resolved to renderable files (${targetAssetIds.join(", ")}).`);
+    }
     if (visualFormFamily === "media_cards" && targetAssetIds.length >= 2) {
       const assetPaths = targetAssetIds
-        .map((assetId) => this.opts.assetResolver.resolve(assetId))
-        .filter((assetPath): assetPath is string => Boolean(assetPath && existsSync(assetPath)))
+        .map((assetId) => resolvedTargetAssetPaths.get(assetId))
+        .filter((assetPath): assetPath is string => Boolean(assetPath))
         .slice(0, 4);
       if (assetPaths.length >= 2) {
         try {
@@ -522,7 +585,7 @@ export class FFmpegRenderer implements RendererAdapter {
 
     if (visualFormFamily === "brand_cta" && targetAssetIds.length > 0) {
       const logoPath = targetAssetIds
-        .map((assetId) => this.opts.assetResolver.resolve(assetId))
+        .map((assetId) => resolvedTargetAssetPaths.get(assetId))
         .find((assetPath) => Boolean(assetPath && existsSync(assetPath)));
       if (logoPath) {
         try {
@@ -537,9 +600,15 @@ export class FFmpegRenderer implements RendererAdapter {
     const sourcePath = clip.sourceAssetId ? this.opts.assetResolver.resolve(clip.sourceAssetId) : undefined;
     if (sourcePath && (clip.type === "video" || clip.type === "image")) {
       try {
+        const isStillImage = /\.(png|jpe?g|webp)$/i.test(sourcePath);
+        const scaleWidth = isStillImage ? Math.round(options.width * 1.12) : options.width;
+        const scaleHeight = isStillImage ? Math.round(options.height * 1.12) : options.height;
         const filter = [
-          `scale=${options.width}:${options.height}:force_original_aspect_ratio=increase`,
-          `crop=${options.width}:${options.height}`,
+          `scale=${scaleWidth}:${scaleHeight}:force_original_aspect_ratio=increase`,
+          isStillImage
+            ? `crop=${options.width}:${options.height}:x=(iw-ow)/2+sin(n/18)*14:y=(ih-oh)/2+cos(n/24)*10`
+            : `crop=${options.width}:${options.height}`,
+          isStillImage ? "eq=saturation=1.08,noise=alls=3:allf=t+u" : "",
           options.subtitle
             ? drawTextFilter(options.subtitle, options.textStyle, options.textStyle.sourceFontSize, "h-(text_h*2)")
             : ""
@@ -548,12 +617,9 @@ export class FFmpegRenderer implements RendererAdapter {
           .join(",");
         await runFfmpeg([
           "-y",
-          "-ss",
-          "0",
-          "-t",
-          options.duration.toFixed(2),
-          "-i",
-          sourcePath,
+          ...(isStillImage
+            ? ["-loop", "1", "-t", options.duration.toFixed(2), "-i", sourcePath]
+            : ["-ss", "0", "-t", options.duration.toFixed(2), "-i", sourcePath]),
           "-vf",
           filter,
           "-r",
@@ -707,13 +773,17 @@ export class FFmpegRenderer implements RendererAdapter {
     const color = backgroundFor(clip, options.timeline);
     const decorations = mgMotionDecorationFilters(options.timeline, options.width, options.height);
     const proxyFilters = proxyPlaceholderFilters(clip, options.width, options.height, options.textStyle);
+    const visualFormFamily = String(clip.visualFormFamily ?? styleValueFromClip(clip, "visualFormFamily") ?? "");
+    const centerSubtitle = visualFormFamily === "kinetic_typography";
+    const subtitleY = centerSubtitle ? "(h-text_h)/2" : "h-(text_h*2)";
+    const subtitleSize = centerSubtitle ? options.textStyle.cardFontSize : options.textStyle.sourceFontSize;
     const filter = `color=c=${color}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)},format=yuv420p${
       decorations.length ? `,${decorations.join(",")}` : ""
     }${
       proxyFilters.length ? `,${proxyFilters.join(",")}` : ""
     }${
       options.subtitle && !proxyFilters.length
-        ? `,${drawTextFilter(options.subtitle, options.textStyle, options.textStyle.cardFontSize, "(h-text_h)/2")}`
+        ? `,${drawTextFilter(options.subtitle, options.textStyle, subtitleSize, subtitleY)}`
         : ""
     }`;
     await runFfmpeg([

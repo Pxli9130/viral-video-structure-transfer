@@ -303,6 +303,32 @@ describe("v1.2 mock pipeline", () => {
     expect(adjusted.renderPlan?.adapterOptions?.editOperations).toContain("adjust_ribbon");
   });
 
+  it("keeps prompt-derived Chinese subtitles monolingual unless bilingual copy is requested", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const generation = generateMigrationResult({ template, request: request() });
+    const subtitles = generation.timeline.clips.map((clip) => clip.subtitleText ?? "").filter(Boolean);
+    expect(subtitles.length).toBeGreaterThan(0);
+    expect(subtitles.join(" ")).not.toMatch(/\bfits\b|compact design|clearer everyday value/i);
+    expect(generation.timeline.renderPlan?.adapterOptions?.subtitleStyleSource).toBe("sample_template_packaging");
+  });
+
+  it("can disable subtitle layers while keeping visual card copy available", () => {
+    const sampleAnalysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
+    const template = buildFallbackTemplate(sampleAnalysis, "b2b_marketing_mg", "project_demo");
+    const noSubtitles = {
+      ...request(),
+      controls: {
+        ...request().controls,
+        subtitleGenerationMode: "off" as const
+      }
+    };
+    const generation = generateMigrationResult({ template, request: noSubtitles });
+    expect(generation.timeline.clips.every((clip) => !clip.subtitleText)).toBe(true);
+    expect(generation.timeline.clips.flatMap((clip) => clip.layers).some((layer) => layer.kind === "base_visual")).toBe(true);
+    expect(generation.timeline.clips.flatMap((clip) => clip.layers).some((layer) => layer.kind === "subtitle")).toBe(false);
+  });
+
   it("weaves VLM video_summary, structure and reusable_patterns into StructureTemplate", () => {
     const analysis = buildMockVideoAnalysis({ assetId: "sample_video", projectId: "project_demo", purpose: "sample", durationSec: 15 });
     const baseline = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_demo");

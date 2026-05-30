@@ -58,6 +58,13 @@ export interface ScorecardResult {
   warnings?: string[];
 }
 
+export interface GeneratedSubtitleCue {
+  clipId: string;
+  text: string;
+  language: "zh" | "en";
+  placement: "lower_third" | "center" | "none";
+}
+
 const DEFAULT_TIMEOUT = 30_000;
 
 export class OpenAICompatibleAIAdapter implements AIAdapter {
@@ -129,6 +136,52 @@ export class OpenAICompatibleAIAdapter implements AIAdapter {
     } catch {
       return null;
     }
+  }
+
+  async generateSubtitles(input: { generation: GenerationResult; language: "zh" | "en" }): Promise<GeneratedSubtitleCue[]> {
+    if (!this.available) return [];
+    const clips = input.generation.timeline.clips.map((clip) => ({
+      clipId: clip.id,
+      role: clip.role,
+      visualFormFamily: clip.visualFormFamily,
+      visualIntent: clip.visualIntent,
+      currentText: clip.subtitleText
+    }));
+    const adapterOptions = input.generation.timeline.renderPlan?.adapterOptions ?? {};
+    const system = [
+      "你是短视频字幕文案助手。请只根据用户目标 prompt 和 timeline clip 角色生成字幕，不要复制样例视频 OCR/ASR/品牌。",
+      "字幕的密度、位置和标题卡/下三分之一风格来自样例模板的 packaging/subtitle style；只迁移风格，不迁移原字幕文本。",
+      "返回严格 JSON：{ subtitles: [{ clipId, text, language, placement }] }。",
+      "language 必须与要求一致；中文模式不要混入英文，英文模式不要混入中文。",
+      "placement 只允许 lower_third, center, none；只有 kinetic_typography clip 可以 center。",
+      "每条 text 不超过 18 个中文字符或 8 个英文词。"
+    ].join("\n");
+    const reply = await this.chat([
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: JSON.stringify({
+          language: input.language,
+          prompt: input.generation.request.prompt,
+          learnedSubtitleStyle: {
+            density: adapterOptions.subtitleDensity,
+            subtitleStyle: adapterOptions.subtitleStyle,
+            titleCardStyle: adapterOptions.titleCardStyle,
+            source: adapterOptions.subtitleStyleSource
+          },
+          clips
+        })
+      }
+    ], true);
+    const parsed = safeParseJson<{ subtitles?: GeneratedSubtitleCue[] }>(reply);
+    return (parsed?.subtitles ?? [])
+      .filter((item) => item?.clipId && typeof item.text === "string")
+      .map((item) => ({
+        clipId: String(item.clipId),
+        text: truncate(String(item.text).replace(/\s+/g, " ").trim(), 48),
+        language: input.language,
+        placement: item.placement === "center" || item.placement === "none" ? item.placement : "lower_third"
+      }));
   }
 
   private async requestTemplateEnrichment(

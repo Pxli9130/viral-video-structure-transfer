@@ -8,3 +8,6 @@ export * from "./timelineBuilder.js";
 export * from "./variantPlanner.js";
 export * from "./naturalLanguageEdit.js";
 export * from "./slotInduction.js";
+export * from "./aigcMaterialPlanner.js";
+export * from "./aigcMaterialProviders.js";
+export * from "./aigcMaterialQualityGate.js";

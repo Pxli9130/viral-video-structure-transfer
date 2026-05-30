@@ -6,8 +6,11 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
+  checkGeneratedMaterials,
+  createMaterialGenerationBriefs,
   buildFallbackTemplate,
   generateMigrationResult,
+  getAigcMaterialProvider,
   nowIso,
   parsePromptToBrief,
   stableId,
@@ -20,7 +23,10 @@ import {
   type Asset,
   type AssetRole,
   type AssetType,
+  type AigcMaterialProviderId,
   type ExampleAnalysis,
+  type GeneratedAssetCandidate,
+  type GeneratedAssetQualityResult,
   type GenerationRequest,
   type GenerationResult,
   type Job,
@@ -28,6 +34,7 @@ import {
   type JobStatus,
   type JobType,
   type KnowledgeAtom,
+  type MaterialGenerationBrief,
   type Project,
   type RenderOutput,
   type RendererTarget,
@@ -64,6 +71,16 @@ const ASSET_ROLES: AssetRole[] = [
 ];
 const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_user_uploaded", "demo_only", "unknown"];
 const RENDERER_TARGETS: RendererTarget[] = ["mock_preview", "html_preview", "ffmpeg", "remotion", "hyperframes"];
+const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
+  "mock_provider",
+  "local_folder_provider",
+  "volcengine_seedream",
+  "ark_seedance_provider_stub",
+  "image_provider",
+  "copy_provider",
+  "none"
+]);
+const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
 
 const repoRoot =
   path.basename(process.cwd()) === "api" && path.basename(path.dirname(process.cwd())) === "apps"
@@ -759,10 +776,32 @@ function selectTemplateForGeneration(db: Database, request: GenerationRequest): 
   };
 }
 
-function buildAssetResolver(db: Database): AssetPathResolver {
+function pathWithin(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveTargetAssetPath(targetAsset: TargetAssetInput): string | undefined {
+  if (!targetAsset.path || /^https?:\/\//i.test(targetAsset.path)) return undefined;
+  const absolute = path.isAbsolute(targetAsset.path)
+    ? path.resolve(targetAsset.path)
+    : path.resolve(repoRoot, targetAsset.path);
+  const allowedRoots = [storageRoot, path.join(repoRoot, "docs", "fixtures")];
+  return allowedRoots.some((root) => pathWithin(root, absolute)) ? absolute : undefined;
+}
+
+function buildAssetResolver(db: Database, generation?: GenerationResult): AssetPathResolver {
+  const targetAssetsById = new Map((generation?.request.targetAssets ?? []).map((asset) => [asset.id, asset]));
   return {
     resolve(assetId: string) {
-      return db.assets.find((asset) => asset.id === assetId)?.path;
+      const targetAsset = targetAssetsById.get(assetId);
+      if (targetAsset) return resolveTargetAssetPath(targetAsset);
+      const managedAsset = db.assets.find((asset) => asset.id === assetId);
+      if (!managedAsset?.path) return undefined;
+      if (managedAsset.role === "example_video" && generation?.request.constraints?.sampleAssetReuse !== "authorized") {
+        return undefined;
+      }
+      return managedAsset.path;
     }
   };
 }
@@ -1248,6 +1287,317 @@ interface RunGenerationOutcome {
   templateId: string;
 }
 
+function aigcProviderForRequest(request: GenerationRequest): AigcMaterialProviderId {
+  if (request.controls?.allowExternalAigcProvider !== true) return "mock_provider";
+  const requested = process.env.AIGC_IMAGE_PROVIDER as AigcMaterialProviderId | undefined;
+  return requested && AIGC_PROVIDER_IDS.has(requested) ? requested : "mock_provider";
+}
+
+function sanitizeAigcProviderError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/ark-[A-Za-z0-9-]+/g, "ark-***")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "AIza***")
+    .replace(/account\s+\[[^\]]+\]/gi, "account [redacted]")
+    .replace(/Request id:\s*[0-9A-Za-z_-]+/gi, "Request id: redacted")
+    .replace(/GEMINI_API_KEY=[^\s]+/g, "GEMINI_API_KEY=***")
+    .replace(/SEEDREAM_ARK_API_KEY=[^\s]+/g, "SEEDREAM_ARK_API_KEY=***")
+    .slice(0, 500);
+}
+
+function targetAssetFromGeneratedCandidate(input: {
+  candidate: GeneratedAssetCandidate;
+  brief: MaterialGenerationBrief | undefined;
+  quality: GeneratedAssetQualityResult | undefined;
+}): TargetAssetInput {
+  const family = input.brief?.visualFormFamily ?? "unknown";
+  const assetType = input.brief?.assetType ?? input.candidate.type;
+  return {
+    id: input.candidate.id,
+    kind: input.candidate.type === "video" ? "video" : input.candidate.type === "copy" ? "copy" : "image",
+    role: family,
+    path: input.candidate.type === "copy" ? undefined : input.candidate.path,
+    text: input.candidate.type === "copy" ? input.candidate.prompt : undefined,
+    filename: path.basename(input.candidate.path),
+    tags: [
+      "target_material",
+      "aigc_generated_material",
+      family,
+      assetType,
+      ...(family === "media_cards" ? ["media_card", "card"] : []),
+      ...(family === "brand_cta" ? ["logo_placeholder", "cta"] : [])
+    ],
+    metadata: {
+      materialRole: "aigc_generated_material",
+      provider: input.candidate.provider,
+      model: input.candidate.model,
+      briefId: input.candidate.briefId,
+      slotId: input.candidate.slotId,
+      generatedAssetType: assetType,
+      quality: input.quality,
+      provenance: input.candidate.provenance
+    }
+  };
+}
+
+async function reviewGeneratedMaterialWithVlm(input: {
+  brief: MaterialGenerationBrief;
+  candidate: GeneratedAssetCandidate;
+  filePath: string;
+}): Promise<{ usable: boolean; slotFitScore: number; targetThemeFitScore: number; noSampleCopyScore: number; textArtifactRisk: number; issues: string[] }> {
+  if (!adapters.vlmAdapter.available) {
+    throw new Error("VLM adapter is not configured");
+  }
+  const review = await adapters.vlmAdapter.describeFrames([{ path: input.filePath, timeSec: 0 }]);
+  const description = review[0]?.description ?? "";
+  const tags = review[0]?.tags ?? [];
+  const hasWatermarkRisk = /watermark|logo|platform|douyin|tiktok|抖音|水印/i.test(description);
+  return {
+    usable: review.length > 0 && !hasWatermarkRisk,
+    slotFitScore: tags.length ? 0.86 : 0.78,
+    targetThemeFitScore: 0.8,
+    noSampleCopyScore: input.candidate.provenance.sampleFramesSentExternally ? 0 : 0.96,
+    textArtifactRisk: /text|caption|文字|字幕/i.test(description) ? 0.22 : 0.08,
+    issues: hasWatermarkRisk ? ["VLM review found possible watermark/platform mark"] : []
+  };
+}
+
+async function applyAigcMaterialFill(input: {
+  template: StructureTemplate;
+  request: GenerationRequest;
+  sourceAsset?: Asset;
+  sourceAnalysis?: VideoAnalysisResult;
+  sourceVlm?: VLMVideoAnalysis;
+  selectedTemplateReason?: string;
+  baseGeneration: GenerationResult;
+  generationIdSalt?: string;
+}): Promise<GenerationResult> {
+  if (input.request.controls?.allowAigcMaterialGeneration !== true) return input.baseGeneration;
+
+  const providerId = aigcProviderForRequest(input.request);
+  const externalProvider = EXTERNAL_AIGC_PROVIDERS.has(providerId);
+  const provider = getAigcMaterialProvider(providerId);
+  const fallbackProvider = getAigcMaterialProvider("mock_provider");
+  const briefs = createMaterialGenerationBriefs({
+    gapReport: input.baseGeneration.gapReport,
+    fillPlan: input.baseGeneration.fillPlan,
+    request: input.request,
+    targetAssets: input.request.targetAssets,
+    config: {
+      enabled: true,
+      provider: providerId,
+      maxAssetsPerRun: 8,
+      allowExternalUpload: externalProvider && input.request.controls?.allowExternalAigcProvider === true,
+      allowSampleFramesToProvider: false,
+      requireUserApprovalBeforeRender: false,
+      cacheEnabled: true
+    }
+  });
+
+  const candidates: GeneratedAssetCandidate[] = [];
+  const providerErrors: string[] = [];
+  let providerFallbackReason: string | undefined;
+  const outputDir = path.join(generatedDir, "aigc-materials", input.baseGeneration.id);
+  const publicPathPrefix = path.relative(repoRoot, outputDir).replace(/\\/g, "/");
+  await fs.mkdir(outputDir, { recursive: true });
+  for (const brief of briefs) {
+    try {
+      const generated = await provider.generate(brief, {
+        outputDir,
+        publicPathPrefix,
+        env: process.env,
+        allowExternalProviderCall: externalProvider && input.request.controls?.allowExternalAigcProvider === true
+      });
+      candidates.push(...generated);
+    } catch (error) {
+      const reason = sanitizeAigcProviderError(error);
+      providerErrors.push(`${providerId}: ${reason}`);
+      if (!externalProvider || providerId === "mock_provider") throw error;
+      providerFallbackReason = `External AIGC provider ${providerId} failed (${reason}); used deterministic mock_provider fallback.`;
+      const generated = await fallbackProvider.generate(brief, {
+        outputDir,
+        publicPathPrefix,
+        env: process.env,
+        allowExternalProviderCall: false
+      });
+      candidates.push(...generated);
+    }
+  }
+
+  const quality = await checkGeneratedMaterials({
+    briefs,
+    candidates,
+    rootDir: repoRoot,
+    vlmAvailable: adapters.vlmAdapter.available,
+    vlmReview: adapters.vlmAdapter.available ? reviewGeneratedMaterialWithVlm : undefined
+  });
+  const briefById = new Map(briefs.map((brief) => [brief.id, brief]));
+  const qualityById = new Map(quality.map((item) => [item.candidateId, item]));
+  const reviewedCandidates = candidates.map((candidate) => {
+    const result = qualityById.get(candidate.id);
+    return {
+      ...candidate,
+      quality: {
+        ...candidate.quality,
+        usable: result?.usable ?? false,
+        slotFitScore: result?.slotFitScore,
+        noSampleCopyScore: result?.noSampleCopyScore,
+        issues: result?.issues ?? []
+      }
+    };
+  });
+  const generatedTargetAssets = reviewedCandidates
+    .filter((candidate) => qualityById.get(candidate.id)?.usable)
+    .map((candidate) => targetAssetFromGeneratedCandidate({
+      candidate,
+      brief: briefById.get(candidate.briefId),
+      quality: qualityById.get(candidate.id)
+    }));
+
+  const augmentedRequest: GenerationRequest = {
+    ...input.request,
+    targetAssets: [...(input.request.targetAssets ?? []), ...generatedTargetAssets]
+  };
+  const generation = generatedTargetAssets.length
+    ? generateMigrationResult({
+        template: input.template,
+        request: augmentedRequest,
+        sourceAsset: input.sourceAsset,
+        sourceAnalysis: input.sourceAnalysis,
+        sourceVlm: input.sourceVlm,
+        generationIdSalt: input.generationIdSalt ? `${input.generationIdSalt}_aigc` : "aigc_material_fill",
+        selectedTemplateReason: input.selectedTemplateReason
+      })
+    : input.baseGeneration;
+
+  return {
+    ...generation,
+    request: augmentedRequest,
+    warnings: [
+      ...generation.warnings,
+      ...(providerFallbackReason ? [providerFallbackReason] : []),
+      briefs.length
+        ? `AIGC material fill used ${providerFallbackReason ? "mock_provider fallback" : providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable assets.`
+        : "AIGC material fill was enabled, but no eligible missing visual slots produced generation briefs."
+    ],
+    aigcMaterialFill: {
+      enabled: true,
+      provider: providerFallbackReason ? "mock_provider" : providerId,
+      requestedProvider: providerId,
+      providerFallbackReason,
+      providerErrors,
+      externalProviderUsed: reviewedCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
+      sampleFramesSentExternally: reviewedCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
+      briefs,
+      candidates: reviewedCandidates,
+      quality,
+      generatedTargetAssets
+    }
+  };
+}
+
+type SubtitleCue = {
+  clipId: string;
+  text: string;
+  language: "zh" | "en";
+  placement: "lower_third" | "center" | "none";
+};
+
+type SubtitleCapableAiAdapter = AdapterSet["aiAdapter"] & {
+  generateSubtitles?: (input: { generation: GenerationResult; language: "zh" | "en" }) => Promise<SubtitleCue[]>;
+};
+
+function subtitleLanguageForPrompt(prompt: string): "zh" | "en" {
+  const cjk = (prompt.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const latin = (prompt.match(/[A-Za-z]/g) ?? []).length;
+  return cjk > 0 && cjk >= latin * 0.2 ? "zh" : "en";
+}
+
+function promptAllowsBilingual(prompt: string): boolean {
+  return /bilingual|中英|双语|英文.*中文|中文.*英文/i.test(prompt);
+}
+
+function normalizeSubtitleText(text: string, language: "zh" | "en", allowBilingual: boolean): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact || allowBilingual) return compact;
+  if (language === "zh") {
+    return compact
+      .replace(/\b[A-Za-z][A-Za-z\s-]{1,}\b/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+  return compact.replace(/[\u3400-\u9fff]+/g, "").replace(/\s{2,}/g, " ").trim();
+}
+
+async function applySubtitleGeneration(generation: GenerationResult): Promise<GenerationResult> {
+  const mode = generation.request.controls?.subtitleGenerationMode ?? "prompt_only";
+  const language = subtitleLanguageForPrompt(generation.request.prompt);
+  const allowBilingual = promptAllowsBilingual(generation.request.prompt);
+  let cues: SubtitleCue[] = [];
+  if (mode === "ark_doubao") {
+    const ai = adapters.aiAdapter as SubtitleCapableAiAdapter;
+    if (ai.available && ai.generateSubtitles) {
+      try {
+        cues = await ai.generateSubtitles({ generation, language });
+      } catch (error) {
+        generation = {
+          ...generation,
+          warnings: [...generation.warnings, `Ark Doubao subtitle generation failed: ${sanitizeAigcProviderError(error)}`]
+        };
+      }
+    }
+  }
+  const cueByClipId = new Map(cues.map((cue) => [cue.clipId, cue]));
+  const subtitleByClipId = new Map<string, string>();
+  const clips = generation.timeline.clips.map((clip) => {
+    const cue = cueByClipId.get(clip.id);
+    const rawText = mode === "off" ? "" : (cue?.text ?? clip.subtitleText ?? "");
+    const text = normalizeSubtitleText(rawText, language, allowBilingual);
+    const baseLayers = clip.layers.filter((layer) => layer.kind !== "subtitle");
+    const duplicateBaseText = baseLayers.some((layer) =>
+      layer.kind === "base_visual" &&
+      typeof layer.text === "string" &&
+      normalizeSubtitleText(layer.text, language, allowBilingual) === text
+    );
+    const visualFormFamily = clip.visualFormFamily ?? String(baseLayers.find((layer) => layer.style?.visualFormFamily)?.style?.visualFormFamily ?? "");
+    const placement = visualFormFamily === "kinetic_typography" ? "center" : "lower_third";
+    const learnedSubtitleStyle = generation.timeline.renderPlan?.adapterOptions?.subtitleStyle;
+    const learnedSubtitleSource = generation.timeline.renderPlan?.adapterOptions?.subtitleStyleSource;
+    const subtitleLayer = mode !== "off" && text && !duplicateBaseText
+      ? [{
+          id: stableId("layer_subtitle", clip.id, text),
+          kind: "subtitle" as const,
+          text,
+          style: {
+            position: placement,
+            density: generation.request.controls?.subtitleDensity ?? generation.timeline.renderPlan?.adapterOptions?.subtitleDensity ?? "medium",
+            generatedBy: mode,
+            learnedSubtitleStyle,
+            learnedSubtitleSource,
+            sampleTextCopied: false
+          }
+        }]
+      : [];
+    subtitleByClipId.set(clip.id, text);
+    return {
+      ...clip,
+      subtitleText: text,
+      layers: [...baseLayers, ...subtitleLayer]
+    };
+  });
+  return {
+    ...generation,
+    timeline: {
+      ...generation.timeline,
+      clips
+    },
+    storyboard: generation.storyboard.map((item) => ({
+      ...item,
+      subtitle: subtitleByClipId.get(item.clipId) ?? item.subtitle
+    }))
+  };
+}
+
 async function runGeneration(
   db: Database,
   request: GenerationRequest,
@@ -1312,6 +1662,17 @@ async function runGeneration(
       generationIdSalt: options.variantLabel,
       selectedTemplateReason: templateSelection.reason
     });
+    generation = await applyAigcMaterialFill({
+      template: templateRecord.template,
+      request,
+      sourceAsset,
+      sourceAnalysis,
+      sourceVlm,
+      selectedTemplateReason: templateSelection.reason,
+      baseGeneration: generation,
+      generationIdSalt: options.variantLabel
+    });
+    generation = await applySubtitleGeneration(generation);
     if (options.variantLabel) {
       generation = {
         ...generation,
@@ -1882,7 +2243,7 @@ app.post(
         : "ViralReconstruction";
       const renderer = selectRenderer(target, {
         generatedDir,
-        assetResolver: buildAssetResolver(db),
+        assetResolver: buildAssetResolver(db, generation),
         remotionEntryPoint,
         remotionCompositionId
       });

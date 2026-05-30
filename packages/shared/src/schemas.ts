@@ -281,6 +281,7 @@ export const structureTemplateSchema = {
                 "reorder_structure",
                 "procedural_generation",
                 "aigc_placeholder",
+                "aigc_generated_asset",
                 "proxy_placeholder",
                 "user_asset_replace"
               ]
@@ -439,7 +440,10 @@ export const generationRequestSchema = {
         packagingStyle: { enum: ["clean", "bold", "mg_motion"] },
         ctaStyle: { enum: ["soft", "direct"] },
         allowAigcPlaceholder: { type: "boolean" },
+        allowAigcMaterialGeneration: { type: "boolean" },
+        allowExternalAigcProvider: { type: "boolean" },
         creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] },
+        subtitleGenerationMode: { enum: ["off", "prompt_only", "ark_doubao"] },
         subtitleDensity: { enum: ["minimal", "medium", "dense"] },
         stylePreset: { enum: ["sample_like", "clean_premium", "white_poster", "bold_mg"] },
         ctaTiming: { enum: ["early", "default", "late"] },
@@ -463,6 +467,100 @@ export const generationRequestSchema = {
       then: { required: ["sourceVideo"] }
     }
   ]
+} as const;
+
+export const aigcMaterialFillConfigSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/aigc-material-fill-config.schema.json",
+  title: "AigcMaterialFillConfig",
+  type: "object",
+  required: [
+    "enabled",
+    "provider",
+    "maxAssetsPerRun",
+    "allowExternalUpload",
+    "allowSampleFramesToProvider",
+    "requireUserApprovalBeforeRender",
+    "cacheEnabled"
+  ],
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    provider: { enum: ["mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    maxAssetsPerRun: { type: "number", minimum: 0 },
+    maxCostUsd: { type: "number", minimum: 0 },
+    allowExternalUpload: { type: "boolean" },
+    allowSampleFramesToProvider: { type: "boolean" },
+    requireUserApprovalBeforeRender: { type: "boolean" },
+    cacheEnabled: { type: "boolean" }
+  }
+} as const;
+
+export const materialGenerationBriefSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/material-generation-brief.schema.json",
+  title: "MaterialGenerationBrief",
+  type: "object",
+  required: [
+    "id",
+    "projectId",
+    "generationId",
+    "slotId",
+    "visualFormFamily",
+    "visualForm",
+    "assetType",
+    "count",
+    "targetTheme",
+    "styleConstraints",
+    "structureConstraints",
+    "negativePrompts",
+    "evidenceRefs",
+    "privacyPolicy"
+  ],
+  additionalProperties: true,
+  properties: {
+    id: { type: "string" },
+    projectId: { type: "string" },
+    generationId: { type: "string" },
+    slotId: { type: "string" },
+    visualFormFamily: { type: "string" },
+    visualForm: { type: "string" },
+    assetType: { enum: ["image", "image_set", "short_video", "copy", "logo_placeholder"] },
+    count: { type: "number", minimum: 1 },
+    targetTheme: { type: "string" },
+    targetBrand: { type: "string" },
+    targetAudience: { type: "string" },
+    copyContext: { type: "array", items: { type: "string" } },
+    promptPack: { type: "array", items: { type: "string" } },
+    styleConstraints: { type: "object", additionalProperties: true },
+    structureConstraints: { type: "object", additionalProperties: true },
+    negativePrompts: { type: "array", items: { type: "string" } },
+    evidenceRefs: { type: "object", additionalProperties: true },
+    privacyPolicy: { type: "object", additionalProperties: true }
+  }
+} as const;
+
+export const generatedAssetCandidateSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/generated-asset-candidate.schema.json",
+  title: "GeneratedAssetCandidate",
+  type: "object",
+  required: ["id", "briefId", "slotId", "provider", "model", "type", "materialRole", "path", "prompt", "provenance", "quality"],
+  additionalProperties: true,
+  properties: {
+    id: { type: "string" },
+    briefId: { type: "string" },
+    slotId: { type: "string" },
+    provider: { enum: ["mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    model: { type: "string" },
+    type: { enum: ["image", "video", "copy"] },
+    materialRole: { const: "aigc_generated_material" },
+    path: { type: "string" },
+    prompt: { type: "string" },
+    negativePrompt: { type: "string" },
+    provenance: { type: "object", additionalProperties: true },
+    quality: { type: "object", additionalProperties: true }
+  }
 } as const;
 
 export const timelineSchema = {
@@ -525,6 +623,7 @@ export const timelineSchema = {
               "reorder_structure",
               "procedural_generation",
               "aigc_placeholder",
+              "aigc_generated_asset",
               "proxy_placeholder",
               "user_asset_replace"
             ]
@@ -577,6 +676,7 @@ export const timelineSchema = {
               "reorder_structure",
               "procedural_generation",
               "aigc_placeholder",
+              "aigc_generated_asset",
               "proxy_placeholder",
               "user_asset_replace"
             ]

@@ -10,6 +10,7 @@ import type {
   StructureTemplate,
   TargetAssetInput,
   TemplateRecord,
+  VideoAnalysisResult,
   Vertical
 } from "@vvst/shared";
 
@@ -21,6 +22,14 @@ type KnowledgeBaseResponse = {
   atoms: KnowledgeAtom[];
   editingTechniques: Array<{ id: string; name: string; category: string; description: string; sourceTemplateId?: string }>;
   counts: { templates: number; atoms: number; techniques: number };
+};
+
+type ProjectDetailResponse = Project & {
+  assets: Asset[];
+  analyses: ExampleAnalysis[];
+  templates: TemplateRecord[];
+  generations: GenerationResult[];
+  renders: RenderResponse["render"][];
 };
 
 type AnalyzeResponse = {
@@ -44,7 +53,13 @@ type RenderResponse = {
   jobId: string;
   renderId: string;
   status: string;
-  render: { outputPath?: string; previewHtml?: string; rendererTarget: RendererTarget; status: string };
+  render: {
+    outputPath?: string;
+    previewHtml?: string;
+    rendererTarget: RendererTarget;
+    status: string;
+    clipPreviewFrames?: { clipId: string; previewFrame: string }[];
+  };
 };
 
 type ReviseResponse = {
@@ -121,11 +136,11 @@ async function api<T>(input: string, init?: RequestInit): Promise<T> {
 }
 
 const defaultPrompt = `请基于已学习的爆款营销视频结构，把这个素材重构成一个 15 秒竖屏短视频。
-主题：便携式桌面加湿器
-目标用户：办公室久坐人群、学生
-卖点：小巧便携、静音、USB 供电、柔和夜灯、缓解干燥
-风格：快节奏、字幕明显、带 MG 风格卖点卡片
-CTA：点击了解更多`;
+主题：爆款结构迁移引擎
+目标用户：短视频创作者、营销团队、内容运营
+卖点：解析样例结构、诱导可复用槽位、检测素材缺口、渲染可编辑时间线
+风格：快节奏、MG 动效、信息清晰
+CTA：上传素材，分析结构，快速重构`;
 
 function downloadJson(filename: string, value: unknown) {
   const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
@@ -137,11 +152,45 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
+function publicAssetUrl(pathname: string): string {
+  if (/^https?:\/\//.test(pathname)) return pathname;
+  const configuredBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+  if (configuredBase) return new URL(pathname, configuredBase).toString();
+  if (import.meta.env.DEV && typeof window !== "undefined" && window.location.port && window.location.port !== "3000") {
+    return `http://${window.location.hostname}:3000${pathname}`;
+  }
+  return pathname;
+}
+
+function generatedOutputUrl(render: RenderResponse["render"] | null): string | null {
+  const outputPath = render?.outputPath;
+  if (!outputPath) return null;
+  if (/^https?:\/\//.test(outputPath)) return outputPath;
+  if (outputPath.startsWith("/generated/")) return publicAssetUrl(outputPath);
+  const filename = outputPath.split(/[\\/]/).pop();
+  return filename ? publicAssetUrl(`/generated/${filename}`) : null;
+}
+
 function renderOutputUrl(render: RenderResponse["render"] | null): string | null {
   const outputPath = render?.outputPath;
   if (!outputPath || !outputPath.endsWith(".mp4")) return null;
-  const filename = outputPath.split(/[\\/]/).pop();
-  return filename ? `/generated/${filename}` : null;
+  return generatedOutputUrl(render);
+}
+
+function renderOutputLabel(render: RenderResponse["render"] | null): string {
+  const outputPath = render?.outputPath;
+  if (!outputPath) return rendererLabel(render?.rendererTarget);
+  return outputPath.split(/[\\/]/).pop() ?? outputPath;
+}
+
+function analysisVideoView(analysis: ExampleAnalysis | null): Partial<VideoAnalysisResult> | null {
+  if (!analysis) return null;
+  const record = analysis as unknown as Record<string, unknown>;
+  const candidate = record.video && typeof record.video === "object"
+    ? record.video as Partial<VideoAnalysisResult>
+    : record as Partial<VideoAnalysisResult>;
+  if (!candidate.metadata && !candidate.shots && !candidate.keyframes) return null;
+  return candidate;
 }
 
 function safeArray<T>(value: T[] | null | undefined): T[] {
@@ -202,6 +251,7 @@ const strategyDisplay: Record<string, string> = {
   packaging_overlay: "包装补全",
   reuse_with_crop_zoom: "裁切缩放复用",
   aigc_placeholder: "AIGC 占位",
+  aigc_generated_asset: "AIGC 生成素材",
   source_video_mapped: "目标素材已匹配"
 };
 
@@ -317,7 +367,7 @@ function AppContent() {
   const [pace, setPace] = useState<"slow" | "medium" | "fast">("fast");
   const [packagingStyle, setPackagingStyle] = useState<"clean" | "bold" | "mg_motion">("mg_motion");
   const [generation, setGeneration] = useState<GenerationResult | null>(null);
-  const [rendererTarget, setRendererTarget] = useState<RendererTarget>("html_preview");
+  const [rendererTarget, setRendererTarget] = useState<RendererTarget>("ffmpeg");
   const [renderResult, setRenderResult] = useState<RenderResponse["render"] | null>(null);
   const [reviseInstruction, setReviseInstruction] = useState("放慢节奏，减少字幕，CTA 更柔和");
   const [reviseResult, setReviseResult] = useState<ReviseResponse | null>(null);
@@ -332,22 +382,27 @@ function AppContent() {
   const [materialCta, setMaterialCta] = useState("Upload. Analyze. Remix.");
   const [materialFeatureCopy, setMaterialFeatureCopy] = useState("Analyze sample videos\nInduce reusable slots\nDetect missing assets\nRender editable timelines");
   const [materialManifest, setMaterialManifest] = useState<TargetMaterialManifestResponse | null>(null);
+  const [allowAigcGapFill, setAllowAigcGapFill] = useState(false);
+  const [allowExternalAigcProvider, setAllowExternalAigcProvider] = useState(false);
+  const [subtitleGenerationMode, setSubtitleGenerationMode] = useState<NonNullable<GenerationRequest["controls"]>["subtitleGenerationMode"]>("prompt_only");
 
   const selectedTemplate = useMemo(
     () => templates.find((record) => record.id === selectedTemplateId)?.template ?? templates[0]?.template ?? null,
     [selectedTemplateId, templates]
   );
+  const renderedOutputUrl = generatedOutputUrl(renderResult);
   const renderedVideoUrl = renderOutputUrl(renderResult);
+  const renderedHtmlPreview = renderResult?.previewHtml ?? null;
   const replacementSlots = generation?.replacementSlots ?? [];
   const selectedReplacementSlot =
     replacementSlots.find((slot) => slot.slotId === selectedReplacementSlotId) ?? replacementSlots[0] ?? null;
-  const sampleVideo = sampleAnalysis?.video;
+  const sampleVideo = analysisVideoView(sampleAnalysis);
   const sampleMetadata = sampleVideo?.metadata;
   const sampleShots = safeArray(sampleVideo?.shots);
   const sampleKeyframes = safeArray(sampleVideo?.keyframes);
   const sampleTranscript = safeArray(sampleVideo?.transcript);
   const sampleOcr = safeArray(sampleVideo?.ocr);
-  const sourceShots = safeArray(sourceAnalysis?.video?.shots);
+  const sourceShots = safeArray(analysisVideoView(sourceAnalysis)?.shots);
   const templateSegments = safeArray(selectedTemplate?.segments);
   const templateExcludeSegments = safeArray(selectedTemplate?.excludeSegments);
   const knowledgeAtoms = safeArray(knowledgeBase?.atoms);
@@ -359,8 +414,17 @@ function AppContent() {
   const generationCandidates = safeArray(generation?.sourceUnderstanding?.candidates);
   const generationStoryboard = safeArray(generation?.storyboard);
   const generationClips = safeArray(generation?.timeline?.clips);
+  const renderedClipFrames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of safeArray(renderResult?.clipPreviewFrames)) {
+      if (entry?.clipId && entry?.previewFrame) map.set(entry.clipId, publicAssetUrl(entry.previewFrame));
+    }
+    return map;
+  }, [renderResult]);
   const managedTargetAssets = materialManifest?.targetAssets ?? [];
   const managedBlockedAssets = materialManifest?.blockedAssets ?? [];
+  const aigcMaterialFill = generation?.aigcMaterialFill;
+  const generationUsesAigcMaterial = Boolean(aigcMaterialFill?.generatedTargetAssets.length);
 
   async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
     setApiState("loading");
@@ -378,7 +442,8 @@ function AppContent() {
 
   async function refreshProject(projectId = project?.id) {
     if (!projectId) return;
-    const [nextAssets, nextTemplates, nextKb] = await Promise.all([
+    const [projectDetail, nextAssets, nextTemplates, nextKb] = await Promise.all([
+      api<ProjectDetailResponse>(`/api/projects/${projectId}`),
       api<Asset[]>(`/api/projects/${projectId}/assets`),
       api<TemplateRecord[]>(`/api/templates?projectId=${projectId}`),
       api<KnowledgeBaseResponse>(`/api/projects/${projectId}/knowledge-base`)
@@ -398,6 +463,17 @@ function AppContent() {
     if (!current || currentIsMock || currentIsStale) {
       const next = latestReal ?? fallback;
       if (next) setSourceAssetId(next.id);
+    }
+    const latestAnalyses = [...safeArray(projectDetail.analyses)].sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+    const latestSampleAnalysis = latestAnalyses.find((analysis) => analysis.purpose === "sample" && analysisVideoView(analysis));
+    const latestSourceAnalysis = latestAnalyses.find((analysis) => analysis.purpose === "source" && analysisVideoView(analysis));
+    if (latestSampleAnalysis) {
+      setSampleAssetId(latestSampleAnalysis.assetId);
+      setSampleAnalysis(latestSampleAnalysis);
+    }
+    if (latestSourceAnalysis && (!sourceAssetId || latestSourceAnalysis.assetId === sourceAssetId)) {
+      setSourceAssetId(latestSourceAnalysis.assetId);
+      setSourceAnalysis(latestSourceAnalysis);
     }
   }
 
@@ -604,9 +680,10 @@ function AppContent() {
     });
   }
 
-  async function generate() {
+  async function generate(options: { forceAigc?: boolean } = {}) {
     if (!project) return;
     await run(async () => {
+      const useAigcGapFill = options.forceAigc ?? allowAigcGapFill;
       const request: GenerationRequest = {
         projectId: project.id,
         inputMode: sourceAssetId ? "video_plus_prompt" : "prompt_only",
@@ -625,7 +702,10 @@ function AppContent() {
           hookIntensity: "strong",
           packagingStyle,
           ctaStyle: "direct",
-          allowAigcPlaceholder: true
+          allowAigcPlaceholder: true,
+          allowAigcMaterialGeneration: useAigcGapFill,
+          allowExternalAigcProvider: useAigcGapFill && allowExternalAigcProvider,
+          subtitleGenerationMode
         },
         constraints: {
           noSampleVisualCopy: true
@@ -643,6 +723,11 @@ function AppContent() {
       setScorecard(null);
       setReplacementResult(null);
     });
+  }
+
+  async function generateWithAigcGapFill() {
+    setAllowAigcGapFill(true);
+    await generate({ forceAigc: true });
   }
 
   async function renderTimeline() {
@@ -801,24 +886,28 @@ function AppContent() {
               <textarea value={sampleDescription} onChange={(event) => setSampleDescription(event.target.value)} />
             </label>
             {sampleAnalysis && (
-              <div className="analysis-summary">
-                <article>
-                  <strong>{fixed(sampleMetadata?.durationSec)}s</strong>
-                  <span>{sampleMetadata?.width ?? "-"}×{sampleMetadata?.height ?? "-"} · {sampleVideo?.analyzerMode ?? "analyzer"}</span>
-                </article>
-                <article>
-                  <strong>{sampleShots.length}</strong>
-                  <span>镜头 / {sampleKeyframes.length} 个关键帧</span>
-                </article>
-                <article>
-                  <strong>{sampleTranscript.length}</strong>
-                  <span>ASR 片段</span>
-                </article>
-                <article>
-                  <strong>{sampleOcr.length}</strong>
-                  <span>OCR 行</span>
-                </article>
-              </div>
+              sampleVideo ? (
+                <div className="analysis-summary">
+                  <article>
+                    <strong>{sampleMetadata?.durationSec == null ? "-" : `${fixed(sampleMetadata.durationSec)}s`}</strong>
+                    <span>{sampleMetadata?.width ?? "-"}×{sampleMetadata?.height ?? "-"} · {sampleVideo.analyzerMode ?? "analyzer"}</span>
+                  </article>
+                  <article>
+                    <strong>{sampleShots.length}</strong>
+                    <span>镜头 / {sampleKeyframes.length} 个关键帧</span>
+                  </article>
+                  <article>
+                    <strong>{sampleTranscript.length}</strong>
+                    <span>ASR 片段</span>
+                  </article>
+                  <article>
+                    <strong>{sampleOcr.length}</strong>
+                    <span>OCR 行</span>
+                  </article>
+                </div>
+              ) : (
+                <p className="empty">样例已上传，但分析响应没有返回 video 字段；请重新分析或刷新项目。</p>
+              )
             )}
           </section>
 
@@ -920,7 +1009,7 @@ function AppContent() {
               </div>
               {knowledgeBase && <button onClick={() => downloadJson("knowledge-base.json", knowledgeBase)}>导出知识库</button>}
             </div>
-            <div className="asset-list">
+            <div className="asset-list knowledge-scroll">
               {knowledgeAtoms.map((atom) => (
                 <article key={`${atom.templateId}-${atom.id}`}>
                   <strong>{roleLabel(atom.role)} · {atom.category}: {atom.name}</strong>
@@ -1080,12 +1169,91 @@ function AppContent() {
                 <span className="step">步骤 5</span>
                 <h2>重构规划器</h2>
               </div>
-              <button onClick={generate} disabled={!project || !templates.length || apiState === "loading"}>
-                生成重构方案
-              </button>
+              <div className="button-row">
+                <button onClick={() => generate()} disabled={!project || !templates.length || apiState === "loading"}>
+                  生成重构方案
+                </button>
+                <button onClick={generateWithAigcGapFill} disabled={!project || !templates.length || apiState === "loading"}>
+                  AIGC 补缺口并生成
+                </button>
+              </div>
+            </div>
+            <div className="aigc-gap-fill-card">
+              <div>
+                <strong>可选 AIGC 素材补全</strong>
+                <span>默认关闭。开启后，缺失视觉槽位会先生成 MaterialGenerationBrief，再用安全 provider 生成候选素材，通过质量检查后作为 <code>aigc_generated_material</code> 进入 slot matching。</span>
+              </div>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={allowAigcGapFill}
+                  onChange={(event) => setAllowAigcGapFill(event.target.checked)}
+                />
+                启用 AIGC gap fill
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={allowExternalAigcProvider}
+                  disabled={!allowAigcGapFill}
+                  onChange={(event) => setAllowExternalAigcProvider(event.target.checked)}
+                />
+                允许外部 provider（Seedream，需要服务端 .env，可能产生费用）
+              </label>
+              <small>未勾选外部 provider 时，API 使用 deterministic mock_provider，不会外呼。样例帧不会发送给外部 provider。</small>
+              <label>
+                字幕生成
+                <select value={subtitleGenerationMode} onChange={(event) => setSubtitleGenerationMode(event.target.value as typeof subtitleGenerationMode)}>
+                  <option value="prompt_only">Prompt 文案（默认，不复制样例字幕）</option>
+                  <option value="off">关闭字幕层</option>
+                  <option value="ark_doubao">Ark Doubao 生成字幕/短文案</option>
+                </select>
+              </label>
             </div>
             {generation ? (
               <>
+                {aigcMaterialFill && (
+                  <div className="aigc-result-card">
+                    <div>
+                      <strong>AIGC material fill</strong>
+                      <span>
+                        provider: {aigcMaterialFill.provider}
+                        {aigcMaterialFill.requestedProvider && aigcMaterialFill.requestedProvider !== aigcMaterialFill.provider ? ` · requested: ${aigcMaterialFill.requestedProvider}` : ""}
+                        {" "}· generated target assets: {aigcMaterialFill.generatedTargetAssets.length} · external calls: {aigcMaterialFill.externalProviderUsed ? "yes" : "no"} · sample frames sent: {aigcMaterialFill.sampleFramesSentExternally ? "yes" : "no"}
+                      </span>
+                      {aigcMaterialFill.providerFallbackReason && <small>{aigcMaterialFill.providerFallbackReason}</small>}
+                    </div>
+                    <div className="result-grid compact-grid">
+                      <div className="table-scroll">
+                        <table>
+                          <thead><tr><th>brief</th><th>family</th><th>type</th><th>count</th></tr></thead>
+                          <tbody>
+                            {aigcMaterialFill.briefs.map((brief) => (
+                              <tr key={brief.id}><td>{brief.slotId}</td><td>{brief.visualFormFamily}</td><td>{brief.assetType}</td><td>{brief.count}</td></tr>
+                            ))}
+                            {!aigcMaterialFill.briefs.length && <tr><td colSpan={4}>没有可生成的缺口。</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="table-scroll">
+                        <table>
+                          <thead><tr><th>candidate</th><th>usable</th><th>vlm</th><th>issues</th></tr></thead>
+                          <tbody>
+                            {aigcMaterialFill.quality.map((item) => (
+                              <tr key={item.candidateId}>
+                                <td>{item.candidateId}</td>
+                                <td>{item.usable ? "yes" : "no"}</td>
+                                <td>{item.vlmStatus}</td>
+                                <td>{item.issues?.join(", ") || "none"}</td>
+                              </tr>
+                            ))}
+                            {!aigcMaterialFill.quality.length && <tr><td colSpan={4}>尚无质量检查结果。</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div className="result-grid">
                   <div>
                     <h3>槽位映射</h3>
@@ -1227,13 +1395,30 @@ function AppContent() {
                 <button onClick={renderTimeline} disabled={apiState === "loading"}>
                   渲染
                 </button>
+                <p className={`render-material-note wide ${generationUsesAigcMaterial ? "ok" : "warn"}`}>
+                  {generationUsesAigcMaterial
+                    ? `当前时间线已包含 ${aigcMaterialFill?.generatedTargetAssets.length ?? 0} 个 AIGC 生成素材，FFmpeg 会按时间线渲染它们。`
+                    : "当前时间线未包含 AIGC 生成素材；如需使用 AIGC 补缺口，请先点击“AIGC 补缺口并生成”，再渲染。"}
+                </p>
                 {renderResult && (
-                  <p className="empty">
-                    {statusLabel(renderResult.status)} → {renderResult.outputPath ?? rendererLabel(renderResult.rendererTarget)}
+                  <p className="empty render-status wide">
+                    {statusLabel(renderResult.status)} → {renderedOutputUrl ? (
+                      <a href={renderedOutputUrl} target="_blank" rel="noreferrer">{renderOutputLabel(renderResult)}</a>
+                    ) : renderOutputLabel(renderResult)}
                   </p>
                 )}
                 {renderedVideoUrl && (
-                  <video className="render-player" controls src={renderedVideoUrl} />
+                  <div className="render-preview wide">
+                    <video className="render-player" controls src={renderedVideoUrl} />
+                  </div>
+                )}
+                {!renderedVideoUrl && renderedHtmlPreview && (
+                  <iframe className="html-preview wide" title="HTML render preview" srcDoc={renderedHtmlPreview} />
+                )}
+                {!renderedVideoUrl && !renderedHtmlPreview && renderedOutputUrl && (
+                  <p className="empty wide">
+                    <a href={renderedOutputUrl} target="_blank" rel="noreferrer">打开渲染结果</a>
+                  </p>
                 )}
                 <label className="wide">
                   修改指令
@@ -1353,7 +1538,8 @@ function AppContent() {
                   <div className="timeline-strip">
                     {generationClips.map((clip, index) => {
                       const subtitle = clip.subtitleText ?? safeArray(clip.layers).find((layer) => layer.kind === "subtitle")?.text ?? clip.visualIntent ?? `Clip ${index + 1}`;
-                      const previewFrame = String((clip as { previewFrame?: string; thumbnailPath?: string }).previewFrame ?? (clip as { previewFrame?: string; thumbnailPath?: string }).thumbnailPath ?? "");
+                      const clipExtra = clip as { previewFrame?: string; thumbnailPath?: string };
+                      const previewFrame = renderedClipFrames.get(clip.id) ?? String(clipExtra.previewFrame ?? clipExtra.thumbnailPath ?? "");
                       const proxyLayer = safeArray(clip.layers).find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
                       const isProxy = clip.gapFillStrategy === "proxy_placeholder" || Boolean(proxyLayer);
                       return (

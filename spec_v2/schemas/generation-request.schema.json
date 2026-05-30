@@ -194,6 +194,12 @@
         "allowAigcPlaceholder": {
           "type": "boolean"
         },
+        "allowAigcMaterialGeneration": {
+          "type": "boolean"
+        },
+        "allowExternalAigcProvider": {
+          "type": "boolean"
+        },
         "subtitleDensity": {
           "enum": [
             "minimal",

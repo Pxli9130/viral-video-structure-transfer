@@ -12,7 +12,8 @@
   "expectations": {
     "motionGraphCaseGates": true,
     "motionGraphAssetModeGates": true,
-    "motionGraphPartialAssetModeGates": true
+    "motionGraphPartialAssetModeGates": true,
+    "motionGraphAigcMaterialGates": true
   },
   "negativeExpectations": {
     "primaryMotifNotAnyOf": ["static_poster"]

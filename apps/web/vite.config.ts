@@ -7,6 +7,7 @@ export default defineConfig({
     port: Number(process.env.WEB_PORT ?? 5173),
     proxy: {
       "/api": "http://localhost:3000",
+      "/generated": "http://localhost:3000",
       "/healthz": "http://localhost:3000",
       "/readyz": "http://localhost:3000"
     }

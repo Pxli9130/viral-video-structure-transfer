@@ -180,6 +180,107 @@ describe("E2E pipeline (mock adapters)", () => {
     expect(Array.isArray(generateRes.body.data.generation.replacementSlots)).toBe(true);
   });
 
+  it("runs optional AIGC gap fill through the generation API without external calls by default", async () => {
+    const generateRes = await api
+      .post("/api/generations")
+      .send({
+        projectId,
+        inputMode: "prompt_only",
+        selectedTemplateIds: [templateId],
+        prompt: "主题：AI 视频结构迁移工具\nCTA：立即上传素材",
+        target: { vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15, outputMode: "storyboard_preview" },
+        controls: {
+          pace: "fast",
+          hookIntensity: "strong",
+          packagingStyle: "mg_motion",
+          allowAigcPlaceholder: true,
+          allowAigcMaterialGeneration: true
+        }
+      })
+      .expect(201);
+
+    const fill = generateRes.body.data.generation.aigcMaterialFill;
+    expect(fill.enabled).toBe(true);
+    expect(fill.provider).toBe("mock_provider");
+    expect(fill.externalProviderUsed).toBe(false);
+    expect(fill.sampleFramesSentExternally).toBe(false);
+    expect(fill.briefs.length).toBeGreaterThan(0);
+    expect(fill.generatedTargetAssets.length).toBeGreaterThan(0);
+    expect(fill.generatedTargetAssets.every((asset: { metadata?: { materialRole?: string } }) => asset.metadata?.materialRole === "aigc_generated_material")).toBe(true);
+    expect(
+      generateRes.body.data.generation.fillPlan.some((action: { strategy: string }) => action.strategy === "aigc_generated_asset")
+    ).toBe(true);
+  });
+
+  it("renders generated AIGC target assets through FFmpeg instead of falling back to tiny text cards", async () => {
+    const generateRes = await api
+      .post("/api/generations")
+      .send({
+        projectId,
+        inputMode: "prompt_only",
+        selectedTemplateIds: [templateId],
+        prompt: "主题：AI 视频结构迁移工具\n卖点：结构拆解、缺口补全、时间线渲染\nCTA：立即上传素材",
+        target: { vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15, outputMode: "storyboard_preview" },
+        controls: {
+          pace: "fast",
+          hookIntensity: "strong",
+          packagingStyle: "mg_motion",
+          allowAigcPlaceholder: true,
+          allowAigcMaterialGeneration: true,
+          subtitleGenerationMode: "prompt_only"
+        }
+      })
+      .expect(201);
+
+    const generation = generateRes.body.data.generation;
+    expect(generation.aigcMaterialFill.generatedTargetAssets.length).toBeGreaterThan(0);
+    const renderRes = await api
+      .post(`/api/generations/${generation.id}/render`)
+      .send({ rendererTarget: "ffmpeg" })
+      .expect(201);
+    const outputPath = renderRes.body.data.render.outputPath as string;
+    const stat = await fs.stat(outputPath);
+    expect(stat.size).toBeGreaterThan(150_000);
+  }, 60_000);
+
+  it("falls back to mock AIGC material when an external provider fails", async () => {
+    const previousProvider = process.env.AIGC_IMAGE_PROVIDER;
+    process.env.AIGC_IMAGE_PROVIDER = "image_provider";
+    try {
+      const generateRes = await api
+        .post("/api/generations")
+        .send({
+          projectId,
+          inputMode: "prompt_only",
+          selectedTemplateIds: [templateId],
+          prompt: "主题：AI 视频结构迁移工具\nCTA：立即上传素材",
+          target: { vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15, outputMode: "storyboard_preview" },
+          controls: {
+            pace: "fast",
+            hookIntensity: "strong",
+            packagingStyle: "mg_motion",
+            allowAigcPlaceholder: true,
+            allowAigcMaterialGeneration: true,
+            allowExternalAigcProvider: true
+          }
+        })
+        .expect(201);
+
+      const fill = generateRes.body.data.generation.aigcMaterialFill;
+      expect(fill.enabled).toBe(true);
+      expect(fill.requestedProvider).toBe("image_provider");
+      expect(fill.provider).toBe("mock_provider");
+      expect(fill.providerFallbackReason).toContain("used deterministic mock_provider fallback");
+      expect(fill.providerErrors.length).toBeGreaterThan(0);
+      expect(fill.externalProviderUsed).toBe(false);
+      expect(fill.sampleFramesSentExternally).toBe(false);
+      expect(fill.generatedTargetAssets.length).toBeGreaterThan(0);
+    } finally {
+      if (previousProvider === undefined) delete process.env.AIGC_IMAGE_PROVIDER;
+      else process.env.AIGC_IMAGE_PROVIDER = previousProvider;
+    }
+  });
+
   it("binds an uploaded replacement asset to a gap slot and regenerates", async () => {
     const replacementUploadRes = await api
       .post(`/api/projects/${projectId}/assets`)

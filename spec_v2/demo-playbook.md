@@ -157,6 +157,9 @@ npm run build
 node scripts/generate-motion-graph-target-assets.mjs
 node scripts/run-motion-graph-case.mjs
 node scripts/run-motion-graph-case.mjs --with-target-assets
+node scripts/run-motion-graph-case.mjs --with-partial-target-assets
+node scripts/run-motion-graph-case.mjs --with-malformed-target-assets
+node scripts/run-motion-graph-case.mjs --with-aigc-materials
 npm run regression:corpus:strict
 VVST_REUSE_IGF_FIXTURE=1 npm run demo:product
 node scripts/check-product-demo-page.mjs
@@ -170,7 +173,10 @@ docs/artifacts/motion_graph_case/induced-slots.json
 docs/artifacts/motion_graph_case/slot-asset-matches.json
 docs/artifacts/motion_graph_case/render_proxy.mp4
 docs/artifacts/motion_graph_case/render_with_assets.mp4
+docs/artifacts/motion_graph_case/render_partial_assets.mp4
+docs/artifacts/motion_graph_case/render_aigc_materials.mp4
 docs/artifacts/motion_graph_case/before_after_contact_sheet.png
+docs/artifacts/motion_graph_case/aigc_materials_contact_sheet.png
 docs/artifacts/motion_graph_case/evaluation.motion_graph.json
 ```
 
@@ -178,6 +184,18 @@ Narration:
 
 ```text
 这里样例视频只提供结构证据，不作为目标素材复制。系统从像素证据归纳 media cards、feature list、neon geometry 和 CTA 等开放世界槽位。没有目标素材时先生成代理版本；加载目标素材 fixture 后，media cards 替换成用户卡片图，feature list 使用用户文案，CTA 使用用户 logo，同时保持原来的 motion-graph 结构。
+```
+
+Optional AIGC narration:
+
+```text
+如果用户没有足够素材，系统不会默认调用外部模型，而是先展示 proxy 和缺口。只有显式开启 AIGC material fill 时，系统才把缺失槽位变成 generation brief，调用 mock provider 或显式授权的 Seedream 图片 provider，经过确定性检查和可选 Gemini VLM 质量 gate 后，把通过的素材标记为 aigc_generated_material 再进入同一套 slot matching 和 renderer。样例帧不会发给外部 provider，也不会复制到输出里。
+```
+
+Browser UI callout:
+
+```text
+在 Web 工作台的“步骤 5 / 重构规划器”中，正常按钮是“生成重构方案”；旁边的“AIGC 补缺口并生成”是独立 opt-in。下方开关会显示当前是否启用 AIGC gap fill，以及是否允许外部 provider。默认只走 deterministic mock_provider，不外呼，也不会发送样例帧。结果面板会列出 brief、candidate、quality/VLM status、external calls 和 sample frames sent。
 ```
 
 Expected slot mapping:
@@ -197,6 +215,18 @@ test_videos/corpus/009_motion_graph_card_stack/fixture.json
 ```
 
 This fixture gates visual evidence generation, induced slots, renderer capability selection, target asset matching, no sample visual copy, preview frames, and with-assets render presence.
+
+Optional external Seedream demo command, only when `.env` contains a Seedream key and the presenter wants to show real image generation:
+
+```bash
+node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
+```
+
+Presenter note:
+
+```text
+这里使用的是 Seedream 图片素材生成，不是视频模型直接生成整段视频。生成图片只作为目标素材进入 card stack / CTA placeholder，最终节奏和结构仍由系统归纳出的 timeline 与 renderer capability 控制。
+```
 
 ---
 
