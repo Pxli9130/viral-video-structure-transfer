@@ -238,6 +238,7 @@ Strong demo passes if:
 
 - [x] real ffprobe or FFmpeg analysis works on at least one uploaded video;
 - [x] FFmpeg MP4 render artefact produced (latest: `storage/generated/render_mp4_tofpa6.mp4`);
+- [x] FFmpeg render returns `clipPreviewFrames` (one real still per clip under `storage/generated/previews/<renderId>/`) and the Step 6 timeline preview renders them by clip id instead of gradient placeholders (verified end-to-end against real `ffmpeg`);
 - [x] Remotion MP4 render path bundled and ready (composition compiles in 4s; renderMedia downloads headless Chromium on first call);
 - [x] HyperFrames JSON manifest produced as deterministic stub artefact;
 - [x] demo video shows the final product flow (recorded outside the repo).

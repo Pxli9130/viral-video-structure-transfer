@@ -434,11 +434,26 @@ Allowed targets:
 
 - `mock_preview` — `MockRenderer`, returns a placeholder RenderOutput; useful for smoke tests.
 - `html_preview` — `HtmlPreviewRenderer`, writes a self-contained HTML preview to `storage/generated/<renderId>.html`.
-- `ffmpeg` — `FFmpegRenderer`, cuts source shots + drawtext overlays + concat into a real 9:16 720p MP4 in `storage/generated/<renderId>.mp4`.
+- `ffmpeg` — `FFmpegRenderer`, cuts source shots + drawtext overlays + concat into a real 9:16 720p MP4 in `storage/generated/<renderId>.mp4`. It also samples one real still per clip from the rendered segments and returns them as `clipPreviewFrames` (see below) so the web timeline preview shows actual frames instead of gradient placeholders.
 - `remotion` — `RemotionRenderer`, bundles `apps/api/remotion/index.tsx`, feeds the timeline as `inputProps`, and renders MP4 via `@remotion/renderer`. First call may download a headless Chromium.
 - `hyperframes` — `HyperFramesRenderer`, writes a deterministic JSON manifest at `storage/generated/hyperframes/<renderId>/hyperframes.json` that a future HyperFrames coding-renderer could consume. Status returns `completed`; the manifest path is in `outputPath`.
 
-Response: RenderResult.
+Response: `{ jobId, renderId, status, render: RenderOutput }`. `RenderOutput` carries `renderId`, `generationId`, `rendererTarget`, `status`, `outputPath`, `previewHtml`, and optional `clipPreviewFrames`:
+
+```json
+{
+  "render": {
+    "rendererTarget": "ffmpeg",
+    "status": "completed",
+    "outputPath": ".../storage/generated/render_mp4_<id>.mp4",
+    "clipPreviewFrames": [
+      { "clipId": "clip_1", "previewFrame": "/generated/previews/render_mp4_<id>/clip_1.png" }
+    ]
+  }
+}
+```
+
+- `clipPreviewFrames` is a per-clip still sampled near the midpoint of each rendered clip, written to `storage/generated/previews/<renderId>/clip_<n>.png` and served under `/generated/...`. It is emitted by the FFmpeg renderer only; HTML/mock/Remotion/HyperFrames omit it. Frame extraction is non-fatal — a failed still just falls back to the placeholder card and is noted in `error`.
 
 ### GET `/renders/:renderId`
 

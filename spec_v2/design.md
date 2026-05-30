@@ -569,6 +569,7 @@ Implemented and used by the motion-graph artifact path:
 - render family-specific motion-graph proxies;
 - render target image sets as card stacks;
 - render target logo + CTA holds.
+- sample one real still per clip from its rendered segment into `storage/generated/previews/<renderId>/clip_<n>.png`, returned as `RenderOutput.clipPreviewFrames` (`{ clipId, previewFrame }[]`) so the web timeline preview shows actual frames instead of gradient placeholders. Extraction is non-fatal: a missing still falls back to the placeholder card.
 
 ### 9.4 Remotion renderer
 
