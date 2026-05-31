@@ -497,6 +497,76 @@ export interface DetectedStyle {
   mustNotCopy?: string[];
 }
 
+/** v3: the opening moving hero object (head/helmet/mask) so the renderer can draw a real silhouette. */
+export interface HeroObjectDescriptor {
+  objectType: string;
+  objectDescriptor: string;
+  dominantPosition?: string;
+  palette?: string[];
+  motionPattern?: string;
+  motionEnergy?: number;
+  timeRangeSec?: [number, number];
+  evidenceFrameIds?: string[];
+  confidence?: number;
+}
+
+/** v3 VisualElementGraph: a located visual element (CV/flow/OCR find it; the VLM only labels it). */
+export interface VisualElementNode {
+  id: string;
+  family: string;
+  timeRangeSec: [number, number];
+  bboxTrackNorm?: Array<{ t: number; bbox: [number, number, number, number] }>;
+  centerTrajectory?: Array<[number, number]>;
+  areaRatioCurve?: number[];
+  orientationCurve?: number[] | null;
+  motionPattern?: string;
+  sizeClass?: string;
+  positionClass?: string;
+  appearance?: Record<string, unknown>;
+  text?: Record<string, unknown>;
+  evidence?: { frameIds?: Array<string | undefined>; detector?: string; confidence?: number };
+}
+
+export interface VisualElementShotNode {
+  shotId: string;
+  startSec: number;
+  endSec: number;
+  role?: string;
+  cutTypeIn?: string;
+  cutTypeOut?: string;
+  dominantElements?: string[];
+  motionClass?: string;
+  cameraMotion?: string;
+  textDensity?: string;
+  beatSync?: { cutOnBeat?: boolean; nearestBeatDeltaMs?: number };
+  rendererRole?: string;
+}
+
+export interface VisualElementGraph {
+  schemaVersion: string;
+  fpsSampled?: number;
+  elementCount?: number;
+  heavyTracker?: string;
+  elements: VisualElementNode[];
+  shots?: VisualElementShotNode[];
+  globalStyle?: Record<string, unknown>;
+}
+
+/** v3: one on-screen text region's layout/colour/animation, so the renderer can vary typography. */
+export interface TypographyEvidenceItem {
+  textLayerId: string;
+  timeSec: number;
+  shotId?: string;
+  text?: string;
+  bboxNorm: [number, number, number, number];
+  layoutRole: string;
+  colorRole: string;
+  fontSizeRatio: number;
+  animationHint: string;
+  beatAligned?: boolean;
+  confidence?: number;
+}
+
 export interface VisualEvidenceStats {
   blackBgRatio?: number;
   dominantPalette?: string[];
@@ -537,6 +607,14 @@ export interface VisualEvidenceTimeline {
   evidenceFamilies?: EvidenceFamilyScore[];
   /** v2: style fingerprint + transfer policy. */
   detectedStyle?: DetectedStyle;
+  /** v3: opening hero-object (head/mask) descriptor. */
+  heroDescriptor?: HeroObjectDescriptor;
+  /** v3: per-region typography layout/colour/animation evidence. */
+  typographyEvidence?: TypographyEvidenceItem[];
+  /** v3: element-level evidence graph (located elements + shot nodes). */
+  visualElementGraph?: VisualElementGraph;
+  /** v3: audio structure (spectral richness + coarse layer estimate) beyond beat ticks. */
+  audioStructure?: Record<string, unknown>;
   ocrStatus: "ok" | "skipped" | "unavailable";
   asrStatus: "ok" | "skipped" | "unavailable";
   analyzerMode: string;
@@ -691,6 +769,14 @@ export interface StructureTemplate {
   sourceAssetFilename?: string;
   videoType?: string;
   visualStyle?: VisualStyleSpec;
+  /** v3: learned opening hero-object (head/mask) descriptor for the style-locked renderer. */
+  heroDescriptor?: HeroObjectDescriptor;
+  /** v3: learned typography layout/colour/animation evidence. */
+  typographyEvidence?: TypographyEvidenceItem[];
+  /** v3: located element graph (hero/text/bg/impact/cta tracks) for the renderer. */
+  visualElementGraph?: VisualElementGraph;
+  /** v3: learned audio structure (spectral richness + coarse layer balance) for procedural BGM. */
+  audioStructure?: Record<string, unknown>;
   excludeSegments?: ExcludeSegment[];
   targetDurationSec?: number;
   segments: StructureSegment[];
@@ -1087,6 +1173,8 @@ export interface RenderPlan {
     required?: boolean;
     beatGridSec?: number[];
     sfx?: string[];
+    /** v3: learned layer balance (bass_kick / music_harmonic / hats_air) the BGM renderer mixes by. */
+    layers?: Record<string, number>;
   };
   adapterOptions?: Record<string, unknown>;
 }

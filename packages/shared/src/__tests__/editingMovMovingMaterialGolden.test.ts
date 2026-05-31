@@ -211,6 +211,45 @@ describe("editing.mov moving-material v2 golden", () => {
     }
   });
 
+  it("v3 human-fidelity: learns a hero-object (head/mask) descriptor + typography layout, threaded onto clips", () => {
+    expect.soft(evidence.heroDescriptor?.objectType, "hero descriptor objectType").toBeTruthy();
+    expect.soft(evidence.heroDescriptor?.objectType).not.toBe("unknown");
+    expect.soft((evidence.typographyEvidence?.length ?? 0), "typography evidence items").toBeGreaterThanOrEqual(3);
+    const layoutRoles = new Set((evidence.typographyEvidence ?? []).map((t) => t.layoutRole));
+    expect.soft(layoutRoles.size, "varied typography layout roles").toBeGreaterThanOrEqual(2);
+
+    const analysis = analysisFromEvidence(evidence);
+    const template = buildBeatCutTemplate(analysis, "beat_cut", "v2_editing_mov_project");
+    expect.soft(template.heroDescriptor?.objectType).toBe(evidence.heroDescriptor?.objectType);
+    const generation = generateMigrationResult({ template, request: buildRequest(template.id), sourceAnalysis: analysis });
+    const tl = generation.timeline;
+
+    // hero clip carries the hero descriptor on its moving_material layer
+    const hook = tl.clips.find((c) => c.role === "hook");
+    const heroLayer = (hook?.layers ?? []).find((l) => l.kind === "moving_material");
+    expect.soft((heroLayer?.style as Record<string, unknown> | undefined)?.heroDescriptor, "hook moving_material heroDescriptor").toBeTruthy();
+    // text clips carry typography layout hints (text isn't always centered)
+    const typoTextLayers = tl.clips.flatMap((c) => c.layers).filter((l) => (l.kind === "text" || l.kind === "text_overlay") && (l.style as Record<string, unknown> | undefined)?.typography);
+    expect.soft(typoTextLayers.length, "text layers with typography").toBeGreaterThanOrEqual(2);
+
+    // honest gaps are deduped and the BGM is procedural (not an AIGC image stub)
+    const bgmGaps = (generation.gapReport ?? []).filter((g) => g.gapType === "bgm_missing");
+    expect.soft(bgmGaps.length, "bgm_missing gap is deduped").toBeLessThanOrEqual(1);
+    const bgmFill = (generation.fillPlan ?? []).find((f) => f.slotId === "slot_bgm_grid");
+    expect.soft(bgmFill?.strategy, "slot_bgm_grid uses procedural fill").not.toMatch(/aigc/i);
+
+    // VisualElementGraph located elements are threaded onto the template + consumed by clip layers
+    const graph = (evidence as unknown as { visualElementGraph?: { elements?: Array<{ family: string; bboxTrackNorm?: unknown[] }> } }).visualElementGraph;
+    expect.soft((graph?.elements?.length ?? 0), "located graph elements").toBeGreaterThanOrEqual(5);
+    const heroGraphEl = (graph?.elements ?? []).find((e) => e.family === "hero_object");
+    expect.soft((heroGraphEl?.bboxTrackNorm?.length ?? 0), "hero bbox track").toBeGreaterThanOrEqual(2);
+    expect.soft((template.visualElementGraph?.elements?.length ?? 0), "graph threaded onto template").toBeGreaterThanOrEqual(5);
+    const heroElOnLayer = (heroLayer?.style as Record<string, unknown> | undefined)?.heroElement;
+    expect.soft(heroElOnLayer, "hook layer carries located hero element (renderer consumes it)").toBeTruthy();
+    // BGM mixed by learned audio-structure layers (not just BPM)
+    expect.soft(tl.renderPlan?.audioPlan?.layers, "audioPlan layers from audio structure").toBeTruthy();
+  });
+
   it("the v2 metric thresholds have teeth: the ideal render passes, the pre-fix static render fails", () => {
     const th = v2Gates.metricThresholds;
     const ideal = metrics.ideal_render_v2;

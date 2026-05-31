@@ -25,6 +25,7 @@ import type {
   RhythmSpec,
   SegmentRole,
   ShotCandidate,
+  HeroObjectDescriptor,
   SlotMapping,
   SlotModality,
   SlotType,
@@ -1024,6 +1025,10 @@ export function buildBeatCutTemplate(
     projectId,
     name: `Learned Beat-Cut Editing Tutorial Structure · ${sampleLabel} · ${ts}`,
     sourceAssetFilename: sampleLabel,
+    heroDescriptor: ev?.heroDescriptor,
+    typographyEvidence: ev?.typographyEvidence,
+    visualElementGraph: ev?.visualElementGraph,
+    audioStructure: ev?.audioStructure,
     vertical,
     sourceSampleIds: [analysis.assetId],
     videoType: "beat_cut",
@@ -2224,7 +2229,16 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
     }
   }
 
-  return slotGaps;
+  // Dedupe by (gapType, slotId): a slot-level gap + a synthetic gap of the same type (e.g. two
+  // bgm_missing for slot_bgm_grid) collapse to the most severe single entry.
+  const severityRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
+  const dedup = new Map<string, GapReportItem>();
+  for (const gap of slotGaps) {
+    const key = `${gap.gapType}:${gap.slotId}`;
+    const existing = dedup.get(key);
+    if (!existing || (severityRank[gap.severity] ?? 0) > (severityRank[existing.severity] ?? 0)) dedup.set(key, gap);
+  }
+  return Array.from(dedup.values());
 }
 
 
@@ -2242,6 +2256,10 @@ function chooseStrategy(ctx: StrategyContext): FillStrategy {
   const allowAigc = ctx.request.controls?.allowAigcPlaceholder ?? true;
   const allowReorder = ctx.mapping.status !== "matched" && ctx.segmentMatchedSiblings.length > 0;
   const slotType = ctx.mapping.slotType;
+  // BGM/audio slot is filled by the procedural beat track (synth_beat), never an AIGC image stub —
+  // keep the fill plan consistent with renderPlan.audioPolicy.
+  if (slotType === "audio" || ctx.mapping.visualFormFamily === "audio") return "procedural_generation";
+  if (ctx.mapping.visualFormFamily === "background") return "procedural_generation";
   if (ctx.mapping.visualFormFamily === "geometric_mg") return "procedural_generation";
   if (ctx.mapping.visualFormFamily === "ui_showcase" || ctx.mapping.visualFormFamily === "kinetic_typography") return "procedural_generation";
   if (ctx.mapping.visualFormFamily === "unknown" && ctx.mapping.status !== "matched") return "proxy_placeholder";
@@ -2865,15 +2883,20 @@ function beatCutLayersForClip(
   clip: TimelineClip,
   primitive: string,
   subtitleText: string | undefined,
-  cta: string | undefined
+  cta: string | undefined,
+  heroDescriptor?: HeroObjectDescriptor,
+  typoHint?: { layoutRole?: string; colorRole?: string; animationHint?: string },
+  heroElement?: { positionClass?: string; motionPattern?: string; centerTrajectory?: Array<[number, number]> }
 ): TimelineLayer[] {
   const id = (kind: string) => stableId("layer", clip.id, kind, primitive);
   const bg = (motion: string): TimelineLayer => ({
     id: id("bg"), kind: "background", slotId: "slot_dark_background", motion, style: { color: "#05060a" }
   });
+  // Text layers carry the sample-derived typography hint (layout/colour/animation) so the renderer
+  // varies placement instead of always centering.
   const text = (content: string | undefined, motion: string, slotId?: string): TimelineLayer => ({
     id: id("text"), kind: "text", slotId, text: content, motion,
-    style: { position: "center", emphasis: "red_yellow_white" }
+    style: { position: typoHint?.layoutRole ?? "center", emphasis: "red_yellow_white", ...(typoHint ? { typography: typoHint } : {}) }
   });
   const layers: TimelineLayer[] = [];
   // Preserve a real matched source-asset visual (target moving clip / image), if any.
@@ -2881,7 +2904,17 @@ function beatCutLayersForClip(
   switch (primitive) {
     case "neon_hero_intro":
       layers.push(bg("slow_light_streaks+scanlines"));
-      layers.push({ id: id("hero"), kind: "moving_material", slotId: "slot_moving_hero_object", motion: "rotate_y+orbit+beat_scale", assetPolicy: "generated/procedural hero object; never sample frames", style: { color: "#22d3ee" } });
+      layers.push({
+        id: id("hero"), kind: "moving_material", slotId: "slot_moving_hero_object",
+        motion: heroDescriptor?.motionPattern ?? "rotate_y+orbit+beat_scale",
+        assetPolicy: "generated/procedural hero object; never sample frames",
+        style: {
+          color: "#22d3ee",
+          ...(heroDescriptor ? { heroDescriptor } : {}),
+          // located element (from the VisualElementGraph) the renderer positions the silhouette by
+          ...(heroElement ? { heroElement: { positionClass: heroElement.positionClass, motionPattern: heroElement.motionPattern, centerTrajectory: (heroElement.centerTrajectory ?? []).slice(0, 8) } } : {})
+        }
+      });
       layers.push(text(subtitleText, "scale_on_beat"));
       break;
     case "beat_text_card":
@@ -3223,6 +3256,16 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   };
   const ctaCopy = hasCjk(brief.cta) ? brief.cta!.trim() : beatCutCjkFallback.cta!;
   let copyCursor = 0;
+  // v3: learned hero descriptor + distinct sample typography styles (headlines first), cycled across
+  // the text clips so each card's layout/animation varies and is grounded in the sample.
+  const heroDescriptor = template.heroDescriptor;
+  const heroElement = (template.visualElementGraph?.elements ?? []).find((e) => e.family === "hero_object");
+  const typoStyles = (template.typographyEvidence ?? [])
+    .slice()
+    .sort((a, b) => b.fontSizeRatio - a.fontSizeRatio)
+    .map((t) => ({ layoutRole: t.layoutRole, colorRole: t.colorRole, animationHint: t.animationHint }))
+    .filter((style, i, arr) => arr.findIndex((x) => x.layoutRole === style.layoutRole && x.colorRole === style.colorRole) === i);
+  let typoCursor = 0;
   const styledClips: TimelineClip[] = isBeatCut
     ? clips.map((clip) => {
         const clipEnd = clip.startSec + clip.durationSec;
@@ -3249,6 +3292,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         const noSampleCopy = request.constraints?.noSampleVisualCopy ?? true;
         const sampleSourced = Boolean(clip.sourceAssetId) && clip.sourceAssetId === source.assetId;
         const dropSampleVisual = noSampleCopy && sampleSourced;
+        const typoHint = clip.role === "hook"
+          ? typoStyles[0]
+          : typoStyles.length ? typoStyles[(typoCursor++) % typoStyles.length] : undefined;
         return {
           ...clip,
           ...(dropSampleVisual ? { sourceAssetId: undefined } : {}),
@@ -3260,7 +3306,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
           styleTokens: baseStyleTokens,
           beatTimestamps,
           placeholderSpec: undefined,
-          layers: beatCutLayersForClip(clip, primitive, subtitleText, ctaCopy)
+          layers: beatCutLayersForClip(clip, primitive, subtitleText, ctaCopy, clip.role === "hook" ? heroDescriptor : undefined, typoHint, clip.role === "hook" ? heroElement : undefined)
         };
       })
     : clips;
@@ -3292,7 +3338,9 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             bpm: synthBeat.bpm,
             required: true,
             beatGridSec: synthBeat.beats,
-            sfx: ["kick_on_segment_start", "flash_on_strong_beat", "ticker_clicks"]
+            sfx: ["kick_on_segment_start", "flash_on_strong_beat", "ticker_clicks"],
+            // v3: learned layer balance from the sample's audio structure drives the procedural mix.
+            layers: (template.audioStructure?.estimatedLayers as Record<string, number> | undefined) ?? undefined
           }
         : undefined,
       rendererBackend: "remotion_mg",

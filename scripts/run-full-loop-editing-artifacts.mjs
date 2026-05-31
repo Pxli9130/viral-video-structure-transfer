@@ -40,6 +40,7 @@ const SOURCE_ARG = arg("--source", "");
 const ALLOW_EXTERNAL_AIGC = flag("--allow-external-aigc");
 const REUSE_SAMPLE_BGM = flag("--reuse-sample-bgm");
 const KEEP_SERVER = flag("--keep-server");
+const REVIEW_TITLE = arg("--review-title", "");
 const BASE = process.env.VVST_API_BASE ?? `http://localhost:${process.env.APP_PORT ?? 3000}`;
 
 // Resolve the sample (accept --sample <path>; fall back to the canonical test asset).
@@ -152,6 +153,14 @@ function runMetrics(video) {
   const res = spawnSync(PYTHON, [path.join(repoRoot, "scripts", "analyze-evidence-timeline.py"), "--video", video, "--metrics-only"], { encoding: "utf8", env: childEnv });
   if (res.status !== 0) return undefined;
   try { return JSON.parse(res.stdout).metadata; } catch { return undefined; }
+}
+/** Full v3 render metrics: global + per-segment motion + audio spectral richness. */
+function runMetricsV3(video, segments) {
+  const args = [path.join(repoRoot, "scripts", "analyze-evidence-timeline.py"), "--video", video, "--metrics-only", "--audio-metrics"];
+  if (segments) args.push("--segments", segments);
+  const res = spawnSync(PYTHON, args, { encoding: "utf8", env: childEnv });
+  if (res.status !== 0) return undefined;
+  try { return JSON.parse(res.stdout); } catch { return undefined; }
 }
 async function contactSheet(video, outPath, times) {
   if (!existsSync(video)) return false;
@@ -355,6 +364,22 @@ async function main() {
       await writeJson(dir, "frame-metrics.json", ev.frameMetrics ?? []);
       await writeJson(dir, "beat-grid.json", ev.beatGrid ?? null);
       await writeJson(dir, "shot-motion-summary.json", (ev.shots ?? []).map((s) => ({ shotId: s.shotId, startSec: s.startSec, endSec: s.endSec, family: s.family, motionEnergy: s.motionEnergy, evidenceFamilies: s.evidenceFamilies, beatAligned: s.beatAligned })));
+      // v3: hero-object descriptor + typography layout evidence
+      await writeJson(dir, "hero-descriptor.json", ev.heroDescriptor ?? null);
+      await writeJson(dir, "typography-evidence-v2.json", ev.typographyEvidence ?? []);
+      // v3 VisualElementGraph: located elements (hero/text/bg/impact/cta/watermark) + shot nodes
+      const graph = ev.visualElementGraph;
+      await writeJson(dir, "visual-element-graph.json", graph ?? null);
+      await writeJson(dir, "typography-evidence-v3.json", ev.typographyEvidence ?? []);
+      await writeJson(dir, "audio-structure.json", ev.audioStructure ?? null);
+      const heroEl = (graph?.elements ?? []).find((e) => e.family === "hero_object");
+      await writeJson(dir, "hero-object-track.json", heroEl ?? null);
+      ctx.elementGraph = graph;
+      if (graph) {
+        const fams = {};
+        for (const e of graph.elements ?? []) fams[e.family] = (fams[e.family] ?? 0) + 1;
+        await writeText(dir, "element-graph-summary.md", `# VisualElementGraph (v3)\n\n- schema: ${graph.schemaVersion}\n- heavy tracker: ${graph.heavyTracker}\n- elements: ${graph.elementCount} → ${JSON.stringify(fams)}\n- shots: ${(graph.shots ?? []).length}\n\nHero object track: ${heroEl ? `${heroEl.bboxTrackNorm?.length ?? 0} bbox keyframes, positionClass=${heroEl.positionClass}, motion=${heroEl.motionPattern}` : "none"}\n\nCV/flow/OCR locate elements; the VLM only labels candidate IDs (no invented boxes).\n`);
+      }
       // copy a few evidence thumbnails if present on disk
       const evFramesDir = path.join(repoRoot, "storage", "generated", "evidence", ctx.sampleAssetId);
       if (existsSync(evFramesDir)) {
@@ -495,8 +520,8 @@ async function main() {
     await stage("12_slot_mapping", async (dir) => {
       const mapping = generation.slotMapping ?? [];
       await writeJson(dir, "slot-mapping.json", mapping);
-      const row = (m) => `| ${m.slotId} | ${m.visualFormFamily ?? ""} | ${m.status} | ${m.selectedTargetAssetId ?? m.selectedShotId ?? "—"} | ${m.confidence ?? ""} | ${(m.reason ?? "").replace(/\|/g, "/").slice(0, 60)} |`;
-      await writeText(dir, "slot-mapping-table.md", `# Slot mapping\n\n| slot | family | status | source/target used | confidence | reason |\n|---|---|---|---|---|---|\n${mapping.map(row).join("\n")}\n`);
+      const row = (m) => `| ${m.slotId} | ${m.visualFormFamily ?? ""} | ${m.status} | ${m.selectedTargetAssetId ?? m.selectedShotId ?? "—"} | ${m.confidence ?? ""} | ${m.renderPrimitive ?? m.rendererCandidate ?? "—"} | ${(m.reason ?? "").replace(/\|/g, "/").replace(/\n/g, " ")} |`;
+      await writeText(dir, "slot-mapping-table.md", `# Slot mapping\n\n| slot | family | status | source/target used | confidence | renderer primitive | reason |\n|---|---|---|---|---|---|---|\n${mapping.map(row).join("\n")}\n`);
       await writeJson(dir, "matched-slots.json", mapping.filter((m) => m.status === "matched"));
       await writeJson(dir, "weak-slots.json", mapping.filter((m) => m.status === "weak_match"));
       await writeJson(dir, "missing-slots.json", mapping.filter((m) => m.status === "missing"));
@@ -530,7 +555,7 @@ async function main() {
       const row = (c) => `| ${c.id.slice(-8)} | ${c.role} | ${c.startSec}–${(c.startSec + c.durationSec).toFixed(2)}s | ${c.motionPrimitive} | ${(c.layers ?? []).map((l) => l.kind).join("+")} | ${c.beatTimestamps?.length ?? 0} |`;
       await writeText(dir, "timeline-table.md", `# Timeline (layered beat-cut)\n\n| clip | role | time | primitive | layers | beats |\n|---|---|---|---|---|---|\n${(tl.clips ?? []).map(row).join("\n")}\n`);
       await writeJson(dir, "storyboard.json", generation.storyboard ?? []);
-      await writeText(dir, "storyboard.md", `# Storyboard\n\n${(generation.storyboard ?? []).map((s, i) => `${i + 1}. **${s.role ?? ""}** — ${s.description ?? s.scriptText ?? s.subtitleText ?? ""}`).join("\n")}\n`);
+      await writeText(dir, "storyboard.md", `# Storyboard\n\n${(generation.storyboard ?? []).map((s, i) => `${i + 1}. **${s.timeRange ?? ""}** — ${s.shotDescription ?? ""}${s.subtitle ? ` · 字幕：${s.subtitle}` : ""}${s.packaging ? ` · 包装：${s.packaging}` : ""}`).join("\n") || "_no storyboard items_"}\n`);
       const prims = (tl.clips ?? []).map((c) => c.motionPrimitive);
       await writeReadme(dir, "15 · Timeline", `Layered timeline, ${tl.clips?.length ?? 0} clips. Primitives: ${[...new Set(prims)].join(", ")}.`);
     });
@@ -559,13 +584,22 @@ async function main() {
   // -- 17_render_metrics --
   await stage("17_render_metrics", async (dir) => {
     if (!ctx.renderPath || !existsSync(ctx.renderPath)) throw new Error("no rendered MP4 to measure");
-    const m = runMetrics(ctx.renderPath);
+    const clips = generation?.timeline?.clips ?? [];
+    const segs = clips.map((c) => `${(c.startSec ?? 0).toFixed(3)}:${((c.startSec ?? 0) + (c.durationSec ?? 0)).toFixed(3)}`).join(",");
+    const full = runMetricsV3(ctx.renderPath, segs);
+    const m = full?.metadata ?? runMetrics(ctx.renderPath);
     if (!m) throw new Error("metrics analyzer unavailable (conda/python)");
     ctx.renderMetrics = m;
+    ctx.renderAudio = full?.audio ?? {};
+    // attach role/primitive to each per-clip segment metric
+    const perClip = (full?.segments ?? []).map((s, i) => ({ ...s, role: clips[i]?.role, motionPrimitive: clips[i]?.motionPrimitive }));
+    ctx.perClipMotion = perClip;
     await writeJson(dir, "render-frame-metrics.json", m);
-    await writeJson(dir, "render-motion-summary.json", { motionDiffMean: m.motionDiffMean, cutLikeCount: m.cutLikeCount, sampledFrames: m.sampledFrames });
+    await writeJson(dir, "render-motion-summary.json", { motionDiffMean: m.motionDiffMean, cutLikeCount: m.cutLikeCount, sampledFrames: m.sampledFrames, perClip });
     await writeJson(dir, "render-style-summary.json", { redYellowRatio: m.redYellowRatio, blackBgRatio: m.blackBgRatio, duration: m.durationSec, resolution: `${m.width}x${m.height}`, hasAudio: m.hasAudio });
-    await writeReadme(dir, "17 · Render metrics", `Same v2 metric pass on the render: motionDiffMean=${m.motionDiffMean} (≥0.04), cutLikeCount=${m.cutLikeCount} (≥5), redYellowRatio=${m.redYellowRatio}, blackBgRatio=${m.blackBgRatio}, ${m.width}x${m.height}, audio=${m.hasAudio}.`);
+    await writeJson(dir, "render-audio-metrics.json", full?.audio ?? {});
+    await writeText(dir, "per-clip-motion.md", `# Per-clip motion (render)\n\n| clip | role | primitive | time | motionDiffMean | cutLike |\n|---|---|---|---|---|---|\n${perClip.map((s, i) => `| ${i + 1} | ${s.role ?? ""} | ${s.motionPrimitive ?? ""} | ${s.startSec}-${s.endSec}s | ${s.motionDiffMean} | ${s.cutLikeCount} |`).join("\n")}\n\nThresholds: hero ≥0.025, kinetic-text ≥0.01, montage ≥0.04 (a static early clip cannot hide behind the global average).\n`);
+    await writeReadme(dir, "17 · Render metrics", `v3 metrics: global motionDiffMean=${m.motionDiffMean} (≥0.04), cutLikeCount=${m.cutLikeCount} (≥5), per-clip motion recorded (${perClip.length} clips), audio spectralCentroid=${full?.audio?.spectralCentroidMean ?? "n/a"} chromaVar=${full?.audio?.chromaVarMean ?? "n/a"}.`);
   });
 
   // -- 18_quality_gates --
@@ -574,7 +608,7 @@ async function main() {
     const tplPath = path.join(stageDir("06_template_extraction"), "selected-template.json");
     const genPath = path.join(stageDir("11_generation_result"), "generation.json");
     const reportPath = path.join(dir, "quality-gates-v2.json");
-    const args = ["scripts/evaluate-render-quality.mjs", "--render", ctx.renderPath, "--template", tplPath, "--generation", genPath, "--sample", SAMPLE, "--expect-video-type", "beat_cut", "--gates", "v2", "--strict", "--out", reportPath];
+    const args = ["scripts/evaluate-render-quality.mjs", "--render", ctx.renderPath, "--template", tplPath, "--generation", genPath, "--sample", SAMPLE, "--expect-video-type", "beat_cut", "--gates", "v3", "--strict", "--out", reportPath];
     await writeText(dir, "gate-command.txt", `node ${args.join(" ")}\n`);
     const res = spawnSync(process.execPath, args, { cwd: repoRoot, encoding: "utf8", env: childEnv });
     let report = {};
@@ -610,6 +644,43 @@ async function main() {
   await stage("20_contact_sheets", async (dir) => {
     await contactSheet(SAMPLE, path.join(dir, "sample-contact-sheet.jpg"), [2, 20, 45, 64, 90, 110]);
     if (ctx.renderPath && existsSync(ctx.renderPath)) await contactSheet(ctx.renderPath, path.join(dir, "render-contact-sheet.jpg"), [1, 4, 7, 9.5, 12, 14]);
+    // hero-intro before/after: the sample's moving-head opening vs the render's hero clip.
+    if (ctx.renderPath && existsSync(ctx.renderPath)) {
+      const heroRange = ctx.sampleEvidence?.heroDescriptor?.timeRangeSec ?? [12, 18];
+      const tmp = await mkdtempStage();
+      const sHero = path.join(tmp, "s.png");
+      const rHero = path.join(tmp, "r.png");
+      spawnSync(FFMPEG, ["-y", "-ss", String((heroRange[0] + heroRange[1]) / 2 || 14), "-i", SAMPLE, "-frames:v", "1", "-vf", "scale=300:-1", sHero], { encoding: "utf8" });
+      spawnSync(FFMPEG, ["-y", "-ss", "1.2", "-i", ctx.renderPath, "-frames:v", "1", "-vf", "scale=300:-1", rHero], { encoding: "utf8" });
+      if (existsSync(sHero) && existsSync(rHero)) {
+        spawnSync(FFMPEG, ["-y", "-i", sHero, "-i", rHero, "-filter_complex", "[0]scale=-1:560[a];[1]scale=-1:560[b];[a][b]hstack=2[o]", "-map", "[o]", path.join(dir, "hero-intro-sample-vs-render.jpg")], { encoding: "utf8" });
+      }
+      await rm(tmp, { recursive: true, force: true });
+    }
+    // annotated element graph: draw located element bboxes (red=hero, yellow=text, cyan=watermark)
+    // on a representative sample frame — shows that CV/flow/OCR located elements, not just guessed.
+    if (ctx.elementGraph?.elements?.length) {
+      const tmp = await mkdtempStage();
+      const frame = path.join(tmp, "f.png");
+      spawnSync(FFMPEG, ["-y", "-ss", "13", "-i", SAMPLE, "-frames:v", "1", "-vf", "scale=400:-1", frame], { encoding: "utf8" });
+      if (existsSync(frame)) {
+        const boxes = [];
+        for (const e of ctx.elementGraph.elements.slice(0, 20)) {
+          const bb = e.bboxTrackNorm?.[0]?.bbox;
+          if (!bb) continue;
+          const color = e.family === "hero_object" ? "red" : e.family === "kinetic_typography" ? "yellow" : e.family === "watermark" ? "cyan" : "white";
+          boxes.push(`drawbox=x=iw*${bb[0]}:y=ih*${bb[1]}:w=iw*${bb[2]}:h=ih*${bb[3]}:color=${color}:t=3`);
+        }
+        if (boxes.length) spawnSync(FFMPEG, ["-y", "-i", frame, "-vf", boxes.join(","), path.join(dir, "annotated-contact-sheet.jpg")], { encoding: "utf8" });
+        // hero element track: the hero bbox drawn across its keyframes
+        const heroEl = ctx.elementGraph.elements.find((e) => e.family === "hero_object");
+        if (heroEl?.bboxTrackNorm?.length) {
+          const tb = heroEl.bboxTrackNorm.map((k) => `drawbox=x=iw*${k.bbox[0]}:y=ih*${k.bbox[1]}:w=iw*${k.bbox[2]}:h=ih*${k.bbox[3]}:color=red@0.5:t=2`).join(",");
+          spawnSync(FFMPEG, ["-y", "-i", frame, "-vf", tb, path.join(dir, "element-tracks-contact-sheet.jpg")], { encoding: "utf8" });
+        }
+      }
+      await rm(tmp, { recursive: true, force: true });
+    }
     // evidence contact sheet from copied thumbnails
     const evThumbs = path.join(stageDir("05_visual_evidence_v2"), "thumbnails");
     if (existsSync(evThumbs)) {
@@ -638,13 +709,16 @@ async function main() {
 
   // -- 21_compare --
   await stage("21_compare", async (dir) => {
-    const sampleM = runMetrics(SAMPLE);
+    const sampleFull = runMetricsV3(SAMPLE, "");
+    const sampleM = sampleFull?.metadata ?? runMetrics(SAMPLE);
+    const sampleAudio = sampleFull?.audio ?? {};
     const r = ctx.renderMetrics;
-    await writeJson(dir, "sample-vs-render-metrics.json", { sample: sampleM, render: r, bpm: ctx.sampleEvidence?.beatGrid?.bpm });
+    const rAudio = ctx.renderAudio ?? {};
+    await writeJson(dir, "sample-vs-render-metrics.json", { sample: sampleM, render: r, sampleAudio, renderAudio: rAudio, perClipMotion: ctx.perClipMotion ?? [], bpm: ctx.sampleEvidence?.beatGrid?.bpm });
     const fmt = (x) => (x === undefined || x === null ? "n/a" : x);
-    await writeText(dir, "before-after-metrics.md", `# Sample vs render metrics\n\n| metric | sample (editing.mov) | render (v2) | gate min |\n|---|---|---|---|\n| motionDiffMean | ${fmt(sampleM?.motionDiffMean)} | ${fmt(r?.motionDiffMean)} | 0.04 |\n| cutLikeCount | ${fmt(sampleM?.cutLikeCount)} | ${fmt(r?.cutLikeCount)} | 5 |\n| redYellowRatio | ${fmt(sampleM?.redYellowRatio)} | ${fmt(r?.redYellowRatio)} | — |\n| blackBgRatio | ${fmt(sampleM?.blackBgRatio)} | ${fmt(r?.blackBgRatio)} | — |\n| bpm | ${fmt(ctx.sampleEvidence?.beatGrid?.bpm)} | ${fmt(generation?.timeline?.renderPlan?.beatGrid?.bpm)} | — |\n`);
-    await writeText(dir, "current-vs-ideal-summary.md", `# Current vs ideal summary\n\n- gate status: **${String(ctx.gateStatus).toUpperCase()}**\n- moving_material_missing reported: ${ctx.hasMovingGap ? "yes (honest)" : "NO"}\n- bgm_missing reported: ${ctx.hasBgmGap ? "yes" : "no"}\n- render motionDiffMean ${fmt(r?.motionDiffMean)} vs sample ${fmt(sampleM?.motionDiffMean)} (target ≥0.04; sample is the natural ceiling)\n- render cutLikeCount ${fmt(r?.cutLikeCount)} vs sample ${fmt(sampleM?.cutLikeCount)}\n`);
-    await writeReadme(dir, "21 · Compare", "Side-by-side metric comparison of the sample vs the v2 render, plus the honest-gap summary.");
+    await writeText(dir, "before-after-metrics.md", `# Sample vs render metrics\n\n## Visual (60-frame)\n| metric | sample (editing.mov) | render (v3) | gate min |\n|---|---|---|---|\n| motionDiffMean | ${fmt(sampleM?.motionDiffMean)} | ${fmt(r?.motionDiffMean)} | 0.04 |\n| cutLikeCount | ${fmt(sampleM?.cutLikeCount)} | ${fmt(r?.cutLikeCount)} | 5 |\n| redYellowRatio | ${fmt(sampleM?.redYellowRatio)} | ${fmt(r?.redYellowRatio)} | — |\n| blackBgRatio | ${fmt(sampleM?.blackBgRatio)} | ${fmt(r?.blackBgRatio)} | — |\n| bpm | ${fmt(ctx.sampleEvidence?.beatGrid?.bpm)} | ${fmt(generation?.timeline?.renderPlan?.beatGrid?.bpm)} | — |\n\n## Audio (librosa)\n| metric | sample (first pass) | render (v3 BGM) | gate min |\n|---|---|---|---|\n| spectralCentroidMean | ${fmt(sampleAudio.spectralCentroidMean)} | ${fmt(rAudio.spectralCentroidMean)} | 900 |\n| chromaVarMean | ${fmt(sampleAudio.chromaVarMean)} | ${fmt(rAudio.chromaVarMean)} | 0.03 |\n| spectralFlatnessMean | ${fmt(sampleAudio.spectralFlatnessMean)} | ${fmt(rAudio.spectralFlatnessMean)} | — |\n\n## Per-clip render motion (no static early clip)\n| clip | role | primitive | motionDiffMean | cutLike |\n|---|---|---|---|---|\n${(ctx.perClipMotion ?? []).map((s, i) => `| ${i + 1} | ${s.role ?? ""} | ${s.motionPrimitive ?? ""} | ${s.motionDiffMean} | ${s.cutLikeCount} |`).join("\n")}\n`);
+    await writeText(dir, "current-vs-ideal-summary.md", `# Current vs ideal summary\n\n- gate status: **${String(ctx.gateStatus).toUpperCase()}** (v2 + v3 human-fidelity gates)\n- hero intro: head/mask silhouette descriptor=${ctx.sampleEvidence?.heroDescriptor?.objectType ?? "n/a"}; hero clip motion=${fmt((ctx.perClipMotion ?? []).find((s) => s.role === "hook")?.motionDiffMean)}\n- moving_material_missing reported: ${ctx.hasMovingGap ? "yes (honest)" : "NO"}; bgm_missing: ${ctx.hasBgmGap ? "yes" : "no"}\n- audio: render centroid ${fmt(rAudio.spectralCentroidMean)} vs sample ${fmt(sampleAudio.spectralCentroidMean)} (layered procedural BGM, not a bare click)\n- typography: sample-derived layout evidence applied to text clips (${(ctx.sampleEvidence?.typographyEvidence?.length ?? 0)} items)\n- remaining gap: no real target moving footage (style-lock) → dynamic procedural montage; for true live-action fidelity, supply --source target clips.\n`);
+    await writeReadme(dir, "21 · Compare", "Sample-vs-render visual + audio metrics, and the per-clip motion table proving no early clip is static.");
   });
 
   return finalize(stageStatus.some((s) => s.status === "failed") ? "partial" : "completed");
@@ -671,6 +745,10 @@ async function finalize(status) {
     templateChecks: ctx.templateChecks ?? null,
     gaps: { movingMaterialMissing: Boolean(ctx.hasMovingGap), bgmMissing: Boolean(ctx.hasBgmGap) },
     keyMetrics: ctx.renderMetrics ?? null,
+    heroDescriptor: ctx.sampleEvidence?.heroDescriptor ?? null,
+    perClipMotion: ctx.perClipMotion ?? null,
+    renderAudioMetrics: ctx.renderAudio ?? null,
+    typographyEvidenceCount: ctx.sampleEvidence?.typographyEvidence?.length ?? 0,
     failedStages: failed,
     stageDirs: STAGE_DEFS.map(([n]) => path.join(runId, n))
   };

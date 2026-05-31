@@ -457,6 +457,127 @@ export interface FFmpegRendererOptions {
   outputBasename?: string;
 }
 
+// ---- beat-cut visual-grammar helpers (shared by the generic primitive + the hero intro) ----
+
+/** A strong moving streak field — the motion bed every beat-cut clip rides so even text clips are
+ * not static. `energy` scales count/alpha (montage/hero use the strongest field). */
+function streakBedFilters(W: number, energy: "calm" | "strong" | "montage"): string[] {
+  const out: string[] = [];
+  const cfg = energy === "montage" ? { n: 9, w: 0.08, a: 0.6, warm: true } : energy === "strong" ? { n: 8, w: 0.06, a: 0.5, warm: false } : { n: 7, w: 0.05, a: 0.42, warm: false };
+  const barW = Math.max(6, Math.round(W * cfg.w));
+  for (let i = 0; i < cfg.n; i += 1) {
+    const speed = Math.round(W * (0.5 + i * 0.32));
+    const off = Math.round((i * (W + barW)) / cfg.n);
+    const color = cfg.warm && i % 3 === 0 ? "0xf97316" : i % 2 ? "0x0e7490" : "0x22d3ee";
+    out.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${barW})-${barW}':y=0:w=${barW}:h=ih:color=${color}@${cfg.a}:t=fill`);
+  }
+  return out;
+}
+
+/** Animated bottom beat-EQ bars (yellow/orange/red) — red/yellow pixels + per-frame motion. */
+function beatEqFilters(W: number, H: number, beatHz: string, tall = false): string[] {
+  const out: string[] = [];
+  const eqN = 13;
+  const eqBand = Math.round(H * (tall ? 0.1 : 0.075));
+  const eqGap = Math.round(W / eqN);
+  const eqBarW = Math.max(4, Math.round(eqGap * 0.55));
+  for (let i = 0; i < eqN; i += 1) {
+    const x = i * eqGap + Math.round((eqGap - eqBarW) / 2);
+    const phase = (i * 0.7).toFixed(2);
+    const hExpr = `(0.18+0.82*abs(sin(2*PI*${beatHz}*t+${phase})))`;
+    const color = i % 4 === 0 ? "0xef4444" : "0xfbbf24";
+    out.push(`drawbox=x=${x}:y='ih-${eqBand}*${hExpr}':w=${eqBarW}:h='${eqBand}*${hExpr}':color=${color}@0.9:t=fill`);
+  }
+  return out;
+}
+
+type TextLayout = { yFrac: number; colorHex: string; anim: "per_char_reveal" | "shake" | "scale"; fontScale: number };
+
+/** Read a typography hint (layoutRole/colorRole/animation) the planner attached to a text layer. */
+function typographyForClip(clip: TimelineClip): { layoutRole?: string; colorRole?: string; animationHint?: string } | undefined {
+  for (const layer of clip.layers ?? []) {
+    const t = (layer.style as Record<string, unknown> | undefined)?.typography as Record<string, unknown> | undefined;
+    if (t && (t.layoutRole || t.colorRole || t.animationHint)) {
+      return { layoutRole: t.layoutRole as string, colorRole: t.colorRole as string, animationHint: t.animationHint as string };
+    }
+  }
+  return undefined;
+}
+
+/** Per-clip text placement/animation so copy is NOT always centered: position, colour and animation
+ * vary by primitive, and are enriched by sample typography evidence when present. */
+function textLayoutForClip(clip: TimelineClip, primitive: string): TextLayout {
+  const roleColor: Record<string, string> = { red: "0xef4444", yellow: "0xfbbf24", white: "white" };
+  const byPrimitive: Record<string, TextLayout> = {
+    neon_hero_intro: { yFrac: 0.74, colorHex: "white", anim: "per_char_reveal", fontScale: 1.0 },
+    beat_text_card: { yFrac: 0.44, colorHex: "white", anim: "per_char_reveal", fontScale: 1.0 },
+    tutorial_rule_card: { yFrac: 0.47, colorHex: "0xfbbf24", anim: "scale", fontScale: 0.92 },
+    action_montage: { yFrac: 0.77, colorHex: "white", anim: "shake", fontScale: 0.86 },
+    impact_flash_stamp: { yFrac: 0.43, colorHex: "0xef4444", anim: "shake", fontScale: 1.06 },
+    motivation_cta: { yFrac: 0.42, colorHex: "white", anim: "per_char_reveal", fontScale: 1.06 }
+  };
+  const base = { ...(byPrimitive[primitive] ?? { yFrac: 0.46, colorHex: "white", anim: "scale", fontScale: 1.0 }) };
+  const typ = typographyForClip(clip);
+  if (typ) {
+    // only a non-white sample colour overrides the role default (keep the yellow/red variety)
+    if (typ.colorRole && typ.colorRole !== "white" && roleColor[typ.colorRole]) base.colorHex = roleColor[typ.colorRole];
+    if (typ.layoutRole === "lower_third") base.yFrac = 0.77;
+    else if (typ.layoutRole === "top_tag" || typ.layoutRole === "top_left_tag") base.yFrac = 0.27;
+    else if (typ.layoutRole === "center_title") base.yFrac = 0.44;
+    if (typ.animationHint === "per_char_reveal" || typ.animationHint === "shake") base.anim = typ.animationHint as TextLayout["anim"];
+  }
+  return base;
+}
+
+/** Build drawtext filters for a headline with the clip's layout + animation (per-char reveal, shake,
+ * or beat-scale), in the learned red/yellow/white palette. `rawText` must be the UN-escaped copy. */
+function beatCutTextFilters(rawText: string, layout: TextLayout, W: number, H: number, beatInterval: string, duration: number): string[] {
+  const text = (rawText ?? "").trim();
+  if (!text) return [];
+  const out: string[] = [];
+  const chars = Array.from(text);
+  const n = chars.length || 1;
+  const widthFit = Math.floor((W * 0.9) / n);
+  const fontSize = Math.max(Math.round(H * 0.034), Math.min(Math.round(H * 0.072 * layout.fontScale), widthFit));
+  const yBase = Math.round(H * layout.yFrac);
+  if (layout.anim === "per_char_reveal" && n <= 12) {
+    // lay chars out horizontally and reveal each in turn over the first ~55% of the clip
+    const charW = fontSize;
+    const x0 = Math.round((W - n * charW) / 2);
+    const step = Math.max(0.05, (duration * 0.55) / n);
+    chars.forEach((ch, i) => {
+      const reveal = (i * step).toFixed(3);
+      out.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(ch)}':fontcolor=${layout.colorHex}:fontsize=${fontSize}:x=${x0 + i * charW}:y=${yBase}:box=0:shadowcolor=black@0.7:shadowx=3:shadowy=3:enable='gte(t\\,${reveal})'`);
+    });
+    return out;
+  }
+  const xExpr = layout.anim === "shake" ? "(w-text_w)/2+6*sin(2*PI*t*9)" : "(w-text_w)/2";
+  const yExpr = layout.anim === "shake" ? `${yBase}+5*cos(2*PI*t*7)` : String(yBase);
+  // red beat-pulse shadow under the headline
+  out.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(text)}':fontcolor=0xef4444@0.7:fontsize=${Math.round(fontSize * 1.12)}:x=${xExpr}:y=(${yExpr})-6:box=0:enable='lt(mod(t\\,${beatInterval})\\,0.12)'`);
+  out.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(text)}':fontcolor=${layout.colorHex}:fontsize=${fontSize}:x=${xExpr}:y=${yExpr}:box=1:boxcolor=black@0.42:boxborderw=20`);
+  return out;
+}
+
+/** Hero palette from the descriptor the planner attached to the moving_material layer. */
+function heroPaletteForClip(clip: TimelineClip): string[] {
+  for (const layer of clip.layers ?? []) {
+    const d = (layer.style as Record<string, unknown> | undefined)?.heroDescriptor as Record<string, unknown> | undefined;
+    if (d && Array.isArray(d.palette) && d.palette.length) return (d.palette as string[]);
+  }
+  return ["black", "red", "blue"];
+}
+
+/** The located hero element (VisualElementGraph) the planner attached to the moving_material layer:
+ * the renderer positions the silhouette by its positionClass + trajectory (actual graph consumption). */
+function heroElementForClip(clip: TimelineClip): { positionClass?: string; centerTrajectory?: Array<[number, number]> } | undefined {
+  for (const layer of clip.layers ?? []) {
+    const e = (layer.style as Record<string, unknown> | undefined)?.heroElement as { positionClass?: string; centerTrajectory?: Array<[number, number]> } | undefined;
+    if (e && (e.positionClass || e.centerTrajectory)) return e;
+  }
+  return undefined;
+}
+
 export class FFmpegRenderer implements RendererAdapter {
   readonly target: RendererTarget = "ffmpeg";
   private readonly opts: FFmpegRendererOptions;
@@ -588,15 +709,36 @@ export class FFmpegRenderer implements RendererAdapter {
         }
         warnings.push(`Audio policy sample_bgm but audioRef ${audioRef ?? "n/a"} did not resolve; falling back to synth beat.`);
       }
-      // synth_beat (and sample_bgm fallback): generate a beat-aligned click track.
+      // synth_beat (and sample_bgm fallback): a layered PROCEDURAL beat track at the timeline BPM —
+      // dark ambient drone (harmonic pad) + kick + bass pulse + hi-hat + pink-noise air. Far richer
+      // than a bare click (higher spectral centroid + chroma variety), still 100% generated (no
+      // copyrighted/sample audio). The drone+hat raise the centroid; the noise adds air/flatness.
       const bpm = timeline.renderPlan?.beatGrid?.bpm ?? 120;
-      const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
-      // Decaying click every beat + a softer low kick — audible beat grid, no copyrighted audio.
-      const click = `aevalsrc='0.45*sin(2*PI*1180*t)*exp(-16*mod(t\\,${beatInterval}))+0.35*sin(2*PI*220*t)*exp(-9*mod(t\\,${beatInterval}))':s=44100:d=${dur}`;
+      const bi = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+      const half = (Number(bi) / 2).toFixed(4);
+      const sr = "s=44100";
+      // v3: mix the layers by the sample's learned audio-structure balance (bass_kick / music_harmonic
+      // / hats_air) — a bass-heavy sample gets a heavier kick/bass, etc. — not just a fixed click.
+      const layers = (timeline.renderPlan?.audioPlan?.layers ?? {}) as Record<string, number>;
+      const gBass = 0.7 + Math.min(1, layers.bass_kick ?? 0.5) * 0.8;
+      const gMusic = 0.7 + Math.min(1, layers.music_harmonic ?? 0.3) * 2.5;
+      const gAir = 0.6 + Math.min(1, layers.hats_air ?? 0.1) * 3.0;
+      const a = (base: number, g: number) => (base * g).toFixed(3);
+      const drone = `aevalsrc='${a(0.10, gMusic)}*sin(2*PI*55*t)+${a(0.07, gMusic)}*sin(2*PI*82.5*t)+${a(0.05, gMusic)}*sin(2*PI*110*t)':${sr}:d=${dur}`;
+      const kick = `aevalsrc='${a(0.6, gBass)}*sin(2*PI*58*t)*exp(-26*mod(t\\,${bi}))':${sr}:d=${dur}`;
+      const bass = `aevalsrc='${a(0.28, gBass)}*sin(2*PI*98*t)*exp(-7*mod(t\\,${bi}))':${sr}:d=${dur}`;
+      const hat = `aevalsrc='${a(0.16, gAir)}*sin(2*PI*1400*t)*exp(-42*mod(t\\,${half}))':${sr}:d=${dur}`;
+      const air = `anoisesrc=color=pink:amplitude=${a(0.05, gAir)}:duration=${dur}:sample_rate=44100`;
       await runFfmpeg([
-        "-y", "-i", silentPath, "-f", "lavfi", "-i", click,
-        "-map", "0:v:0", "-map", "1:a:0", "-t", dur,
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", finalPath
+        "-y", "-i", silentPath,
+        "-f", "lavfi", "-i", drone,
+        "-f", "lavfi", "-i", kick,
+        "-f", "lavfi", "-i", bass,
+        "-f", "lavfi", "-i", hat,
+        "-f", "lavfi", "-i", air,
+        "-filter_complex", "[1][2][3][4][5]amix=inputs=5:normalize=0,highpass=f=30,alimiter=limit=0.9[a]",
+        "-map", "0:v:0", "-map", "[a]", "-t", dur,
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", finalPath
       ]);
       return true;
     } catch (error) {
@@ -755,67 +897,37 @@ export class FFmpegRenderer implements RendererAdapter {
     options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle },
     primitive: string
   ): Promise<boolean> {
+    // The hero intro renders a procedural head/mask silhouette (separate ffmpeg input).
+    if (primitive === "neon_hero_intro") {
+      return this.renderHeroIntro(clip, segmentPath, options);
+    }
+
     const { width: W, height: H, duration } = options;
     const bpm = options.timeline.renderPlan?.beatGrid?.bpm ?? 120;
     const bpmSafe = bpm > 40 && bpm < 300 ? bpm : 120;
     const beatInterval = (60 / bpmSafe).toFixed(4);
     const beatHz = (bpmSafe / 60).toFixed(3);
-    // Only draw clean copy (clip.subtitleText); never leak the English slot-description visualIntent.
-    const text = options.subtitle;
 
     const filters: string[] = ["format=yuv420p"];
-
-    // ---- Moving dark-tech background: light streaks scrolling across the frame every frame.
-    // Continuous per-frame motion (raises motionDiffMean) + dark-tech look (slot_dark_background).
-    // Cool, dark streak colors only (keep the frame dark + lots of motion without over-reddening).
-    const streakW = Math.max(6, Math.round(W * 0.045));
-    const streakColors = ["0x1f3a5f", "0x0e7490", "0x155e75"];
-    const streakCount = 7;
-    for (let i = 0; i < streakCount; i += 1) {
-      const speed = Math.round(W * (0.35 + i * 0.22));
-      const off = Math.round((i * (W + streakW)) / streakCount);
-      const color = streakColors[i % streakColors.length];
-      filters.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${streakW})-${streakW}':y=0:w=${streakW}:h=ih:color=${color}@0.4:t=fill`);
-    }
-    // a horizontal scanline sweep
-    filters.push(`drawbox=x=0:y='mod(t*${Math.round(H * 0.3)}\\,ih)':w=iw:h=3:color=0x38bdf8@0.3:t=fill`);
-
-    // ---- Per-beat full-frame WHITE flash — brief and colour-neutral, so it creates the hard
-    // "cut-like" frame jumps the gate counts without reddening or brightening the average frame.
+    // Strong moving streak bed so even text clips are not static (the montage rides the strongest).
+    filters.push(...streakBedFilters(W, primitive === "action_montage" ? "montage" : "strong"));
+    filters.push(`drawbox=x=0:y='mod(t*${Math.round(H * 0.32)}\\,ih)':w=iw:h=3:color=0x38bdf8@0.3:t=fill`);
+    // per-beat full-frame WHITE flash — brief, colour-neutral cut-like jumps
     filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
 
-    // ---- Per-primitive material on top of the moving background.
-    if (primitive === "neon_hero_intro") {
-      const R = Math.round(Math.min(W, H) * 0.24);
-      const box = Math.round(Math.min(W, H) * 0.18);
-      filters.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.95)':y='(ih-${box})/2+${R}*cos(2*PI*t*0.95)':w=${box}:h=${box}:color=0x22d3ee@0.9:t=fill`);
-      filters.push(`drawbox=x='(iw-${Math.round(box * 0.62)})/2+${R}*sin(2*PI*t*0.95+1.6)':y='(ih-${Math.round(box * 0.62)})/2+${R}*cos(2*PI*t*0.95+1.6)':w=${Math.round(box * 0.62)}:h=${Math.round(box * 0.62)}:color=0xef4444@0.85:t=fill`);
-    } else if (primitive === "action_montage") {
-      // Aggressive montage: a fast field of cyan/orange vertical streaks (high motionDiff) plus a
-      // per-beat full-frame white flash held a touch longer (extra cut-like jumps) — the dominant
-      // motion clip, kept dark with cool colours so it does not red-wash the average frame.
+    // ---- Per-primitive accents.
+    if (primitive === "action_montage") {
       filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.22:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.09)'`);
-      const barW = Math.round(W * 0.08);
-      for (let i = 0; i < 9; i += 1) {
-        const speed = Math.round(W * (1.1 + i * 0.4));
-        const off = Math.round((i * (W + barW)) / 9);
-        const color = i % 3 === 0 ? "0xf97316" : "0x22d3ee";
-        filters.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${barW})-${barW}':y=0:w=${barW}:h=ih:color=${color}@0.66:t=fill`);
-      }
     } else if (primitive === "impact_flash_stamp") {
-      // Red radial starburst (rotating diagonal spokes) + a hard red stamp on every beat.
       const cx = Math.round(W * 0.5);
       const cy = Math.round(H * 0.46);
       const len = Math.round(Math.min(W, H) * 0.5);
       for (let i = 0; i < 8; i += 1) {
         const ang = (i / 8) * Math.PI;
-        const dx = Math.cos(ang).toFixed(3);
-        const dy = Math.sin(ang).toFixed(3);
-        filters.push(`drawbox=x='${cx}+${len}*${dx}*sin(2*PI*t*0.5)':y='${cy}+${len}*${dy}*sin(2*PI*t*0.5)':w=10:h=${len}:color=0xef4444@0.7:t=fill`);
+        filters.push(`drawbox=x='${cx}+${len}*${Math.cos(ang).toFixed(3)}*sin(2*PI*t*0.5)':y='${cy}+${len}*${Math.sin(ang).toFixed(3)}*sin(2*PI*t*0.5)':w=10:h=${len}:color=0xef4444@0.7:t=fill`);
       }
       filters.push(`drawbox=x=${cx - Math.round(W * 0.2)}:y=${cy - Math.round(W * 0.2)}:w=${Math.round(W * 0.4)}:h=${Math.round(W * 0.4)}:color=0xef4444@0.9:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.1)'`);
     } else if (primitive === "motivation_cta") {
-      // Scrolling red ticker bar at the bottom + red CTA band.
       filters.push(`drawbox=x=0:y=${Math.round(H * 0.84)}:w=iw:h=${Math.round(H * 0.08)}:color=0xb91c1c@0.92:t=fill`);
       filters.push(`drawbox=x='iw-mod(t*${Math.round(W * 0.6)}\\,iw+${Math.round(W * 0.3)})':y=${Math.round(H * 0.855)}:w=${Math.round(W * 0.3)}:h=${Math.round(H * 0.05)}:color=0xfbbf24@0.85:t=fill`);
     } else {
@@ -824,22 +936,9 @@ export class FFmpegRenderer implements RendererAdapter {
       filters.push(`drawbox=x=${Math.round(W * 0.16)}:y=${Math.round(H * 0.62)}:w=${Math.round(W * 0.68)}:h=${Math.round(H * 0.012)}:color=0xef4444@0.9:t=fill`);
     }
 
-    // ---- Beat-EQ bars along the bottom (yellow/orange/red). They oscillate per beat — a steady
-    // source of red/yellow pixels (raises redYellowRatio) and per-frame motion. They appear on
-    // every beat-cut clip, echoing the sample's BGM visualizer.
-    const eqN = 13;
-    const eqBand = Math.round(H * 0.075);
-    const eqGap = Math.round(W / eqN);
-    const eqBarW = Math.max(4, Math.round(eqGap * 0.55));
-    for (let i = 0; i < eqN; i += 1) {
-      const x = i * eqGap + Math.round((eqGap - eqBarW) / 2);
-      const phase = (i * 0.7).toFixed(2);
-      const hExpr = `(0.18+0.82*abs(sin(2*PI*${beatHz}*t+${phase})))`;
-      const color = i % 4 === 0 ? "0xef4444" : "0xfbbf24";
-      filters.push(`drawbox=x=${x}:y='ih-${eqBand}*${hExpr}':w=${eqBarW}:h='${eqBand}*${hExpr}':color=${color}@0.9:t=fill`);
-    }
+    filters.push(...beatEqFilters(W, H, beatHz));
 
-    // ---- Genre tag (clean Chinese, not a debug label) for the text/transition cards.
+    // ---- Genre tag (clean Chinese, not a debug label).
     const genreTag: Record<string, string> = {
       beat_text_card: "文字卡", tutorial_rule_card: "分镜规则", action_montage: "动作混剪",
       impact_flash_stamp: "卡点冲击", motivation_cta: "立即行动"
@@ -848,17 +947,9 @@ export class FFmpegRenderer implements RendererAdapter {
       filters.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(genreTag[primitive])}':fontcolor=0xfbbf24:fontsize=${Math.round(H * 0.026)}:x=(w-text_w)/2:y=${Math.round(H * 0.225)}:box=1:boxcolor=0x7f1d1d@0.8:boxborderw=10`);
     }
 
-    // ---- Main copy: big bold centered CJK with a beat-pulsing shadow copy.
-    if (text) {
-      const big = primitive === "motivation_cta" || primitive === "neon_hero_intro";
-      const rawLen = (clip.subtitleText ?? clip.visualIntent ?? "").length || 1;
-      const widthFit = Math.floor((W * 0.88) / rawLen);
-      const fontSize = Math.max(Math.round(H * 0.032), Math.min(Math.round(H * (big ? 0.075 : 0.058)), widthFit));
-      const yExpr = primitive === "neon_hero_intro" ? `${Math.round(H * 0.7)}` : "(h-text_h)/2";
-      // beat-synced enlarged red shadow copy (pulses on the beat) under the white headline
-      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=0xef4444@0.7:fontsize=${Math.round(fontSize * 1.12)}:x=(w-text_w)/2:y=${yExpr}-6:box=0:enable='lt(mod(t\\,${beatInterval})\\,0.12)'`);
-      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=white:fontsize=${fontSize}:x=(w-text_w)/2:y=${yExpr}:box=1:boxcolor=black@0.42:boxborderw=22`);
-    }
+    // ---- Main copy with per-clip layout + animation (raw subtitle; escaped inside the helper).
+    const rawText = (clip.subtitleText ?? clip.visualIntent ?? "").trim();
+    filters.push(...beatCutTextFilters(rawText, textLayoutForClip(clip, primitive), W, H, beatInterval, duration));
 
     const lavfi = `color=c=0x05060a:s=${W}x${H}:d=${duration.toFixed(2)},${filters.join(",")}`;
     await runFfmpeg([
@@ -866,6 +957,89 @@ export class FFmpegRenderer implements RendererAdapter {
       "-t", duration.toFixed(2), "-r", String(options.fps),
       "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
       segmentPath
+    ]);
+    return false;
+  }
+
+  /** Generate (and cache) a procedural neon head/mask silhouette PNG with glow-based alpha. */
+  private async heroHeadPng(workDir: string, palette: string[]): Promise<string | undefined> {
+    const hasCool = palette.includes("blue") || palette.includes("purple");
+    const key = hasCool ? "redblue" : "red";
+    const out = path.join(workDir, `hero_head_${key}.png`);
+    if (existsSync(out)) return out;
+    const hw = 380;
+    const hh = 470;
+    const cx = 190;
+    const cy = 200;
+    const rx = 150;
+    const ry = 200;
+    const r = 235;
+    const g = 55;
+    const b = hasCool ? 150 : 110;
+    try {
+      await runFfmpeg([
+        "-y", "-f", "lavfi", "-i", `color=c=black:s=${hw}x${hh}:d=0.1`,
+        "-filter_complex",
+        `[0:v]format=rgba,geq=r='${r}':g='${g}':b='${b}':a='255*exp(-3.0*(pow((X-${cx})/${rx}\\,2)+pow((Y-${cy})/${ry}\\,2)))'[g];` +
+          `[g]drawbox=x=${cx - rx}:y=${cy - 14}:w=${rx * 2}:h=34:color=black@1.0:t=fill,drawbox=x=${cx - rx + 22}:y=${cy - 5}:w=${rx * 2 - 44}:h=8:color=0x22d3ee@1.0:t=fill[out]`,
+        "-map", "[out]", "-frames:v", "1", out
+      ]);
+      return existsSync(out) ? out : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Render the opening hero clip: a procedural head/mask silhouette (neon glow + visor) orbiting
+   * over a strong moving streak field, with beat flashes, EQ bars and the headline below it. The
+   * silhouette is generated from shapes (never a sample frame). Falls back to orbiting neon shapes
+   * if the silhouette can't be generated. Returns false (no source asset consumed).
+   */
+  private async renderHeroIntro(
+    clip: TimelineClip,
+    segmentPath: string,
+    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
+  ): Promise<boolean> {
+    const { width: W, height: H, duration, fps } = options;
+    const bpm = options.timeline.renderPlan?.beatGrid?.bpm ?? 120;
+    const bpmSafe = bpm > 40 && bpm < 300 ? bpm : 120;
+    const beatInterval = (60 / bpmSafe).toFixed(4);
+    const beatHz = (bpmSafe / 60).toFixed(3);
+    const workDir = path.dirname(segmentPath);
+    const head = await this.heroHeadPng(workDir, heroPaletteForClip(clip)).catch(() => undefined);
+    // Consume the located hero element: place the silhouette by its positionClass (upper_center /
+    // center / lower_third) from the VisualElementGraph instead of a fixed offset.
+    const heroEl = heroElementForClip(clip);
+    const posOffsetFrac = heroEl?.positionClass === "upper_center" ? -0.14 : heroEl?.positionClass === "lower_third" ? 0.08 : -0.04;
+    const heroYOffset = Math.round(H * posOffsetFrac);
+
+    const bg: string[] = ["format=yuv420p"];
+    bg.push(...streakBedFilters(W, "montage"));
+    bg.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
+    if (!head) {
+      // fallback: a big orbiting neon "head" blob (never just static boxes)
+      const box = Math.round(Math.min(W, H) * 0.2);
+      const R = Math.round(Math.min(W, H) * 0.16);
+      bg.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.9)':y='(ih-${box})/2-${Math.round(H * 0.1)}+${R}*cos(2*PI*t*0.9)':w=${box}:h=${box}:color=0xef4444@0.85:t=fill`);
+    }
+    bg.push(...beatEqFilters(W, H, beatHz));
+    const textFilters = beatCutTextFilters((clip.subtitleText ?? clip.visualIntent ?? "").trim(), textLayoutForClip(clip, "neon_hero_intro"), W, H, beatInterval, duration);
+
+    if (!head) {
+      const lavfi = `color=c=0x05060a:s=${W}x${H}:d=${duration.toFixed(2)},${[...bg, ...textFilters].join(",")}`;
+      await runFfmpeg(["-y", "-f", "lavfi", "-i", lavfi, "-t", duration.toFixed(2), "-r", String(fps), "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", segmentPath]);
+      return false;
+    }
+    const bgChain = `[0:v]${bg.join(",")}[bg]`;
+    const overlay = `[bg][1:v]overlay=x='(W-w)/2+44*sin(2*PI*t*0.85)':y='(H-h)/2+${heroYOffset}+30*cos(2*PI*t*0.85)'[ov]`;
+    const textChain = textFilters.length ? `[ov]${textFilters.join(",")}[out]` : `[ov]null[out]`;
+    await runFfmpeg([
+      "-y", "-f", "lavfi", "-i", `color=c=0x05060a:s=${W}x${H}:d=${duration.toFixed(2)}`,
+      "-loop", "1", "-t", duration.toFixed(2), "-i", head,
+      "-filter_complex", `${bgChain};${overlay};${textChain}`,
+      "-map", "[out]", "-t", duration.toFixed(2), "-r", String(fps),
+      "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", segmentPath
     ]);
     return false;
   }

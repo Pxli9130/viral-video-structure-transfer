@@ -145,6 +145,10 @@ video
 
 `beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。**moving 素材/背景/分镜/BGM 是一等结构槽位 + 渲染契约 + gate**：没有目标动作素材时，动作混剪用高运动的程序化代理（绝不复制样例帧）并上报 `moving_material_missing`，所以输出不会退化成静态卡片。
 
+**v3（human-fidelity）**：分析器再抽取 **hero-object 描述符**（head/mask 类型 + 调色板 + 运动）和 **TypographyEvidenceV2**（OCR bbox → 版式角色/颜色/字号/动效），渲染器据此画**程序化霓虹头部/面罩剪影**（不再是方块，绝不复制样例人脸）、**分角色变化的字幕版式/颜色/逐字显现/抖动**，并用**分层程序化 BGM**（drone+kick+bass+hat+noise，频谱质心远高于纯 click）替代单 click。gate 升级到 **v3 per-clip** 指标（hero≥0.025、文字片段≥0.01、混剪≥0.04，静态早段无法靠全局均值蒙混）+ hero 描述符/代理、typography 证据、audio richness、storyboard 非空、bgm 去重、fillPlan 一致性等。`npm run full-loop:editing` 把整条产品链路落成 22 个可人工评审的 stage 目录。
+
+**v3 VisualElementGraph（localize-then-label）**：架构是 **先用 CV/光流/OCR 把元素定位出来（bbox + 轨迹），VLM 只对已框出的候选做语义命名**（不再让 VLM 在 1FPS 视频里猜坐标）。分析器产出 `visualElementGraph`：hero_object（光流 bbox 轨迹 + center 轨迹 + 面积曲线）、kinetic_typography 与 **watermark**（按角落启发式分离，抖音水印只标注不复刻）、impact_fx、background、cta，加 shot 节点（dominantElements/cutType/motionClass/beatSync）与 `audioStructure`（bass/music/hats 层占比）。渲染器**真实消费**图谱：hero 剪影按 `positionClass` 定位、BGM 按学到的层占比混音。重型 tracker（Grounded-SAM2/SAM2/RAFT/CoTracker/Demucs/Essentia）是 **env-gated stub**（默认关、CI 不受影响）。v3 gate **检验真实使用**而非仅存在：`element_graph_renderer_consumed`（hero 元素已挂到 layer 且渲染开场片段确实有运动）、`typography_layout_used`、`audio_structure_used`。`--gates v3` real-API 全闭环 **47/47**。
+
 实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
 
 ```bash
@@ -154,10 +158,14 @@ npm run build && node apps/api/dist/server.js
 # 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
 npm run e2e:editing-beatcut
 
-# 3) 渲染质量 gate v2（beat_cut moving-material 严格模式，27 项）
+# 3) 渲染质量 gate v3（beat_cut moving-material + human-fidelity 严格模式，40 项）
 npm run eval:render-quality -- --render storage/generated/<renderId>.mp4 \
   --template /tmp/editing_e2e/template.json --generation /tmp/editing_e2e/generation.json \
-  --sample test_videos/editing.mov --expect-video-type beat_cut --gates v2 --strict
+  --sample test_videos/editing.mov --expect-video-type beat_cut --gates v3 --strict
+
+# 4) 产品级全闭环 artifact runner（22 个 stage 目录 + 对比图 + per-clip motion + audio + v3 gate）
+npm run full-loop:editing -- --sample ./test_videos/manual/editing.mov \
+  --prompt "主题：爆款结构迁移引擎；..." --out docs/artifacts/full_loop_editing_mov
 
 # 4) 单独跑证据分析器 / 模型 provider 评测
 npm run analyze:evidence -- --video test_videos/editing.mov --out /tmp/ev.json --frames-dir /tmp/ev_frames

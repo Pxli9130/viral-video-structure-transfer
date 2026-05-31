@@ -168,7 +168,7 @@ if (renderEvidence) {
 
 // --- v2 moving-material gate set (render-quality-gates-v2): 12 mustPass booleans + metric
 // thresholds. Enforces that the output is a moving-material-aware beat_cut, not static cards. ---
-if (args.gates === "v2") {
+if (args.gates === "v2" || args.gates === "v3") {
   const TH = { durMin: 14.8, durMax: 15.2, w: 720, h: 1280, minMotionDiffMean: 0.04, minCutLikeCount: 5, minMovingMaterialFamilies: 3, minSlotEvidenceCoverage: 0.8, minLayeredClips: 5 };
   const clips = timeline?.clips ?? [];
   const slotIds = new Set((template?.requiredSlots ?? []).map((s) => s.id));
@@ -205,6 +205,65 @@ if (args.gates === "v2") {
   } else {
     warnings.push("metrics-only analyzer unavailable; skipped v2 metric-threshold gates.");
   }
+}
+
+// --- v3 human-fidelity gates: per-clip motion (no static early clip), a real hero-object
+// descriptor + proxy, typography layout evidence, audio richness, and artifact consistency. ---
+if (args.gates === "v3") {
+  const clips = timeline?.clips ?? [];
+  const segs = clips.map((c) => `${(c.startSec ?? 0).toFixed(3)}:${((c.startSec ?? 0) + (c.durationSec ?? 0)).toFixed(3)}`).join(",");
+  let perClip = [];
+  let audio = {};
+  if (existsSync(PYTHON) && segs) {
+    const res = spawnSync(PYTHON, [path.join(scriptsDir, "analyze-evidence-timeline.py"), "--video", render, "--metrics-only", "--segments", segs, "--audio-metrics"], { encoding: "utf8", env: { ...process.env, PATH: `${path.join(condaBase, "envs", condaEnv, "bin")}:${process.env.PATH ?? ""}` } });
+    try { const j = JSON.parse(res.stdout); perClip = j.segments ?? []; audio = j.audio ?? {}; } catch { /* keep empty */ }
+  }
+  // attach role + primitive to each per-clip metric
+  const clipMetrics = perClip.map((m, i) => ({ ...m, role: clips[i]?.role, primitive: clips[i]?.motionPrimitive }));
+  evidence.perClipMotion = clipMetrics;
+  evidence.audioMetrics = audio;
+  const byRole = (role) => clipMetrics.filter((m) => m.role === role);
+  const hero = byRole("hook")[0];
+  const textClips = clipMetrics.filter((m) => m.role === "setup" || m.role === "body");
+  const montage = byRole("proof")[0];
+  const template3 = template ?? {};
+  const heroDescriptor = template3.heroDescriptor;
+  const heroLayerHasDescriptor = clips.some((c) => c.role === "hook" && (c.layers ?? []).some((l) => l.kind === "moving_material" && (l.style?.heroDescriptor?.objectType)));
+  const textTypoLayers = clips.flatMap((c) => c.layers ?? []).filter((l) => (l.kind === "text" || l.kind === "text_overlay") && l.style?.typography);
+  const bgmGaps = (generation?.gapReport ?? []).filter((g) => g.gapType === "bgm_missing");
+  const bgmFill = (generation?.fillPlan ?? []).find((f) => f.slotId === "slot_bgm_grid");
+
+  gate("v3_per_clip_motion_metrics_recorded", clipMetrics.length >= 5 && clipMetrics.every((m) => typeof m.motionDiffMean === "number"), `${clipMetrics.length} per-clip motion metrics`);
+  gate("v3_hero_intro_motion_min", (hero?.motionDiffMean ?? 0) >= 0.025, `hook motionDiffMean=${hero?.motionDiffMean}`, { hero: hero?.motionDiffMean });
+  gate("v3_hero_intro_not_static", (hero?.motionDiffMean ?? 0) > 0.01, `hook motionDiffMean=${hero?.motionDiffMean}`);
+  gate("v3_hero_object_descriptor_exists", Boolean(heroDescriptor?.objectType) && heroDescriptor.objectType !== "unknown", `objectType=${heroDescriptor?.objectType ?? "none"}`);
+  gate("v3_hero_proxy_uses_object_descriptor", heroLayerHasDescriptor, `hook moving_material carries heroDescriptor=${heroLayerHasDescriptor}`);
+  gate("v3_kinetic_text_clip_motion_min", textClips.length > 0 && textClips.every((m) => (m.motionDiffMean ?? 0) >= 0.01), `text-clip motion=[${textClips.map((m) => m.motionDiffMean).join(",")}]`);
+  gate("v3_montage_clip_motion_min", (montage?.motionDiffMean ?? 0) >= 0.04, `proof motionDiffMean=${montage?.motionDiffMean}`);
+  gate("v3_typography_layout_evidence_present", (template3.typographyEvidence?.length ?? 0) >= 3 || textTypoLayers.length >= 2, `typoEvidence=${template3.typographyEvidence?.length ?? 0} textTypoLayers=${textTypoLayers.length}`);
+  gate("v3_audio_richness_min", audio.hasAudio === true && (audio.spectralCentroidMean ?? 0) >= 900 && (audio.chromaVarMean ?? 0) >= 0.03, `centroid=${audio.spectralCentroidMean} chromaVar=${audio.chromaVarMean}`, audio);
+  gate("v3_storyboard_nonempty", Array.isArray(generation?.storyboard) && generation.storyboard.length > 0 && generation.storyboard.some((s) => (s.shotDescription || s.subtitle || s.timeRange)), `storyboard items=${generation?.storyboard?.length ?? 0}`);
+  gate("v3_bgm_gap_deduped", bgmGaps.length <= 1, `bgm_missing count=${bgmGaps.length}`);
+  gate("v3_fill_plan_audio_policy_consistent", (!bgmFill || (bgmFill.strategy !== "aigc_placeholder" && bgmFill.strategy !== "aigc_generated_asset")) && ["synth_beat", "sample_bgm"].includes(audioPolicy), `bgmFill=${bgmFill?.strategy} audioPolicy=${audioPolicy}`);
+
+  // --- VisualElementGraph: located elements must be CONSUMED by the renderer, not just exist. ---
+  const graph = template3.visualElementGraph;
+  const graphElements = graph?.elements ?? [];
+  const heroGraphEl = graphElements.find((e) => e.family === "hero_object");
+  const textGraphEls = graphElements.filter((e) => e.family === "kinetic_typography");
+  const heroLayerHasElement = clips.some((c) => c.role === "hook" && (c.layers ?? []).some((l) => l.kind === "moving_material" && l.style?.heroElement?.positionClass));
+  const textLayoutRolesUsed = new Set(clips.flatMap((c) => c.layers ?? []).filter((l) => l.style?.typography?.layoutRole).map((l) => l.style.typography.layoutRole));
+  const textAnimUsed = clips.flatMap((c) => c.layers ?? []).some((l) => l.style?.typography?.animationHint);
+
+  gate("v3_visual_element_graph_exists", graphElements.length >= 5, `${graphElements.length} located elements`);
+  gate("v3_hero_object_bbox_track_exists", (heroGraphEl?.bboxTrackNorm?.length ?? 0) >= 2 && (heroGraphEl?.centerTrajectory?.length ?? 0) >= 2, `heroTrack=${heroGraphEl?.bboxTrackNorm?.length ?? 0}`);
+  gate("v3_text_bbox_track_count_min", textGraphEls.length >= 3, `text elements=${textGraphEls.length}`);
+  // ACTUAL CONSUMPTION: the hook clip's moving_material layer carries the located element AND the
+  // rendered opening clip moves (so the silhouette was positioned + animated from the graph).
+  gate("v3_element_graph_renderer_consumed", heroLayerHasElement && (hero?.motionDiffMean ?? 0) >= 0.025, `heroElementOnLayer=${heroLayerHasElement} renderedHeroMotion=${hero?.motionDiffMean}`);
+  gate("v3_typography_layout_used", textLayoutRolesUsed.size >= 2, `distinct layout roles on clips=[${[...textLayoutRolesUsed].join(",")}]`);
+  gate("v3_kinetic_text_animation_present", textAnimUsed, `text animation on clips=${textAnimUsed}`);
+  gate("v3_audio_structure_used", Boolean(timeline?.renderPlan?.audioPlan?.layers), `audioPlan.layers=${JSON.stringify(timeline?.renderPlan?.audioPlan?.layers ?? null)}`);
 }
 
 const failures = gates.filter((g) => !g.passed).map((g) => g.id);
