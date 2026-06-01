@@ -1,29 +1,50 @@
 import React from "react";
-import { AbsoluteFill, Img, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Img, Sequence, Video, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 
-/**
- * v1.3 RenderRecipe-driven Remotion composition. Consumes `timeline.renderPlan.renderRecipe` and the
- * resolved `assetMap` (assetId -> { src }) and renders each recipe clip by its `selectedPrimitive`.
- * Components read RenderRecipeClip props only — no re-inference. Sample frames never appear; only the
- * recipe's bound target/source assets (here, the real AIGC fan images via assetMap) reach the canvas.
- */
+type AssetMap = Record<string, { src: string; ext?: string; type?: string }>;
 
-type AssetMap = Record<string, { src: string; ext?: string }>;
+type BBox = { x: number; y: number; w: number; h: number };
+type RecipeLayer = {
+  id: string;
+  type: "media" | "text" | "motion_atom" | "audio" | "shape" | "transition";
+  clipId?: string;
+  zIndex: number;
+  startSec: number;
+  durationSec: number;
+  material?: { assetIds?: string[]; kind?: string; policy?: string };
+  layout?: { bboxNorm?: BBox; fit?: string; align?: "left" | "center" | "right"; minAreaRatio?: number; safeArea?: string };
+  text?: { content?: string; role?: string };
+  typography?: {
+    fontSizeRatio?: number;
+    color?: string;
+    colorRole?: string;
+    weight?: number;
+    stroke?: { color?: string; widthRatio?: number };
+    shadow?: { color?: string; blurRatio?: number; dxRatio?: number; dyRatio?: number };
+    background?: { color?: string; radiusRatio?: number; paddingRatio?: number };
+  };
+  animation?: { enter?: string; exit?: string; beatReactive?: { amplitude?: number; beatRefs?: number[] } };
+  atom?: { kind?: string; direction?: string; thicknessRatio?: number; opacity?: number; colorRoles?: string[]; path?: string; twist?: number; widthRatio?: number; softnessRatio?: number; intensity?: number; beatRefs?: number[] };
+};
 type RecipeClip = {
   clipId: string;
+  id?: string;
   role: string;
   startSec: number;
   endSec: number;
   selectedPrimitive: string;
   visualFormFamily?: string;
   material?: { assetIds?: string[]; kind?: string };
-  text?: { copy?: string; colorRoles?: string[]; animationHint?: string };
+  text?: { copy?: string; colorRoles?: string[]; animationHint?: string; fontSizeRatio?: number };
   motion?: { beatTimestampsSec?: number[]; pattern?: string };
+  layout?: { bboxNorm?: BBox; typographyLayout?: string };
 };
 type Recipe = {
   global?: { palette?: string[]; fps?: number; durationSec?: number };
-  productTheme?: { name?: string; cta?: string };
+  composition?: { width?: number; height?: number; fps?: number; durationSec?: number };
+  productTheme?: { name?: string; productName?: string; brandName?: string; cta?: string; ctaText?: string; generationPrompt?: string; rawPrompt?: string };
   clips?: RecipeClip[];
+  layers?: RecipeLayer[];
 };
 export type ViralRecipeProps = {
   timeline?: { durationSec?: number; aspectRatio?: string; renderPlan?: { renderRecipe?: Recipe; fps?: number } };
@@ -35,24 +56,82 @@ const YELLOW = "#f5c518";
 const WHITE = "#f5f5f5";
 const TEAL = "#22d3ee";
 const BG = "#05060a";
+const PROMPT_TOKENS = ["15 秒", "15秒", "高转化", "CTA", "prompt", "生成", "换成", "版本", "镜头", "素材", "文案：", "要求："];
 
 function colorFor(roles?: string[]): string {
   const r = (roles ?? []).join(" ").toLowerCase();
-  if (r.includes("red")) return RED;
-  if (r.includes("yellow")) return YELLOW;
+  if (r.includes("red") || r.includes("primary")) return RED;
+  if (r.includes("yellow") || r.includes("accent")) return YELLOW;
   if (r.includes("teal") || r.includes("cyan")) return TEAL;
   return WHITE;
 }
+
+function safeText(value?: string, fallback = ""): string {
+  const raw = (value ?? "").replace(/^(?:主题|产品|商品|CTA)[:：]\s*/i, "").trim();
+  if (!raw) return fallback;
+  const lower = raw.toLowerCase();
+  const badIndex = PROMPT_TOKENS.map((token) => lower.indexOf(token.toLowerCase())).filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  const clipped = (badIndex !== undefined ? raw.slice(0, badIndex) : raw).split(/[。！？\n]/)[0].trim();
+  return Array.from(clipped || fallback).slice(0, 24).join("");
+}
+
+function assetFor(assetMap: AssetMap, assetIds?: string[]): { src?: string; ext?: string } {
+  const id = assetIds?.find((assetId) => assetMap[assetId]?.src);
+  return id ? assetMap[id] : {};
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function boxWithMinArea(box: BBox | undefined, minAreaRatio?: number): BBox | undefined {
+  if (!box || !minAreaRatio) return box;
+  const area = box.w * box.h;
+  if (area >= minAreaRatio || area <= 0) return box;
+  const scale = Math.sqrt(minAreaRatio / area);
+  const w = Math.min(0.92, box.w * scale);
+  const h = Math.min(0.92, box.h * scale);
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h };
+}
+
+function layerBoxStyle(box: BBox | undefined): React.CSSProperties {
+  if (!box) return { position: "absolute", inset: 0 };
+  return {
+    position: "absolute",
+    left: `${box.x * 100}%`,
+    top: `${box.y * 100}%`,
+    width: `${box.w * 100}%`,
+    height: `${box.h * 100}%`
+  };
+}
+
+const MissingMedia: React.FC<{ label?: string }> = ({ label }) => (
+  <AbsoluteFill style={{ background: BG, justifyContent: "center", alignItems: "center" }}>
+    <div style={{ color: YELLOW, fontSize: 34, fontWeight: 800, fontFamily: "sans-serif", textAlign: "center", padding: 24 }}>
+      {label ?? "Media asset did not resolve"}
+    </div>
+  </AbsoluteFill>
+);
+
+const MediaSurface: React.FC<{ src?: string; ext?: string; fit?: string; style?: React.CSSProperties }> = ({ src, ext, fit, style }) => {
+  const objectFit = fit === "contain" || fit === "cardInset" ? "contain" : "cover";
+  if (!src) return <MissingMedia />;
+  if (/\.(mp4|mov|webm|m4v)$/i.test(ext ?? src)) {
+    return <Video src={src} muted style={{ width: "100%", height: "100%", objectFit, ...style }} />;
+  }
+  return <Img src={src} style={{ width: "100%", height: "100%", objectFit, ...style }} />;
+};
 
 const BeatBars: React.FC<{ beats: number[]; clipStartSec: number }> = ({ beats, clipStartSec }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = clipStartSec + frame / fps;
-  const nearBeat = beats.some((b) => Math.abs(b - (frame / fps)) < 0.08);
-  const bars = 13;
+  const nearBeat = beats.some((b) => Math.abs(b - frame / fps) < 0.08);
   return (
     <div style={{ position: "absolute", bottom: 36, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 6, opacity: 0.9 }}>
-      {Array.from({ length: bars }).map((_, i) => {
+      {Array.from({ length: 13 }).map((_, i) => {
         const h = 20 + Math.abs(Math.sin(t * 6 + i)) * (nearBeat ? 80 : 46);
         return <div key={i} style={{ width: 10, height: h, background: i % 2 ? YELLOW : TEAL, borderRadius: 3 }} />;
       })}
@@ -60,39 +139,95 @@ const BeatBars: React.FC<{ beats: number[]; clipStartSec: number }> = ({ beats, 
   );
 };
 
-const HeroSpin: React.FC<{ src?: string }> = ({ src }) => {
+const HeroSpin: React.FC<{ src?: string; ext?: string }> = ({ src, ext }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const scale = 1 + Math.sin((frame / fps) * 3) * 0.04;
   const rot = (frame / fps) * 8;
   return (
     <AbsoluteFill style={{ background: `radial-gradient(circle at 50% 42%, #0b3b3f 0%, ${BG} 60%)`, justifyContent: "center", alignItems: "center" }}>
-      {src ? <Img src={src} style={{ width: "80%", maxHeight: "78%", objectFit: "contain", transform: `scale(${scale}) rotate(${rot}deg)`, filter: "drop-shadow(0 0 40px rgba(34,211,238,0.5))" }} /> : null}
+      <MediaSurface src={src} ext={ext} fit="contain" style={{ width: "80%", maxHeight: "78%", transform: `scale(${scale}) rotate(${rot}deg)`, filter: "drop-shadow(0 0 40px rgba(34,211,238,0.5))" }} />
     </AbsoluteFill>
   );
 };
 
-const SourceMontage: React.FC<{ src?: string }> = ({ src }) => {
+const SourceMontage: React.FC<{ src?: string; ext?: string }> = ({ src, ext }) => {
   const frame = useCurrentFrame();
   const zoom = interpolate(frame, [0, 60], [1.0, 1.12], { extrapolateRight: "clamp" });
   return (
     <AbsoluteFill style={{ background: BG }}>
-      {src ? <Img src={src} style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${zoom})` }} /> : null}
+      <MediaSurface src={src} ext={ext} fit="cover" style={{ transform: `scale(${zoom})` }} />
       <div style={{ position: "absolute", top: "20%", left: 0, right: 0, height: 6, background: RED }} />
     </AbsoluteFill>
   );
 };
 
-const Typography: React.FC<{ copy?: string; color: string }> = ({ copy, color }) => {
+const Typography: React.FC<{
+  copy?: string;
+  color: string;
+  bbox?: BBox;
+  fontSizeRatio?: number;
+  animation?: string;
+  align?: "left" | "center" | "right";
+  typography?: RecipeLayer["typography"];
+}> = ({ copy, color, bbox, fontSizeRatio, animation, align = "center", typography }) => {
   const frame = useCurrentFrame();
-  const s = interpolate(frame, [0, 10], [0.7, 1], { extrapolateRight: "clamp" });
+  const { width, height } = useVideoConfig();
+  const box = bbox ?? { x: 0.1, y: 0.4, w: 0.8, h: 0.16 };
+  const baseFont = Math.max(20, Math.min(96, height * (fontSizeRatio ?? Math.min(0.11, box.h * 0.7))));
+  const s = animation === "none" || animation === "typewriter" ? 1 : interpolate(frame, [0, 10], [0.82, 1], { extrapolateRight: "clamp" });
+  const xOffset = animation === "slide_left"
+    ? interpolate(frame, [0, 12], [-width * box.w, 0], { extrapolateRight: "clamp" })
+    : animation === "slide_right"
+      ? interpolate(frame, [0, 12], [width * box.w, 0], { extrapolateRight: "clamp" })
+      : animation === "sweep"
+        ? Math.sin(frame / 8) * width * 0.015
+        : 0;
+  const opacity = animation === "fade" ? interpolate(frame, [0, 14], [0, 1], { extrapolateRight: "clamp" }) : animation === "flash" ? 0.72 + Math.sin(frame * 0.8) * 0.28 : 1;
+  const visibleCopy = animation === "typewriter"
+    ? Array.from(copy ?? "").slice(0, Math.max(1, Math.ceil((frame / 18) * Array.from(copy ?? "").length))).join("")
+    : copy ?? "";
+  const shadow = typography?.shadow;
+  const stroke = typography?.stroke;
+  const bg = typography?.background;
   return (
-    <AbsoluteFill style={{ background: BG, justifyContent: "center", alignItems: "center", padding: 60 }}>
-      <div style={{ position: "absolute", top: "30%", left: "12%", right: "12%", height: 6, background: RED }} />
-      <div style={{ fontSize: 84, fontWeight: 900, color, textAlign: "center", transform: `scale(${s})`, textShadow: "0 4px 24px rgba(0,0,0,0.8)", fontFamily: "sans-serif" }}>{copy ?? ""}</div>
-    </AbsoluteFill>
+    <div
+      style={{
+        position: "absolute",
+        left: `${box.x * 100}%`,
+        top: `${box.y * 100}%`,
+        width: `${box.w * 100}%`,
+        height: `${box.h * 100}%`,
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        color,
+        fontSize: baseFont,
+        lineHeight: 1.08,
+        fontWeight: typography?.weight ?? 900,
+        textAlign: align,
+        transform: `translateX(${xOffset}px) scale(${s})`,
+        opacity,
+        textShadow: shadow
+          ? `${Math.round((shadow.dxRatio ?? 0.004) * width)}px ${Math.round((shadow.dyRatio ?? 0.004) * height)}px ${Math.round((shadow.blurRatio ?? 0.012) * height)}px ${shadow.color ?? "rgba(0,0,0,0.75)"}`
+          : "0 4px 24px rgba(0,0,0,0.82)",
+        WebkitTextStroke: stroke ? `${Math.max(1, Math.round((stroke.widthRatio ?? 0.002) * height))}px ${stroke.color ?? "rgba(0,0,0,0.65)"}` : undefined,
+        fontFamily: "sans-serif",
+        overflow: "hidden"
+      }}
+    >
+      {bg ? <span style={{ background: bg.color ?? "rgba(0,0,0,0.45)", borderRadius: Math.round((bg.radiusRatio ?? 0.012) * height), padding: `${Math.round((bg.paddingRatio ?? 0.01) * height)}px` }}>{visibleCopy}</span> : visibleCopy}
+    </div>
   );
 };
+
+const LegacyMediaText: React.FC<{ src?: string; ext?: string; copy?: string; color: string; bbox?: BBox; fontSizeRatio?: number }> = ({ src, ext, copy, color, bbox, fontSizeRatio }) => (
+  <AbsoluteFill style={{ background: BG }}>
+    <MediaSurface src={src} ext={ext} fit="cover" />
+    <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(5,6,10,0.08), rgba(5,6,10,0.5))" }} />
+    <Typography copy={copy} color={color} bbox={bbox} fontSizeRatio={fontSizeRatio} animation="scale" />
+  </AbsoluteFill>
+);
 
 const ImpactFlash: React.FC = () => {
   const frame = useCurrentFrame();
@@ -105,45 +240,165 @@ const ImpactFlash: React.FC = () => {
   );
 };
 
-const CtaSlate: React.FC<{ logo?: string; cta?: string; brand?: string }> = ({ logo, cta, brand }) => {
+const ParametricRibbonSurface: React.FC<{ layer: RecipeLayer }> = ({ layer }) => {
   const frame = useCurrentFrame();
-  const s = interpolate(frame, [0, 14], [0.8, 1], { extrapolateRight: "clamp" });
+  const { width, height } = useVideoConfig();
+  const t = frame / 30;
+  const colors = layer.atom?.colorRoles?.length ? layer.atom.colorRoles : ["#2563eb", "#7c3aed", "#ec4899", "#eab308", "#22c55e"];
+  const thickness = Math.max(18, Math.round(width * (layer.atom?.thicknessRatio ?? 0.11)));
+  const dir = layer.atom?.direction === "left_to_right" ? 1 : -1;
+  const x = width * 0.5 + dir * Math.sin(t * 0.8) * width * 0.36;
+  const y = height * 0.44 + Math.cos(t * 1.1) * height * 0.12;
   return (
-    <AbsoluteFill style={{ background: `radial-gradient(circle at 50% 40%, #111827 0%, ${BG} 70%)`, justifyContent: "center", alignItems: "center", gap: 36 }}>
-      {logo ? <Img src={logo} style={{ width: "44%", maxHeight: "34%", objectFit: "contain", transform: `scale(${s})` }} /> : null}
-      <div style={{ fontSize: 40, fontWeight: 800, color: WHITE, fontFamily: "sans-serif" }}>{brand ?? ""}</div>
-      <div style={{ fontSize: 52, fontWeight: 900, color: YELLOW, background: "#7f1d1d", padding: "14px 30px", borderRadius: 14, fontFamily: "sans-serif" }}>{cta ?? ""}</div>
+    <AbsoluteFill style={{ pointerEvents: "none", opacity: layer.atom?.opacity ?? 0.62 }}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ position: "absolute", inset: 0 }}>
+        <defs>
+          <linearGradient id={`grad_${layer.id}`} x1="0%" y1="0%" x2="100%" y2="0%">
+            {colors.map((c, i) => <stop key={c + i} offset={`${(i / Math.max(1, colors.length - 1)) * 100}%`} stopColor={c} />)}
+          </linearGradient>
+        </defs>
+        <path
+          d={`M ${x - width * 0.7} ${y + height * 0.08} C ${x - width * 0.2} ${y - height * 0.28}, ${x + width * 0.2} ${y + height * 0.28}, ${x + width * 0.72} ${y - height * 0.08}`}
+          fill="none"
+          stroke={`url(#grad_${layer.id})`}
+          strokeWidth={thickness}
+          strokeLinecap="round"
+          style={{ filter: "drop-shadow(0 24px 28px rgba(0,0,0,0.28))" }}
+        />
+        <path
+          d={`M ${x - width * 0.6} ${y - height * 0.02} C ${x - width * 0.18} ${y + height * 0.2}, ${x + width * 0.18} ${y - height * 0.2}, ${x + width * 0.62} ${y + height * 0.02}`}
+          fill="none"
+          stroke="rgba(255,255,255,0.55)"
+          strokeWidth={Math.max(4, thickness * 0.16)}
+          strokeLinecap="round"
+        />
+      </svg>
     </AbsoluteFill>
   );
 };
 
+const MotionAtomFallback: React.FC<{ layer: RecipeLayer }> = ({ layer }) => {
+  const frame = useCurrentFrame();
+  const { width, height } = useVideoConfig();
+  if (layer.atom?.kind === "impact_flash") {
+    const intensity = layer.atom.intensity ?? 0.55;
+    const opacity = Math.max(0, intensity * (1 - (frame % 16) / 12));
+    return <AbsoluteFill style={{ pointerEvents: "none", background: WHITE, opacity }} />;
+  }
+  if (layer.atom?.kind === "light_sweep" || layer.atom?.kind === "text_sweep_mask") {
+    const sweepX = interpolate(frame % 90, [0, 90], [-width * 0.35, width * 1.15]);
+    return (
+      <AbsoluteFill style={{ pointerEvents: "none", overflow: "hidden" }}>
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: sweepX,
+            width: width * (layer.atom.widthRatio ?? 0.22),
+            transform: "skewX(-18deg)",
+            background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.62), transparent)",
+            opacity: layer.atom.opacity ?? 0.45
+          }}
+        />
+      </AbsoluteFill>
+    );
+  }
+  return <div style={{ position: "absolute", top: height * 0.48, left: width * 0.1, right: width * 0.1, height: 8, background: TEAL, opacity: 0.35 }} />;
+};
+
+const CtaSlate: React.FC<{ logo?: string; ext?: string; cta?: string; brand?: string }> = ({ logo, ext, cta, brand }) => {
+  const frame = useCurrentFrame();
+  const s = interpolate(frame, [0, 14], [0.8, 1], { extrapolateRight: "clamp" });
+  return (
+    <AbsoluteFill style={{ background: `radial-gradient(circle at 50% 40%, #111827 0%, ${BG} 70%)`, justifyContent: "center", alignItems: "center", gap: 36 }}>
+      {logo ? <div style={{ width: "44%", maxHeight: "34%", transform: `scale(${s})` }}><MediaSurface src={logo} ext={ext} fit="contain" /></div> : null}
+      <div style={{ fontSize: 40, fontWeight: 800, color: WHITE, fontFamily: "sans-serif", textAlign: "center", maxWidth: "86%" }}>{safeText(brand)}</div>
+      <div style={{ fontSize: 52, fontWeight: 900, color: YELLOW, background: "#7f1d1d", padding: "14px 30px", borderRadius: 14, fontFamily: "sans-serif", maxWidth: "88%", textAlign: "center" }}>{safeText(cta)}</div>
+    </AbsoluteFill>
+  );
+};
+
+const LayerView: React.FC<{ layer: RecipeLayer; assetMap: AssetMap }> = ({ layer, assetMap }) => {
+  if (layer.type === "media") {
+    const asset = assetFor(assetMap, layer.material?.assetIds);
+    const bbox = boxWithMinArea(layer.layout?.bboxNorm, layer.layout?.minAreaRatio);
+    return (
+      <div style={layerBoxStyle(bbox)}>
+        <MediaSurface src={asset.src} ext={asset.ext} fit={layer.layout?.fit} />
+      </div>
+    );
+  }
+  if (layer.type === "text") {
+    return (
+      <Typography
+        copy={layer.text?.content}
+        color={layer.typography?.color ?? colorFor([layer.typography?.colorRole ?? ""])}
+        bbox={layer.layout?.bboxNorm}
+        fontSizeRatio={layer.typography?.fontSizeRatio}
+        animation={layer.animation?.enter}
+        align={layer.layout?.align}
+        typography={layer.typography}
+      />
+    );
+  }
+  if (layer.type === "motion_atom" && layer.atom?.kind === "parametric_ribbon_surface") return <ParametricRibbonSurface layer={layer} />;
+  if (layer.type === "motion_atom") return <MotionAtomFallback layer={layer} />;
+  return null;
+};
+
 const ClipView: React.FC<{ clip: RecipeClip; assetMap: AssetMap; recipe: Recipe }> = ({ clip, assetMap, recipe }) => {
-  const assetId = clip.material?.assetIds?.[0];
-  const src = assetId ? assetMap[assetId]?.src : undefined;
+  const asset = assetFor(assetMap, clip.material?.assetIds);
   const color = colorFor(clip.text?.colorRoles);
   const beats = clip.motion?.beatTimestampsSec ?? [];
   let body: React.ReactNode;
   switch (clip.selectedPrimitive) {
     case "FanHeroSpin":
     case "ProductHeroOrbit":
-      body = <HeroSpin src={src} />;
+    case "ProductPosterHero":
+    case "ObjectTrackReveal":
+      body = <HeroSpin src={asset.src} ext={asset.ext} />;
       break;
     case "SourceClipBeatMontage":
     case "FeatureCardStack":
-      body = <SourceMontage src={src} />;
+    case "MediaCardCascade":
+    case "SplitScreenCompare":
+      body = <SourceMontage src={asset.src} ext={asset.ext} />;
       break;
     case "ImpactFlash":
+    case "LightLeakTransition":
       body = <ImpactFlash />;
       break;
     case "CTAEndSlate":
-      body = <CtaSlate logo={src} cta={recipe.productTheme?.cta} brand={recipe.productTheme?.name} />;
-      break;
-    case "DynamicProxyMontage":
-      body = <Typography copy={clip.text?.copy} color={TEAL} />;
+      body = (
+        <CtaSlate
+          logo={asset.src}
+          ext={asset.ext}
+          cta={recipe.productTheme?.ctaText ?? recipe.productTheme?.cta}
+          brand={recipe.productTheme?.brandName ?? recipe.productTheme?.productName ?? recipe.productTheme?.name}
+        />
+      );
       break;
     case "TypographyLayoutSequence":
+    case "KineticTypographySweep":
+    case "PriceBadgePulse":
+      body = asset.src
+        ? <LegacyMediaText src={asset.src} ext={asset.ext} copy={clip.text?.copy} color={color} bbox={clip.layout?.bboxNorm} fontSizeRatio={clip.text?.fontSizeRatio} />
+        : <AbsoluteFill style={{ background: BG }}><Typography copy={clip.text?.copy} color={color} bbox={clip.layout?.bboxNorm} fontSizeRatio={clip.text?.fontSizeRatio} animation={clip.text?.animationHint} /></AbsoluteFill>;
+      break;
+    case "ParametricRibbonSurface":
+      body = (
+        <AbsoluteFill style={{ background: BG }}>
+          <ParametricRibbonSurface layer={{ id: `legacy_${clip.clipId}_ribbon`, type: "motion_atom", zIndex: 20, startSec: clip.startSec, durationSec: clip.endSec - clip.startSec, atom: { kind: "parametric_ribbon_surface", direction: "right_to_left", thicknessRatio: 0.11, opacity: 0.68, colorRoles: recipe.global?.palette ?? [TEAL, YELLOW], path: "s_curve_orbit", twist: 0.5 } }} />
+          <Typography copy={clip.text?.copy} color={color} bbox={clip.layout?.bboxNorm} fontSizeRatio={clip.text?.fontSizeRatio} animation={clip.text?.animationHint} />
+        </AbsoluteFill>
+      );
+      break;
+    case "DynamicProxyMontage":
+      body = <AbsoluteFill style={{ background: BG }}><Typography copy={clip.text?.copy} color={TEAL} bbox={clip.layout?.bboxNorm} fontSizeRatio={clip.text?.fontSizeRatio} /></AbsoluteFill>;
+      break;
     default:
-      body = <Typography copy={clip.text?.copy} color={color} />;
+      body = <AbsoluteFill style={{ background: BG }}><Typography copy={clip.text?.copy} color={color} bbox={clip.layout?.bboxNorm} fontSizeRatio={clip.text?.fontSizeRatio} /></AbsoluteFill>;
   }
   return (
     <AbsoluteFill>
@@ -161,6 +416,26 @@ export const defaultRecipeProps: ViralRecipeProps = {
 export const ViralRecipeRoot: React.FC<ViralRecipeProps> = ({ timeline, assetMap }) => {
   const { fps } = useVideoConfig();
   const recipe = timeline?.renderPlan?.renderRecipe ?? { clips: [] };
+  const layers = recipe.layers ?? [];
+  if (layers.length) {
+    return (
+      <AbsoluteFill style={{ background: BG }}>
+        {layers
+          .slice()
+          .sort((a, b) => a.zIndex - b.zIndex)
+          .map((layer) => {
+            const from = Math.round((layer.startSec ?? 0) * fps);
+            const dur = Math.max(1, Math.round((layer.durationSec ?? 1) * fps));
+            return (
+              <Sequence key={layer.id} from={from} durationInFrames={dur}>
+                <LayerView layer={layer} assetMap={assetMap ?? {}} />
+              </Sequence>
+            );
+          })}
+      </AbsoluteFill>
+    );
+  }
+
   const clips = recipe.clips ?? [];
   return (
     <AbsoluteFill style={{ background: BG }}>
@@ -168,7 +443,7 @@ export const ViralRecipeRoot: React.FC<ViralRecipeProps> = ({ timeline, assetMap
         const from = Math.round((clip.startSec ?? 0) * fps);
         const dur = Math.max(1, Math.round(((clip.endSec ?? clip.startSec + 1) - (clip.startSec ?? 0)) * fps));
         return (
-          <Sequence key={clip.clipId ?? i} from={from} durationInFrames={dur}>
+          <Sequence key={clip.clipId ?? clip.id ?? i} from={from} durationInFrames={dur}>
             <ClipView clip={clip} assetMap={assetMap ?? {}} recipe={recipe} />
           </Sequence>
         );
