@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-structure-transfer/spec_v4_1/model-routing-policy.schema.json",
+  "title": "ModelRoutingPolicy",
+  "type": "object",
+  "required": ["task", "candidates", "deterministicFallback"],
+  "properties": {
+    "task": { "type": "string", "minLength": 1 },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider", "priority", "enabled", "timeoutMs", "fallbackOn"],
+        "properties": {
+          "provider": { "type": "string", "minLength": 1 },
+          "model": { "type": "string" },
+          "priority": { "type": "integer", "minimum": 1 },
+          "enabled": { "type": "boolean" },
+          "maxCostUsd": { "type": "number", "minimum": 0 },
+          "timeoutMs": { "type": "integer", "minimum": 1 },
+          "fallbackOn": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["timeout", "rate_limit", "schema_error", "empty_output", "policy_block", "api_error"] }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "deterministicFallback": {
+      "type": "object",
+      "required": ["strategy", "severity"],
+      "properties": {
+        "strategy": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["info", "warn", "fatal"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

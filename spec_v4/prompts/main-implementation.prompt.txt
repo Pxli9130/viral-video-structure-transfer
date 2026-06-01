@@ -1,0 +1,17 @@
+你是这个 repo 的 senior engineer。请实施 Spec v4.0: Evidence-Faithful Atom Transfer Engine。
+
+目标：让 learned_samples_max / marketing / editing / motion_graph cases 真正从样例学习结构，并迁移到新素材，最终输出可看的 final.mp4 / final.remotion.mp4。不要只修单点，也不要为了架构洁癖重写全项目；目标是 make it work。
+
+请阅读 spec_v4 全部文档，尤其 README、requirements、architecture、design、migration-v3-to-v4、tasks、test-plan。
+
+优先级：
+P0: evidence carry-forward, productTheme sanitize, Remotion media rendering, layer-based recipe, Remotion layer interpreter, FFmpeg fallback, fidelity script.
+P1: TechniqueAtom extraction, evidence-based primitive selection, geometry strategy, audio fidelity.
+P2: UI/demo support, multi-version, natural edit.
+
+约束：
+- 不复制样例帧/音频。
+- 不提交 API keys。
+- 不引入重型 DB/queue infra unless already present and necessary。
+- 必须加 tests/gates。
+- 最终运行可用命令并报告。

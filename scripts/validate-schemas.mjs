@@ -6,6 +6,7 @@ import {
   validateJob,
   validateKnowledgeAtom,
   validateProject,
+  validateRenderRecipe,
   validateStructureTemplate,
   validateTimeline
 } from "@vvst/shared";
@@ -22,6 +23,7 @@ const validators = {
   structure_template: validateStructureTemplate,
   generation_request: validateGenerationRequest,
   timeline: validateTimeline,
+  render_recipe: validateRenderRecipe,
   job: validateJob
 };
 
@@ -41,6 +43,22 @@ async function readJson(filePath) {
   } catch {
     return undefined;
   }
+}
+
+async function findFiles(rootDir, basename) {
+  let entries;
+  try {
+    entries = await fs.readdir(rootDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const entry of entries) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) found.push(...await findFiles(fullPath, basename));
+    else if (entry.isFile() && entry.name === basename) found.push(fullPath);
+  }
+  return found;
 }
 
 let okCount = 0;
@@ -64,6 +82,9 @@ for (const fixture of demoFixtures) {
     continue;
   }
   note(report(`${fixture.file} :: ${fixture.schema}`, validators[fixture.schema](value)));
+  if (fixture.schema === "timeline" && value.renderPlan?.renderRecipe) {
+    note(report(`${fixture.file} :: render_recipe`, validators.render_recipe(value.renderPlan.renderRecipe)));
+  }
 }
 
 const db = await readJson(dbPath);
@@ -71,11 +92,24 @@ if (db) {
   for (const project of db.projects ?? []) note(report(`db.projects[${project.id}]`, validators.project(project)));
   for (const analysis of db.analyses ?? []) note(report(`db.analyses[${analysis.id}]`, validators.asset_analysis(analysis.video)));
   for (const template of db.templates ?? []) note(report(`db.templates[${template.id}]`, validators.structure_template(template.template)));
-  for (const generation of db.generations ?? []) note(report(`db.generations[${generation.id}].timeline`, validators.timeline(generation.timeline)));
+  for (const generation of db.generations ?? []) {
+    note(report(`db.generations[${generation.id}].timeline`, validators.timeline(generation.timeline)));
+    if (generation.timeline?.renderPlan?.renderRecipe) {
+      note(report(`db.generations[${generation.id}].renderRecipe`, validators.render_recipe(generation.timeline.renderPlan.renderRecipe)));
+    }
+  }
   for (const atom of db.atoms ?? []) note(report(`db.atoms[${atom.id}]`, validators.knowledge_atom(atom)));
   for (const job of db.jobs ?? []) note(report(`db.jobs[${job.id}]`, validators.job(job)));
 } else {
   console.warn(`SKIP  storage/db/app.json missing — run npm run demo:seed first`);
+}
+
+const artifactRecipes = await findFiles(path.join(repoRoot, "docs", "artifacts"), "render-recipe.json");
+for (const recipePath of artifactRecipes) {
+  const value = await readJson(recipePath);
+  if (!value) continue;
+  const label = path.relative(repoRoot, recipePath).split(path.sep).join("/");
+  note(report(`${label} :: render_recipe`, validators.render_recipe(value)));
 }
 
 console.log(`\n${okCount} passed, ${failCount} failed.`);

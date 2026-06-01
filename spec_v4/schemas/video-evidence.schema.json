@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/spec_v4/video-evidence.schema.json",
+  "title": "VideoEvidenceBundle v4",
+  "type": "object",
+  "required": [
+    "version",
+    "sampleId",
+    "meta",
+    "shots",
+    "rhythm",
+    "typographyEvidence",
+    "visualElementGraph",
+    "motionAtoms",
+    "audioStructure",
+    "safety"
+  ],
+  "properties": {
+    "version": {
+      "const": "evidence-v4"
+    },
+    "sampleId": {
+      "type": "string"
+    },
+    "meta": {
+      "type": "object",
+      "required": [
+        "durationSec",
+        "fps",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "durationSec": {
+          "type": "number"
+        },
+        "fps": {
+          "type": "number"
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "aspectRatio": {
+          "type": "string"
+        }
+      }
+    },
+    "shots": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "rhythm": {
+      "type": "object"
+    },
+    "typographyEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "startSec",
+          "endSec",
+          "bboxNorm",
+          "evidenceRefs"
+        ]
+      }
+    },
+    "visualElementGraph": {
+      "type": "object",
+      "required": [
+        "elements"
+      ],
+      "properties": {
+        "elements": {
+          "type": "array"
+        },
+        "relations": {
+          "type": "array"
+        }
+      }
+    },
+    "motionAtoms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "startSec",
+          "endSec",
+          "evidenceRefs"
+        ]
+      }
+    },
+    "audioStructure": {
+      "type": "object",
+      "properties": {
+        "estimatedLayers": {
+          "type": "array"
+        },
+        "style": {
+          "type": "string"
+        }
+      }
+    },
+    "frameSheets": {
+      "type": "object"
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "sampleFrameCopyAllowed",
+        "sampleAudioCopyAllowed"
+      ],
+      "properties": {
+        "sampleFrameCopyAllowed": {
+          "const": false
+        },
+        "sampleAudioCopyAllowed": {
+          "const": false
+        }
+      }
+    }
+  }
+}

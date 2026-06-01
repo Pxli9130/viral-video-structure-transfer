@@ -1,0 +1,19 @@
+You are investigating provider feasibility for Spec v4.1. Do not modify code.
+
+Tasks:
+1. Check current repo for existing AIAdapter/VLMAdapter/ASR/OCR/AIGC provider interfaces.
+2. Identify where to add seedance_2_0, seedream_4_0, and elevenlabs_* adapters.
+3. Identify existing environment variable/config patterns.
+4. Identify current AssetProfile/provenance fields.
+5. Identify how final render reports are generated.
+6. Identify how inspect-learning-fidelity can add provider safety gates.
+
+Output:
+- Existing adapter map
+- Missing interfaces
+- Files likely touched
+- Risks
+- Suggested minimal implementation order
+- git status --short
+
+Do not call external APIs and do not commit code.

@@ -1,0 +1,600 @@
+{
+  "projectId": "demo_v1_2_project",
+  "templates": [
+    {
+      "id": "ideal_template_editing_mov_v2",
+      "sourceAssetId": "asset_editing_mov",
+      "sourceAssetFilename": "editing.mov",
+      "template": {
+        "id": "ideal_template_editing_mov_v2",
+        "schemaVersion": "structure-template-v1.2-plus-motion-assets",
+        "projectId": "demo_v1_2_project",
+        "sourceAssetFilename": "editing.mov",
+        "name": "Ideal Beat-Cut Editing Tutorial Structure · moving-material aware · editing.mov",
+        "vertical": "beat_cut",
+        "videoType": "beat_cut",
+        "targetDurationSec": 15,
+        "visualStyle": {
+          "background": "dark_tech_black_with_moving_light_streaks_or_generated_bg_image",
+          "layout": "center_bold_cjk_typography alternating with moving montage panels",
+          "typography": "large bold Chinese, red/yellow/white emphasis, center aligned, black cards",
+          "colorProgression": [
+            "black",
+            "red",
+            "yellow",
+            "white",
+            "blue accent"
+          ],
+          "motionAsset": "rotating neon hero object + beat-synced text + live-action/action proxy montage",
+          "transitionStyle": "hard_cut + beat_flash + impact_stamp",
+          "bgm": "152_BPM beat grid; visual cut points align to onsets"
+        },
+        "segments": [
+          {
+            "id": "seg_hook",
+            "role": "hook",
+            "startSec": 0,
+            "endSec": 2.4,
+            "slots": [
+              "slot_moving_hero_object",
+              "slot_bgm_grid",
+              "slot_dark_background"
+            ],
+            "intent": "霓虹旋转主视觉开场，强制检测 moving 素材和背景层"
+          },
+          {
+            "id": "seg_setup",
+            "role": "setup",
+            "startSec": 2.4,
+            "endSec": 5.4,
+            "slots": [
+              "slot_kinetic_text_card",
+              "slot_dark_background",
+              "slot_bgm_grid"
+            ],
+            "intent": "黑底中文大字卡，红黄关键词，卡点缩放"
+          },
+          {
+            "id": "seg_rule",
+            "role": "body",
+            "startSec": 5.4,
+            "endSec": 8.25,
+            "slots": [
+              "slot_storyboard_rule_card",
+              "slot_kinetic_text_card",
+              "slot_bgm_grid"
+            ],
+            "intent": "分镜/节奏/BGM/字幕规则卡"
+          },
+          {
+            "id": "seg_proof",
+            "role": "proof",
+            "startSec": 8.25,
+            "endSec": 11.1,
+            "slots": [
+              "slot_moving_source_montage",
+              "slot_impact_flash",
+              "slot_bgm_grid"
+            ],
+            "intent": "目标素材或生成素材动作蒙太奇"
+          },
+          {
+            "id": "seg_flash",
+            "role": "transition",
+            "startSec": 11.1,
+            "endSec": 12.9,
+            "slots": [
+              "slot_impact_flash",
+              "slot_dark_background",
+              "slot_bgm_grid"
+            ],
+            "intent": "最强鼓点红白闪切印记"
+          },
+          {
+            "id": "seg_cta",
+            "role": "cta",
+            "startSec": 12.9,
+            "endSec": 15.0,
+            "slots": [
+              "slot_motivation_cta",
+              "slot_bgm_grid"
+            ],
+            "intent": "转化 CTA 收尾卡"
+          }
+        ],
+        "requiredSlots": [
+          {
+            "id": "slot_moving_hero_object",
+            "role": "hook",
+            "visualFormFamily": "object_motion",
+            "visualForm": "neon_hero_intro",
+            "modality": "video_or_generated_image_sequence",
+            "required": true,
+            "assetRequirement": {
+              "type": "moving_visual",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "neon_hero_intro"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                0,
+                2.4
+              ],
+              "frameIds": [
+                "sample_0",
+                "sample_2.4"
+              ],
+              "evidenceKinds": [
+                "visual",
+                "motion",
+                "beat"
+              ],
+              "confidence": 0.9
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          },
+          {
+            "id": "slot_dark_background",
+            "role": "global",
+            "visualFormFamily": "background",
+            "visualForm": "dark_tech_bg_image_or_procedural_motion",
+            "modality": "image_or_procedural_video",
+            "required": true,
+            "assetRequirement": {
+              "type": "image_or_procedural_video",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "dark_tech_bg_image_or_procedural_motion"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                0,
+                118.2
+              ],
+              "frameIds": [
+                "sample_0",
+                "sample_118.2"
+              ],
+              "evidenceKinds": [
+                "visual",
+                "palette"
+              ],
+              "confidence": 0.92
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          },
+          {
+            "id": "slot_kinetic_text_card",
+            "role": "setup",
+            "visualFormFamily": "kinetic_typography",
+            "visualForm": "beat_text_card",
+            "modality": "text",
+            "required": true,
+            "assetRequirement": {
+              "type": "text",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "beat_text_card"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                10,
+                34
+              ],
+              "frameIds": [
+                "sample_10",
+                "sample_34"
+              ],
+              "evidenceKinds": [
+                "ocr",
+                "visual",
+                "beat"
+              ],
+              "confidence": 0.88
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          },
+          {
+            "id": "slot_storyboard_rule_card",
+            "role": "body",
+            "visualFormFamily": "storyboard",
+            "visualForm": "tutorial_rule_card",
+            "modality": "text",
+            "required": true,
+            "assetRequirement": {
+              "type": "text",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "tutorial_rule_card"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                34,
+                64
+              ],
+              "frameIds": [
+                "sample_34",
+                "sample_64"
+              ],
+              "evidenceKinds": [
+                "ocr",
+                "asr",
+                "role"
+              ],
+              "confidence": 0.85
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          },
+          {
+            "id": "slot_moving_source_montage",
+            "role": "proof",
+            "visualFormFamily": "live_action_montage",
+            "visualForm": "action_montage_sequence",
+            "modality": "video_clip",
+            "required": true,
+            "assetRequirement": {
+              "type": "moving_visual",
+              "minCount": 3
+            },
+            "rendererCandidates": [
+              "action_montage_sequence"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                64,
+                106.7
+              ],
+              "frameIds": [
+                "sample_64",
+                "sample_106.7"
+              ],
+              "evidenceKinds": [
+                "visual",
+                "motion",
+                "beat",
+                "scene_cut"
+              ],
+              "confidence": 0.86
+            },
+            "fallbackStrategies": [
+              "target_source_clips_by_motion",
+              "aigc_generated_material",
+              "procedural_dynamic_proxy"
+            ]
+          },
+          {
+            "id": "slot_impact_flash",
+            "role": "transition",
+            "visualFormFamily": "transition",
+            "visualForm": "impact_flash_stamp",
+            "modality": "procedural",
+            "required": true,
+            "assetRequirement": {
+              "type": "procedural",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "impact_flash_stamp"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                105,
+                112
+              ],
+              "frameIds": [
+                "sample_105",
+                "sample_112"
+              ],
+              "evidenceKinds": [
+                "beat",
+                "transition"
+              ],
+              "confidence": 0.8
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          },
+          {
+            "id": "slot_bgm_grid",
+            "role": "global",
+            "visualFormFamily": "audio",
+            "visualForm": "beat_grid_152bpm",
+            "modality": "audio",
+            "required": true,
+            "assetRequirement": {
+              "type": "audio",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "beat_grid_152bpm"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                0,
+                118.2
+              ],
+              "frameIds": [
+                "sample_0",
+                "sample_118.2"
+              ],
+              "evidenceKinds": [
+                "audio",
+                "beat"
+              ],
+              "confidence": 0.88
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          },
+          {
+            "id": "slot_motivation_cta",
+            "role": "cta",
+            "visualFormFamily": "brand_cta",
+            "visualForm": "motivation_cta_card",
+            "modality": "text_or_logo",
+            "required": true,
+            "assetRequirement": {
+              "type": "text_or_logo",
+              "minCount": 1
+            },
+            "rendererCandidates": [
+              "motivation_cta_card"
+            ],
+            "sourceEvidence": {
+              "timeRangeSec": [
+                107,
+                118.2
+              ],
+              "frameIds": [
+                "sample_107",
+                "sample_118.2"
+              ],
+              "evidenceKinds": [
+                "visual",
+                "ocr",
+                "role"
+              ],
+              "confidence": 0.8
+            },
+            "fallbackStrategies": [
+              "procedural_generation",
+              "aigc_generated_material",
+              "prompt_copy"
+            ]
+          }
+        ],
+        "replacementPolicy": {
+          "doNotCopySampleVisuals": true,
+          "sampleAudioUse": "only_if_authorized_else_synth_beat",
+          "allowedTransfer": [
+            "structure",
+            "rhythm",
+            "typography_style",
+            "background_style",
+            "motion_grammar",
+            "BGM beat grid",
+            "storyboard pattern"
+          ],
+          "forbiddenTransfer": [
+            "sample_frames",
+            "creator watermark",
+            "person likeness",
+            "sample audio without authorization"
+          ]
+        },
+        "qualityRationale": "Ideal output must preserve editing.mov style grammar: moving hero material, dark moving background, beat-locked typography, action montage, storyboard-level segmentation and BGM grid. It is not enough to render static cards."
+      }
+    }
+  ],
+  "atoms": [
+    {
+      "id": "atom_moving_hero_object",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "object_motion",
+      "name": "neon_hero_intro",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          0,
+          2.4
+        ],
+        "frameIds": [
+          "sample_0",
+          "sample_2.4"
+        ],
+        "evidenceKinds": [
+          "visual",
+          "motion",
+          "beat"
+        ],
+        "confidence": 0.9
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_dark_background",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "background",
+      "name": "dark_tech_bg_image_or_procedural_motion",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          0,
+          118.2
+        ],
+        "frameIds": [
+          "sample_0",
+          "sample_118.2"
+        ],
+        "evidenceKinds": [
+          "visual",
+          "palette"
+        ],
+        "confidence": 0.92
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_kinetic_text_card",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "kinetic_typography",
+      "name": "beat_text_card",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          10,
+          34
+        ],
+        "frameIds": [
+          "sample_10",
+          "sample_34"
+        ],
+        "evidenceKinds": [
+          "ocr",
+          "visual",
+          "beat"
+        ],
+        "confidence": 0.88
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_storyboard_rule_card",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "storyboard",
+      "name": "tutorial_rule_card",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          34,
+          64
+        ],
+        "frameIds": [
+          "sample_34",
+          "sample_64"
+        ],
+        "evidenceKinds": [
+          "ocr",
+          "asr",
+          "role"
+        ],
+        "confidence": 0.85
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_moving_source_montage",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "live_action_montage",
+      "name": "action_montage_sequence",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          64,
+          106.7
+        ],
+        "frameIds": [
+          "sample_64",
+          "sample_106.7"
+        ],
+        "evidenceKinds": [
+          "visual",
+          "motion",
+          "beat",
+          "scene_cut"
+        ],
+        "confidence": 0.86
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_impact_flash",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "transition",
+      "name": "impact_flash_stamp",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          105,
+          112
+        ],
+        "frameIds": [
+          "sample_105",
+          "sample_112"
+        ],
+        "evidenceKinds": [
+          "beat",
+          "transition"
+        ],
+        "confidence": 0.8
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_bgm_grid",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "audio",
+      "name": "beat_grid_152bpm",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          0,
+          118.2
+        ],
+        "frameIds": [
+          "sample_0",
+          "sample_118.2"
+        ],
+        "evidenceKinds": [
+          "audio",
+          "beat"
+        ],
+        "confidence": 0.88
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    },
+    {
+      "id": "atom_motivation_cta",
+      "templateId": "ideal_template_editing_mov_v2",
+      "category": "brand_cta",
+      "name": "motivation_cta_card",
+      "sourceEvidence": {
+        "timeRangeSec": [
+          107,
+          118.2
+        ],
+        "frameIds": [
+          "sample_107",
+          "sample_118.2"
+        ],
+        "evidenceKinds": [
+          "visual",
+          "ocr",
+          "role"
+        ],
+        "confidence": 0.8
+      },
+      "usageRules": "Use only with matching target material or honest gap/procedural fallback."
+    }
+  ]
+}

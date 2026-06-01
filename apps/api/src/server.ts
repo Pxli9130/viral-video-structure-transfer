@@ -7,10 +7,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   checkGeneratedMaterials,
+  attachModelRouteSummaryToAnalysis,
+  attachModelRouteSummaryToTemplate,
+  buildModelRouteSummaryForTasks,
   createMaterialGenerationBriefs,
+  extractTechniqueAtoms,
   buildFallbackTemplate,
   generateMigrationResult,
   getAigcMaterialProvider,
+  normalizeAigcMaterialProviderId,
   fileTimestamp,
   nowIso,
   parsePromptToBrief,
@@ -73,8 +78,9 @@ const ASSET_ROLES: AssetRole[] = [
   "render_output"
 ];
 const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_user_uploaded", "demo_only", "unknown"];
-const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "hyperframes"];
+const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "remotion_recipe", "hyperframes"];
 const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
+  "deterministic_local_image_fill",
   "mock_provider",
   "google_gemini_image",
   "local_folder_provider",
@@ -746,10 +752,19 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
   if (!analysisValidation.valid) {
     throw new HttpError(500, "VALIDATION_ERROR", "VideoAnalysisResult failed schema validation", analysisValidation.errors);
   }
+  const analysisRouteSummary = buildModelRouteSummaryForTasks([
+    "video_structure_vlm",
+    "asr",
+    "ocr",
+    "visual_grounding",
+    "audio_analysis",
+    "quality_judge"
+  ]);
+  analysis = attachModelRouteSummaryToAnalysis(analysis, analysisRouteSummary);
 
   let templateRecord: TemplateRecord | undefined;
   if (purpose === "sample") {
-    const template = await adapters.aiAdapter.extractStructure({
+    let template = await adapters.aiAdapter.extractStructure({
       analysis,
       projectId: project.id,
       vertical: project.vertical,
@@ -759,6 +774,11 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
     if (!templateValidation.valid) {
       throw new HttpError(500, "VALIDATION_ERROR", "StructureTemplate failed schema validation", templateValidation.errors);
     }
+    template = attachModelRouteSummaryToTemplate(
+      template,
+      analysisRouteSummary,
+      vlmResult ? "vlm" : analysis.evidenceTimeline ? "deterministic_evidence" : "fallback"
+    );
     templateRecord = {
       id: template.id,
       projectId: project.id,
@@ -883,7 +903,13 @@ function buildAssetResolver(db: Database, generation?: GenerationResult): AssetP
   return {
     resolve(assetId: string) {
       const targetAsset = targetAssetsById.get(assetId);
-      if (targetAsset) return resolveTargetAssetPath(targetAsset);
+      if (targetAsset) {
+        const resolved = resolveTargetAssetPath(targetAsset);
+        if (resolved) return resolved;
+        // A managed target asset carries path = asset://managed/<id>, which resolveTargetAssetPath
+        // cannot resolve; fall through to the managed-asset lookup (by id) below so HTTP-uploaded
+        // target material actually renders.
+      }
       const managedAsset = db.assets.find((asset) => asset.id === assetId);
       if (!managedAsset?.path) return undefined;
       if (managedAsset.role === "example_video" && generation?.request.constraints?.sampleAssetReuse !== "authorized") {
@@ -1338,6 +1364,124 @@ app.get(
   })
 );
 
+app.get(
+  "/api/projects/:projectId/evidence",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const projectId = String(req.params.projectId);
+    const analyses = db.analyses.filter((analysis) => analysis.projectId === projectId);
+    const templates = db.templates.filter((template) => template.projectId === projectId);
+    ok(res, {
+      projectId,
+      analyses: analyses.map((analysis) => {
+        const video = analysis.video;
+        const ev = video.evidenceTimeline;
+        return {
+          analysisId: analysis.id,
+          assetId: analysis.assetId,
+          purpose: analysis.purpose,
+          metadata: video.metadata,
+          counts: {
+            shots: ev?.shots?.length ?? video.shots?.length ?? 0,
+            visualElements: ev?.visualElementGraph?.elements?.length ?? 0,
+            typographyRuns: ev?.typographyEvidence?.length ?? 0,
+            motionAtoms: ev?.motionAtoms?.length ?? 0,
+            audioLayers: Object.keys((ev?.audioStructure?.estimatedLayers as Record<string, unknown> | undefined) ?? {}).length
+          },
+          evidenceTimeline: ev
+        };
+      }),
+      templates: templates.map((record) => ({
+        templateId: record.id,
+        sourceAssetId: record.sourceAssetId,
+        name: record.name,
+        videoType: record.template.videoType,
+        counts: {
+          visualElements: record.template.visualElementGraph?.elements?.length ?? 0,
+          typographyRuns: record.template.typographyEvidence?.length ?? 0,
+          motionAtoms: record.template.motionAtoms?.length ?? 0,
+          audioLayers: Object.keys((record.template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined) ?? {}).length
+        },
+        rhythm: record.template.rhythm,
+        visualElementGraph: record.template.visualElementGraph,
+        typographyEvidence: record.template.typographyEvidence,
+        motionAtoms: record.template.motionAtoms,
+        audioStructure: record.template.audioStructure
+      }))
+    });
+  })
+);
+
+app.get(
+  "/api/projects/:projectId/technique-atoms",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const projectId = String(req.params.projectId);
+    const templates = db.templates.filter((template) => template.projectId === projectId);
+    const atoms = templates.flatMap((record) =>
+      (record.template.techniqueAtoms?.length ? record.template.techniqueAtoms : extractTechniqueAtoms(record.template))
+        .map((atom) => ({ ...atom, templateId: record.id, templateName: record.name }))
+    );
+    ok(res, { projectId, count: atoms.length, atoms });
+  })
+);
+
+app.get(
+  "/api/transfer-plans/:generationId/gap-report",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const generation = assertFound(db.generations.find((item) => item.id === req.params.generationId), "Generation");
+    ok(res, {
+      generationId: generation.id,
+      projectId: generation.projectId,
+      gapReport: generation.timeline.gapReport ?? generation.gapReport,
+      fillPlan: generation.timeline.fillPlan ?? generation.fillPlan
+    });
+  })
+);
+
+app.get(
+  "/api/transfer-plans/:generationId/render-recipe",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const generation = assertFound(db.generations.find((item) => item.id === req.params.generationId), "Generation");
+    ok(res, {
+      generationId: generation.id,
+      projectId: generation.projectId,
+      renderRecipe: generation.timeline.renderPlan?.renderRecipe,
+      renderPlan: generation.timeline.renderPlan
+    });
+  })
+);
+
+app.get(
+  "/api/render-jobs/:renderId/report",
+  asyncRoute(async (req, res) => {
+    const db = await store.read();
+    const render = assertFound(db.renders.find((item) => item.renderId === req.params.renderId), "Render");
+    const generation = db.generations.find((item) => item.id === render.generationId);
+    ok(res, {
+      renderId: render.renderId,
+      generationId: render.generationId,
+      projectId: generation?.projectId,
+      render,
+      recipeSummary: generation?.timeline.renderPlan?.renderRecipe
+        ? {
+            version: generation.timeline.renderPlan.renderRecipe.version,
+            clips: generation.timeline.renderPlan.renderRecipe.clips.length,
+            layers: generation.timeline.renderPlan.renderRecipe.layers?.length ?? 0,
+            primitiveHistogram: generation.timeline.renderPlan.renderRecipe.clips.reduce<Record<string, number>>((acc, clip) => {
+              acc[clip.selectedPrimitive] = (acc[clip.selectedPrimitive] ?? 0) + 1;
+              return acc;
+            }, {})
+          }
+        : undefined,
+      gapReport: generation?.timeline.gapReport,
+      gates: render.renderQualityWarnings
+    });
+  })
+);
+
 interface RunGenerationOutcome {
   generation: GenerationResult;
   job: Job;
@@ -1346,9 +1490,10 @@ interface RunGenerationOutcome {
 }
 
 function aigcProviderForRequest(request: GenerationRequest): AigcMaterialProviderId {
-  if (request.controls?.allowExternalAigcProvider !== true) return "mock_provider";
+  if (request.controls?.allowExternalAigcProvider !== true) return "deterministic_local_image_fill";
   const requested = process.env.AIGC_IMAGE_PROVIDER as AigcMaterialProviderId | undefined;
-  return requested && AIGC_PROVIDER_IDS.has(requested) ? requested : "mock_provider";
+  if (requested && AIGC_PROVIDER_IDS.has(requested)) return normalizeAigcMaterialProviderId(requested).id;
+  return "deterministic_local_image_fill";
 }
 
 function sanitizeAigcProviderError(error: unknown): string {
@@ -1607,21 +1752,25 @@ function normalizeSubtitleText(text: string, language: "zh" | "en", allowBilingu
 }
 
 async function applySubtitleGeneration(generation: GenerationResult): Promise<GenerationResult> {
-  const mode = generation.request.controls?.subtitleGenerationMode ?? "prompt_only";
+  const ai = adapters.aiAdapter as SubtitleCapableAiAdapter;
+  const canLlm = Boolean(ai.available && ai.generateSubtitles);
+  // v1.3: when subtitles are not explicitly disabled and a real LLM provider is available, GENERATE
+  // product-relevant subtitles from the prompt via the configured provider (Gemini/Ark/OpenAI) — the
+  // deterministic planner copy is only a fallback. Default to "auto" so a generation never ships the
+  // generic planner fallback when a provider can write real copy. "prompt_only"/"off" opt out of LLM.
+  const mode = generation.request.controls?.subtitleGenerationMode ?? (canLlm ? "auto" : "prompt_only");
   const language = subtitleLanguageForPrompt(generation.request.prompt);
   const allowBilingual = promptAllowsBilingual(generation.request.prompt);
   let cues: SubtitleCue[] = [];
-  if (mode === "ark_doubao") {
-    const ai = adapters.aiAdapter as SubtitleCapableAiAdapter;
-    if (ai.available && ai.generateSubtitles) {
-      try {
-        cues = await ai.generateSubtitles({ generation, language });
-      } catch (error) {
-        generation = {
-          ...generation,
-          warnings: [...generation.warnings, `Ark Doubao subtitle generation failed: ${sanitizeAigcProviderError(error)}`]
-        };
-      }
+  const useLlm = canLlm && (mode === "auto" || mode === "llm" || mode === "ark_doubao");
+  if (useLlm) {
+    try {
+      cues = await ai.generateSubtitles!({ generation, language });
+    } catch (error) {
+      generation = {
+        ...generation,
+        warnings: [...generation.warnings, `LLM subtitle generation (${mode}) failed: ${sanitizeAigcProviderError(error)}`]
+      };
     }
   }
   const cueByClipId = new Map(cues.map((cue) => [cue.clipId, cue]));
@@ -2013,25 +2162,18 @@ interface VariantSpec {
 
 const VARIANT_PRESETS: VariantSpec[] = [
   {
-    label: "high_ctr",
+    label: "high_click",
     displayName: "高点击版",
     strategy: "更激进的 hook + 快节奏 + 强 CTA，前 3 秒抓注意力",
-    controls: { hookIntensity: "aggressive", pace: "fast", ctaStyle: "direct", packagingStyle: "mg_motion" },
+    controls: { hookIntensity: "aggressive", pace: "fast", ctaStyle: "direct", packagingStyle: "mg_motion", subtitleDensity: "dense" },
     promptAddendum: "请把最具吸引力的画面/卖点放在前 3 秒，并在结尾给出强 CTA。"
   },
   {
     label: "high_conversion",
     displayName: "高转化版",
     strategy: "商品特写多 + 利益点重复 + 直接 CTA",
-    controls: { hookIntensity: "strong", pace: "medium", ctaStyle: "direct", packagingStyle: "bold" },
+    controls: { hookIntensity: "strong", pace: "medium", ctaStyle: "direct", packagingStyle: "bold", ctaTiming: "early", subtitleDensity: "dense" },
     promptAddendum: "请优先展示商品的核心卖点和使用场景，结尾重复利益点和 CTA。"
-  },
-  {
-    label: "high_rhythm",
-    displayName: "高节奏版",
-    strategy: "短镜头 + 硬切转场 + 高密度字幕 + 紧凑结构",
-    controls: { hookIntensity: "strong", pace: "fast", packagingStyle: "mg_motion", ctaStyle: "direct" },
-    promptAddendum: "请保持高节奏：每个镜头 1.5 秒内，硬切转场，字幕密度高。"
   },
   {
     label: "high_quality",

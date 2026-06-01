@@ -7,7 +7,12 @@ import { HtmlPreviewRenderer } from "@vvst/renderer";
 import {
   nowIso,
   stableId,
+  type BBoxNormObject,
   type RenderClipPreviewFrame,
+  type RenderRecipeLayer,
+  type RenderRecipeMediaLayer,
+  type RenderRecipeMotionAtomLayer,
+  type RenderRecipeTextLayer,
   type RenderOutput,
   type RendererAdapter,
   type RendererBackend,
@@ -154,8 +159,98 @@ function ffmpegColor(hex: string | undefined, fallback: string): string {
   return `0x${hex.slice(1)}`;
 }
 
+const ROLE_HEX: Record<string, string> = {
+  black: "#05060a",
+  dark: "#05060a",
+  white: "#f5f5f5",
+  red: "#e11d2a",
+  yellow: "#f5c518",
+  amber: "#f5c518",
+  blue: "#22d3ee",
+  cyan: "#22d3ee",
+  teal: "#14b8a6",
+  purple: "#a855f7",
+  pink: "#f472b6",
+  orange: "#f97316",
+  green: "#22c55e"
+};
+
+type RenderPalette = {
+  bg: string;
+  primary: string;
+  accent: string;
+  secondary: string;
+  cool: string;
+  text: string;
+  muted: string;
+};
+
+function normalizeHexColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text;
+  const shortHex = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(text);
+  if (shortHex) return `#${shortHex[1]}${shortHex[1]}${shortHex[2]}${shortHex[2]}${shortHex[3]}${shortHex[3]}`;
+  if (/^0x[0-9a-f]{6}$/i.test(text)) return `#${text.slice(2)}`;
+  return ROLE_HEX[text] ?? undefined;
+}
+
+function paletteEntries(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(paletteEntries);
+  if (typeof value !== "string") return [];
+  const exact = normalizeHexColor(value);
+  if (exact) return [exact];
+  return value
+    .split(/[,/|+_\s-]+/)
+    .map((part) => normalizeHexColor(part))
+    .filter((color): color is string => Boolean(color));
+}
+
+function colorChannel(hex: string, offset: number): number {
+  return Number.parseInt(hex.slice(1 + offset, 3 + offset), 16);
+}
+
+function colorDistance(hex: string, target: [number, number, number]): number {
+  const dr = colorChannel(hex, 0) - target[0];
+  const dg = colorChannel(hex, 2) - target[1];
+  const db = colorChannel(hex, 4) - target[2];
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function luminance(hex: string): number {
+  return 0.2126 * colorChannel(hex, 0) + 0.7152 * colorChannel(hex, 2) + 0.0722 * colorChannel(hex, 4);
+}
+
+function pickClosest(colors: string[], target: [number, number, number], fallback: string): string {
+  return colors.length
+    ? colors.slice().sort((a, b) => colorDistance(a, target) - colorDistance(b, target))[0]
+    : fallback;
+}
+
+function timelinePalette(timeline: Timeline): RenderPalette {
+  const learned = paletteEntries(timeline.renderPlan?.renderRecipe?.global?.palette);
+  const renderBackground = normalizeHexColor(timeline.renderPlan?.background);
+  const defaults = ["#05060a", "#e11d2a", "#f5c518", "#f5f5f5", "#22d3ee", "#a855f7"];
+  const unique: string[] = [];
+  for (const color of [renderBackground, ...learned, ...defaults]) {
+    if (color && !unique.includes(color)) unique.push(color);
+  }
+  const text = unique.find((color) => luminance(color) > 185) ?? "#f5f5f5";
+  return {
+    bg: ffmpegColor(unique[0], "0x05060a"),
+    primary: ffmpegColor(unique[1], "0xe11d2a"),
+    accent: ffmpegColor(unique[2], "0xf5c518"),
+    secondary: ffmpegColor(unique[3], "0xa855f7"),
+    cool: ffmpegColor(pickClosest(unique, [34, 211, 238], "#22d3ee"), "0x22d3ee"),
+    text: ffmpegColor(text, "white"),
+    muted: ffmpegColor(unique[4], "0x334155")
+  };
+}
+
 function backgroundFor(clip: TimelineClip, timeline: Timeline): string {
-  const base = ffmpegColor(timeline.renderPlan?.background, "");
+  const palette = timelinePalette(timeline);
+  const base = palette.bg;
+  if (timeline.renderPlan?.renderRecipe?.global?.palette?.length) return base;
   const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
   if (base && (packagingStyle === "clean" || packagingStyle === "bold")) return base;
   switch (clip.role) {
@@ -192,6 +287,71 @@ function drawTextStyle(timeline: Timeline): DrawTextStyle {
 
 function drawTextFilter(text: string, style: DrawTextStyle, size: number, y: string): string {
   return `drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${style.fontColor}:fontsize=${size}:x=(w-text_w)/2:y=${y}:box=1:boxcolor=${style.boxColor}:boxborderw=18`;
+}
+
+function recipeLayersForClip(timeline: Timeline, clip: TimelineClip): RenderRecipeLayer[] {
+  return (timeline.renderPlan?.renderRecipe?.layers ?? []).filter((layer) =>
+    layer.clipId === clip.id ||
+    (layer.startSec < clip.startSec + clip.durationSec && layer.startSec + layer.durationSec > clip.startSec)
+  );
+}
+
+function recipeTextLayerForClip(timeline: Timeline, clip: TimelineClip): RenderRecipeTextLayer | undefined {
+  return recipeLayersForClip(timeline, clip)
+    .filter((layer): layer is RenderRecipeTextLayer => layer.type === "text")
+    .sort((a, b) => b.zIndex - a.zIndex)[0];
+}
+
+function recipeMediaLayerForClip(timeline: Timeline, clip: TimelineClip): RenderRecipeMediaLayer | undefined {
+  return recipeLayersForClip(timeline, clip)
+    .filter((layer): layer is RenderRecipeMediaLayer => layer.type === "media")
+    .sort((a, b) => b.zIndex - a.zIndex)[0];
+}
+
+function bboxObjectToArray(box: BBoxNormObject | undefined): [number, number, number, number] | undefined {
+  return box ? [box.x, box.y, box.w, box.h] : undefined;
+}
+
+function recipeDrawTextFilter(text: string, layer: RenderRecipeTextLayer | undefined, fallbackStyle: DrawTextStyle, W: number, H: number): string | undefined {
+  if (!text) return undefined;
+  const box = layer?.layout.bboxNorm;
+  if (!box) return drawTextFilter(text, fallbackStyle, fallbackStyle.sourceFontSize, "h-(text_h*2)");
+  const size = Math.max(18, Math.min(96, Math.round(H * (layer.typography.fontSizeRatio ?? Math.min(0.11, box.h * 0.72)))));
+  const color = ffmpegColor(layer.typography.color, layer.typography.colorRole === "accent" ? "0xf5c518" : layer.typography.colorRole === "primary" ? "0xe11d2a" : fallbackStyle.fontColor);
+  const left = Math.round(W * box.x);
+  const top = Math.round(H * box.y);
+  const boxW = Math.max(24, Math.round(W * box.w));
+  const alignExpr = layer.layout.align === "left"
+    ? `${left}`
+    : layer.layout.align === "right"
+      ? `${left}+${boxW}-text_w`
+      : `${left}+(${boxW}-text_w)/2`;
+  const yExpr = `${top}+(${Math.max(24, Math.round(H * box.h))}-text_h)/2`;
+  const shadow = layer.typography.shadow ? `:shadowcolor=${layer.typography.shadow.color ?? "black@0.75"}:shadowx=${Math.round(W * (layer.typography.shadow.dxRatio ?? 0.004))}:shadowy=${Math.round(H * (layer.typography.shadow.dyRatio ?? 0.004))}` : "";
+  return `drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${color}:fontsize=${size}:x=${alignExpr}:y=${yExpr}:box=1:boxcolor=${fallbackStyle.boxColor}:boxborderw=12${shadow}`;
+}
+
+function motionAtomFiltersFromRecipe(timeline: Timeline, clip: TimelineClip, W: number, H: number, palette: RenderPalette): string[] {
+  const atoms = recipeLayersForClip(timeline, clip)
+    .filter((layer): layer is RenderRecipeMotionAtomLayer => layer.type === "motion_atom");
+  const filters: string[] = [];
+  for (const layer of atoms) {
+    const localStart = Math.max(0, layer.startSec - clip.startSec);
+    const localEnd = Math.min(clip.durationSec, layer.startSec + layer.durationSec - clip.startSec);
+    if (localEnd <= 0 || localStart >= clip.durationSec) continue;
+    const enable = `between(t\\,${localStart.toFixed(3)}\\,${localEnd.toFixed(3)})`;
+    if (layer.atom.kind === "parametric_ribbon_surface") {
+      const band = Math.max(10, Math.round(W * layer.atom.thicknessRatio));
+      const opacity = Math.max(0.12, Math.min(0.82, layer.atom.opacity));
+      filters.push(`drawbox=x='mod(t*${Math.round(W * 0.42)}\\,iw+${Math.round(W * 0.45)})-${Math.round(W * 0.22)}':y='${Math.round(H * 0.42)}+${Math.round(H * 0.08)}*sin(t*3.1)':w=${Math.round(W * 0.62)}:h=${band}:color=${palette.cool}@${opacity.toFixed(2)}:t=fill:enable='${enable}'`);
+      filters.push(`drawbox=x='mod(t*${Math.round(W * 0.42)}\\,iw+${Math.round(W * 0.45)})-${Math.round(W * 0.18)}':y='${Math.round(H * 0.42)}+${Math.round(H * 0.08)}*sin(t*3.1)+${Math.round(band * 0.42)}':w=${Math.round(W * 0.48)}:h=${Math.max(3, Math.round(band * 0.16))}:color=white@0.35:t=fill:enable='${enable}'`);
+    } else if (layer.atom.kind === "impact_flash") {
+      filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.34:t=fill:enable='${enable}*lt(mod(t\\,0.32)\\,0.08)'`);
+    } else if (layer.atom.kind === "light_sweep" || layer.atom.kind === "text_sweep_mask") {
+      filters.push(`drawbox=x='mod(t*${Math.round(W * 0.75)}\\,iw+${Math.round(W * 0.35)})-${Math.round(W * 0.18)}':y=0:w=${Math.round(W * 0.18)}:h=ih:color=white@0.24:t=fill:enable='${enable}'`);
+    }
+  }
+  return filters;
 }
 
 function styleValueFromClip(clip: TimelineClip, key: string): unknown {
@@ -237,28 +397,23 @@ function clipUsesAigcGeneratedMaterial(clip: TimelineClip): boolean {
   );
 }
 
-function mgMotionDecorationFilters(timeline: Timeline, width: number, height: number): string[] {
+function mgMotionDecorationFilters(timeline: Timeline, width: number, height: number, palette: RenderPalette): string[] {
   const packagingStyle = String(timeline.renderPlan?.adapterOptions?.packagingStyle ?? "");
   if (packagingStyle !== "mg_motion") return [];
   const top = Math.round(height * 0.15);
   const mid = Math.round(height * 0.72);
   const lower = Math.round(height * 0.82);
-  const keywordStyle: DrawTextStyle = {
-    fontColor: "0x38bdf8",
-    boxColor: "black@0.0",
-    sourceFontSize: 28,
-    cardFontSize: 28
-  };
+  // v1.3: never burn engine/debug keywords ("STRUCTURE / REMIX / TIMELINE / AIGC") onto a product
+  // ad frame — keep only subtle MG accent bands (their colors are palette-driven elsewhere).
   return [
-    `drawbox=x=0:y=${top}:w=${width}:h=26:color=0x38bdf8@0.22:t=fill`,
-    `drawbox=x=0:y=${top + 34}:w=${width}:h=18:color=0xa855f7@0.24:t=fill`,
-    `drawbox=x=0:y=${mid}:w=${width}:h=22:color=0xf97316@0.25:t=fill`,
-    `drawbox=x=0:y=${lower}:w=${width}:h=16:color=0x22c55e@0.24:t=fill`,
-    drawTextFilter("STRUCTURE / REMIX / TIMELINE / AIGC", keywordStyle, 28, String(top + 58))
+    `drawbox=x=0:y=${top}:w=${width}:h=26:color=${palette.cool}@0.22:t=fill`,
+    `drawbox=x=0:y=${top + 34}:w=${width}:h=18:color=${palette.secondary}@0.24:t=fill`,
+    `drawbox=x=0:y=${mid}:w=${width}:h=22:color=${palette.accent}@0.25:t=fill`,
+    `drawbox=x=0:y=${lower}:w=${width}:h=16:color=${palette.primary}@0.24:t=fill`
   ];
 }
 
-function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: number, style: DrawTextStyle): string[] {
+function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: number, style: DrawTextStyle, palette: RenderPalette): string[] {
   const proxyLayer = clip.layers.find((layer) => layer.style?.fillStrategy === "proxy_placeholder");
   const visualForm = String(proxyLayer?.style?.visualForm ?? "");
   const visualFormFamily = String(proxyLayer?.style?.visualFormFamily ?? clip.visualFormFamily ?? "");
@@ -312,7 +467,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     visualForm === "action_montage_sequence" ||
     visualForm === "match_cut_sequence" ||
     /montage|match|action|beat/i.test(rawLabel);
-  const proxyColor = ffmpegColor(placeholder.color, "0xE53935");
+  const proxyColor = ffmpegColor(normalizeHexColor(placeholder.color), palette.primary);
   const size = Math.round(Math.min(width, height) * 0.34);
   const x = Math.round((width - size) / 2);
   const y = Math.round(height * 0.27);
@@ -328,7 +483,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     return [
       `drawbox=x='${cx - Math.round(cardW * 0.72)}-${spread}':y=${startY + 74}:w=${cardW}:h=${cardH}:color=0x111827@0.86:t=fill`,
       `drawbox=x='${cx - Math.round(cardW * 0.5)}':y=${startY + 24}:w=${cardW}:h=${cardH}:color=${proxyColor}@0.86:t=fill`,
-      `drawbox=x='${cx - Math.round(cardW * 0.25)}+${spread}':y=${startY + 120}:w=${cardW}:h=${cardH}:color=0x38bdf8@0.78:t=fill`,
+      `drawbox=x='${cx - Math.round(cardW * 0.25)}+${spread}':y=${startY + 120}:w=${cardW}:h=${cardH}:color=${palette.cool}@0.78:t=fill`,
       `drawbox=x=${cx - Math.round(cardW * 0.5)}:y=${startY + 24}:w=${cardW}:h=10:color=white@0.72:t=fill`,
       `drawbox=x=${cx - Math.round(cardW * 0.38)}:y=${startY + 82}:w=${Math.round(cardW * 0.62)}:h=8:color=white@0.42:t=fill`,
       drawTextFilter(escapeDrawText("媒体卡片"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
@@ -343,7 +498,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     const panelY = Math.round(height * 0.22);
     return [
       `drawbox=x=${panelX}:y=${panelY}:w=${panelW}:h=${panelH}:color=0x0f172a@0.88:t=fill`,
-      `drawbox=x=${panelX}:y=${panelY}:w=${panelW}:h=${panelH}:color=0x14b8a6@0.82:t=5`,
+      `drawbox=x=${panelX}:y=${panelY}:w=${panelW}:h=${panelH}:color=${palette.cool}@0.82:t=5`,
       ...Array.from({ length: 5 }).flatMap((_, index) => {
         const rowY = panelY + 52 + index * 72;
         const feature = featureList[index];
@@ -351,16 +506,16 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
           `drawbox=x=${panelX + 38}:y=${rowY}:w=${panelW - 76}:h=42:color=white@0.1:t=fill`,
           feature
             ? `drawtext=${FONT_FILE_ARG}text='${escapeDrawText(feature)}':fontcolor=0xf8fafc:fontsize=23:x=${panelX + 66}:y=${rowY + 8}:box=0`
-            : `drawbox=x=${panelX + 52}:y=${rowY + 12}:w='${Math.round(panelW * (0.34 + index * 0.06))}+${Math.round(panelW * 0.08)}*gt(sin(2*PI*t*0.8+${index}),0)':h=12:color=0x14b8a6@0.74:t=fill`
+            : `drawbox=x=${panelX + 52}:y=${rowY + 12}:w='${Math.round(panelW * (0.34 + index * 0.06))}+${Math.round(panelW * 0.08)}*gt(sin(2*PI*t*0.8+${index}),0)':h=12:color=${palette.cool}@0.74:t=fill`
         ];
       }),
-      drawTextFilter(escapeDrawText(featureList.length ? "功能清单" : "功能展示"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
 
   if (isKinetic) {
-    const kineticLabel = escapeDrawText(targetCopy ?? brandName ?? cleanLabel);
+    // Use the clip's REAL product subtitle/copy as the kinetic headline (not the family label).
+    const kineticLabel = escapeDrawText(displayText);
     const bandY = Math.round(height * 0.32);
     const bandH = Math.round(height * 0.3);
     const barW = Math.round(width * 0.52);
@@ -369,10 +524,9 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     const scale = "1+0.16*sin(2*PI*t*1.6)";
     return [
       `drawbox=x=0:y=${bandY}:w=${width}:h=${bandH}:color=0x111827@0.5:t=fill`,
-      `drawbox=x='${barX}':y=${midY - 64}:w='${barW}*${scale}':h=12:color=0xf472b6@0.88:t=fill`,
-      `drawbox=x='${barX}':y=${midY + 70}:w='${barW}*${scale}':h=12:color=0x38bdf8@0.88:t=fill`,
+      `drawbox=x='${barX}':y=${midY - 64}:w='${barW}*${scale}':h=12:color=${palette.secondary}@0.88:t=fill`,
+      `drawbox=x='${barX}':y=${midY + 70}:w='${barW}*${scale}':h=12:color=${palette.cool}@0.88:t=fill`,
       `drawbox=x='mod(t*${Math.round(width * 1.1)},iw)':y=${bandY}:w=26:h=${bandH}:color=white@0.1:t=fill`,
-      drawTextFilter(escapeDrawText("动态文字"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, midY - 150))),
       drawTextFilter(kineticLabel, { ...style, boxColor: "black@0.0", fontColor: "0xf8fafc" }, 52, String(midY - 30))
     ];
   }
@@ -382,11 +536,10 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     const gx = Math.round((width - box) / 2);
     const gy = Math.round(height * 0.24);
     return [
-      `drawbox=x=${gx}:y=${gy}:w=${box}:h=${box}:color=0xa855f7@0.18:t=8`,
-      `drawbox=x='${gx}+${Math.round(box * 0.16)}*sin(2*PI*t*0.8)':y=${gy + Math.round(box * 0.14)}:w=${Math.round(box * 0.68)}:h=8:color=0x22d3ee@0.88:t=fill`,
-      `drawbox=x=${gx + Math.round(box * 0.1)}:y='${gy}+${Math.round(box * 0.16)}*cos(2*PI*t*0.8)':w=8:h=${Math.round(box * 0.78)}:color=0xf97316@0.72:t=fill`,
+      `drawbox=x=${gx}:y=${gy}:w=${box}:h=${box}:color=${palette.secondary}@0.18:t=8`,
+      `drawbox=x='${gx}+${Math.round(box * 0.16)}*sin(2*PI*t*0.8)':y=${gy + Math.round(box * 0.14)}:w=${Math.round(box * 0.68)}:h=8:color=${palette.cool}@0.88:t=fill`,
+      `drawbox=x=${gx + Math.round(box * 0.1)}:y='${gy}+${Math.round(box * 0.16)}*cos(2*PI*t*0.8)':w=8:h=${Math.round(box * 0.78)}:color=${palette.accent}@0.72:t=fill`,
       `drawbox=x=${gx + Math.round(box * 0.24)}:y=${gy + Math.round(box * 0.24)}:w=${Math.round(box * 0.52)}:h=${Math.round(box * 0.52)}:color=0xffffff@0.08:t=fill`,
-      drawTextFilter(escapeDrawText("霓虹几何"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
@@ -400,7 +553,6 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x=${lx}:y=${ly}:w=${logo}:h=${logo}:color=${proxyColor}@0.8:t=8`,
       `drawbox=x=${lx + Math.round(logo * 0.22)}:y=${ly + Math.round(logo * 0.44)}:w=${Math.round(logo * 0.56)}:h=${Math.round(logo * 0.13)}:color=${proxyColor}@0.9:t=fill`,
       `drawbox=x=${Math.round(width * 0.2)}:y=${ly + logo + 78}:w=${Math.round(width * 0.6)}:h=48:color=${proxyColor}@0.72:t=fill`,
-      drawTextFilter(escapeDrawText("品牌 CTA"), { ...style, boxColor: "black@0.58", fontColor: "white" }, 30, String(Math.max(24, y - 82))),
       drawTextFilter(escapeDrawText(brandName ?? cleanLabel), { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY)),
       ...(cta ? [drawTextFilter(escapeDrawText(cta), { ...style, boxColor: "black@0.42", fontColor: "white" }, 28, String(badgeY + 78))] : [])
     ];
@@ -418,7 +570,7 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
       `drawbox=x=(iw-${size})/2+${Math.round(size * 0.17)}:y=${visorY}:w=${Math.round(size * 0.66)}:h=${Math.round(size * 0.16)}:color=black@0.42:t=fill`,
       `drawbox=x=${shineX}:y=${y + Math.round(size * 0.12)}:w=${Math.round(size * 0.12)}:h=${Math.round(size * 0.58)}:color=white@0.32:t=fill`,
       `drawbox=x=0:y=${Math.round(height * 0.12)}:w='${Math.round(width * 0.36)}+${Math.round(width * 0.18)}*sin(2*PI*t*2)':h=8:color=${proxyColor}@0.52:t=fill`,
-      `drawbox=x=iw-${Math.round(width * 0.46)}:y=${Math.round(height * 0.82)}:w='${Math.round(width * 0.32)}+${Math.round(width * 0.14)}*cos(2*PI*t*2)':h=10:color=0x38bdf8@0.46:t=fill`,
+      `drawbox=x=iw-${Math.round(width * 0.46)}:y=${Math.round(height * 0.82)}:w='${Math.round(width * 0.32)}+${Math.round(width * 0.14)}*cos(2*PI*t*2)':h=10:color=${palette.cool}@0.46:t=fill`,
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
     ];
   }
@@ -432,9 +584,9 @@ function proxyPlaceholderFilters(clip: TimelineClip, width: number, height: numb
     return [
       `drawbox=x=${cardX}:y=${cardY}:w=${cardW}:h=${cardH}:color=${proxyColor}@0.78:t=fill`,
       `drawbox=x=${cardX - 20}:y=${cardY + cardH + 28}:w=${Math.round(cardW * 0.7)}:h=${cardH}:color=0x111827@0.82:t=fill`,
-      `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w=${Math.round(cardW * 0.62)}:h=${cardH}:color=0xf97316@0.72:t=fill`,
+      `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w=${Math.round(cardW * 0.62)}:h=${cardH}:color=${palette.accent}@0.72:t=fill`,
       `drawbox=x=${cardX}:y=${cardY}:w='${cardW}*${pulse}':h=8:color=white@0.72:t=fill`,
-      `drawbox=x=${cardX}:y=${cardY + cardH + 28}:w='${Math.round(cardW * 0.7)}*${pulse}':h=8:color=0x38bdf8@0.78:t=fill`,
+      `drawbox=x=${cardX}:y=${cardY + cardH + 28}:w='${Math.round(cardW * 0.7)}*${pulse}':h=8:color=${palette.cool}@0.78:t=fill`,
       `drawbox=x=${cardX + Math.round(cardW * 0.26)}:y=${cardY + Math.round(cardH * 2.25)}:w='${Math.round(cardW * 0.62)}*${pulse}':h=8:color=white@0.78:t=fill`,
       `drawbox=x='mod(t*${Math.round(width * 1.8)},iw)':y=${Math.round(height * 0.2)}:w=34:h=${Math.round(height * 0.66)}:color=white@0.14:t=fill`,
       drawTextFilter(label, { ...style, boxColor: "black@0.66", fontColor: "white" }, 34, String(badgeY))
@@ -455,6 +607,157 @@ export interface FFmpegRendererOptions {
   preferSourceClips?: boolean;
   /** User-facing output file basename ("theme_sampleName_timestamp", already sanitized). renderId stays the internal key. */
   outputBasename?: string;
+}
+
+// ---- beat-cut visual-grammar helpers (shared by the generic primitive + the hero intro) ----
+
+/** A strong moving streak field — the motion bed every beat-cut clip rides so even text clips are
+ * not static. `energy` scales count/alpha (montage/hero use the strongest field). */
+function streakBedFilters(W: number, energy: "calm" | "strong" | "montage", palette: RenderPalette): string[] {
+  const out: string[] = [];
+  const cfg = energy === "montage" ? { n: 9, w: 0.08, a: 0.6, warm: true } : energy === "strong" ? { n: 8, w: 0.06, a: 0.5, warm: false } : { n: 7, w: 0.05, a: 0.42, warm: false };
+  const barW = Math.max(6, Math.round(W * cfg.w));
+  for (let i = 0; i < cfg.n; i += 1) {
+    const speed = Math.round(W * (0.5 + i * 0.32));
+    const off = Math.round((i * (W + barW)) / cfg.n);
+    const color = cfg.warm && i % 3 === 0 ? palette.accent : i % 2 ? palette.secondary : palette.cool;
+    out.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${barW})-${barW}':y=0:w=${barW}:h=ih:color=${color}@${cfg.a}:t=fill`);
+  }
+  return out;
+}
+
+/** Animated bottom beat-EQ bars (yellow/orange/red) — red/yellow pixels + per-frame motion. */
+function beatEqFilters(W: number, H: number, beatHz: string, palette: RenderPalette, tall = false): string[] {
+  const out: string[] = [];
+  const eqN = 13;
+  const eqBand = Math.round(H * (tall ? 0.1 : 0.075));
+  const eqGap = Math.round(W / eqN);
+  const eqBarW = Math.max(4, Math.round(eqGap * 0.55));
+  for (let i = 0; i < eqN; i += 1) {
+    const x = i * eqGap + Math.round((eqGap - eqBarW) / 2);
+    const phase = (i * 0.7).toFixed(2);
+    const hExpr = `(0.18+0.82*abs(sin(2*PI*${beatHz}*t+${phase})))`;
+    const color = i % 4 === 0 ? palette.primary : palette.accent;
+    out.push(`drawbox=x=${x}:y='ih-${eqBand}*${hExpr}':w=${eqBarW}:h='${eqBand}*${hExpr}':color=${color}@0.9:t=fill`);
+  }
+  return out;
+}
+
+type TextLayout = {
+  yFrac: number;
+  xFrac?: number;
+  colorHex: string;
+  pulseHex: string;
+  anim: "per_char_reveal" | "shake" | "scale";
+  fontScale: number;
+};
+
+/** Read a typography hint (layoutRole/colorRole/animation) the planner attached to a text layer. */
+function typographyForClip(clip: TimelineClip): { layoutRole?: string; colorRole?: string; animationHint?: string; bboxNorm?: [number, number, number, number] } | undefined {
+  for (const layer of clip.layers ?? []) {
+    const t = (layer.style as Record<string, unknown> | undefined)?.typography as Record<string, unknown> | undefined;
+    const bbox = Array.isArray(t?.bboxNorm) && t.bboxNorm.length === 4 && t.bboxNorm.every((v) => typeof v === "number" && Number.isFinite(v))
+      ? t.bboxNorm as [number, number, number, number]
+      : undefined;
+    if (t && (t.layoutRole || t.colorRole || t.animationHint || bbox)) {
+      return { layoutRole: t.layoutRole as string, colorRole: t.colorRole as string, animationHint: t.animationHint as string, bboxNorm: bbox };
+    }
+  }
+  return undefined;
+}
+
+/** Per-clip text placement/animation so copy is NOT always centered: position, colour and animation
+ * vary by primitive, and are enriched by sample typography evidence when present. */
+function textLayoutForClip(clip: TimelineClip, primitive: string, palette: RenderPalette): TextLayout {
+  const roleColor: Record<string, string> = {
+    red: palette.primary,
+    yellow: palette.accent,
+    amber: palette.accent,
+    white: palette.text,
+    blue: palette.cool,
+    cyan: palette.cool,
+    teal: palette.cool,
+    purple: palette.secondary,
+    pink: palette.secondary,
+    green: palette.secondary,
+    orange: palette.accent
+  };
+  const byPrimitive: Record<string, TextLayout> = {
+    neon_hero_intro: { yFrac: 0.74, colorHex: palette.text, pulseHex: palette.primary, anim: "per_char_reveal", fontScale: 1.0 },
+    beat_text_card: { yFrac: 0.44, colorHex: palette.text, pulseHex: palette.primary, anim: "per_char_reveal", fontScale: 1.0 },
+    tutorial_rule_card: { yFrac: 0.47, colorHex: palette.accent, pulseHex: palette.primary, anim: "scale", fontScale: 0.92 },
+    action_montage: { yFrac: 0.77, colorHex: palette.text, pulseHex: palette.primary, anim: "shake", fontScale: 0.86 },
+    impact_flash_stamp: { yFrac: 0.43, colorHex: palette.primary, pulseHex: palette.accent, anim: "shake", fontScale: 1.06 },
+    motivation_cta: { yFrac: 0.42, colorHex: palette.text, pulseHex: palette.primary, anim: "per_char_reveal", fontScale: 1.06 }
+  };
+  const base = { ...(byPrimitive[primitive] ?? { yFrac: 0.46, colorHex: palette.text, pulseHex: palette.primary, anim: "scale" as const, fontScale: 1.0 }) };
+  const typ = typographyForClip(clip);
+  if (typ) {
+    // only a non-white sample colour overrides the role default (keep the yellow/red variety)
+    if (typ.colorRole && typ.colorRole !== "white" && roleColor[typ.colorRole]) base.colorHex = roleColor[typ.colorRole];
+    if (typ.layoutRole === "lower_third") base.yFrac = 0.77;
+    else if (typ.layoutRole === "top_tag" || typ.layoutRole === "top_left_tag") base.yFrac = 0.27;
+    else if (typ.layoutRole === "center_title") base.yFrac = 0.44;
+    if (typ.animationHint === "per_char_reveal" || typ.animationHint === "shake") base.anim = typ.animationHint as TextLayout["anim"];
+    if (typ.bboxNorm) {
+      const [x, y, w, h] = typ.bboxNorm;
+      base.xFrac = Math.max(0.08, Math.min(0.92, x + w / 2));
+      base.yFrac = Math.max(0.12, Math.min(0.84, y + h / 2));
+    }
+  }
+  return base;
+}
+
+/** Build drawtext filters for a headline with the clip's layout + animation (per-char reveal, shake,
+ * or beat-scale), in the learned red/yellow/white palette. `rawText` must be the UN-escaped copy. */
+function beatCutTextFilters(rawText: string, layout: TextLayout, W: number, H: number, beatInterval: string, duration: number): string[] {
+  const text = (rawText ?? "").trim();
+  if (!text) return [];
+  const out: string[] = [];
+  const chars = Array.from(text);
+  const n = chars.length || 1;
+  const widthFit = Math.floor((W * 0.9) / n);
+  const fontSize = Math.max(Math.round(H * 0.034), Math.min(Math.round(H * 0.072 * layout.fontScale), widthFit));
+  const yBase = Math.round(H * layout.yFrac);
+  const xFrac = layout.xFrac ?? 0.5;
+  if (layout.anim === "per_char_reveal" && n <= 12) {
+    // lay chars out horizontally and reveal each in turn over the first ~55% of the clip
+    const charW = fontSize;
+    const textW = n * charW;
+    const x0 = Math.max(18, Math.min(W - textW - 18, Math.round(W * xFrac - textW / 2)));
+    const step = Math.max(0.05, (duration * 0.55) / n);
+    chars.forEach((ch, i) => {
+      const reveal = (i * step).toFixed(3);
+      out.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(ch)}':fontcolor=${layout.colorHex}:fontsize=${fontSize}:x=${x0 + i * charW}:y=${yBase}:box=0:shadowcolor=black@0.7:shadowx=3:shadowy=3:enable='gte(t\\,${reveal})'`);
+    });
+    return out;
+  }
+  const xAnchor = Math.round(W * xFrac);
+  const xExpr = layout.anim === "shake" ? `${xAnchor}-text_w/2+6*sin(2*PI*t*9)` : `${xAnchor}-text_w/2`;
+  const yExpr = layout.anim === "shake" ? `${yBase}+5*cos(2*PI*t*7)` : String(yBase);
+  // red beat-pulse shadow under the headline
+  out.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(text)}':fontcolor=${layout.pulseHex}@0.7:fontsize=${Math.round(fontSize * 1.12)}:x=${xExpr}:y=(${yExpr})-6:box=0:enable='lt(mod(t\\,${beatInterval})\\,0.12)'`);
+  out.push(`drawtext=${FONT_FILE_ARG}text='${escapeDrawText(text)}':fontcolor=${layout.colorHex}:fontsize=${fontSize}:x=${xExpr}:y=${yExpr}:box=1:boxcolor=black@0.42:boxborderw=20`);
+  return out;
+}
+
+/** Hero palette from the descriptor the planner attached to the moving_material layer. */
+function heroPaletteForClip(clip: TimelineClip): string[] {
+  for (const layer of clip.layers ?? []) {
+    const d = (layer.style as Record<string, unknown> | undefined)?.heroDescriptor as Record<string, unknown> | undefined;
+    if (d && Array.isArray(d.palette) && d.palette.length) return (d.palette as string[]);
+  }
+  return ["black", "red", "blue"];
+}
+
+/** The located hero element (VisualElementGraph) the planner attached to the moving_material layer:
+ * the renderer positions the silhouette by its positionClass + trajectory (actual graph consumption). */
+function heroElementForClip(clip: TimelineClip): { positionClass?: string; centerTrajectory?: Array<[number, number]> } | undefined {
+  for (const layer of clip.layers ?? []) {
+    const e = (layer.style as Record<string, unknown> | undefined)?.heroElement as { positionClass?: string; centerTrajectory?: Array<[number, number]> } | undefined;
+    if (e && (e.positionClass || e.centerTrajectory)) return e;
+  }
+  return undefined;
 }
 
 export class FFmpegRenderer implements RendererAdapter {
@@ -480,6 +783,7 @@ export class FFmpegRenderer implements RendererAdapter {
     let sourceClipCount = 0;
     let primitiveClipCount = 0;
     let placeholderClipCount = 0;
+    const recipeMotionAtomLayerCount = (timeline.renderPlan?.renderRecipe?.layers ?? []).filter((layer) => layer.type === "motion_atom").length;
 
     for (let index = 0; index < timeline.clips.length; index += 1) {
       const clip = timeline.clips[index];
@@ -517,11 +821,23 @@ export class FFmpegRenderer implements RendererAdapter {
     }
 
     // Quality signals for the gate / UI.
-    const isBeatCut = timeline.renderPlan?.beatGrid?.status === "ok" || timeline.renderPlan?.audioPolicy === "synth_beat" || timeline.renderPlan?.audioPolicy === "sample_bgm";
+    const isBeatCut = timeline.renderPlan?.renderRecipe?.videoType === "beat_cut_product" || timeline.clips.some((clip) => Boolean(clip.motionPrimitive));
     if (placeholderClipCount > 0) renderQualityWarnings.push("placeholder_detected");
     if (isBeatCut && sourceClipCount === 0) renderQualityWarnings.push("no_source_clips");
     if (isBeatCut && primitiveClipCount + sourceClipCount < Math.ceil(timeline.clips.length * 0.6)) {
       renderQualityWarnings.push("weak_style_transfer");
+    }
+    // v2 honesty signals: the montage/hero used a dynamic procedural proxy (no real moving footage);
+    // a non-sample-BGM beat-cut output rides a synthesized beat track (beat alignment is engine-set,
+    // not analyzed from real audio).
+    if (isBeatCut) {
+      const hasMovingVideo = timeline.clips.some((clip) =>
+        clip.layers?.some((layer) => layer.kind === "moving_video" && Boolean(layer.assetId)));
+      if (sourceClipCount === 0 && !hasMovingVideo) renderQualityWarnings.push("moving_material_missing");
+      if (timeline.clips.some((clip) => clip.motionPrimitive === "action_montage") && sourceClipCount === 0 && !hasMovingVideo) {
+        renderQualityWarnings.push("static_action_montage_avoided_via_dynamic_proxy");
+      }
+      if (timeline.renderPlan?.audioPolicy === "synth_beat") renderQualityWarnings.push("beat_alignment_unverified");
     }
 
     const clipPreviewFrames = await this.extractClipPreviewFrames(timeline.clips, segmentFiles, renderId, warnings);
@@ -529,6 +845,7 @@ export class FFmpegRenderer implements RendererAdapter {
     console.log(
       `[ffmpeg] ✓ ${path.basename(outputPath)} (${((Date.now() - renderStartedAt) / 1000).toFixed(1)}s) · ` +
         `source=${sourceClipCount} primitive=${primitiveClipCount} placeholder=${placeholderClipCount}` +
+        `${recipeMotionAtomLayerCount ? ` motionAtomLayers=${recipeMotionAtomLayerCount} fallback=2d_overlay` : ""}` +
         `${renderQualityWarnings.length ? ` · warnings=[${renderQualityWarnings.join(",")}]` : ""}`
     );
     return {
@@ -576,15 +893,69 @@ export class FFmpegRenderer implements RendererAdapter {
         }
         warnings.push(`Audio policy sample_bgm but audioRef ${audioRef ?? "n/a"} did not resolve; falling back to synth beat.`);
       }
-      // synth_beat (and sample_bgm fallback): generate a beat-aligned click track.
-      const bpm = timeline.renderPlan?.beatGrid?.bpm ?? 120;
-      const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
-      // Decaying click every beat + a softer low kick — audible beat grid, no copyrighted audio.
-      const click = `aevalsrc='0.45*sin(2*PI*1180*t)*exp(-16*mod(t\\,${beatInterval}))+0.35*sin(2*PI*220*t)*exp(-9*mod(t\\,${beatInterval}))':s=44100:d=${dur}`;
+      // synth_beat (and sample_bgm fallback): a layered PROCEDURAL beat track at the timeline BPM —
+      // dark ambient drone (harmonic pad) + kick + bass pulse + hi-hat + pink-noise air. Far richer
+      // than a bare click (higher spectral centroid + chroma variety), still 100% generated (no
+      // copyrighted/sample audio). The drone+hat raise the centroid; the noise adds air/flatness.
+      const bpm = timeline.renderPlan?.audioPlan?.bpm ?? timeline.renderPlan?.beatGrid?.bpm ?? 120;
+      const bi = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+      const half = (Number(bi) / 2).toFixed(4);
+      const sr = "s=44100";
+      // v3: mix the layers by the sample's learned audio-structure balance (bass_kick / music_harmonic
+      // / hats_air) — a bass-heavy sample gets a heavier kick/bass, etc. — not just a fixed click.
+      const recipeAudioLayers = Object.fromEntries(
+        (timeline.renderPlan?.renderRecipe?.layers ?? [])
+          .filter((layer) => layer.type === "audio")
+          .map((layer) => [layer.audio.kind === "hat" ? "hats" : layer.audio.kind, layer.audio.weight])
+      ) as Record<string, number>;
+      const timelineAudioLayers = (timeline.renderPlan?.audioPlan?.layers ?? {}) as Record<string, number>;
+      const layers = Object.keys(timelineAudioLayers).length ? timelineAudioLayers : recipeAudioLayers;
+      const layer = (keys: string[], fallback: number): number => {
+        for (const key of keys) {
+          const value = layers[key];
+          if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.min(1, value));
+        }
+        return fallback;
+      };
+      const motionDriven = timeline.clips.some((clip) => Boolean(clip.motionPrimitive));
+      const spectralCentroid = timeline.renderPlan?.audioPlan?.spectralCentroidMean;
+      const spectralFlatness = timeline.renderPlan?.audioPlan?.spectralFlatnessMean;
+      const airBoost =
+        (typeof spectralCentroid === "number" && spectralCentroid > 2000 ? 0.28 : 0) +
+        (typeof spectralFlatness === "number" && spectralFlatness > 0.35 ? 0.22 : 0);
+      const gBass = 0.55 + layer(["bass", "kick", "bass_kick"], 0.5) * (motionDriven ? 0.95 : 0.55);
+      const gMusic = 0.7 + layer(["drone", "music_harmonic"], 0.45) * 2.2;
+      const gAir = 0.45 + layer(["hats", "hats_air"], 0.2) * 2.6 + airBoost;
+      const gImpact = 0.35 + layer(["impact", "kick", "bass_kick"], 0.35) * 0.9;
+      const strongBeats = (timeline.renderPlan?.audioPlan?.strongBeatsSec ?? [])
+        .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= durationSec)
+        .slice(0, 36);
+      const a = (base: number, g: number) => (base * g).toFixed(3);
+      const drone = `aevalsrc='${a(0.10, gMusic)}*sin(2*PI*55*t)+${a(0.07, gMusic)}*sin(2*PI*82.5*t)+${a(0.05, gMusic)}*sin(2*PI*110*t)':${sr}:d=${dur}`;
+      const kick = `aevalsrc='${a(motionDriven ? 0.6 : 0.34, gBass)}*sin(2*PI*58*t)*exp(-26*mod(t\\,${bi}))':${sr}:d=${dur}`;
+      const bass = `aevalsrc='${a(motionDriven ? 0.28 : 0.18, gBass)}*sin(2*PI*98*t)*exp(-7*mod(t\\,${bi}))':${sr}:d=${dur}`;
+      const hat = `aevalsrc='${a(0.16, gAir)}*sin(2*PI*1400*t)*exp(-42*mod(t\\,${half}))':${sr}:d=${dur}`;
+      const air = `anoisesrc=color=pink:amplitude=${a(0.05, gAir)}:duration=${dur}:sample_rate=44100`;
+      const impactExpr = strongBeats.length
+        ? strongBeats
+            .map((beat) => {
+              const b = beat.toFixed(3);
+              return `${a(0.18, gImpact)}*sin(2*PI*180*(t-${b}))*exp(-28*(t-${b}))*gte(t\\,${b})`;
+            })
+            .join("+")
+        : "0";
+      const impact = `aevalsrc='${impactExpr}':${sr}:d=${dur}`;
       await runFfmpeg([
-        "-y", "-i", silentPath, "-f", "lavfi", "-i", click,
-        "-map", "0:v:0", "-map", "1:a:0", "-t", dur,
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", finalPath
+        "-y", "-i", silentPath,
+        "-f", "lavfi", "-i", drone,
+        "-f", "lavfi", "-i", kick,
+        "-f", "lavfi", "-i", bass,
+        "-f", "lavfi", "-i", hat,
+        "-f", "lavfi", "-i", air,
+        "-f", "lavfi", "-i", impact,
+        "-filter_complex", "[1][2][3][4][5][6]amix=inputs=6:normalize=0,highpass=f=30,alimiter=limit=0.9[a]",
+        "-map", "0:v:0", "-map", "[a]", "-t", dur,
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", finalPath
       ]);
       return true;
     } catch (error) {
@@ -643,6 +1014,9 @@ export class FFmpegRenderer implements RendererAdapter {
     options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
   ): Promise<boolean> {
     const visualFormFamily = String(clip.visualFormFamily ?? styleValueFromClip(clip, "visualFormFamily") ?? "");
+    const palette = timelinePalette(options.timeline);
+    const recipeTextLayer = recipeTextLayerForClip(options.timeline, clip);
+    const recipeMediaLayer = recipeMediaLayerForClip(options.timeline, clip);
     const targetAssetIds = targetAssetIdsForClip(clip);
     const resolvedTargetAssetPaths = new Map<string, string>();
     for (const assetId of targetAssetIds) {
@@ -682,20 +1056,63 @@ export class FFmpegRenderer implements RendererAdapter {
     }
 
     const sourcePath = clip.sourceAssetId ? this.opts.assetResolver.resolve(clip.sourceAssetId) : undefined;
-    if (sourcePath && (clip.type === "video" || clip.type === "image")) {
+    // v1.3 source-first: composite a real resolvable target/source asset (image or video) even when
+    // clip.type is a generated_card (a family-renderer fill that still bound a real asset). The golden
+    // self-reconstruction path has no resolvable sourceAssetId, so this branch never fires there.
+    const sourceIsRenderableMedia = Boolean(sourcePath && existsSync(sourcePath));
+    if (sourcePath && (clip.type === "video" || clip.type === "image" || sourceIsRenderableMedia)) {
       try {
         const isStillImage = /\.(png|jpe?g|webp)$/i.test(sourcePath);
+        // v1.3 fidelity: composite the real asset at the SAMPLE's learned element geometry
+        // (size + position + motion) instead of always full-bleed + a fixed pan. The planner attaches
+        // `style.elementGeometry = { bbox:[x,y,w,h], motionPattern }` (from the VisualElementGraph hero
+        // element) to image clips; a sub-frame bbox is placed on a dark bed so different samples render
+        // the product at their actual size/position, not "one big pic filling the screen".
+        const geom = (clip.layers
+          .map((l) => (l.style as { elementGeometry?: { bbox?: [number, number, number, number]; motionPattern?: string } } | undefined)?.elementGeometry)
+          .find(Boolean));
+        const bb = geom?.bbox ?? bboxObjectToArray(recipeMediaLayer?.layout.bboxNorm);
+        const subFrame = Boolean(bb && (bb[2] < 0.9 || bb[3] < 0.9 || bb[0] > 0.04 || bb[1] > 0.04));
+        if (isStillImage && bb && subFrame) {
+          const [bx, by, bw, bh] = bb;
+          const tW = Math.max(24, Math.round(options.width * Math.min(1, bw)));
+          const tH = Math.max(24, Math.round(options.height * Math.min(1, bh)));
+          const px = Math.round(options.width * Math.max(0, Math.min(1 - bw, bx)));
+          const py = Math.round(options.height * Math.max(0, Math.min(1 - bh, by)));
+          const mp = String(geom?.motionPattern ?? "");
+          const sweep = /sweep|orbit|pan|rotate/.test(mp) ? 20 : 8;
+          const bob = /orbit|float|bob|helix/.test(mp) ? 16 : 5;
+          const textFilter = recipeDrawTextFilter(options.subtitle, recipeTextLayer, options.textStyle, options.width, options.height);
+          const atomFilters = motionAtomFiltersFromRecipe(options.timeline, clip, options.width, options.height, palette);
+          const postOverlay = [...atomFilters, ...(textFilter ? [textFilter] : [])];
+          const sub = postOverlay.length
+            ? `;[ov]${postOverlay.join(",")}[outv]`
+            : "";
+          const outLabel = sub ? "[outv]" : "[ov]";
+          const fc =
+            `color=c=${palette.bg}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)}[bg];` +
+            `[0:v]scale=${tW}:${tH}:force_original_aspect_ratio=increase,crop=${tW}:${tH},eq=saturation=1.08[el];` +
+            `[bg][el]overlay=x='${px}+sin(n/20)*${sweep}':y='${py}+cos(n/26)*${bob}'${sub ? "[ov]" + sub : "[ov]"}`;
+          await runFfmpeg([
+            "-y", "-loop", "1", "-t", options.duration.toFixed(2), "-i", sourcePath,
+            "-filter_complex", fc, "-map", outLabel,
+            "-r", String(options.fps), "-pix_fmt", "yuv420p", "-an",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", segmentPath
+          ]);
+          return true;
+        }
         const scaleWidth = isStillImage ? Math.round(options.width * 1.12) : options.width;
         const scaleHeight = isStillImage ? Math.round(options.height * 1.12) : options.height;
+        const panMp = String(geom?.motionPattern ?? "");
+        const panX = /sweep|orbit|pan|rotate/.test(panMp) ? 22 : 14;
         const filter = [
           `scale=${scaleWidth}:${scaleHeight}:force_original_aspect_ratio=increase`,
           isStillImage
-            ? `crop=${options.width}:${options.height}:x=(iw-ow)/2+sin(n/18)*14:y=(ih-oh)/2+cos(n/24)*10`
+            ? `crop=${options.width}:${options.height}:x=(iw-ow)/2+sin(n/18)*${panX}:y=(ih-oh)/2+cos(n/24)*10`
             : `crop=${options.width}:${options.height}`,
           isStillImage ? "eq=saturation=1.08,noise=alls=3:allf=t+u" : "",
-          options.subtitle
-            ? drawTextFilter(options.subtitle, options.textStyle, options.textStyle.sourceFontSize, "h-(text_h*2)")
-            : ""
+          ...motionAtomFiltersFromRecipe(options.timeline, clip, options.width, options.height, palette),
+          recipeDrawTextFilter(options.subtitle, recipeTextLayer, options.textStyle, options.width, options.height) ?? ""
         ]
           .filter(Boolean)
           .join(",");
@@ -743,67 +1160,162 @@ export class FFmpegRenderer implements RendererAdapter {
     options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle },
     primitive: string
   ): Promise<boolean> {
+    // The hero intro renders a procedural head/mask silhouette (separate ffmpeg input).
+    if (primitive === "neon_hero_intro") {
+      return this.renderHeroIntro(clip, segmentPath, options);
+    }
+
     const { width: W, height: H, duration } = options;
+    const palette = timelinePalette(options.timeline);
     const bpm = options.timeline.renderPlan?.beatGrid?.bpm ?? 120;
-    const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
-    // Only draw clean copy (clip.subtitleText); never leak the English slot-description visualIntent.
-    const text = options.subtitle;
-    const tokens = clip.styleTokens ?? [];
-    const redEmphasis = tokens.includes("red_emphasis") || primitive === "motivation_cta";
+    const bpmSafe = bpm > 40 && bpm < 300 ? bpm : 120;
+    const beatInterval = (60 / bpmSafe).toFixed(4);
+    const beatHz = (bpmSafe / 60).toFixed(3);
 
     const filters: string[] = ["format=yuv420p"];
-    // Beat-synced full-frame flash (pulses on every beat).
-    const flashAlpha = primitive === "action_montage" ? "0.22" : "0.14";
-    const flashColor = redEmphasis && primitive === "action_montage" ? "0xef4444" : "0xffffff";
-    filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=${flashColor}@${flashAlpha}:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
+    // Strong moving streak bed so even text clips are not static (the montage rides the strongest).
+    filters.push(...streakBedFilters(W, primitive === "action_montage" ? "montage" : "strong", palette));
+    filters.push(`drawbox=x=0:y='mod(t*${Math.round(H * 0.32)}\\,ih)':w=iw:h=3:color=${palette.cool}@0.3:t=fill`);
+    // per-beat full-frame WHITE flash — brief, colour-neutral cut-like jumps
+    filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
 
-    if (primitive === "neon_hero_intro") {
-      const R = Math.round(Math.min(W, H) * 0.22);
-      const box = Math.round(Math.min(W, H) * 0.14);
-      filters.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.85)':y='(ih-${box})/2+${R}*cos(2*PI*t*0.85)':w=${box}:h=${box}:color=0x22d3ee@0.85:t=fill`);
-      filters.push(`drawbox=x='(iw-${Math.round(box * 0.6)})/2+${R}*sin(2*PI*t*0.85+1.6)':y='(ih-${Math.round(box * 0.6)})/2+${R}*cos(2*PI*t*0.85+1.6)':w=${Math.round(box * 0.6)}:h=${Math.round(box * 0.6)}:color=0xef4444@0.75:t=fill`);
-    } else if (primitive === "action_montage") {
-      // energetic shifting bars + diagonal sweep
-      for (let i = 0; i < 3; i += 1) {
-        const y = Math.round(H * (0.2 + i * 0.22));
-        filters.push(`drawbox=x='mod(t*${Math.round(W * (1.4 + i * 0.4))}\\,iw)-${Math.round(W * 0.3)}':y=${y}:w=${Math.round(W * 0.3)}:h=${Math.round(H * 0.04)}:color=${i % 2 ? "0xf97316" : "0x22d3ee"}@0.8:t=fill`);
-      }
-      filters.push(`drawbox=x='mod(t*${Math.round(W * 1.9)}\\,iw)':y=0:w=8:h=ih:color=0xffffff@0.5:t=fill`);
-    } else if (primitive === "motivation_cta") {
-      filters.push(`drawbox=x=0:y=${Math.round(H * 0.86)}:w=iw:h=${Math.round(H * 0.07)}:color=0xb91c1c@0.92:t=fill`);
+    // ---- Per-primitive accents.
+    if (primitive === "action_montage") {
+      filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.22:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.09)'`);
     } else if (primitive === "impact_flash_stamp") {
-      // strong red impact stamp pulsing hard on every beat + diagonal speed lines
-      filters.push(`drawbox=x=${Math.round(W * 0.5)}-${Math.round(W * 0.18)}:y=${Math.round(H * 0.42)}:w=${Math.round(W * 0.36)}:h=${Math.round(W * 0.36)}:color=0xef4444@0.85:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.09)'`);
-      filters.push(`drawbox=x='mod(t*${Math.round(W * 2.2)}\\,iw)':y=0:w=10:h=ih:color=0xfbbf24@0.6:t=fill`);
+      const cx = Math.round(W * 0.5);
+      const cy = Math.round(H * 0.46);
+      const len = Math.round(Math.min(W, H) * 0.5);
+      for (let i = 0; i < 8; i += 1) {
+        const ang = (i / 8) * Math.PI;
+        filters.push(`drawbox=x='${cx}+${len}*${Math.cos(ang).toFixed(3)}*sin(2*PI*t*0.5)':y='${cy}+${len}*${Math.sin(ang).toFixed(3)}*sin(2*PI*t*0.5)':w=10:h=${len}:color=${palette.primary}@0.7:t=fill`);
+      }
+      filters.push(`drawbox=x=${cx - Math.round(W * 0.2)}:y=${cy - Math.round(W * 0.2)}:w=${Math.round(W * 0.4)}:h=${Math.round(W * 0.4)}:color=${palette.primary}@0.9:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.1)'`);
+    } else if (primitive === "motivation_cta") {
+      filters.push(`drawbox=x=0:y=${Math.round(H * 0.84)}:w=iw:h=${Math.round(H * 0.08)}:color=${palette.primary}@0.92:t=fill`);
+      filters.push(`drawbox=x='iw-mod(t*${Math.round(W * 0.6)}\\,iw+${Math.round(W * 0.3)})':y=${Math.round(H * 0.855)}:w=${Math.round(W * 0.3)}:h=${Math.round(H * 0.05)}:color=${palette.accent}@0.85:t=fill`);
     } else {
-      // beat_text_card / tutorial_rule_card: red underline accent below the text
-      filters.push(`drawbox=x=${Math.round(W * 0.18)}:y=${Math.round(H * 0.6)}:w=${Math.round(W * 0.64)}:h=${Math.round(H * 0.012)}:color=0xef4444@0.9:t=fill`);
+      // beat_text_card / tutorial_rule_card: red title bar + red underline accent.
+      filters.push(`drawbox=x=0:y=${Math.round(H * 0.2)}:w=iw:h=${Math.round(H * 0.012)}:color=${palette.primary}@0.9:t=fill`);
+      filters.push(`drawbox=x=${Math.round(W * 0.16)}:y=${Math.round(H * 0.62)}:w=${Math.round(W * 0.68)}:h=${Math.round(H * 0.012)}:color=${palette.primary}@0.9:t=fill`);
     }
 
-    if (primitive === "tutorial_rule_card") {
-      const label = escapeDrawText("剪辑要点 / RULE");
-      filters.push(`drawtext=${FONT_FILE_ARG}text='${label}':fontcolor=0xfbbf24:fontsize=${Math.round(H * 0.028)}:x=(w-text_w)/2:y=${Math.round(H * 0.34)}:box=0`);
+    filters.push(...beatEqFilters(W, H, beatHz, palette));
+    filters.push(...motionAtomFiltersFromRecipe(options.timeline, clip, W, H, palette));
+
+    // v1.3: no meta genre tag ("文字卡"/"动作混剪"…) is burned onto the card — a product ad shows
+    // product copy, not a label naming the primitive. The card's message is the subtitle below.
+
+    // ---- Main copy with per-clip layout + animation (raw subtitle; escaped inside the helper).
+    const rawText = (clip.subtitleText ?? clip.visualIntent ?? "").trim();
+    const recipeText = recipeTextLayerForClip(options.timeline, clip);
+    if (recipeText) {
+      const textFilter = recipeDrawTextFilter(escapeDrawText(rawText), recipeText, options.textStyle, W, H);
+      if (textFilter) filters.push(textFilter);
+    } else {
+      filters.push(...beatCutTextFilters(rawText, textLayoutForClip(clip, primitive, palette), W, H, beatInterval, duration));
     }
 
-    if (text) {
-      const big = primitive === "motivation_cta" || primitive === "neon_hero_intro";
-      const rawLen = (clip.subtitleText ?? clip.visualIntent ?? "").length || 1;
-      // Fit single-line CJK text within ~88% of the frame width (drawtext has no auto-wrap).
-      const widthFit = Math.floor((W * 0.88) / rawLen);
-      const fontSize = Math.max(Math.round(H * 0.03), Math.min(Math.round(H * (big ? 0.07 : 0.055)), widthFit));
-      const yExpr = primitive === "neon_hero_intro" ? `${Math.round(H * 0.72)}` : "(h-text_h)/2";
-      const fontColor = redEmphasis ? "0xfca5a5" : "white";
-      const boxColor = primitive === "motivation_cta" ? "0x7f1d1d@0.0" : "black@0.35";
-      // subtle beat pulse: a brief enlarged shadow copy on the beat
-      filters.push(`drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${fontColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=${yExpr}:box=1:boxcolor=${boxColor}:boxborderw=24`);
-    }
-
-    const lavfi = `color=c=0x05060a:s=${W}x${H}:d=${duration.toFixed(2)},${filters.join(",")}`;
+    const lavfi = `color=c=${palette.bg}:s=${W}x${H}:d=${duration.toFixed(2)},${filters.join(",")}`;
     await runFfmpeg([
       "-y", "-f", "lavfi", "-i", lavfi,
       "-t", duration.toFixed(2), "-r", String(options.fps),
       "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
       segmentPath
+    ]);
+    return false;
+  }
+
+  /** Generate (and cache) a procedural neon head/mask silhouette PNG with glow-based alpha. */
+  private async heroHeadPng(workDir: string, palette: string[]): Promise<string | undefined> {
+    const colors = paletteEntries(palette);
+    const glow = pickClosest(colors, [235, 55, 150], "#e11d2a");
+    const visor = pickClosest(colors, [34, 211, 238], "#22d3ee");
+    const key = `${glow.slice(1)}_${visor.slice(1)}`;
+    const out = path.join(workDir, `hero_head_${key}.png`);
+    if (existsSync(out)) return out;
+    const hw = 380;
+    const hh = 470;
+    const cx = 190;
+    const cy = 200;
+    const rx = 150;
+    const ry = 200;
+    const r = colorChannel(glow, 0);
+    const g = colorChannel(glow, 2);
+    const b = colorChannel(glow, 4);
+    const visorColor = ffmpegColor(visor, "0x22d3ee");
+    try {
+      await runFfmpeg([
+        "-y", "-f", "lavfi", "-i", `color=c=black:s=${hw}x${hh}:d=0.1`,
+        "-filter_complex",
+        `[0:v]format=rgba,geq=r='${r}':g='${g}':b='${b}':a='255*exp(-3.0*(pow((X-${cx})/${rx}\\,2)+pow((Y-${cy})/${ry}\\,2)))'[g];` +
+          `[g]drawbox=x=${cx - rx}:y=${cy - 14}:w=${rx * 2}:h=34:color=black@1.0:t=fill,drawbox=x=${cx - rx + 22}:y=${cy - 5}:w=${rx * 2 - 44}:h=8:color=${visorColor}@1.0:t=fill[out]`,
+        "-map", "[out]", "-frames:v", "1", out
+      ]);
+      return existsSync(out) ? out : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Render the opening hero clip: a procedural head/mask silhouette (neon glow + visor) orbiting
+   * over a strong moving streak field, with beat flashes, EQ bars and the headline below it. The
+   * silhouette is generated from shapes (never a sample frame). Falls back to orbiting neon shapes
+   * if the silhouette can't be generated. Returns false (no source asset consumed).
+   */
+  private async renderHeroIntro(
+    clip: TimelineClip,
+    segmentPath: string,
+    options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
+  ): Promise<boolean> {
+    const { width: W, height: H, duration, fps } = options;
+    const palette = timelinePalette(options.timeline);
+    const bpm = options.timeline.renderPlan?.beatGrid?.bpm ?? 120;
+    const bpmSafe = bpm > 40 && bpm < 300 ? bpm : 120;
+    const beatInterval = (60 / bpmSafe).toFixed(4);
+    const beatHz = (bpmSafe / 60).toFixed(3);
+    const workDir = path.dirname(segmentPath);
+    const head = await this.heroHeadPng(workDir, [
+      ...((options.timeline.renderPlan?.renderRecipe?.global?.palette ?? []) as string[]),
+      ...heroPaletteForClip(clip)
+    ]).catch(() => undefined);
+    // Consume the located hero element: place the silhouette by its positionClass (upper_center /
+    // center / lower_third) from the VisualElementGraph instead of a fixed offset.
+    const heroEl = heroElementForClip(clip);
+    const posOffsetFrac = heroEl?.positionClass === "upper_center" ? -0.14 : heroEl?.positionClass === "lower_third" ? 0.08 : -0.04;
+    const heroYOffset = Math.round(H * posOffsetFrac);
+
+    const bg: string[] = ["format=yuv420p"];
+    bg.push(...streakBedFilters(W, "montage", palette));
+    bg.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
+    if (!head) {
+      // fallback: a big orbiting neon "head" blob (never just static boxes)
+      const box = Math.round(Math.min(W, H) * 0.2);
+      const R = Math.round(Math.min(W, H) * 0.16);
+      bg.push(`drawbox=x='(iw-${box})/2+${R}*sin(2*PI*t*0.9)':y='(ih-${box})/2-${Math.round(H * 0.1)}+${R}*cos(2*PI*t*0.9)':w=${box}:h=${box}:color=${palette.primary}@0.85:t=fill`);
+    }
+    bg.push(...beatEqFilters(W, H, beatHz, palette));
+    bg.push(...motionAtomFiltersFromRecipe(options.timeline, clip, W, H, palette));
+    const recipeText = recipeTextLayerForClip(options.timeline, clip);
+    const rawHeroText = (clip.subtitleText ?? clip.visualIntent ?? "").trim();
+    const recipeHeroText = recipeText ? recipeDrawTextFilter(escapeDrawText(rawHeroText), recipeText, options.textStyle, W, H) : undefined;
+    const textFilters = recipeHeroText ? [recipeHeroText] : beatCutTextFilters(rawHeroText, textLayoutForClip(clip, "neon_hero_intro", palette), W, H, beatInterval, duration);
+
+    if (!head) {
+      const lavfi = `color=c=${palette.bg}:s=${W}x${H}:d=${duration.toFixed(2)},${[...bg, ...textFilters].join(",")}`;
+      await runFfmpeg(["-y", "-f", "lavfi", "-i", lavfi, "-t", duration.toFixed(2), "-r", String(fps), "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", segmentPath]);
+      return false;
+    }
+    const bgChain = `[0:v]${bg.join(",")}[bg]`;
+    const overlay = `[bg][1:v]overlay=x='(W-w)/2+44*sin(2*PI*t*0.85)':y='(H-h)/2+${heroYOffset}+30*cos(2*PI*t*0.85)'[ov]`;
+    const textChain = textFilters.length ? `[ov]${textFilters.join(",")}[out]` : `[ov]null[out]`;
+    await runFfmpeg([
+      "-y", "-f", "lavfi", "-i", `color=c=${palette.bg}:s=${W}x${H}:d=${duration.toFixed(2)}`,
+      "-loop", "1", "-t", duration.toFixed(2), "-i", head,
+      "-filter_complex", `${bgChain};${overlay};${textChain}`,
+      "-map", "[out]", "-t", duration.toFixed(2), "-r", String(fps),
+      "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", segmentPath
     ]);
     return false;
   }
@@ -814,6 +1326,7 @@ export class FFmpegRenderer implements RendererAdapter {
     segmentPath: string,
     options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
   ): Promise<void> {
+    const palette = timelinePalette(options.timeline);
     const cardW = Math.round(options.width * 0.42);
     const cardH = Math.round(options.height * 0.32);
     const positions = [
@@ -827,13 +1340,13 @@ export class FFmpegRenderer implements RendererAdapter {
       "-f",
       "lavfi",
       "-i",
-      `color=c=0x08111f:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)}`,
+      `color=c=${palette.bg}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)}`,
       ...assetPaths.flatMap((assetPath) => ["-loop", "1", "-t", options.duration.toFixed(2), "-i", assetPath])
     ];
     const filters: string[] = [];
     assetPaths.forEach((_, index) => {
       filters.push(
-        `[${index + 1}:v]scale=${cardW}:${cardH}:force_original_aspect_ratio=decrease,pad=${cardW}:${cardH}:(ow-iw)/2:(oh-ih)/2:color=0x111827,format=rgba[c${index}]`
+        `[${index + 1}:v]scale=${cardW}:${cardH}:force_original_aspect_ratio=decrease,pad=${cardW}:${cardH}:(ow-iw)/2:(oh-ih)/2:color=${palette.muted},format=rgba[c${index}]`
       );
     });
     let last = "[0:v]";
@@ -847,8 +1360,8 @@ export class FFmpegRenderer implements RendererAdapter {
       const proxyFilters: string[] = [];
       for (let index = assetPaths.length; index < positions.length; index += 1) {
         const pos = positions[index];
-        proxyFilters.push(`drawbox=x=${pos.x}:y=${pos.y}:w=${cardW}:h=${cardH}:color=0x334155@0.82:t=fill`);
-        proxyFilters.push(`drawbox=x=${pos.x + 12}:y=${pos.y + 12}:w=${cardW - 24}:h=${cardH - 24}:color=0x38bdf8@0.28:t=4`);
+        proxyFilters.push(`drawbox=x=${pos.x}:y=${pos.y}:w=${cardW}:h=${cardH}:color=${palette.muted}@0.82:t=fill`);
+        proxyFilters.push(`drawbox=x=${pos.x + 12}:y=${pos.y + 12}:w=${cardW - 24}:h=${cardH - 24}:color=${palette.cool}@0.28:t=4`);
       }
       filters.push(`[stacked]${proxyFilters.join(",")}[partial]`);
       last = "[partial]";
@@ -885,21 +1398,22 @@ export class FFmpegRenderer implements RendererAdapter {
     segmentPath: string,
     options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
   ): Promise<void> {
+    const palette = timelinePalette(options.timeline);
     const logo = Math.round(Math.min(options.width, options.height) * 0.28);
     const brand = escapeDrawText(stringStyleValue(clip, "brandName") ?? options.subtitle ?? "Viral Structure Engine");
     const cta = escapeDrawText(stringStyleValue(clip, "cta") ?? "Upload. Analyze. Remix.");
     const filters = [
       `[1:v]scale=${logo}:${logo}:force_original_aspect_ratio=decrease,pad=${logo}:${logo}:(ow-iw)/2:(oh-ih)/2:color=white,format=rgba[logo]`,
       `[0:v][logo]overlay=x=(main_w-overlay_w)/2:y=${Math.round(options.height * 0.25)}:shortest=1[v0]`,
-      `[v0]${drawTextFilter(brand, { ...options.textStyle, boxColor: "black@0.0", fontColor: "0xf8fafc" }, 42, String(Math.round(options.height * 0.52)))}[v1]`,
-      `[v1]${drawTextFilter(cta, { ...options.textStyle, boxColor: "0xb91c1c@0.86", fontColor: "white" }, 34, String(Math.round(options.height * 0.64)))}[out]`
+      `[v0]${drawTextFilter(brand, { ...options.textStyle, boxColor: "black@0.0", fontColor: palette.text }, 42, String(Math.round(options.height * 0.52)))}[v1]`,
+      `[v1]${drawTextFilter(cta, { ...options.textStyle, boxColor: `${palette.primary}@0.86`, fontColor: palette.text }, 34, String(Math.round(options.height * 0.64)))}[out]`
     ];
     await runFfmpeg([
       "-y",
       "-f",
       "lavfi",
       "-i",
-      `color=c=0x0f172a:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)}`,
+      `color=c=${palette.bg}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)}`,
       "-loop",
       "1",
       "-t",
@@ -931,20 +1445,25 @@ export class FFmpegRenderer implements RendererAdapter {
     segmentPath: string,
     options: { width: number; height: number; fps: number; duration: number; subtitle: string; warnings: string[]; timeline: Timeline; textStyle: DrawTextStyle }
   ): Promise<boolean> {
+    const palette = timelinePalette(options.timeline);
     const color = backgroundFor(clip, options.timeline);
-    const decorations = mgMotionDecorationFilters(options.timeline, options.width, options.height);
-    const proxyFilters = proxyPlaceholderFilters(clip, options.width, options.height, options.textStyle);
+    const decorations = [
+      ...mgMotionDecorationFilters(options.timeline, options.width, options.height, palette),
+      ...motionAtomFiltersFromRecipe(options.timeline, clip, options.width, options.height, palette)
+    ];
+    const proxyFilters = proxyPlaceholderFilters(clip, options.width, options.height, options.textStyle, palette);
     const visualFormFamily = String(clip.visualFormFamily ?? styleValueFromClip(clip, "visualFormFamily") ?? "");
     const centerSubtitle = visualFormFamily === "kinetic_typography";
     const subtitleY = centerSubtitle ? "(h-text_h)/2" : "h-(text_h*2)";
     const subtitleSize = centerSubtitle ? options.textStyle.cardFontSize : options.textStyle.sourceFontSize;
+    const recipeText = recipeDrawTextFilter(options.subtitle, recipeTextLayerForClip(options.timeline, clip), options.textStyle, options.width, options.height);
     const filter = `color=c=${color}:s=${options.width}x${options.height}:d=${options.duration.toFixed(2)},format=yuv420p${
       decorations.length ? `,${decorations.join(",")}` : ""
     }${
       proxyFilters.length ? `,${proxyFilters.join(",")}` : ""
     }${
       options.subtitle && !proxyFilters.length
-        ? `,${drawTextFilter(options.subtitle, options.textStyle, subtitleSize, subtitleY)}`
+        ? `,${recipeText ?? drawTextFilter(options.subtitle, options.textStyle, subtitleSize, subtitleY)}`
         : ""
     }`;
     await runFfmpeg([
@@ -1018,10 +1537,16 @@ export class RemotionRenderer implements RendererAdapter {
 
       const assetIds = Array.from(
         new Set(
-          timeline.clips.flatMap((clip) => [
-            clip.sourceAssetId,
-            ...clip.layers.map((layer) => layer.assetId)
-          ]).filter((assetId): assetId is string => Boolean(assetId))
+          [
+            ...timeline.clips.flatMap((clip) => [
+              clip.sourceAssetId,
+              ...clip.layers.map((layer) => layer.assetId)
+            ]),
+            ...((timeline.renderPlan?.renderRecipe?.clips ?? []).flatMap((clip) => clip.material?.assetIds ?? [])),
+            ...((timeline.renderPlan?.renderRecipe?.layers ?? []).flatMap((layer) =>
+              layer.type === "media" ? layer.material.assetIds : []
+            ))
+          ].filter((assetId): assetId is string => Boolean(assetId))
         )
       );
       const assetEntries = await Promise.all(
@@ -1233,6 +1758,19 @@ export const RendererRegistry: Record<RendererBackend, RendererRegistryEntry> = 
         outputBasename: opts.outputBasename
       })
   },
+  remotion_recipe_compose: {
+    backend: "remotion_recipe_compose",
+    target: "remotion_recipe",
+    label: "Remotion RenderRecipe-driven renderer (ViralRecipe composition)",
+    create: (opts) =>
+      new RemotionRenderer({
+        generatedDir: opts.generatedDir,
+        entryPoint: opts.remotionEntryPoint,
+        compositionId: opts.remotionCompositionId ?? "ViralRecipe",
+        assetResolver: opts.assetResolver,
+        outputBasename: opts.outputBasename
+      })
+  },
   ffmpeg_compose: {
     backend: "ffmpeg_compose",
     target: "ffmpeg",
@@ -1263,6 +1801,8 @@ export function selectRenderer(target: RendererTarget, opts: RendererSelectOptio
       return selectRendererBackend("ffmpeg_compose", opts);
     case "remotion":
       return selectRendererBackend("remotion_mg", opts);
+    case "remotion_recipe":
+      return selectRendererBackend("remotion_recipe_compose", opts);
     case "hyperframes":
       return new HyperFramesRenderer({ generatedDir: opts.generatedDir });
     case "html_preview":

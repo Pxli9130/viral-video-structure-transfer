@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-structure-transfer/spec_v4_1/provider-policy.schema.json",
+  "title": "ProviderPolicy",
+  "type": "object",
+  "required": [
+    "provider",
+    "category",
+    "requiredForCoreDemo",
+    "enabledByDefault",
+    "fallbackStrategy",
+    "provenanceRequired",
+    "sampleFramesAllowedAsInput",
+    "sampleAudioAllowedAsInput",
+    "userAssetsAllowedAsInput",
+    "generatedAssetLabelRequired",
+    "riskLevel"
+  ],
+  "properties": {
+    "provider": { "type": "string", "minLength": 1 },
+    "category": {
+      "type": "string",
+      "enum": ["text", "vlm", "image", "video", "audio", "asr", "ocr", "tts", "sfx", "music", "cleanup", "dubbing"]
+    },
+    "requiredForCoreDemo": { "type": "boolean" },
+    "enabledByDefault": { "type": "boolean" },
+    "fallbackStrategy": { "type": "string", "minLength": 1 },
+    "provenanceRequired": { "type": "boolean", "const": true },
+    "sampleFramesAllowedAsInput": { "type": "boolean", "const": false },
+    "sampleAudioAllowedAsInput": { "type": "boolean", "const": false },
+    "userAssetsAllowedAsInput": { "type": "boolean" },
+    "generatedAssetLabelRequired": { "type": "boolean", "const": true },
+    "maxCostUsdPerRun": { "type": "number", "minimum": 0 },
+    "maxDurationSec": { "type": "number", "minimum": 0 },
+    "riskLevel": { "type": "string", "enum": ["low", "medium", "high"] }
+  },
+  "additionalProperties": false
+}

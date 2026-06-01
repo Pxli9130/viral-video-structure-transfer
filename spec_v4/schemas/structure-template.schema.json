@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StructureTemplate v4",
+  "type": "object",
+  "required": [
+    "version",
+    "id",
+    "sourceSampleIds",
+    "videoType",
+    "scriptStructure",
+    "rhythmStructure",
+    "packagingStructure",
+    "templateSlots",
+    "techniqueAtoms",
+    "evidenceSummary",
+    "safety"
+  ],
+  "properties": {
+    "version": {
+      "const": "structure-template-v4"
+    },
+    "id": {
+      "type": "string"
+    },
+    "sourceSampleIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "videoType": {
+      "enum": [
+        "editing_tutorial",
+        "marketing_poster",
+        "motion_graph_ad",
+        "product_ad",
+        "mixed"
+      ]
+    },
+    "scriptStructure": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "startSec",
+          "endSec",
+          "viewerPurpose",
+          "sourceEvidenceRefs"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "hook",
+              "setup",
+              "proof",
+              "demo",
+              "benefit",
+              "climax",
+              "cta",
+              "outro"
+            ]
+          },
+          "startSec": {
+            "type": "number"
+          },
+          "endSec": {
+            "type": "number"
+          },
+          "viewerPurpose": {
+            "type": "string"
+          },
+          "sourceEvidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "rhythmStructure": {
+      "type": "object",
+      "required": [
+        "beatGridSec",
+        "avgShotDurationSec",
+        "cutDensity",
+        "fastZones",
+        "climaxRanges"
+      ],
+      "properties": {
+        "bpm": {
+          "type": "number"
+        },
+        "beatGridSec": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "avgShotDurationSec": {
+          "type": "number"
+        },
+        "cutDensity": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "fastZones": {
+          "type": "array"
+        },
+        "climaxRanges": {
+          "type": "array"
+        }
+      }
+    },
+    "packagingStructure": {
+      "type": "object",
+      "required": [
+        "colorPalette",
+        "typographySystem",
+        "motionAtoms",
+        "visualElementFamilies"
+      ],
+      "properties": {
+        "colorPalette": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "typographySystem": {
+          "type": "object",
+          "required": [
+            "textTracks",
+            "dominantPlacements",
+            "fontSizeRangeRatio",
+            "animationHints"
+          ],
+          "properties": {
+            "textTracks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dominantPlacements": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "center",
+                  "top",
+                  "bottom",
+                  "left",
+                  "right",
+                  "diagonal"
+                ]
+              }
+            },
+            "fontSizeRangeRatio": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "animationHints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "motionAtoms": {
+          "type": "array"
+        },
+        "visualElementFamilies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "templateSlots": {
+      "type": "array"
+    },
+    "techniqueAtoms": {
+      "type": "array"
+    },
+    "evidenceSummary": {
+      "type": "object",
+      "required": [
+        "visualElements",
+        "typographyRuns",
+        "motionAtoms",
+        "audioLayers",
+        "heroDescriptors"
+      ],
+      "properties": {
+        "visualElements": {
+          "type": "integer"
+        },
+        "typographyRuns": {
+          "type": "integer"
+        },
+        "motionAtoms": {
+          "type": "integer"
+        },
+        "audioLayers": {
+          "type": "integer"
+        },
+        "heroDescriptors": {
+          "type": "integer"
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "sampleFrameCopyAllowed",
+        "sampleAudioCopyAllowed"
+      ],
+      "properties": {
+        "sampleFrameCopyAllowed": {
+          "const": false
+        },
+        "sampleAudioCopyAllowed": {
+          "const": false
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,76 @@
+You are the senior engineer for this repo. Implement Spec v4.1 as an addendum to Spec v4.0.
+
+Goal:
+Add provider-aware AIGC/audio routing without breaking the core evidence-faithful structure-transfer system.
+
+Core principles:
+1. Seedance 2.0 is an optional AIGC video-fill provider, not a core dependency.
+2. Seedream 4.0 is an optional image/poster/background fill provider.
+3. ElevenLabs is the optional audio intelligence stack: Scribe, TTS, SFX, Music, Audio Isolation, Dubbing/Lip Sync.
+4. Remotion + FFmpeg remain the deterministic rendering backbone.
+5. No sample frame/audio may be sent to AIGC providers unless explicitly authorized.
+6. All generated assets must include provenance.
+7. Every optional provider must have a deterministic fallback.
+
+Read first:
+- spec_v4/SPEC_V4_ALL.md
+- spec_v4_1/model-stack.md
+- spec_v4_1/provider-policy.md
+- spec_v4_1/routing-and-fallbacks.md
+- spec_v4_1/implementation-delta.md
+- spec_v4_1/acceptance-gates.md
+
+Implementation tasks:
+
+P0 — Provider types and policies
+1. Add ProviderPolicy, ModelRoutingPolicy, GeneratedAssetProvenance types.
+2. Add JSON schema validation for these types.
+3. Add default policy config for seedance_2_0, seedream_4_0, elevenlabs_scribe, elevenlabs_tts, elevenlabs_sound_effects, elevenlabs_music, elevenlabs_audio_isolation.
+4. Keep all optional providers disabled by default unless env/config enables them.
+
+P1 — Router and deterministic fallback
+1. Add model router that chooses provider by task.
+2. Add fallback for every provider route.
+3. Add telemetry: provider, task, status, latency, estimated cost, output assets, provenance IDs.
+
+P2 — AIGC visual adapters
+1. Add Seedance 2.0 adapter interface for video fill. It may be a stub if API credentials are absent, but it must return a clear fallback result.
+2. Add Seedream 4.0 adapter interface for image fill. It may be a stub if API credentials are absent.
+3. Do not block rendering if adapters are disabled.
+4. Ensure generated assets are stored as AssetProfile with source=aigc_generated and sampleDerived=false.
+
+P3 — ElevenLabs adapters
+1. Add ElevenLabs Scribe adapter as optional ASR fallback/upgrade.
+2. Add ElevenLabs TTS adapter for voiceover.
+3. Add ElevenLabs Sound Effects adapter for whoosh/hit/riser.
+4. Add ElevenLabs Music adapter for BGM.
+5. Add Audio Isolation / Dubbing as interfaces or TODO adapters if time is limited.
+6. Procedural audio and faster-whisper must remain working fallback paths.
+
+P4 — RenderRecipe/provider reporting
+1. Extend RenderRecipe with providerUse[].
+2. Add generated material fields to MediaLayer/AudioLayer material metadata.
+3. Add provider usage section to render report/UI.
+4. Update inspect-learning-fidelity with provider safety checks.
+
+Tests/gates:
+1. ProviderPolicy schema validation.
+2. ModelRoutingPolicy schema validation.
+3. Optional provider disabled -> deterministic fallback.
+4. Seedance request rejects sample frame inputs.
+5. Seedream output requires provenance.
+6. ElevenLabs output requires provenance.
+7. No-key environment still renders final.mp4 via Remotion/FFmpeg.
+8. inspect-learning-fidelity reports zero sample frames/audio sent to AIGC.
+
+Final report:
+# Spec v4.1 Implementation Report
+## Summary
+## Files Changed
+## Provider Policies Added
+## Routing/Fallbacks Added
+## Tests and Commands Run
+## Artifact/Provider Usage Report
+## Safety Check
+## Remaining Risks
+## git status --short

@@ -1,0 +1,26 @@
+{
+  "case": "marketing",
+  "status": "pass",
+  "counts": {
+    "analysis": {
+      "visualElements": 33,
+      "typographyRuns": 24,
+      "audioLayers": 4,
+      "motionAtoms": 1
+    },
+    "template": {
+      "visualElements": 33,
+      "typographyRuns": 24,
+      "audioLayers": 4,
+      "motionAtoms": 1
+    },
+    "recipe": {
+      "mediaLayers": 8,
+      "textLayers": 9,
+      "motionAtomLayers": 1,
+      "audioLayers": 4
+    }
+  },
+  "droppedEvidence": [],
+  "warnings": []
+}

@@ -1,0 +1,49 @@
+{
+  "routes": [
+    {
+      "task": "aigc_video_fill",
+      "candidates": [
+        {
+          "provider": "seedance_2_0",
+          "model": "seedance-2.0",
+          "priority": 1,
+          "enabled": false,
+          "maxCostUsd": 2.0,
+          "timeoutMs": 240000,
+          "fallbackOn": ["timeout", "rate_limit", "policy_block", "api_error"]
+        },
+        {
+          "provider": "veo_3_1",
+          "model": "veo-3.1",
+          "priority": 2,
+          "enabled": false,
+          "maxCostUsd": 2.5,
+          "timeoutMs": 240000,
+          "fallbackOn": ["timeout", "rate_limit", "policy_block", "api_error"]
+        }
+      ],
+      "deterministicFallback": {
+        "strategy": "render_motion_atom_with_remotion",
+        "severity": "warn"
+      }
+    },
+    {
+      "task": "audio_music",
+      "candidates": [
+        {
+          "provider": "elevenlabs_music",
+          "model": "eleven-music",
+          "priority": 1,
+          "enabled": false,
+          "maxCostUsd": 0.5,
+          "timeoutMs": 120000,
+          "fallbackOn": ["timeout", "rate_limit", "api_error"]
+        }
+      ],
+      "deterministicFallback": {
+        "strategy": "procedural_bgm_from_audio_layers",
+        "severity": "info"
+      }
+    }
+  ]
+}

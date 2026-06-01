@@ -1,0 +1,239 @@
+{
+  "version": "render-recipe-v4",
+  "composition": {
+    "width": 720,
+    "height": 1280,
+    "fps": 30,
+    "durationSec": 15,
+    "aspectRatio": "9:16"
+  },
+  "productTheme": {
+    "productName": "AeroSpin 便携涡轮小风扇",
+    "brandName": "AeroSpin",
+    "brief": "便携涡轮小风扇",
+    "sellingPoints": [
+      "强劲风力",
+      "小巧便携",
+      "长续航"
+    ],
+    "ctaText": "现在入手",
+    "generationPrompt": "raw prompt for audit only"
+  },
+  "sourcePolicy": {
+    "sampleUse": "structure_evidence_only",
+    "sampleFrameCopyAllowed": false,
+    "sampleAudioCopyAllowed": false,
+    "sourceVideoUse": "missing",
+    "targetAssetUse": "renderable_target_material"
+  },
+  "evidenceSummary": {
+    "sourceSampleIds": [
+      "sample_marketing"
+    ],
+    "preservedEvidence": {
+      "visualElements": 33,
+      "typographyRuns": 24,
+      "motionAtoms": 1,
+      "audioLayers": 4
+    },
+    "droppedEvidence": []
+  },
+  "clips": [
+    {
+      "id": "clip_hook",
+      "role": "hook",
+      "startSec": 0,
+      "durationSec": 4,
+      "atomIds": [
+        "atom_ribbon_poster_001"
+      ],
+      "layerIds": [
+        "layer_bg",
+        "layer_product",
+        "layer_title",
+        "layer_ribbon"
+      ],
+      "primitiveReason": "marketing ribbon evidence + hero image available",
+      "evidenceRefs": [
+        "evidence://sample_marketing/motion/ma_ribbon_001"
+      ]
+    },
+    {
+      "id": "clip_cta",
+      "role": "cta",
+      "startSec": 12,
+      "durationSec": 3,
+      "atomIds": [
+        "atom_cta_001"
+      ],
+      "layerIds": [
+        "layer_cta_text"
+      ],
+      "primitiveReason": "CTA segment from sample structure",
+      "evidenceRefs": []
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer_bg",
+      "type": "media",
+      "clipId": "clip_hook",
+      "zIndex": 0,
+      "startSec": 0,
+      "durationSec": 15,
+      "material": {
+        "kind": "procedural",
+        "assetIds": [],
+        "policy": "renderable",
+        "provenance": "fixture"
+      },
+      "layout": {
+        "fit": "backgroundFill"
+      },
+      "evidenceRefs": []
+    },
+    {
+      "id": "layer_product",
+      "type": "media",
+      "clipId": "clip_hook",
+      "zIndex": 10,
+      "startSec": 0,
+      "durationSec": 12,
+      "material": {
+        "kind": "target_image",
+        "assetIds": [
+          "asset_product_hero"
+        ],
+        "policy": "renderable",
+        "provenance": "user_uploaded"
+      },
+      "layout": {
+        "bboxNorm": {
+          "x": 0.18,
+          "y": 0.3,
+          "w": 0.64,
+          "h": 0.42
+        },
+        "fit": "contain",
+        "minAreaRatio": 0.2
+      },
+      "motion": {
+        "pattern": "zoom",
+        "beatAligned": true
+      },
+      "evidenceRefs": [
+        "evidence://sample_marketing/visual/ve_hero_001"
+      ]
+    },
+    {
+      "id": "layer_title",
+      "type": "text",
+      "clipId": "clip_hook",
+      "zIndex": 20,
+      "startSec": 0.2,
+      "durationSec": 3.8,
+      "text": {
+        "content": "随身强风力",
+        "role": "headline"
+      },
+      "layout": {
+        "bboxNorm": {
+          "x": 0.1,
+          "y": 0.08,
+          "w": 0.8,
+          "h": 0.12
+        },
+        "align": "center"
+      },
+      "typography": {
+        "fontSizeRatio": 0.07,
+        "weight": 800,
+        "colorRole": "primary"
+      },
+      "animation": {
+        "enter": "sweep",
+        "exit": "fade"
+      },
+      "evidenceRefs": [
+        "evidence://sample_marketing/typography/typo_001"
+      ]
+    },
+    {
+      "id": "layer_ribbon",
+      "type": "motion_atom",
+      "clipId": "clip_hook",
+      "zIndex": 15,
+      "startSec": 0,
+      "durationSec": 4,
+      "atom": {
+        "kind": "parametric_ribbon_surface",
+        "direction": "right_to_left",
+        "path": "s_curve_orbit",
+        "thicknessRatio": 0.08,
+        "twist": 0.6,
+        "opacity": 0.9,
+        "colorRoles": [
+          "accent",
+          "primary"
+        ]
+      },
+      "evidenceRefs": [
+        "evidence://sample_marketing/motion/ma_ribbon_001"
+      ]
+    },
+    {
+      "id": "layer_cta_text",
+      "type": "text",
+      "clipId": "clip_cta",
+      "zIndex": 30,
+      "startSec": 12,
+      "durationSec": 3,
+      "text": {
+        "content": "现在入手",
+        "role": "cta"
+      },
+      "layout": {
+        "bboxNorm": {
+          "x": 0.18,
+          "y": 0.78,
+          "w": 0.64,
+          "h": 0.1
+        },
+        "align": "center"
+      },
+      "typography": {
+        "fontSizeRatio": 0.055,
+        "weight": 700,
+        "colorRole": "accent"
+      },
+      "animation": {
+        "enter": "pop",
+        "exit": "none"
+      },
+      "evidenceRefs": []
+    },
+    {
+      "id": "layer_kick",
+      "type": "audio",
+      "zIndex": 0,
+      "startSec": 0,
+      "durationSec": 15,
+      "audio": {
+        "kind": "kick",
+        "policy": "procedural",
+        "weight": 0.55,
+        "bpm": 128,
+        "accentPattern": [
+          0,
+          4,
+          8,
+          12
+        ]
+      },
+      "evidenceRefs": [
+        "evidence://sample_marketing/audio/layer_kick"
+      ]
+    }
+  ],
+  "warnings": []
+}

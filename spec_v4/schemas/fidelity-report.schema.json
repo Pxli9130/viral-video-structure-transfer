@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/spec_v4/fidelity-report.schema.json",
+  "title": "EvidenceFidelityReport v4",
+  "type": "object",
+  "required": [
+    "case",
+    "status",
+    "counts",
+    "droppedEvidence"
+  ],
+  "properties": {
+    "case": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "warn",
+        "fail"
+      ]
+    },
+    "counts": {
+      "type": "object"
+    },
+    "droppedEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "severity",
+          "message"
+        ]
+      }
+    },
+    "warnings": {
+      "type": "array"
+    }
+  }
+}

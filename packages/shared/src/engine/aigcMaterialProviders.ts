@@ -309,7 +309,7 @@ function seedreamRequestBody(config: SeedreamProviderConfig, prompt: string): Re
 }
 
 export const mockProvider: AigcMaterialProvider = {
-  id: "mock_provider",
+  id: "deterministic_local_image_fill",
   kind: "image",
   async generate(brief, context) {
     await mkdir(context.outputDir, { recursive: true });
@@ -330,8 +330,8 @@ export const mockProvider: AigcMaterialProvider = {
         id: `generated_${brief.slotId}_${String(index + 1).padStart(2, "0")}`.replace(/[^a-zA-Z0-9_.-]/g, "_"),
         briefId: brief.id,
         slotId: brief.slotId,
-        provider: "mock_provider",
-        model: "deterministic_mock_png_v1",
+        provider: "deterministic_local_image_fill",
+        model: "deterministic_local_png_v1",
         type: candidateTypeFor(brief),
         materialRole: "aigc_generated_material",
         path: candidatePath(context.publicPathPrefix, filename),
@@ -554,6 +554,7 @@ function disabledProvider(id: AigcMaterialProviderId): AigcMaterialProvider {
 }
 
 export const AIGC_MATERIAL_PROVIDER_REGISTRY: Record<AigcMaterialProviderId, AigcMaterialProvider> = {
+  deterministic_local_image_fill: mockProvider,
   mock_provider: mockProvider,
   google_gemini_image: googleGeminiImageProvider,
   local_folder_provider: disabledProvider("local_folder_provider"),
@@ -564,6 +565,19 @@ export const AIGC_MATERIAL_PROVIDER_REGISTRY: Record<AigcMaterialProviderId, Aig
   none: disabledProvider("none")
 };
 
-export function getAigcMaterialProvider(id: AigcMaterialProviderId = "mock_provider"): AigcMaterialProvider {
+export function normalizeAigcMaterialProviderId(id: AigcMaterialProviderId = "deterministic_local_image_fill"): {
+  id: AigcMaterialProviderId;
+  warning?: string;
+} {
+  if (id === "mock_provider") {
+    return {
+      id: "deterministic_local_image_fill",
+      warning: "mock_provider is deprecated; use deterministic_local_image_fill. It is deterministic local generation, not fake output."
+    };
+  }
+  return { id };
+}
+
+export function getAigcMaterialProvider(id: AigcMaterialProviderId = "deterministic_local_image_fill"): AigcMaterialProvider {
   return AIGC_MATERIAL_PROVIDER_REGISTRY[id] ?? mockProvider;
 }

@@ -41,7 +41,36 @@
 - [演示脚本](./spec_v2/demo-playbook.md)
 - [Schema](./spec_v2/schemas/)
 
-旧版 `specs_v1/` 和 `spec_v1_1/` 仅保留作历史追踪，当前以 `spec_v2/` 为准。
+**最终提交规范以 [`spec_v3/`](./spec_v3/) 为准**（Spec v1.3 — Source-first RenderRecipe Engine）；`spec_v2/` 仍是更广的产品规范，`specs_v1/` 和 `spec_v1_1/` 仅作历史追踪。
+
+- [Spec v1.3 需求](./spec_v3/requirements.md)、[系统设计](./spec_v3/design.md)、[RenderRecipe schema](./spec_v3/schemas/render-recipe.schema.json)、[实现状态](./spec_v3/implementation-status.md)、[演示脚本](./spec_v3/demo-playbook.md)
+
+## Spec v1.3 — Source-first RenderRecipe（最终提交演示）
+
+针对「渲染 overfit」investigation（[REPORT](./docs/artifacts/render_overfit_findings/REPORT.md)）暴露的「样例无关的固定模具」问题（同类 beat_cut 输入坍缩成同一 6-primitive 序列，跨样例布局 NCC 0.868–1.000），v1.3 把渲染改成 **source-first + RenderRecipe 单一契约**：
+
+```text
+样例视频 = 仅结构证据（不复制帧/音频/水印）
+目标素材 / 源视频 = 进画面的输出素材
+→ buildRenderRecipe（timeline.renderPlan.renderRecipe，唯一渲染契约，每个 clip 带可审计 primitiveReason）
+→ FFmpeg（合成真实素材像素 + 卡点字幕 + 程序化 BGM，产出 final.mp4）
+   与 Remotion ViralRecipe composition（消费同一 recipe，产出 final.remotion.mp4）
+```
+
+最终演示产品是 **AeroSpin 便携涡轮小风扇**产品广告。仓库无真实风扇素材，故目标素材由**真实 Gemini 2.5 Flash Image（Nano Banana）生成**并标注 provenance `aigc_generated_material`（非用户上传、非真实产品照）。
+
+```bash
+# 工具链前缀（系统 node 是过期 v12；ffmpeg/python 在 viral conda env）
+export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
+
+# 1) 生成真实 AIGC 风扇目标 fixture（需 GEMINI_API_KEY + 外部 provider opt-in）
+node scripts/generate-aerospin-fan-fixture.mjs
+
+# 2) 最终提交演示：Demo A（editing.mov beat_cut + 风扇）+ Demo B（motion_graph + 同一风扇素材）+ 反 overfit 多样性
+npm run demo:final
+```
+
+产物：`docs/artifacts/final_submission/`（`demo_a_editing_fan/`、`demo_b_motion_graph_fan/`、`diversity_eval/`、`FINAL_REPORT.md`）。每个 demo 含 `final.mp4`（FFmpeg）、`final.remotion.mp4`（Remotion）、`render-recipe.json`、`quality-gates.json`、`sample-copy-safety.json`、`source-material-usage.json`、contact sheet、`HUMAN_REVIEW_REPORT.md`。**跨样例反 overfit 结果：layout NCC ≈ 0.01**（同样素材、不同样例产出结构迥异的视频，固定模具被打破）。
 
 ## 目录结构
 
@@ -131,17 +160,23 @@ node scripts/check-artifact-hygiene.mjs
 ```text
 video
 → ffprobe 元数据
-→ PySceneDetect 场景切点 + 每镜头关键帧/视觉族标签（scripts/analyze-evidence-timeline.py）
+→ PySceneDetect 场景切点 + 每镜头关键帧/视觉族标签 + 每镜头 motionEnergy（Farneback 光流）
 → librosa 鼓点网格（BPM / beats / onsets）
+→ 60 帧 frameMetrics（blackBgRatio / redYellowRatio / motionDiffMean / cutLikeCount）+ movingObjectCandidates
 → OCR / ASR 文本按时间戳绑定到镜头
-→ VisualEvidenceTimeline（每个 induced/required 槽位带 frameIds + timeRange + 证据缩略图）
+→ VisualEvidenceTimeline v2（6 视觉族：object_motion/kinetic_typography/background/storyboard/live_action_montage/bgm）
 → Gemini VLM（被证据 grounding，不再自由发挥）→ Doubao/Ark 合并
-→ beat_cut StructureTemplate（neon hero → kinetic rule cards → beat-sync montage → impact flash → CTA）
-→ style-locked renderer（黑底、红黄大字、卡点硬切、动作混剪、红色 CTA ticker）+ 音频
-→ 渲染质量 gate（无 placeholder、有音频/卡点、证据覆盖 ≥70%）
+→ beat_cut StructureTemplate（8 个 moving-material 槽位：主视觉/背景/文字卡/分镜规则/动作混剪/冲击闪/BGM/CTA）
+→ 分层时间线（layers + slotId/motion/assetPolicy，按真实 152 BPM 卡点）+ 诚实缺口（moving_material_missing / bgm_missing）
+→ style-locked 动态渲染器（黑底动态光带、卡点白闪、BGM EQ 条、硬切混剪、红色冲击星芒、红黄大字、CTA ticker）+ 音频
+→ 渲染质量 gate v2（无 placeholder、有音频、证据覆盖 ≥0.8、motionDiffMean ≥0.04、cutLikeCount ≥5、分层片段 ≥5、moving 缺口已上报）
 ```
 
-`beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。
+`beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。**moving 素材/背景/分镜/BGM 是一等结构槽位 + 渲染契约 + gate**：没有目标动作素材时，动作混剪用高运动的程序化代理（绝不复制样例帧）并上报 `moving_material_missing`，所以输出不会退化成静态卡片。
+
+**v3（human-fidelity）**：分析器再抽取 **hero-object 描述符**（head/mask 类型 + 调色板 + 运动）和 **TypographyEvidenceV2**（OCR bbox → 版式角色/颜色/字号/动效），渲染器据此画**程序化霓虹头部/面罩剪影**（不再是方块，绝不复制样例人脸）、**分角色变化的字幕版式/颜色/逐字显现/抖动**，并用**分层程序化 BGM**（drone+kick+bass+hat+noise，频谱质心远高于纯 click）替代单 click。gate 升级到 **v3 per-clip** 指标（hero≥0.025、文字片段≥0.01、混剪≥0.04，静态早段无法靠全局均值蒙混）+ hero 描述符/代理、typography 证据、audio richness、storyboard 非空、bgm 去重、fillPlan 一致性等。`npm run full-loop:editing` 把整条产品链路落成 22 个可人工评审的 stage 目录。
+
+**v3 VisualElementGraph（localize-then-label）**：架构是 **先用 CV/光流/OCR 把元素定位出来（bbox + 轨迹），VLM 只对已框出的候选做语义命名**（不再让 VLM 在 1FPS 视频里猜坐标）。分析器产出 `visualElementGraph`：hero_object（光流 bbox 轨迹 + center 轨迹 + 面积曲线）、kinetic_typography 与 **watermark**（按角落启发式分离，抖音水印只标注不复刻）、impact_fx、background、cta，加 shot 节点（dominantElements/cutType/motionClass/beatSync）与 `audioStructure`（bass/music/hats 层占比）。渲染器**真实消费**图谱：hero 剪影按 `positionClass` 定位、BGM 按学到的层占比混音。重型 tracker（Grounded-SAM2/SAM2/RAFT/CoTracker/Demucs/Essentia）是 **env-gated stub**（默认关、CI 不受影响）。v3 gate **检验真实使用**而非仅存在：`element_graph_renderer_consumed`（hero 元素已挂到 layer 且渲染开场片段确实有运动）、`typography_layout_used`、`audio_structure_used`。`--gates v3` real-API 全闭环 **47/47**。
 
 实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
 
@@ -152,10 +187,14 @@ npm run build && node apps/api/dist/server.js
 # 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
 npm run e2e:editing-beatcut
 
-# 3) 渲染质量 gate（beat_cut 严格模式）
+# 3) 渲染质量 gate v3（beat_cut moving-material + human-fidelity 严格模式，40 项）
 npm run eval:render-quality -- --render storage/generated/<renderId>.mp4 \
   --template /tmp/editing_e2e/template.json --generation /tmp/editing_e2e/generation.json \
-  --sample test_videos/editing.mov --expect-video-type beat_cut --strict
+  --sample test_videos/editing.mov --expect-video-type beat_cut --gates v3 --strict
+
+# 4) 产品级全闭环 artifact runner（22 个 stage 目录 + 对比图 + per-clip motion + audio + v3 gate）
+npm run full-loop:editing -- --sample ./test_videos/manual/editing.mov \
+  --prompt "主题：爆款结构迁移引擎；..." --out docs/artifacts/full_loop_editing_mov
 
 # 4) 单独跑证据分析器 / 模型 provider 评测
 npm run analyze:evidence -- --video test_videos/editing.mov --out /tmp/ev.json --frames-dir /tmp/ev_frames
@@ -164,7 +203,7 @@ npm run eval:model-understanding -- --sample test_videos/editing.mov
 
 输出（`storage/generated/` 渲染产物 + `docs/artifacts/model_eval/`）：beat_cut MP4（黑底大字 + 卡点 + 音频）、按 clip 抽帧的真实预览、`docs/artifacts/model_eval/editing_mov_model_eval.{json,md}`（heuristic / Gemini / Ark 对比，失败可见）。
 
-验收：`packages/shared/src/__tests__/editingMovBeatCutGolden.test.ts`（golden 模板/时间线/风格锁）+ `scripts/evaluate-render-quality.mjs`（10/10 gate）。
+验收：`packages/shared/src/__tests__/editingMovMovingMaterialGolden.test.ts`（v2 确定性 golden：8 槽位/分层时间线/诚实缺口/152 BPM；并证明 gate 有牙——理想渲染过线、修复前的静态渲染不过 motion 线）+ `editingMovBeatCutGolden.test.ts` + `scripts/evaluate-render-quality.mjs --gates v2`（27/27 gate）。v2 测试 oracle 在 `test_fixtures/expected_editing_mov_case_v2/`。
 
 ## Motion Graph 结构迁移演示
 
@@ -372,7 +411,8 @@ AIGC 安全策略：
 - 外部 AIGC 目前只用于图片素材生成；不默认生成整段视频。
 - Seedance/视频生成 provider 仍是后续 P1 能力，不是当前默认路径。
 - Gemini 只作为质量 gate，不是唯一事实来源。
-- evidence-first beat_cut pipeline 已接入实时 API（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa 产出 beat_cut MP4 并通过 10/10 gate）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
+- evidence-first beat_cut pipeline 已接入实时 API 并升级到 **v2 moving-material 版**（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa + 光流 motionEnergy 产出 8 槽位 beat_cut、分层时间线、动态渲染，通过 `--gates v2` 27/27）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
+- v2 本轮聚焦 感知→模板→渲染→gate 闭环；KB 的 moving/背景/BGM/分镜 证据面板、SAM2 物体追踪、AIGC 视频（Seedance）补 moving 素材属于下一轮（当前缺 moving 素材用高运动程序化代理 + 上报 `moving_material_missing`）。
 - **已删除所有 mock 适配器**（MockAIAdapter / MockVideoToolAdapter / MockRenderer / `mock_preview` / 文本 mock 样例分析）。真实 provider 失败时直接报错，绝不伪造结果。`AI_PROVIDER` 现支持 `gemini`（默认，文本 LLM 与 Gemini VLM 是**分离的不同 request**）/ `ark_doubao` / `openai_compatible`；因示例 `ARK_API_KEY` 401，已切到 `AI_PROVIDER=gemini`，`aiEnrichmentStatus=ok`。（`buildMockVideoAnalysis` 仅作为单元测试/seed/case 脚本的确定性 fixture，不在运行链路中。）
 - beat-cut renderer / 真实帧目前在 FFmpeg MP4 路径最完整；Remotion 组件尚未镜像全部 beat-cut primitives（ImpactFlashStamp 等）。
 - 浏览器已有 AIGC gap-fill 按钮和基础结果面板；更完整的拖拽上传、人工审核/选择生成候选、批量素材管理仍是产品化工作。

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Learning Fidelity Report v4",
+  "type": "object",
+  "required": [
+    "case",
+    "status",
+    "counts",
+    "droppedEvidence"
+  ],
+  "properties": {
+    "case": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "warn",
+        "fail"
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "required": [
+        "analysis",
+        "template",
+        "timeline",
+        "recipe"
+      ],
+      "properties": {
+        "analysis": {
+          "type": "object"
+        },
+        "template": {
+          "type": "object"
+        },
+        "timeline": {
+          "type": "object"
+        },
+        "recipe": {
+          "type": "object"
+        }
+      }
+    },
+    "droppedEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "firstLossLayer",
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "firstLossLayer": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warn",
+              "fatal"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "suggestedFix": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

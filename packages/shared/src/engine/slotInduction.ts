@@ -1,6 +1,7 @@
 import type { VLMVideoAnalysis } from "../adapters.js";
 import type {
   AcceptedReplacementAssetType,
+  EvidenceShot,
   FillStrategy,
   InducedSlotStatus,
   InducedVisualSlot,
@@ -331,12 +332,18 @@ function roleRegion(role: SegmentRole): [number, number] {
     case "hook":
       return [0, 0.2];
     case "setup":
-      return [0.05, 0.32];
+      return [0.05, 0.36];
+    case "body":
+      return [0.32, 0.6];
     case "proof":
       return [0.55, 0.92];
     case "cta":
-      return [0.8, 1];
+      return [0.82, 1];
     case "transition":
+      // Late impact/transition window — NOT the whole video (was [0,1], which produced
+      // absurdly broad evidence ranges like [0, 118] for slot_impact_flash).
+      return [0.7, 0.9];
+    case "global":
       return [0, 1];
     default:
       return [0.15, 0.78];
@@ -360,21 +367,74 @@ export function bindSlotEvidence(
   if (!evidence || evidence.shots.length === 0) {
     return { confidence, frameIds: [], textEvidence: texts.slice(0, 4), summary };
   }
-  let matches = evidence.shots.filter((shot) => shot.family === family);
-  let signal = "evidence_analyzer:family";
-  if (matches.length === 0) {
-    const [lo, hi] = roleRegion(role);
-    const loSec = lo * evidence.durationSec;
-    const hiSec = hi * evidence.durationSec;
-    matches = evidence.shots.filter((shot) => {
-      const mid = (shot.startSec + shot.endSec) / 2;
-      return mid >= loSec && mid <= hiSec;
-    });
-    signal = "evidence_analyzer:role_region";
+  const dur = evidence.durationSec;
+  // A shot belongs to a family by its argmax `family` or any multi-score `evidenceFamilies` (v2).
+  const famMatch = (shot: EvidenceShot): boolean =>
+    shot.family === family || (shot.evidenceFamilies ?? []).some((f) => f.family === family);
+
+  // Global BGM slot — bind to the whole audio beat grid, not a frame window.
+  if (family === "audio") {
+    const grid = evidence.beatGrid;
+    const ok = grid?.status === "ok";
+    return {
+      confidence: ok ? confidence : Math.min(confidence, 0.5),
+      timeRange: [0, Number(dur.toFixed(3))],
+      frameIds: [],
+      textEvidence: [`${grid?.bpm ?? 152} BPM`, ...texts].filter(Boolean).slice(0, 4),
+      summary: ok ? `${grid?.bpm ?? 152} BPM beat grid (${grid?.beats?.length ?? 0} beats)` : summary,
+      signalSource: "evidence_analyzer:beat_grid",
+      evidenceKinds: ok ? ["audio", "beat"] : ["audio"]
+    };
   }
-  if (matches.length === 0) {
-    matches = evidence.shots.slice(0, 3);
-    signal = "evidence_analyzer:nearest";
+
+  // Global background slot — representative stills across the whole sample + palette evidence.
+  if (role === "global" || family === "background") {
+    const pool = evidence.shots.filter(famMatch);
+    const base = pool.length ? pool : evidence.shots;
+    const repr = [base[0], base[Math.floor(base.length / 2)], base[base.length - 1]].filter(Boolean) as EvidenceShot[];
+    return {
+      confidence,
+      timeRange: [0, Number(dur.toFixed(3))],
+      frameIds: repr.flatMap((shot) => shot.keyframeIds).slice(0, 6),
+      framePaths: repr.flatMap((shot) => shot.evidencePaths ?? []).slice(0, 6),
+      textEvidence: texts.slice(0, 4),
+      summary,
+      signalSource: "evidence_analyzer:global_background",
+      evidenceKinds: ["visual", "palette"]
+    };
+  }
+
+  // Non-global slots: family ∩ role-region, then role-region, then family, then nearest —
+  // always tightened to the role's time window so evidence ranges stay specific.
+  const [lo, hi] = roleRegion(role);
+  const loSec = lo * dur;
+  const hiSec = hi * dur;
+  const inRegion = (shot: EvidenceShot): boolean => {
+    const mid = (shot.startSec + shot.endSec) / 2;
+    return mid >= loSec && mid <= hiSec;
+  };
+  const famMatches = evidence.shots.filter(famMatch);
+  const famInRegion = famMatches.filter(inRegion);
+  let matches: EvidenceShot[];
+  let signal: string;
+  if (famInRegion.length) {
+    matches = famInRegion;
+    signal = "evidence_analyzer:family_region";
+  } else {
+    const regionShots = evidence.shots.filter(inRegion);
+    if (regionShots.length) {
+      matches = regionShots;
+      signal = "evidence_analyzer:role_region";
+    } else if (famMatches.length) {
+      matches = famMatches.slice(0, 3);
+      signal = "evidence_analyzer:family";
+    } else {
+      const center = (loSec + hiSec) / 2;
+      matches = [...evidence.shots]
+        .sort((a, b) => Math.abs((a.startSec + a.endSec) / 2 - center) - Math.abs((b.startSec + b.endSec) / 2 - center))
+        .slice(0, 2);
+      signal = "evidence_analyzer:nearest";
+    }
   }
   const frameIds = matches.flatMap((shot) => shot.keyframeIds).slice(0, 8);
   const framePaths = matches.flatMap((shot) => shot.evidencePaths ?? []).slice(0, 8);
@@ -383,10 +443,12 @@ export function bindSlotEvidence(
   const ocrTexts = matches.flatMap((shot) => shot.ocrText ?? []);
   const asrTexts = matches.flatMap((shot) => shot.asrText ?? []);
   const beatAligned = matches.some((shot) => shot.beatAligned);
+  const motion = matches.reduce((max, shot) => Math.max(max, shot.motionEnergy ?? 0), 0);
   const evidenceKinds = ["visual"];
   if (ocrTexts.length) evidenceKinds.push("ocr");
   if (asrTexts.length) evidenceKinds.push("asr");
   if (beatAligned) evidenceKinds.push("beat");
+  if (motion > 0.6) evidenceKinds.push("motion");
   const mergedTexts = [...texts, ...ocrTexts, ...asrTexts].filter(Boolean);
   return {
     confidence,

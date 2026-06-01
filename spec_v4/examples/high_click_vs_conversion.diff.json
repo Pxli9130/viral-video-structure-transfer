@@ -1,0 +1,21 @@
+{
+  "high_click": {
+    "hookDurationSec": 2.2,
+    "textDensity": "high",
+    "motionIntensity": "high",
+    "ctaPlacement": "late",
+    "audioDensity": "high"
+  },
+  "high_conversion": {
+    "hookDurationSec": 3.0,
+    "textDensity": "medium",
+    "motionIntensity": "medium",
+    "ctaPlacement": "early_and_late",
+    "audioDensity": "medium",
+    "sellingPointOrder": [
+      "proof",
+      "benefit",
+      "cta"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/spec_v4/transfer-plan.schema.json",
+  "title": "TransferPlan v4",
+  "type": "object",
+  "required": [
+    "id",
+    "templateId",
+    "versionStrategy",
+    "selectedAtoms",
+    "slotAssignments",
+    "gapReportId",
+    "renderRecipeId"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "templateId": {
+      "type": "string"
+    },
+    "versionStrategy": {
+      "enum": [
+        "default",
+        "high_click",
+        "high_conversion",
+        "high_quality"
+      ]
+    },
+    "selectedAtoms": {
+      "type": "array"
+    },
+    "slotAssignments": {
+      "type": "array"
+    },
+    "gapReportId": {
+      "type": "string"
+    },
+    "renderRecipeId": {
+      "type": "string"
+    }
+  }
+}

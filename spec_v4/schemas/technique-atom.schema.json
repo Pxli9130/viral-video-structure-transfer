@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TechniqueAtom v4",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "category",
+    "sourceSampleId",
+    "sourceEvidenceRefs",
+    "visualPattern",
+    "timingPattern",
+    "requiredAssets",
+    "renderer",
+    "transferRules"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "category": {
+      "enum": [
+        "hook",
+        "rhythm",
+        "typography",
+        "transition",
+        "motion_graph",
+        "poster",
+        "cta",
+        "audio",
+        "layout"
+      ]
+    },
+    "sourceSampleId": {
+      "type": "string"
+    },
+    "sourceEvidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "visualPattern": {
+      "type": "object",
+      "required": [
+        "family",
+        "description"
+      ],
+      "properties": {
+        "family": {
+          "enum": [
+            "kinetic_typography",
+            "image_card_orbit",
+            "ribbon_poster",
+            "product_hero",
+            "source_montage",
+            "impact_flash",
+            "feature_card_stack",
+            "cta_slate"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "colorPalette": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "layoutMotif": {
+          "type": "string"
+        },
+        "motionMotif": {
+          "type": "string"
+        }
+      }
+    },
+    "timingPattern": {
+      "type": "object",
+      "required": [
+        "durationRangeSec"
+      ],
+      "properties": {
+        "startRole": {
+          "enum": [
+            "opening",
+            "middle",
+            "climax",
+            "ending"
+          ]
+        },
+        "durationRangeSec": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "beatSync": {
+          "type": "boolean"
+        },
+        "cutDensity": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "accentBeats": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "requiredAssets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "type",
+          "minCount",
+          "importance"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "hero_image",
+              "source_video_shots",
+              "media_cards",
+              "logo",
+              "selling_points",
+              "background",
+              "cta_text",
+              "audio"
+            ]
+          },
+          "type": {
+            "enum": [
+              "image",
+              "video",
+              "text",
+              "audio",
+              "generated",
+              "none"
+            ]
+          },
+          "minCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "importance": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        }
+      }
+    },
+    "renderer": {
+      "type": "object",
+      "required": [
+        "preferred",
+        "component"
+      ],
+      "properties": {
+        "preferred": {
+          "enum": [
+            "remotion",
+            "ffmpeg"
+          ]
+        },
+        "component": {
+          "enum": [
+            "KineticTypographySweep",
+            "ParametricRibbonSurface",
+            "MediaCardCascade",
+            "ProductPosterHero",
+            "SourceClipBeatMontage",
+            "FeatureCardStack",
+            "ImpactFlash",
+            "CTAEndSlate"
+          ]
+        },
+        "fallbackComponent": {
+          "type": "string"
+        }
+      }
+    },
+    "transferRules": {
+      "type": "object",
+      "required": [
+        "canUseTargetImages",
+        "canUseSourceVideo",
+        "canUseAigcFill",
+        "samplePixelsAllowed",
+        "fallbackStrategies"
+      ],
+      "properties": {
+        "canUseTargetImages": {
+          "type": "boolean"
+        },
+        "canUseSourceVideo": {
+          "type": "boolean"
+        },
+        "canUseAigcFill": {
+          "type": "boolean"
+        },
+        "samplePixelsAllowed": {
+          "const": false
+        },
+        "fallbackStrategies": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "structure_reorder",
+              "text_fill",
+              "packaging_fill",
+              "aigc_fill",
+              "asset_reuse",
+              "procedural_motion"
+            ]
+          }
+        }
+      }
+    },
+    "qualityHints": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

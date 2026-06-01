@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "visual-evidence-timeline-v2",
+  "sourceAssetFilename": "editing.mov",
+  "summary": "editing.mov 是 118.2s beat-cut 剪辑教程：暗黑科技开场、黑底大字卡、红/黄/白中文排版、动作蒙太奇、硬切、152 BPM BGM 卡点、鼓励式 CTA。",
+  "metadata": {
+    "durationSec": 118.212,
+    "sizeBytes": 17220280,
+    "streams": [
+      {
+        "type": "video",
+        "codec": "h264",
+        "width": 1280,
+        "height": 720,
+        "fps": "24/1",
+        "durationSec": 118.208
+      },
+      {
+        "type": "audio",
+        "codec": "aac",
+        "width": null,
+        "height": null,
+        "fps": "0/0",
+        "durationSec": 118.212
+      }
+    ],
+    "hasAudio": true,
+    "hasVideo": true,
+    "blackBgRatio": 0.675,
+    "redYellowRatio": 0.072,
+    "motionDiffMean": 0.199,
+    "cutLikeCount": 26,
+    "sampledFrames": 60
+  },
+  "detectedStyle": {
+    "videoType": "beat_cut",
+    "bpm": 152,
+    "blackBgRatioApprox": 0.76,
+    "mustTransfer": [
+      "shot rhythm",
+      "BGM beat grid",
+      "kinetic typography",
+      "moving hero object",
+      "background layer style",
+      "live-action montage layout",
+      "CTA card pattern"
+    ],
+    "mustNotCopy": [
+      "sample frames",
+      "sample audio",
+      "creator watermark",
+      "person likeness"
+    ]
+  },
+  "evidenceFamilies": [
+    {
+      "family": "object_motion",
+      "timeRangeSec": [
+        0,
+        2.4
+      ],
+      "visualForm": "neon_hero_intro",
+      "movingMaterial": "rotating helmet/mask-like proxy object",
+      "expectedTargetSubstitution": "target logo/product/avatar/AI-generated hero object"
+    },
+    {
+      "family": "kinetic_typography",
+      "timeRangeSec": [
+        10,
+        34
+      ],
+      "visualForm": "beat_text_card",
+      "movingMaterial": "text scale/pulse/flash synced to beat",
+      "expectedTargetSubstitution": "prompt-derived Chinese headline and tutorial rules"
+    },
+    {
+      "family": "background",
+      "timeRangeSec": [
+        0,
+        118.2
+      ],
+      "visualForm": "dark tech background / black card background",
+      "movingMaterial": "slow light streaks, scanlines, color pulses",
+      "expectedTargetSubstitution": "procedural bg or generated bg image, not flat color"
+    },
+    {
+      "family": "storyboard",
+      "timeRangeSec": [
+        0,
+        15
+      ],
+      "visualForm": "hook -> setup -> rule -> proof -> flash -> CTA",
+      "movingMaterial": "shot-level hard-cut plan",
+      "expectedTargetSubstitution": "target timeline with per-shot clips and duration"
+    },
+    {
+      "family": "live_action_montage",
+      "timeRangeSec": [
+        64,
+        106.7
+      ],
+      "visualForm": "action montage",
+      "movingMaterial": "source/user moving clips, abstract moving cards if no source",
+      "expectedTargetSubstitution": "target source clips selected by motion/highlight, fallback generated/procedural moving clips"
+    },
+    {
+      "family": "bgm",
+      "timeRangeSec": [
+        0,
+        118.2
+      ],
+      "visualForm": "152 BPM beat grid",
+      "movingMaterial": "audio onset grid + visual pulses",
+      "expectedTargetSubstitution": "authorized BGM or synth beat with beat-aligned cuts"
+    }
+  ]
+}

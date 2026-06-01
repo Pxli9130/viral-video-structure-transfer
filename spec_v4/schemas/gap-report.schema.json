@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GapReport v4",
+  "type": "object",
+  "required": [
+    "version",
+    "gaps"
+  ],
+  "properties": {
+    "version": {
+      "const": "gap-report-v4"
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "slotId",
+          "status",
+          "requiredAsset",
+          "matchedAssetIds",
+          "reason",
+          "impact",
+          "repairOptions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slotId": {
+            "type": "string"
+          },
+          "atomId": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "matched",
+              "weak_match",
+              "missing"
+            ]
+          },
+          "requiredAsset": {
+            "type": "string"
+          },
+          "matchedAssetIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "impact": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "repairOptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "description",
+                "selected",
+                "expectedVisualResult"
+              ],
+              "properties": {
+                "type": {
+                  "enum": [
+                    "structure_reorder",
+                    "text_fill",
+                    "packaging_fill",
+                    "aigc_fill",
+                    "asset_reuse",
+                    "procedural_motion"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "selected": {
+                  "type": "boolean"
+                },
+                "expectedVisualResult": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

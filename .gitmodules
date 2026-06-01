@@ -1,0 +1,3 @@
+[submodule "tools/vvst-eval"]
+	path = tools/vvst-eval
+	url = https://github.com/Pxli9130/viral-video-structure-transfer-eval.git
