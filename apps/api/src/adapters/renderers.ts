@@ -155,7 +155,14 @@ function pickResolution(timeline: Timeline): { width: number; height: number } {
 }
 
 function ffmpegColor(hex: string | undefined, fallback: string): string {
-  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return fallback;
+  if (!hex) return fallback;
+  const rgba = /^rgba?\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})(?:,\s*([0-9.]+))?\)$/i.exec(hex.trim());
+  if (rgba) {
+    const channel = (value: string) => Math.max(0, Math.min(255, Number(value))).toString(16).padStart(2, "0");
+    const alpha = rgba[4] !== undefined ? `@${Math.max(0, Math.min(1, Number(rgba[4]))).toFixed(2)}` : "";
+    return `0x${channel(rgba[1])}${channel(rgba[2])}${channel(rgba[3])}${alpha}`;
+  }
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return fallback;
   return `0x${hex.slice(1)}`;
 }
 
@@ -327,7 +334,7 @@ function recipeDrawTextFilter(text: string, layer: RenderRecipeTextLayer | undef
       ? `${left}+${boxW}-text_w`
       : `${left}+(${boxW}-text_w)/2`;
   const yExpr = `${top}+(${Math.max(24, Math.round(H * box.h))}-text_h)/2`;
-  const shadow = layer.typography.shadow ? `:shadowcolor=${layer.typography.shadow.color ?? "black@0.75"}:shadowx=${Math.round(W * (layer.typography.shadow.dxRatio ?? 0.004))}:shadowy=${Math.round(H * (layer.typography.shadow.dyRatio ?? 0.004))}` : "";
+  const shadow = layer.typography.shadow ? `:shadowcolor=${ffmpegColor(layer.typography.shadow.color, "black@0.75")}:shadowx=${Math.round(W * (layer.typography.shadow.dxRatio ?? 0.004))}:shadowy=${Math.round(H * (layer.typography.shadow.dyRatio ?? 0.004))}` : "";
   return `drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${color}:fontsize=${size}:x=${alignExpr}:y=${yExpr}:box=1:boxcolor=${fallbackStyle.boxColor}:boxborderw=12${shadow}`;
 }
 

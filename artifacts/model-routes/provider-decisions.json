@@ -1,15 +1,15 @@
 {
   "mode": "offline",
-  "generatedAt": "2026-06-01T21:41:31.524Z",
+  "generatedAt": "2026-06-01T22:29:20.161Z",
   "case": null,
   "allCases": false,
   "allowCloud": false,
   "allowSampleMediaExternal": false,
   "allowQualityJudgeSampleFrames": false,
-  "strictPolicy": false,
+  "strictPolicy": true,
   "summary": {
     "version": "model-router-v4.2",
-    "generatedAt": "2026-06-01T21:41:31.524Z",
+    "generatedAt": "2026-06-01T22:29:20.160Z",
     "decisions": [
       {
         "task": "video_structure_vlm",

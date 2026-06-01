@@ -1,7 +1,7 @@
 # Model Route Summary
 
 version: model-router-v4.2
-generatedAt: 2026-06-01T21:41:31.528Z
+generatedAt: 2026-06-01T22:29:20.164Z
 totalTasks: 28
 requiredTasks: 14
 featureGatedRequiredTasks: 0

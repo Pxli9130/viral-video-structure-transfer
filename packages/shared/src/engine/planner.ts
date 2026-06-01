@@ -905,6 +905,66 @@ function motionAtomsFromUnknown(value: unknown): MotionAtomSpec[] {
   );
 }
 
+function motionAtomsFromVisualEvidence(analysis: VideoAnalysisResult): MotionAtomSpec[] {
+  const ev = analysis.evidenceTimeline;
+  const graph = ev?.visualElementGraph;
+  const elements = graph?.elements ?? [];
+  const source = elements.find((element) => {
+    const haystack = [
+      element.family,
+      element.motionPattern,
+      element.positionClass,
+      element.sizeClass,
+      element.appearance?.objectDescriptor
+    ].join(" ").toLowerCase();
+    return /ribbon|orbit|helix|sweep|light_sweep|hero_object/.test(haystack);
+  });
+  if (!source) return [];
+  const pattern = String(source.motionPattern ?? source.appearance?.objectDescriptor ?? "").toLowerCase();
+  const timeRange = Array.isArray(source.timeRangeSec) ? source.timeRangeSec : undefined;
+  const track = Array.isArray(source.bboxTrackNorm) ? source.bboxTrackNorm : [];
+  const evidenceFrames = track
+    .map((item) => (typeof item === "object" && item && typeof (item as { t?: unknown }).t === "number" ? (item as { t: number }).t : undefined))
+    .filter((value): value is number => value !== undefined)
+    .slice(0, 8);
+  const graphPalette = graph?.globalStyle?.palette;
+  const palette = Array.isArray(graphPalette) && graphPalette.every((item): item is string => typeof item === "string") && graphPalette.length
+    ? graphPalette
+    : RIBBON_COLORS;
+  return [{
+    type: "parametric_ribbon_surface",
+    fulfilledBy: "procedural_generation",
+    keywords: pattern.includes("light") ? ["LIGHT", "SWEEP", "PRODUCT"] : RIBBON_KEYWORDS,
+    colorProgression: palette,
+    style: "mg_motion",
+    density: pattern.includes("impact") ? 4 : 3,
+    speed: pattern.includes("slow") ? 0.62 : 0.92,
+    opacity: pattern.includes("light") ? 0.46 : 0.62,
+    bandWidth: pattern.includes("light") ? 56 : 82,
+    edgeWidth: pattern.includes("light") ? 8 : 14,
+    gradientStops: palette,
+    frontLayerCount: pattern.includes("light") ? 1 : 2,
+    backLayerCount: pattern.includes("light") ? 1 : 2,
+    textOnRibbon: /text|title|caption/.test(pattern),
+    depthLayering: /orbit|helix|hero_object/.test(`${source.family} ${pattern}`),
+    twistIntensity: pattern.includes("helix") ? 0.66 : 0.42,
+    perspectiveStrength: pattern.includes("orbit") || pattern.includes("helix") ? 0.5 : 0.28,
+    specularHighlight: pattern.includes("light"),
+    shadowOpacity: 0.34,
+    climaxBuild: true,
+    surfaceType: "wide_band",
+    pathFamily: pattern.includes("helix") ? "vertical_helix" : pattern.includes("diagonal") ? "diagonal_sweep" : "horizontal_wave",
+    axis: pattern.includes("vertical") || pattern.includes("helix") ? "screen_y" : "screen_x",
+    depthBehavior: /orbit|helix/.test(pattern) ? "front_back_crossing" : "perspective_only",
+    layoutRelation: "around_title",
+    textRelation: /text|title|caption/.test(pattern) ? "text_on_ribbon" : "none",
+    confidence: source.evidence?.confidence ?? 0.72,
+    evidenceFrames,
+    startSec: typeof timeRange?.[0] === "number" ? timeRange[0] : 0,
+    endSec: typeof timeRange?.[1] === "number" ? timeRange[1] : analysis.metadata.durationSec
+  }];
+}
+
 function evidenceMotionAtomsFromAnalysis(analysis: VideoAnalysisResult, vlm?: VLMVideoAnalysis): MotionAtomSpec[] {
   const ev = analysis.evidenceTimeline as (VideoAnalysisResult["evidenceTimeline"] & { motionAtoms?: unknown }) | undefined;
   const direct = [
@@ -914,7 +974,8 @@ function evidenceMotionAtomsFromAnalysis(analysis: VideoAnalysisResult, vlm?: VL
   ];
   if (direct.length) return direct;
   const ribbonMotion = analysis.motionGeometry?.ribbonMotion ?? vlm?.visualStyle?.ribbonMotion;
-  return ribbonMotion ? [motionAtomFromRibbonMotion(ribbonMotion, analysis.metadata.durationSec)] : [];
+  if (ribbonMotion) return [motionAtomFromRibbonMotion(ribbonMotion, analysis.metadata.durationSec)];
+  return motionAtomsFromVisualEvidence(analysis);
 }
 
 export function attachEvidenceToTemplate(
@@ -3445,6 +3506,12 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
   const anyTargetAsset =
     (request.targetAssets?.length ?? 0) > 0 ||
     styledClips.some((c) => (c.layers ?? []).some((l) => Boolean(l.assetId)));
+  const targetAssetKindById = new Map((request.targetAssets ?? []).map((asset) => [asset.id, asset.kind]));
+  const isRenderableMediaAsset = (assetId: string | undefined): boolean => {
+    if (!assetId) return false;
+    const kind = targetAssetKindById.get(assetId);
+    return !kind || kind === "image" || kind === "video" || kind === "logo" || kind === "background_image";
+  };
 
   const videoType: RenderRecipe["videoType"] = isBeatCut
     ? "beat_cut_product"
@@ -3473,8 +3540,8 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
     }));
   let templateTypoCursor = 0;
   const clips: RenderRecipeClip[] = styledClips.map((clip) => {
-    const layerAssetId = (clip.layers ?? []).find((l) => Boolean(l.assetId))?.assetId;
-    const hasSourcePixels = Boolean(clip.sourceAssetId) || Boolean(layerAssetId);
+    const layerAssetId = (clip.layers ?? []).find((l) => Boolean(l.assetId) && isRenderableMediaAsset(l.assetId))?.assetId;
+    const hasSourcePixels = isRenderableMediaAsset(clip.sourceAssetId) || Boolean(layerAssetId);
     const fallbackComponent = recipeComponentFor(clip.motionPrimitive, { isFan, hasSourcePixels });
     const heroLayer = (clip.layers ?? []).find((l) => l.kind === "moving_material" || l.kind === "moving_video");
     const heroElement = (heroLayer?.style as
@@ -3495,9 +3562,9 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
 
     let materialKind: RenderRecipeClip["material"]["kind"];
     const assetIds: string[] = [];
-    if (clip.sourceAssetId) {
+    if (isRenderableMediaAsset(clip.sourceAssetId)) {
       materialKind = clip.sourceAssetId === source.assetId ? "source_video" : "target_image";
-      assetIds.push(clip.sourceAssetId);
+      assetIds.push(clip.sourceAssetId as string);
     } else if (layerAssetId) {
       materialKind = "target_image";
       assetIds.push(layerAssetId);
@@ -3940,6 +4007,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   const clips: TimelineClip[] = [];
   const storyboard: StoryboardItem[] = [];
   const mapping: TimelineMappingItem[] = [];
+  const slotUseCounts = new Map<string, number>();
 
   let cursor = 0;
   for (const segment of planSegments) {
@@ -3959,6 +4027,8 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
     const segmentClipIds: string[] = [];
 
     for (const slotId of slotsForSegment) {
+      const slotOccurrence = slotUseCounts.get(slotId) ?? 0;
+      slotUseCounts.set(slotId, slotOccurrence + 1);
       const slot = template.requiredSlots.find((item) => item.id === slotId);
       const mappingForSlot = mappings.find((item) => item.slotId === slotId);
       const fillForSlot = fillPlan.find((item) => item.slotId === slotId);
@@ -3972,11 +4042,13 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       const matched = mappingForSlot?.status === "matched" && !familyRendererFill;
       const strategy: "none" | FillStrategy = matched ? "none" : (fillForSlot?.strategy ?? "text_card");
       // Adaptive structure can reuse a slot across multiple clips, so the clip id must include the
-      // segment id to stay unique. Non-adaptive ids are unchanged (golden-safe).
+      // segment id to stay unique. Non-adaptive first use is unchanged, but repeated slots also need
+      // segment scoping or v4.1 layer ids collide and renderers overwrite media/text layers.
+      const segmentScopedClipId = adaptiveStructure || slotOccurrence > 0;
       const clipId = matched
-        ? (adaptiveStructure ? stableId("clip", generationId, slotId, segment.id) : stableId("clip", generationId, slotId))
-        : adaptiveStructure
-          ? stableId("clip", generationId, slotId, segment.id, "fill")
+        ? (segmentScopedClipId ? stableId("clip", generationId, slotId, segment.id, slotOccurrence) : stableId("clip", generationId, slotId))
+        : segmentScopedClipId
+          ? stableId("clip", generationId, slotId, segment.id, slotOccurrence, "fill")
           : fillForSlot?.targetClipId ?? stableId("clip", generationId, slotId, "fill");
       const slotType: SlotType = slot?.slotType ?? "background";
       const subtitle = subtitleForSlot(slotType, brief, request);

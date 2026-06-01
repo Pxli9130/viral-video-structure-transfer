@@ -147,6 +147,50 @@ function fitForPrimitive(primitive: RenderRecipeClip["selectedPrimitive"]): Rend
   return "cover";
 }
 
+function fallbackMediaBBox(clip: RenderRecipeClip): BBoxNormObject {
+  if (clip.selectedPrimitive === "CTAEndSlate" || clip.role === "cta") return { x: 0.18, y: 0.12, w: 0.64, h: 0.42 };
+  if (
+    clip.role === "hook" ||
+    clip.selectedPrimitive === "ProductPosterHero" ||
+    clip.selectedPrimitive === "ProductHeroOrbit" ||
+    clip.selectedPrimitive === "FanHeroSpin" ||
+    clip.selectedPrimitive === "ObjectTrackReveal"
+  ) {
+    return { x: 0.08, y: 0.12, w: 0.84, h: 0.56 };
+  }
+  if (clip.selectedPrimitive === "FeatureCardStack" || clip.selectedPrimitive === "MediaCardCascade" || clip.selectedPrimitive === "SplitScreenCompare") {
+    return { x: 0.12, y: 0.18, w: 0.76, h: 0.52 };
+  }
+  if (clip.selectedPrimitive === "TypographyLayoutSequence" || clip.selectedPrimitive === "KineticTypographySweep") {
+    return { x: 0.1, y: 0.14, w: 0.8, h: 0.5 };
+  }
+  return { x: 0.08, y: 0.14, w: 0.84, h: 0.54 };
+}
+
+function minAreaForMedia(clip: RenderRecipeClip): number | undefined {
+  if (clip.selectedPrimitive === "FeatureCardStack" || clip.selectedPrimitive === "MediaCardCascade" || clip.selectedPrimitive === "SplitScreenCompare") return 0.14;
+  if (clip.role === "hook" || clip.selectedPrimitive === "ProductPosterHero" || clip.selectedPrimitive === "ProductHeroOrbit" || clip.selectedPrimitive === "FanHeroSpin" || clip.selectedPrimitive === "ObjectTrackReveal") return 0.18;
+  if (clip.role === "cta" || clip.selectedPrimitive === "CTAEndSlate") return 0.16;
+  return 0.12;
+}
+
+function expandBBoxToMinArea(box: BBoxNormObject, minAreaRatio: number | undefined): BBoxNormObject {
+  if (!minAreaRatio) return box;
+  const area = box.w * box.h;
+  if (area >= minAreaRatio || area <= 0) return box;
+  const scale = Math.sqrt(minAreaRatio / area);
+  const w = Math.min(0.92, box.w * scale);
+  const h = Math.min(0.92, box.h * scale);
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return {
+    x: clamp(cx - w / 2, 0, 1 - w),
+    y: clamp(cy - h / 2, 0, 1 - h),
+    w,
+    h
+  };
+}
+
 function evidenceRefsForClip(recipe: RenderRecipe, clip: RenderRecipeClip): string[] {
   if (clip.evidenceRefs?.length) return clip.evidenceRefs;
   const sample = recipe.evidenceSummary?.sourceSampleIds?.[0] ?? "sample";
@@ -213,7 +257,8 @@ export function migrateRenderRecipeToV4_1(input: RenderRecipe, options: RenderRe
 
     if (clip.material.kind !== "none" && clip.material.kind !== "procedural" && clip.material.assetIds.length) {
       const id = `layer_${clip.clipId}_media`;
-      const mediaBBox = clip.layout.mediaBBoxNorm ?? clip.layout.bboxNorm;
+      const minAreaRatio = minAreaForMedia(clip);
+      const mediaBBox = clip.layout.mediaBBoxNorm ?? expandBBoxToMinArea(fallbackMediaBBox(clip), minAreaRatio);
       layerIds.push(id);
       layers.push({
         id,
@@ -230,9 +275,9 @@ export function migrateRenderRecipeToV4_1(input: RenderRecipe, options: RenderRe
           provenance: clip.material.provenance ?? provenanceForMaterial(clip.material)
         },
         layout: {
-          ...(mediaBBox ? { bboxNorm: mediaBBox } : {}),
+          bboxNorm: mediaBBox,
           fit: fitForPrimitive(clip.selectedPrimitive),
-          ...(clip.selectedPrimitive === "ProductPosterHero" || clip.selectedPrimitive === "ObjectTrackReveal" ? { minAreaRatio: 0.18 } : {}),
+          ...(minAreaRatio ? { minAreaRatio } : {}),
           safeArea: clip.role === "cta" ? "cta" : clip.role === "hook" ? "title" : "body"
         },
         motion: {

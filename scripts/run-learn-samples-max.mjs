@@ -51,7 +51,12 @@ const arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] 
 const KEEP_SERVER = argv.includes("--keep-server");
 const NO_REMOTION = argv.includes("--no-remotion");
 const NO_GATE = argv.includes("--no-gate");
-const SAMPLES = arg("--samples", "test_videos/editing.mov,test_videos/marketing.mov,test_videos/motion_graph_1.mov,test_videos/motion_graph_2.mov")
+const OFFLINE = argv.includes("--offline");
+const CASE = arg("--case", "");
+const DEFAULT_SAMPLES = CASE
+  ? `test_videos/${CASE}.mov`
+  : "test_videos/editing.mov,test_videos/marketing.mov,test_videos/motion_graph_1.mov,test_videos/motion_graph_2.mov";
+const SAMPLES = arg("--samples", DEFAULT_SAMPLES)
   .split(",").map((s) => s.trim()).filter(Boolean);
 const OUT = path.resolve(arg("--out", "docs/artifacts/learned_samples_max"));
 const PROMPT =
@@ -79,6 +84,16 @@ function probe(file) {
 }
 function sh(cmd, a) { return new Promise((res) => { const p = spawn(cmd, a, { stdio: ["ignore", "pipe", "pipe"] }); let e = ""; p.stderr.on("data", (d) => (e += d)); p.on("close", (code) => res({ code, err: e })); }); }
 async function contactSheet(mp4, outPng) { await sh(FFMPEG, ["-y", "-i", mp4, "-vf", "fps=1/1.6,scale=200:-1,tile=3x4", "-frames:v", "1", outPng]); }
+async function clipPreviewFrames(mp4, clips, outDir) {
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index];
+    const t = Math.max(0, Number((clip.startSec + Math.max(0.05, clip.durationSec / 2)).toFixed(3)));
+    await sh(FFMPEG, ["-y", "-ss", String(t), "-i", mp4, "-frames:v", "1", path.join(outDir, `${clip.id}.png`)]);
+    await sh(FFMPEG, ["-y", "-ss", String(t), "-i", mp4, "-frames:v", "1", path.join(outDir, `clip_${index + 1}.png`)]);
+  }
+}
 
 let serverProc = null;
 async function ensureServer() {
@@ -118,6 +133,7 @@ const FAN_TARGETS = [
   { id: "fan_feature", kind: "copy", role: "ui_showcase", text: (copy.features ?? []).join("\n") },
   { id: "fan_kinetic", kind: "copy", role: "kinetic_typography", text: copy.productName ?? copy.brandName ?? "AeroSpin" }
 ];
+const isRenderableFanMediaId = (id) => /^fan_(hero|card|mc|logo)/.test(id);
 function polish(timeline) {
   const features = (copy.features ?? []).filter(Boolean);
   let cc = 0, fc = 0;
@@ -144,7 +160,16 @@ function polish(timeline) {
     const tc = timeline.clips.find((c) => c.id === rc.clipId);
     if (!tc) continue;
     rc.text = { ...(rc.text ?? {}), copy: tc.subtitleText ?? rc.text?.copy ?? "" };
-    if (typeof tc.sourceAssetId === "string" && tc.sourceAssetId.startsWith("fan_")) rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+    if (typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+  }
+  if (recipe?.layers) for (const layer of recipe.layers) {
+    if (!layer.clipId) continue;
+    const tc = timeline.clips.find((c) => c.id === layer.clipId);
+    if (!tc) continue;
+    if (layer.type === "text" && layer.text && tc.subtitleText) layer.text.content = tc.subtitleText;
+    if (layer.type === "media" && layer.material && typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) {
+      layer.material.assetIds = [tc.sourceAssetId];
+    }
   }
   return timeline;
 }
@@ -188,22 +213,38 @@ async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
   const name = path.basename(samplePath).replace(/\.[^.]+$/, "");
   const dir = path.join(OUT, name);
   await mkdir(dir, { recursive: true });
-  console.log(`\n=== ${name}: learn (server analyze) → generate → FFmpeg + Remotion render → v3 gate ===`);
+  console.log(`\n=== ${name}: ${OFFLINE ? "offline analysis replay" : "learn (server analyze)"} → generate → FFmpeg + Remotion render → v3 gate ===`);
 
   // 1) project + upload + analyze (REAL learning on the server)
-  const project = await api("POST", "/api/projects", { name: `learn-max ${name}`, vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15 });
-  const buf = await readFile(path.join(ROOT, samplePath));
-  const form = new FormData();
-  form.append("file", new Blob([buf], { type: "video/quicktime" }), path.basename(samplePath));
-  form.append("role", "example_video");
-  form.append("sourcePolicy", "user_authorized");
-  const asset = await api("POST", `/api/projects/${project.id}/assets`, form, true);
-  console.log(`  uploaded ${name} → ${asset.id}; analyzing (real Gemini VLM + evidence + ASR/OCR, can take minutes)…`);
-  const res = await api("POST", `/api/assets/${asset.id}/analyze`, { purpose: "sample" });
-  const template = res.template;
+  let project = { id: `offline_${name}` };
+  let template;
+  let videoTl;
+  if (OFFLINE) {
+    const existingAnalysisPath = [
+      path.join(dir, "analysis.json"),
+      path.join(ROOT, "docs/artifacts/learned_samples_max", name, "analysis.json"),
+      path.join(ROOT, "docs/artifacts/learned_samples", name, "analysis.json")
+    ].find((candidate) => existsSync(candidate));
+    if (!existingAnalysisPath) throw new Error(`offline analysis not found for ${name}`);
+    videoTl = JSON.parse(readFileSync(existingAnalysisPath, "utf8"));
+    const { buildFallbackTemplate } = await loadShared();
+    template = buildFallbackTemplate(videoTl, "b2b_marketing_mg", project.id);
+    console.log(`  offline replay: ${path.relative(ROOT, existingAnalysisPath)} → rebuilt template evidence visual=${template.visualElementGraph?.elements?.length ?? 0}`);
+  } else {
+    project = await api("POST", "/api/projects", { name: `learn-max ${name}`, vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15 });
+    const buf = await readFile(path.join(ROOT, samplePath));
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type: "video/quicktime" }), path.basename(samplePath));
+    form.append("role", "example_video");
+    form.append("sourcePolicy", "user_authorized");
+    const asset = await api("POST", `/api/projects/${project.id}/assets`, form, true);
+    console.log(`  uploaded ${name} → ${asset.id}; analyzing (real Gemini VLM + evidence + ASR/OCR, can take minutes)…`);
+    const res = await api("POST", `/api/assets/${asset.id}/analyze`, { purpose: "sample" });
+    template = res.template;
+    videoTl = res.analysis?.video ?? res.analysis;
+  }
   if (!template) throw new Error("analyze did not return a learned template");
   await writeFile(path.join(dir, "learned-template.json"), JSON.stringify(template, null, 2));
-  const videoTl = res.analysis?.video ?? res.analysis;
   await writeFile(path.join(dir, "analysis.json"), JSON.stringify(videoTl ?? null, null, 2));
   console.log(`  learned: videoType=${template.videoType}, slots=${template.requiredSlots?.length ?? 0}, aiEnrichment=${template.aiEnrichmentStatus ?? "?"}`);
 
@@ -234,6 +275,7 @@ async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
   await rm(tmp, { recursive: true, force: true });
   await contactSheet(finalMp4, path.join(dir, "render-contact-sheet.png"));
   const meta = probe(finalMp4);
+  await clipPreviewFrames(finalMp4, gen.timeline.clips, path.join(dir, "preview_frames"));
 
   // 3b) Remotion render → final.remotion.mp4 (best-effort; failure does not abort the sample)
   let remotion = { ok: false, error: NO_REMOTION ? "skipped (--no-remotion)" : undefined };
@@ -336,7 +378,7 @@ async function main() {
   if (!NO_REMOTION && !REMOTION_BROWSER) console.log("⚠ no chrome-headless-shell found in known paths; Remotion will rely on its own default and may fail.");
   else if (!NO_REMOTION) console.log(`• Remotion browser: ${REMOTION_BROWSER}`);
 
-  const startedServer = await ensureServer();
+  const startedServer = OFFLINE ? false : await ensureServer();
   const { RemotionRenderer } = await loadRenderer();
   const sharedRemotionDir = path.join(OUT, "_remotion_tmp");
   await mkdir(sharedRemotionDir, { recursive: true });
@@ -391,5 +433,6 @@ async function main() {
   console.log(`\n[done] ${ffOk.length}/${results.length} samples FFmpeg-rendered, ${remOk.length} Remotion-rendered → ${OUT}`);
   console.log("ffmpeg diversity:", ffMatrix.map((m) => `${m.a}×${m.b}=${m.layout_ncc_mean}`).join("  "));
   if (ffOk.length === 0) process.exit(1);
+  process.exit(0);
 }
 main().catch((e) => { console.error("[FAIL]", redact(e?.stack ?? String(e))); if (serverProc && !KEEP_SERVER) { try { serverProc.kill("SIGTERM"); } catch { /* */ } } process.exit(1); });
