@@ -73,7 +73,7 @@ const ASSET_ROLES: AssetRole[] = [
   "render_output"
 ];
 const SOURCE_POLICIES: SourcePolicy[] = ["user_authorized", "open_download_or_user_uploaded", "demo_only", "unknown"];
-const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "hyperframes"];
+const RENDERER_TARGETS: RendererTarget[] = ["html_preview", "ffmpeg", "remotion", "remotion_recipe", "hyperframes"];
 const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "mock_provider",
   "google_gemini_image",
@@ -883,7 +883,13 @@ function buildAssetResolver(db: Database, generation?: GenerationResult): AssetP
   return {
     resolve(assetId: string) {
       const targetAsset = targetAssetsById.get(assetId);
-      if (targetAsset) return resolveTargetAssetPath(targetAsset);
+      if (targetAsset) {
+        const resolved = resolveTargetAssetPath(targetAsset);
+        if (resolved) return resolved;
+        // A managed target asset carries path = asset://managed/<id>, which resolveTargetAssetPath
+        // cannot resolve; fall through to the managed-asset lookup (by id) below so HTTP-uploaded
+        // target material actually renders.
+      }
       const managedAsset = db.assets.find((asset) => asset.id === assetId);
       if (!managedAsset?.path) return undefined;
       if (managedAsset.role === "example_video" && generation?.request.constraints?.sampleAssetReuse !== "authorized") {
@@ -1607,21 +1613,25 @@ function normalizeSubtitleText(text: string, language: "zh" | "en", allowBilingu
 }
 
 async function applySubtitleGeneration(generation: GenerationResult): Promise<GenerationResult> {
-  const mode = generation.request.controls?.subtitleGenerationMode ?? "prompt_only";
+  const ai = adapters.aiAdapter as SubtitleCapableAiAdapter;
+  const canLlm = Boolean(ai.available && ai.generateSubtitles);
+  // v1.3: when subtitles are not explicitly disabled and a real LLM provider is available, GENERATE
+  // product-relevant subtitles from the prompt via the configured provider (Gemini/Ark/OpenAI) — the
+  // deterministic planner copy is only a fallback. Default to "auto" so a generation never ships the
+  // generic planner fallback when a provider can write real copy. "prompt_only"/"off" opt out of LLM.
+  const mode = generation.request.controls?.subtitleGenerationMode ?? (canLlm ? "auto" : "prompt_only");
   const language = subtitleLanguageForPrompt(generation.request.prompt);
   const allowBilingual = promptAllowsBilingual(generation.request.prompt);
   let cues: SubtitleCue[] = [];
-  if (mode === "ark_doubao") {
-    const ai = adapters.aiAdapter as SubtitleCapableAiAdapter;
-    if (ai.available && ai.generateSubtitles) {
-      try {
-        cues = await ai.generateSubtitles({ generation, language });
-      } catch (error) {
-        generation = {
-          ...generation,
-          warnings: [...generation.warnings, `Ark Doubao subtitle generation failed: ${sanitizeAigcProviderError(error)}`]
-        };
-      }
+  const useLlm = canLlm && (mode === "auto" || mode === "llm" || mode === "ark_doubao");
+  if (useLlm) {
+    try {
+      cues = await ai.generateSubtitles!({ generation, language });
+    } catch (error) {
+      generation = {
+        ...generation,
+        warnings: [...generation.warnings, `LLM subtitle generation (${mode}) failed: ${sanitizeAigcProviderError(error)}`]
+      };
     }
   }
   const cueByClipId = new Map(cues.map((cue) => [cue.clipId, cue]));

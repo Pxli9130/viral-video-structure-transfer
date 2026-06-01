@@ -13,8 +13,8 @@ export type AssetStatus = "uploaded" | "processing" | "ready" | "failed";
 export type SourcePolicy = "user_authorized" | "open_download_or_user_uploaded" | "demo_only" | "unknown";
 export type AnalysisPurpose = "sample" | "source";
 export type AnalyzerMode = "mock" | "ffmpeg" | "ffmpeg_opencv" | "ffmpeg_vlm_asr";
-export type RendererTarget = "html_preview" | "ffmpeg" | "remotion" | "hyperframes";
-export type RendererBackend = "remotion_mg" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
+export type RendererTarget = "html_preview" | "ffmpeg" | "remotion" | "remotion_recipe" | "hyperframes";
+export type RendererBackend = "remotion_mg" | "remotion_recipe_compose" | "ffmpeg_compose" | "image_card" | "aigc_video_fill_stub";
 export type CreativeOutputMode = "explainable_demo" | "final_creative" | "high_fidelity_style";
 export type TargetAssetKind = "image" | "video" | "logo" | "copy" | "cta_info" | "background_image";
 export type AcceptedReplacementAssetType = "image" | "video" | "gif" | "logo" | "copy" | "glb" | "lottie";
@@ -859,10 +859,17 @@ export interface GenerationControls {
   allowAigcMaterialGeneration?: boolean;
   allowExternalAigcProvider?: boolean;
   creativeMode?: CreativeOutputMode;
-  subtitleGenerationMode?: "off" | "prompt_only" | "ark_doubao";
+  subtitleGenerationMode?: "off" | "prompt_only" | "ark_doubao" | "auto" | "llm";
   subtitleDensity?: "minimal" | "medium" | "dense";
   stylePreset?: "sample_like" | "clean_premium" | "white_poster" | "bold_mg";
   ctaTiming?: "early" | "default" | "late";
+  /** v1.3: opt in to evidence+material driven primitive selection (used by demo:final). Default OFF
+   *  keeps the role-only beat-cut selection so golden output stays byte-identical. */
+  recipeEvidencePrimitives?: boolean;
+  /** v1.3: opt in to SAMPLE-ADAPTIVE timeline structure — clip count + durations derived from the
+   *  sample's real shot signature (visualElementGraph shots + BPM) instead of a fixed segment mold.
+   *  Default OFF keeps the fixed beat-cut structure (goldens byte-identical). */
+  recipeAdaptiveStructure?: boolean;
   ribbon?: Partial<RibbonMotionGeometry> & {
     speedMultiplier?: number;
     densityMultiplier?: number;
@@ -1098,6 +1105,8 @@ export interface TimelineClip {
   styleTokens?: string[];
   /** Named beat-cut style primitive the renderer should draw (beat_text_card, neon_hero_intro, action_montage, tutorial_rule_card, motivation_cta). */
   motionPrimitive?: string;
+  /** v1.3: human-auditable reason the primitive was selected (set when evidence-driven selection is on). */
+  primitiveReason?: string;
 }
 
 export interface TimelineMappingItem {
@@ -1175,8 +1184,123 @@ export interface RenderPlan {
     sfx?: string[];
     /** v3: learned layer balance (bass_kick / music_harmonic / hats_air) the BGM renderer mixes by. */
     layers?: Record<string, number>;
+    /** v3: strong beat timestamps copied from evidence for procedural impacts. */
+    strongBeatsSec?: number[];
+    spectralCentroidMean?: number;
+    spectralFlatnessMean?: number;
   };
   adapterOptions?: Record<string, unknown>;
+  /** v1.3: renderer-agnostic render contract — see RenderRecipe and spec_v3/schemas/render-recipe.schema.json. */
+  renderRecipe?: RenderRecipe;
+}
+
+export type RenderRecipePrimitive =
+  | "SourceClipBeatMontage"
+  | "ProductHeroOrbit"
+  | "FanHeroSpin"
+  | "FeatureCardStack"
+  | "TypographyLayoutSequence"
+  | "ImpactFlash"
+  | "CTAEndSlate"
+  | "DynamicProxyMontage";
+
+export type RenderRecipeFamily =
+  | "source_video_montage"
+  | "product_hero"
+  | "media_cards"
+  | "kinetic_typography"
+  | "feature_list"
+  | "impact_fx"
+  | "brand_cta"
+  | "procedural_proxy";
+
+export interface RenderRecipeClip {
+  clipId: string;
+  role: "hook" | "setup" | "body" | "proof" | "transition" | "cta";
+  startSec: number;
+  endSec: number;
+  slotId: string;
+  visualFormFamily: RenderRecipeFamily;
+  selectedPrimitive: RenderRecipePrimitive;
+  /** Human-auditable reason the primitive was selected from evidence + material (never role alone). */
+  primitiveReason: string;
+  rendererTarget: "remotion_recipe" | "ffmpeg" | "hyperframes_recipe";
+  material: {
+    kind: "source_video" | "target_image" | "target_image_set" | "generated_target_asset" | "procedural" | "none";
+    assetIds: string[];
+    sourceShotIds?: string[];
+    policy: "renderable" | "evidence_only" | "missing";
+  };
+  layout: {
+    positionClass?: string;
+    bboxTrackNorm?: unknown[];
+    typographyLayout?: "center_title" | "lower_third" | "diagonal_tag" | "keyword_scatter" | "top_tag";
+  };
+  motion: {
+    pattern: "orbit" | "spin" | "zoom_pulse" | "hard_cut" | "shake" | "pan" | "card_stack" | "none";
+    beatAligned: boolean;
+    beatTimestampsSec: number[];
+    trajectory?: unknown[];
+  };
+  text: {
+    copy: string;
+    colorRoles: string[];
+    animationHint: "per_char_reveal" | "shake" | "scale" | "flash" | "none";
+  };
+}
+
+/**
+ * v1.3 Source-first render contract. Compiled from StructureTemplate + VisualElementGraph +
+ * SourceVideoUnderstanding + SlotMapping + GapReport + FillPlan + TargetMaterialManifest +
+ * ProductBrief and carried at `timeline.renderPlan.renderRecipe`. It is the ONLY thing a renderer
+ * reads to decide pixels — no renderer may re-derive a primitive from `clip.role`. Mirrors
+ * spec_v3/schemas/render-recipe.schema.json. Sample/reference material is structure evidence only;
+ * only source_video / target / generated_target material may reach the canvas.
+ */
+export interface RenderRecipe {
+  schemaVersion: "render-recipe-v1";
+  videoType: "product_mg" | "beat_cut_product" | "motion_graph" | "fallback_cards";
+  productTheme: {
+    name: string;
+    category: string;
+    sellingPoints: string[];
+    cta: string;
+  };
+  sourcePolicy: {
+    sampleUse: "structure_evidence_only" | "authorized_reuse";
+    sourceVideoUse: "renderable_user_material" | "missing";
+    targetAssetUse: "renderable_target_material" | "missing";
+    sampleFrameCopyAllowed: false;
+    sampleAudioCopyAllowed: false;
+  };
+  global: {
+    aspectRatio: AspectRatio | (string & {});
+    width: number;
+    height: number;
+    fps: number;
+    durationSec: number;
+    palette: string[];
+    bpm?: number;
+    beatGridSec?: number[];
+    cutPattern: {
+      targetCutCount: number;
+      avgShotDurationSec: number;
+      fastZones: Array<[number, number]>;
+    };
+    audioPlan: {
+      policy: "procedural_bgm" | "user_bgm" | "authorized_sample_bgm" | "silent";
+      layers: {
+        kick?: number;
+        bass?: number;
+        drone?: number;
+        hats?: number;
+        riser?: number;
+        impact?: number;
+      };
+    };
+  };
+  clips: RenderRecipeClip[];
+  warnings: string[];
 }
 
 export type EditOperationType =

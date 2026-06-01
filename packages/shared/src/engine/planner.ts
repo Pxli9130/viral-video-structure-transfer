@@ -18,6 +18,10 @@ import type {
   PackagingSpec,
   PlaceholderSpec,
   RendererBackend,
+  RenderRecipe,
+  RenderRecipeClip,
+  RenderRecipePrimitive,
+  RenderRecipeFamily,
   RequiredSlot,
   ReplacementSlot,
   SlotReplacementBinding,
@@ -2194,11 +2198,19 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
     const movingSlots = (context.template.requiredSlots ?? []).filter(
       (s) => s.assetRequirement?.type === "moving_visual" || s.visualFormFamily === "live_action_montage" || s.visualFormFamily === "object_motion"
     );
-    // Only a real TARGET moving clip counts as filled — a self-reconstruction match to the sample
-    // does not, because the montage must not copy sample frames.
+    // A real TARGET moving clip fills the slot; so does a genuinely reusable, DISTINCT (non-sample)
+    // authorized source video (v1.3 source-first). A self-reconstruction match to the sample does
+    // NOT, because the montage must never copy sample frames.
+    const sourceReusableForGap =
+      context.source?.reusableAsMaterial === true &&
+      context.source.materialRole === "target_material" &&
+      !(context.template?.sourceSampleIds ?? []).includes(context.source.assetId ?? "");
     const movingMatched = movingSlots.some((s) => {
       const m = mappings.find((mm) => mm.slotId === s.id);
-      return m?.status === "matched" && Boolean(m.selectedTargetAssetId || (m.selectedTargetAssetIds?.length ?? 0) > 0);
+      if (m?.status !== "matched") return false;
+      const targetFilled = Boolean(m.selectedTargetAssetId || (m.selectedTargetAssetIds?.length ?? 0) > 0);
+      const sourceFilled = m.assetAvailability === "source_video_mapped" && sourceReusableForGap;
+      return targetFilled || sourceFilled;
     });
     if (movingSlots.length > 0 && !movingMatched) {
       slotGaps.push({
@@ -2842,6 +2854,347 @@ const KNOWN_BEAT_PRIMITIVES = new Set([
   "motivation_cta"
 ]);
 
+// ---- v1.3 RenderRecipe compiler (spec_v3/schemas/render-recipe.schema.json) ----
+// Maps the internal beat-cut primitive vocabulary onto the renderer-agnostic recipe component
+// vocabulary the RemotionRecipeRenderer dispatches on. The recipe is built from the SAME
+// styledClips array buildTimeline emits, so it never drifts from the rendered clips.
+
+function recipeComponentFor(
+  motionPrimitive: string | undefined,
+  opts: { isFan: boolean; hasSourcePixels: boolean }
+): RenderRecipePrimitive {
+  switch (motionPrimitive) {
+    case "neon_hero_intro":
+      return opts.isFan ? "FanHeroSpin" : "ProductHeroOrbit";
+    case "action_montage":
+      return opts.hasSourcePixels ? "SourceClipBeatMontage" : "DynamicProxyMontage";
+    case "impact_flash_stamp":
+      return "ImpactFlash";
+    case "motivation_cta":
+      return "CTAEndSlate";
+    case "beat_text_card":
+    case "tutorial_rule_card":
+      return "TypographyLayoutSequence";
+    default:
+      return "TypographyLayoutSequence";
+  }
+}
+
+function recipeFamilyFor(component: RenderRecipePrimitive): RenderRecipeFamily {
+  switch (component) {
+    case "ProductHeroOrbit":
+    case "FanHeroSpin":
+      return "product_hero";
+    case "SourceClipBeatMontage":
+      return "source_video_montage";
+    case "DynamicProxyMontage":
+      return "procedural_proxy";
+    case "TypographyLayoutSequence":
+      return "kinetic_typography";
+    case "FeatureCardStack":
+      return "media_cards";
+    case "ImpactFlash":
+      return "impact_fx";
+    case "CTAEndSlate":
+      return "brand_cta";
+    default:
+      return "procedural_proxy";
+  }
+}
+
+function recipeMotionFor(component: RenderRecipePrimitive): RenderRecipeClip["motion"]["pattern"] {
+  switch (component) {
+    case "FanHeroSpin":
+      return "spin";
+    case "ProductHeroOrbit":
+      return "orbit";
+    case "SourceClipBeatMontage":
+      return "hard_cut";
+    case "DynamicProxyMontage":
+      return "pan";
+    case "TypographyLayoutSequence":
+      return "zoom_pulse";
+    case "FeatureCardStack":
+      return "card_stack";
+    case "ImpactFlash":
+      return "shake";
+    case "CTAEndSlate":
+      return "zoom_pulse";
+    default:
+      return "none";
+  }
+}
+
+function recipeTypographyLayout(
+  layoutRole: string | undefined
+): RenderRecipeClip["layout"]["typographyLayout"] {
+  if (!layoutRole) return undefined;
+  const r = layoutRole.toLowerCase();
+  if (r.includes("center") || r.includes("headline") || r.includes("title")) return "center_title";
+  if (r.includes("lower") || r.includes("sub")) return "lower_third";
+  if (r.includes("diag")) return "diagonal_tag";
+  if (r.includes("scatter") || r.includes("keyword")) return "keyword_scatter";
+  if (r.includes("top")) return "top_tag";
+  return undefined;
+}
+
+function recipeAnimationHint(hint: string | undefined): RenderRecipeClip["text"]["animationHint"] {
+  switch (hint) {
+    case "per_char_reveal":
+    case "shake":
+    case "scale":
+    case "flash":
+      return hint;
+    default:
+      return "none";
+  }
+}
+
+function recipePrimitiveReason(clip: TimelineClip, component: RenderRecipePrimitive): string {
+  const fam = clip.visualFormFamily;
+  let signal: string;
+  if (clip.role === "hook") signal = "role=hook";
+  else if (clip.role === "cta") signal = "role=cta";
+  else if (fam === "live_action_montage" || fam === "object_motion") signal = `family=${fam}`;
+  else if (fam === "brand_cta") signal = "family=brand_cta";
+  else if (fam === "kinetic_typography") signal = "family=kinetic_typography";
+  else if (clip.role === "proof") signal = "role=proof";
+  else signal = clip.subtitleText ? "subtitle_present" : "default";
+  return `${signal} → ${clip.motionPrimitive ?? "beat_text_card"} → ${component}`;
+}
+
+const COLOR_ROLE_HEX: Record<string, string> = {
+  black: "#05060a",
+  dark: "#05060a",
+  white: "#f5f5f5",
+  red: "#e11d2a",
+  yellow: "#f5c518",
+  amber: "#f5c518",
+  blue: "#22d3ee",
+  cyan: "#22d3ee",
+  teal: "#14b8a6",
+  purple: "#a855f7",
+  pink: "#f472b6",
+  orange: "#f97316",
+  green: "#22c55e"
+};
+
+function normalizeRecipeColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().toLowerCase();
+  if (!text) return undefined;
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text;
+  const shortHex = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(text);
+  if (shortHex) return `#${shortHex[1]}${shortHex[1]}${shortHex[2]}${shortHex[2]}${shortHex[3]}${shortHex[3]}`;
+  if (/^0x[0-9a-f]{6}$/i.test(text)) return `#${text.slice(2)}`;
+  return COLOR_ROLE_HEX[text] ?? undefined;
+}
+
+function colorsFromUnknown(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(colorsFromUnknown);
+  if (typeof value !== "string") return [];
+  const exact = normalizeRecipeColor(value);
+  if (exact) return [exact];
+  return value
+    .split(/[,/|+_\s-]+/)
+    .map((part) => normalizeRecipeColor(part))
+    .filter((color): color is string => Boolean(color));
+}
+
+function recipePalette(background: string, isBeatCut: boolean, template: StructureTemplate): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (value: unknown) => {
+    for (const color of colorsFromUnknown(value)) {
+      if (!seen.has(color)) {
+        seen.add(color);
+        out.push(color);
+      }
+    }
+  };
+  add(background);
+  add(template.visualElementGraph?.globalStyle?.palette);
+  add(template.visualStyle?.colorProgression);
+  add(template.heroDescriptor?.palette);
+  for (const typo of template.typographyEvidence ?? []) add(typo.colorRole);
+
+  const fallback = isBeatCut
+    ? [background, "#e11d2a", "#f5c518", "#f5f5f5", "#22d3ee"]
+    : [background, "#0ea5e9", "#a855f7", "#f5f5f5"];
+  for (const color of fallback) add(color);
+  return out.slice(0, 8);
+}
+
+function recipeAudioLayers(
+  estimated: Record<string, unknown> | undefined
+): RenderRecipe["global"]["audioPlan"]["layers"] {
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const e = estimated ?? {};
+  const layers: RenderRecipe["global"]["audioPlan"]["layers"] = {};
+  const kick = num(e.kick) ?? num(e.bass_kick);
+  if (kick !== undefined) {
+    layers.kick = kick;
+  }
+  const bass = num(e.bass) ?? num(e.bass_kick);
+  if (bass !== undefined) layers.bass = bass;
+  const drone = num(e.drone) ?? num(e.music_harmonic);
+  if (drone !== undefined) layers.drone = drone;
+  const hats = num(e.hats) ?? num(e.hats_air);
+  if (hats !== undefined) layers.hats = hats;
+  const riser = num(e.riser);
+  if (riser !== undefined) layers.riser = riser;
+  const impact = num(e.impact);
+  if (impact !== undefined) layers.impact = impact;
+  return layers;
+}
+
+interface BuildRenderRecipeArgs {
+  styledClips: TimelineClip[];
+  isBeatCut: boolean;
+  videoType: string | undefined;
+  aspectRatio: AspectRatio;
+  width: number;
+  height: number;
+  durationSec: number;
+  synthBeat: { bpm: number; beats: number[] };
+  audioPolicy: "sample_bgm" | "synth_beat" | "silent";
+  background: string;
+  brief: { topic?: string; sellingPoints: string[]; cta?: string };
+  template: StructureTemplate;
+  source: SourceVideoUnderstanding;
+  request: GenerationRequest;
+  warnings: string[];
+}
+
+/**
+ * Compile the renderer-agnostic RenderRecipe from the final styled clips. Source of truth for what
+ * each renderer draws; never re-derives a primitive from role alone (see recipePrimitiveReason).
+ */
+export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
+  const {
+    styledClips, isBeatCut, aspectRatio, width, height, durationSec,
+    synthBeat, audioPolicy, background, brief, template, source, request, warnings
+  } = args;
+  const name = (brief.topic ?? "").trim() || "Product";
+  const isFan = /fan|风扇|涡轮|turbo/i.test(`${name} ${brief.sellingPoints.join(" ")} ${request.prompt}`);
+  const sampleIds = new Set(template.sourceSampleIds ?? []);
+  const sourceIsDistinct =
+    Boolean(source.assetId) && source.reusableAsMaterial === true && !sampleIds.has(source.assetId ?? "");
+  const anyTargetAsset =
+    (request.targetAssets?.length ?? 0) > 0 ||
+    styledClips.some((c) => (c.layers ?? []).some((l) => Boolean(l.assetId)));
+
+  const videoType: RenderRecipe["videoType"] = isBeatCut
+    ? "beat_cut_product"
+    : args.videoType === "motion_graph"
+      ? "motion_graph"
+      : "product_mg";
+
+  const clips: RenderRecipeClip[] = styledClips.map((clip) => {
+    const layerAssetId = (clip.layers ?? []).find((l) => Boolean(l.assetId))?.assetId;
+    const hasSourcePixels = Boolean(clip.sourceAssetId) || Boolean(layerAssetId);
+    const component = recipeComponentFor(clip.motionPrimitive, { isFan, hasSourcePixels });
+    const heroLayer = (clip.layers ?? []).find((l) => l.kind === "moving_material" || l.kind === "moving_video");
+    const heroElement = (heroLayer?.style as
+      | { heroElement?: { positionClass?: string; centerTrajectory?: Array<[number, number]> } }
+      | undefined)?.heroElement;
+    const textLayer = (clip.layers ?? []).find(
+      (l) => l.kind === "text" || l.kind === "text_overlay" || l.kind === "ticker"
+    );
+    const typo = (textLayer?.style as
+      | { typography?: { layoutRole?: string; colorRole?: string; animationHint?: string } }
+      | undefined)?.typography;
+
+    let materialKind: RenderRecipeClip["material"]["kind"];
+    const assetIds: string[] = [];
+    if (clip.sourceAssetId) {
+      materialKind = clip.sourceAssetId === source.assetId ? "source_video" : "target_image";
+      assetIds.push(clip.sourceAssetId);
+    } else if (layerAssetId) {
+      materialKind = "target_image";
+      assetIds.push(layerAssetId);
+    } else {
+      materialKind = "procedural";
+    }
+    const policy: RenderRecipeClip["material"]["policy"] =
+      materialKind !== "procedural" ? "renderable" : component === "DynamicProxyMontage" ? "missing" : "renderable";
+
+    const typographyLayout = recipeTypographyLayout(typo?.layoutRole);
+    return {
+      clipId: clip.id,
+      role: clip.role === "global" ? "body" : clip.role,
+      startSec: clip.startSec,
+      endSec: round(clip.startSec + clip.durationSec),
+      slotId: (clip.layers ?? []).find((l) => l.slotId)?.slotId ?? clip.id,
+      visualFormFamily: recipeFamilyFor(component),
+      selectedPrimitive: component,
+      primitiveReason: clip.primitiveReason ?? recipePrimitiveReason(clip, component),
+      rendererTarget: "remotion_recipe",
+      material: {
+        kind: materialKind,
+        assetIds,
+        ...(clip.sourceShotId ? { sourceShotIds: [clip.sourceShotId] } : {}),
+        policy
+      },
+      layout: {
+        ...(heroElement?.positionClass ? { positionClass: heroElement.positionClass } : {}),
+        ...(heroElement?.centerTrajectory?.length ? { bboxTrackNorm: heroElement.centerTrajectory } : {}),
+        ...(typographyLayout ? { typographyLayout } : {})
+      },
+      motion: {
+        pattern: recipeMotionFor(component),
+        beatAligned: isBeatCut,
+        beatTimestampsSec: clip.beatTimestamps ?? [],
+        ...(heroElement?.centerTrajectory?.length ? { trajectory: heroElement.centerTrajectory } : {})
+      },
+      text: {
+        copy: clip.subtitleText ?? "",
+        colorRoles: typo?.colorRole ? [typo.colorRole] : ["red", "yellow", "white"],
+        animationHint: recipeAnimationHint(typo?.animationHint)
+      }
+    };
+  });
+
+  return {
+    schemaVersion: "render-recipe-v1",
+    videoType,
+    productTheme: {
+      name,
+      category: isFan ? "portable_fan" : "physical_product",
+      sellingPoints: brief.sellingPoints,
+      cta: (brief.cta ?? "").trim()
+    },
+    sourcePolicy: {
+      sampleUse: request.constraints?.sampleAssetReuse === "authorized" ? "authorized_reuse" : "structure_evidence_only",
+      sourceVideoUse: sourceIsDistinct ? "renderable_user_material" : "missing",
+      targetAssetUse: anyTargetAsset ? "renderable_target_material" : "missing",
+      sampleFrameCopyAllowed: false,
+      sampleAudioCopyAllowed: false
+    },
+    global: {
+      aspectRatio,
+      width,
+      height,
+      fps: 30,
+      durationSec,
+      palette: recipePalette(background, isBeatCut, template),
+      ...(isBeatCut ? { bpm: synthBeat.bpm, beatGridSec: synthBeat.beats } : {}),
+      cutPattern: {
+        targetCutCount: clips.length,
+        avgShotDurationSec: round(durationSec / Math.max(1, clips.length)),
+        fastZones: []
+      },
+      audioPlan: {
+        policy:
+          audioPolicy === "sample_bgm" ? "authorized_sample_bgm" : audioPolicy === "synth_beat" ? "procedural_bgm" : "silent",
+        layers: recipeAudioLayers(template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined)
+      }
+    },
+    clips,
+    warnings
+  };
+}
+
 /** The beat-cut primitive for a slot = its first renderer candidate that is a known primitive. */
 function beatPrimitiveFromSlot(slot: RequiredSlot | undefined): string | undefined {
   return slot?.rendererCandidates?.find((candidate) => KNOWN_BEAT_PRIMITIVES.has(candidate));
@@ -2885,7 +3238,7 @@ function beatCutLayersForClip(
   subtitleText: string | undefined,
   cta: string | undefined,
   heroDescriptor?: HeroObjectDescriptor,
-  typoHint?: { layoutRole?: string; colorRole?: string; animationHint?: string },
+  typoHint?: { layoutRole?: string; colorRole?: string; animationHint?: string; bboxNorm?: [number, number, number, number] },
   heroElement?: { positionClass?: string; motionPattern?: string; centerTrajectory?: Array<[number, number]> }
 ): TimelineLayer[] {
   const id = (kind: string) => stableId("layer", clip.id, kind, primitive);
@@ -2929,7 +3282,7 @@ function beatCutLayersForClip(
     case "action_montage":
       layers.push(bg("dark_streaks"));
       layers.push({ id: id("montage"), kind: "moving_video", slotId: "slot_moving_source_montage", motion: "hard-cut / crop-zoom / diagonal wipe", assetPolicy: "target clips or generated/procedural proxy; never sample frames", style: {} });
-      layers.push({ id: id("overlay"), kind: "text_overlay", text: subtitleText, motion: "impact on beat", style: { emphasis: "red_yellow_white" } });
+      layers.push({ id: id("overlay"), kind: "text_overlay", text: subtitleText, motion: "impact on beat", style: { emphasis: "red_yellow_white", ...(typoHint ? { typography: typoHint } : {}) } });
       break;
     case "impact_flash_stamp":
       layers.push(bg("dark"));
@@ -2961,6 +3314,54 @@ function beatCutPrimitiveForClip(clip: TimelineClip): string {
   return clip.subtitleText ? "tutorial_rule_card" : "beat_text_card";
 }
 
+/**
+ * v1.3 evidence + material driven primitive selection (flag-guarded by controls.recipeEvidencePrimitives).
+ * Reads the template's visual evidence (hero descriptor, element graph, typography, audio structure) and
+ * the clip's material availability so DIFFERENT samples yield DIFFERENT primitive sequences — this is what
+ * removes the sample-blind mold. Returns the internal beat-cut primitive plus an auditable reason. The
+ * default (flag OFF) path stays on beatCutPrimitiveForClip so golden output is unchanged.
+ */
+export function selectPrimitive(args: {
+  clip: TimelineClip;
+  template: StructureTemplate;
+  hasSourcePixels: boolean;
+}): { primitive: string; reason: string } {
+  const { clip, template, hasSourcePixels } = args;
+  const fam = clip.visualFormFamily;
+  const elements = template.visualElementGraph?.elements ?? [];
+  const hasHero = Boolean(template.heroDescriptor) || elements.some((e) => e.family === "hero_object");
+  const hasImpact =
+    elements.some((e) => e.family === "impact_fx") ||
+    Array.isArray((template.audioStructure as { onsets?: unknown[] } | undefined)?.onsets);
+  const typo = template.typographyEvidence ?? [];
+  const hasRuleList = typo.some((t) => /list|rule|bullet|step/i.test(`${t.layoutRole ?? ""}`));
+
+  if (clip.role === "cta" || fam === "brand_cta") {
+    return { primitive: "motivation_cta", reason: `${clip.role === "cta" ? "role=cta" : "family=brand_cta"} → motivation_cta` };
+  }
+  if (clip.role === "transition" && hasImpact) {
+    return { primitive: "impact_flash_stamp", reason: "role=transition + impact_fx/onset evidence → impact_flash_stamp" };
+  }
+  if (clip.role === "hook") {
+    if (hasHero) return { primitive: "neon_hero_intro", reason: "role=hook + hero_object/heroDescriptor evidence → neon_hero_intro" };
+    if (hasSourcePixels) return { primitive: "action_montage", reason: "role=hook + source/target pixels available → action_montage" };
+    return { primitive: "neon_hero_intro", reason: "role=hook (no hero evidence; default product hero) → neon_hero_intro" };
+  }
+  if (fam === "live_action_montage" || fam === "object_motion" || clip.role === "proof") {
+    if (hasSourcePixels) return { primitive: "action_montage", reason: `${fam ?? "role=proof"} + source/target pixels → action_montage (source-first montage)` };
+    if (hasImpact && clip.role === "transition") return { primitive: "impact_flash_stamp", reason: "impact evidence → impact_flash_stamp" };
+    return { primitive: "action_montage", reason: `${fam ?? "role=proof"} (no source pixels) → action_montage (procedural proxy)` };
+  }
+  if (fam === "kinetic_typography" || typo.length > 0 || Boolean(clip.subtitleText)) {
+    if (hasRuleList || (Boolean(clip.subtitleText) && clip.role === "body")) {
+      return { primitive: "tutorial_rule_card", reason: "typography rule/list evidence or body subtitle → tutorial_rule_card" };
+    }
+    return { primitive: "beat_text_card", reason: "typography/kinetic evidence → beat_text_card" };
+  }
+  const fallback = clip.subtitleText ? "tutorial_rule_card" : "beat_text_card";
+  return { primitive: fallback, reason: `default → ${fallback}` };
+}
+
 /** Synthesize a regular beat grid at the transferred BPM (we transfer rhythm, not sample audio). */
 function synthesizeBeatGrid(bpmInput: number | undefined, durationSec: number): { bpm: number; beats: number[] } {
   const bpm = bpmInput && bpmInput > 40 && bpmInput < 300 ? bpmInput : 120;
@@ -2970,17 +3371,104 @@ function synthesizeBeatGrid(bpmInput: number | undefined, durationSec: number): 
   return { bpm, beats };
 }
 
+/**
+ * v1.3 sample-adaptive beat-cut structure: derive the segment plan (clip count + per-clip duration +
+ * role/slot arrangement) from the sample's REAL shot signature (visualElementGraph shots + BPM) instead
+ * of a fixed 6-segment mold. Different samples (different shot counts / durations / BPM) therefore yield
+ * structurally different timelines — this is what breaks the within-videoType "mold". Flag-guarded.
+ */
+function adaptiveBeatCutSegments(template: StructureTemplate): StructureSegment[] {
+  const shots = (template.visualElementGraph?.shots ?? []) as Array<{ startSec?: number; endSec?: number }>;
+  const bpm = template.rhythm?.bpm && template.rhythm.bpm > 40 ? template.rhythm.bpm : 120;
+  // Clip count scales with the sample's tempo (faster → more cuts in the same target window). Distinct per sample.
+  const N = clamp(Math.round(bpm / 22), 4, 9);
+  // Per-clip duration profile resampled from the sample's real shot-duration distribution, so the
+  // output inherits the sample's actual rhythm (mix of long/short shots), not a uniform split.
+  const shotDurs = shots
+    .map((s) => Math.max(0.25, Number(s.endSec ?? 0) - Number(s.startSec ?? 0)))
+    .filter((d) => Number.isFinite(d) && d > 0);
+  const picked: number[] = [];
+  for (let i = 0; i < N; i += 1) {
+    picked.push(shotDurs.length ? shotDurs[Math.floor((i * shotDurs.length) / N)] : (60 / bpm) * (2 + (i % 3)));
+  }
+  const total = picked.reduce((a, b) => a + b, 0) || N;
+  const roleAt = (i: number): SegmentRole => {
+    if (i === 0) return "hook";
+    if (i === N - 1) return "cta";
+    if (i === N - 2 && N >= 4) return "transition";
+    const mid: SegmentRole[] = ["setup", "body", "proof"];
+    return mid[(i - 1) % mid.length];
+  };
+  const bodyCycle = ["slot_moving_source_montage", "slot_kinetic_text_card", "slot_storyboard_rule_card"];
+  let bodyCursor = 0;
+  const slotFor = (role: SegmentRole): string => {
+    if (role === "hook") return "slot_moving_hero_object";
+    if (role === "cta") return "slot_motivation_cta";
+    if (role === "transition") return "slot_impact_flash";
+    return bodyCycle[bodyCursor++ % bodyCycle.length];
+  };
+  const segments: StructureSegment[] = [];
+  let acc = 0;
+  for (let i = 0; i < N; i += 1) {
+    const startRatio = acc / total;
+    acc += picked[i];
+    const endRatio = i === N - 1 ? 1 : acc / total;
+    const role = roleAt(i);
+    segments.push({
+      id: `adaptive_seg_${i + 1}_${role}`,
+      role,
+      startRatio: Number(startRatio.toFixed(4)),
+      endRatio: Number(endRatio.toFixed(4)),
+      intent: `adaptive ${role} (sample-driven: ${N} clips @ ${Math.round(bpm)}bpm)`,
+      slots: [slotFor(role)]
+    });
+  }
+  return segments;
+}
+
+/** Representative element geometry (size+position+motion) from the learned VisualElementGraph, so the
+ *  FFmpeg renderer composites the real asset at the SAMPLE's actual element bbox/motion instead of
+ *  always full-bleed + a fixed pan. Only image-bearing roles get geometry (text clips stay procedural). */
+function elementGeometryForClip(
+  clip: TimelineClip,
+  template: StructureTemplate
+): { bbox: [number, number, number, number]; motionPattern?: string } | undefined {
+  const wantsImage =
+    clip.role === "hook" || clip.role === "proof" ||
+    clip.visualFormFamily === "object_motion" || clip.visualFormFamily === "live_action_montage";
+  if (!wantsImage) return undefined;
+  const el = (template.visualElementGraph?.elements ?? []).find((e) => e.family === "hero_object");
+  const track = (el?.bboxTrackNorm ?? []) as Array<{ t: number; bbox: [number, number, number, number] }>;
+  if (!track.length) return undefined;
+  const bbox = track[Math.floor(track.length / 2)]?.bbox ?? track[0].bbox;
+  if (!Array.isArray(bbox) || bbox.length !== 4) return undefined;
+  return { bbox, motionPattern: el?.motionPattern };
+}
+
+function attachElementGeometry(
+  layers: TimelineLayer[],
+  geom: { bbox: [number, number, number, number]; motionPattern?: string } | undefined
+): TimelineLayer[] {
+  if (!geom || !layers.length) return layers;
+  const [first, ...rest] = layers;
+  return [{ ...first, style: { ...(first.style ?? {}), elementGeometry: geom } }, ...rest];
+}
+
 export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; storyboard: StoryboardItem[] } {
   const { template, request, source, mappings, fillPlan, generationId } = input;
   const totalSec = request.target.targetDurationSec;
   const brief = parsePromptToBrief(request);
   const isBeatCut = template.videoType === "beat_cut";
+  // v1.3: when adaptive structure is enabled, the segment plan (clip count + durations + slot arc) is
+  // derived from THIS sample's real shot signature instead of the fixed beat-cut mold.
+  const adaptiveStructure = isBeatCut && request.controls?.recipeAdaptiveStructure === true;
+  const planSegments = adaptiveStructure ? adaptiveBeatCutSegments(template) : template.segments;
   const clips: TimelineClip[] = [];
   const storyboard: StoryboardItem[] = [];
   const mapping: TimelineMappingItem[] = [];
 
   let cursor = 0;
-  for (const segment of template.segments) {
+  for (const segment of planSegments) {
     const segmentDuration = Math.max(0.6, round((segment.endRatio - segment.startRatio) * totalSec));
     // Global slots (background, BGM) are carried as layers / render-plan audio, not as their own
     // clips — so a segment that lists them does not spawn extra clips for them.
@@ -2989,7 +3477,10 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
     const slotIds = nonGlobalSlots.length > 0
       ? nonGlobalSlots
       : segment.slots.filter((slotId) => template.requiredSlots.some((slot) => slot.id === slotId));
-    const slotsForSegment = slotsForPace(slotIds.length > 0 ? slotIds : segment.slots, template, request.controls);
+    // Adaptive structure already chose exactly one slot per clip; don't let pace expansion re-split it.
+    const slotsForSegment = adaptiveStructure
+      ? (slotIds.length > 0 ? slotIds : segment.slots)
+      : slotsForPace(slotIds.length > 0 ? slotIds : segment.slots, template, request.controls);
     const perSlotDuration = round(segmentDuration / Math.max(slotsForSegment.length, 1));
     const segmentClipIds: string[] = [];
 
@@ -3006,9 +3497,13 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       );
       const matched = mappingForSlot?.status === "matched" && !familyRendererFill;
       const strategy: "none" | FillStrategy = matched ? "none" : (fillForSlot?.strategy ?? "text_card");
+      // Adaptive structure can reuse a slot across multiple clips, so the clip id must include the
+      // segment id to stay unique. Non-adaptive ids are unchanged (golden-safe).
       const clipId = matched
-        ? stableId("clip", generationId, slotId)
-        : fillForSlot?.targetClipId ?? stableId("clip", generationId, slotId, "fill");
+        ? (adaptiveStructure ? stableId("clip", generationId, slotId, segment.id) : stableId("clip", generationId, slotId))
+        : adaptiveStructure
+          ? stableId("clip", generationId, slotId, segment.id, "fill")
+          : fillForSlot?.targetClipId ?? stableId("clip", generationId, slotId, "fill");
       const slotType: SlotType = slot?.slotType ?? "background";
       const subtitle = subtitleForSlot(slotType, brief, request);
       const durationSec = perSlotDuration;
@@ -3231,12 +3726,31 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   // (dark bg, bold center typography, beat-synced hard cuts) instead of generic proxy cards.
   const synthBeat = synthesizeBeatGrid(template.rhythm.bpm, durationSec);
   const sampleReuse = request.constraints?.sampleAssetReuse;
+  const shouldRenderProceduralAudio = request.target.outputMode !== "timeline_only";
   const audioPolicy: "sample_bgm" | "synth_beat" | "silent" = isBeatCut
     ? sampleReuse === "authorized"
       ? "sample_bgm"
       : "synth_beat"
-    : "silent";
+    : shouldRenderProceduralAudio
+      ? "synth_beat"
+      : "silent";
   const audioRef = audioPolicy === "sample_bgm" ? source.assetId : undefined;
+  const audioStructure = (template.audioStructure ?? {}) as Record<string, unknown>;
+  const strongBeatsSec = Array.isArray(audioStructure.strongBeats)
+    ? audioStructure.strongBeats
+        .map((value) => (typeof value === "number" && Number.isFinite(value) ? Number(value.toFixed(3)) : undefined))
+        .filter((value): value is number => value !== undefined)
+        .slice(0, 48)
+    : undefined;
+  const spectralCentroidMean =
+    typeof audioStructure.spectralCentroidMean === "number" && Number.isFinite(audioStructure.spectralCentroidMean)
+      ? audioStructure.spectralCentroidMean
+      : undefined;
+  const spectralFlatnessMean =
+    typeof audioStructure.spectralFlatnessMean === "number" && Number.isFinite(audioStructure.spectralFlatnessMean)
+      ? audioStructure.spectralFlatnessMean
+      : undefined;
+  const learnedAudioLayers = (audioStructure.estimatedLayers as Record<string, number> | undefined) ?? undefined;
   // Style tokens are the learned visual grammar; they also surface in explainability views.
   const baseStyleTokens = ["dark_tech", "black_bg", "red_yellow_white_text", "hard_cut", "beat_pulse", "impact_flash", "beat_sync"];
   // Clean Chinese copy pool from the brief so beat-cut cards never fall back to English
@@ -3244,15 +3758,20 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   const hasCjk = (text: string | undefined): boolean => Boolean(text && /[一-鿿]/.test(text));
   const copyPool = [brief.topic, ...brief.sellingPoints].map((t) => (t ?? "").trim()).filter(Boolean);
   const cjkCopyPool = copyPool.filter(hasCjk);
-  // Per-role Chinese defaults so a beat-cut card never shows English filler when the brief copy
-  // is English (the editing.mov demo grammar: hook -> rules -> storyboard -> montage -> CTA).
+  // Per-role fallback copy DERIVED FROM THE BRIEF (product), never engine/meta phrases. When the
+  // brief carries no usable Chinese copy at all, fall back to neutral product-oriented lines (a real
+  // LLM subtitle pass on the server replaces these with prompt-grounded copy when enabled). This is
+  // why a render never shows meta text like "分镜=时间线 字幕=结构".
+  const productNameRaw = ((hasCjk(brief.topic) ? brief.topic!.trim() : cjkCopyPool[0]) ?? "").replace(/^主题[:：]\s*/, "");
+  const productName = (productNameRaw.split(/[；;。\n]/)[0] ?? productNameRaw).trim().slice(0, 16);
+  const pickCjk = (i: number): string => (cjkCopyPool.length ? cjkCopyPool[i % cjkCopyPool.length] : (productName || "立即了解"));
   const beatCutCjkFallback: Partial<Record<SegmentRole, string>> = {
-    hook: "爆款结构 先拆再迁移",
-    setup: "先找钩子 再找节奏",
-    body: "分镜=时间线 字幕=结构",
-    proof: "裁切重排 卡点替换",
-    transition: "卡点冲击 重组",
-    cta: "上传素材 立即生成"
+    hook: productName || "立即开看",
+    setup: pickCjk(0),
+    body: pickCjk(1),
+    proof: pickCjk(2),
+    transition: pickCjk(3),
+    cta: hasCjk(brief.cta) ? brief.cta!.trim() : "立即了解"
   };
   const ctaCopy = hasCjk(brief.cta) ? brief.cta!.trim() : beatCutCjkFallback.cta!;
   let copyCursor = 0;
@@ -3263,7 +3782,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   const typoStyles = (template.typographyEvidence ?? [])
     .slice()
     .sort((a, b) => b.fontSizeRatio - a.fontSizeRatio)
-    .map((t) => ({ layoutRole: t.layoutRole, colorRole: t.colorRole, animationHint: t.animationHint }))
+    .map((t) => ({ layoutRole: t.layoutRole, colorRole: t.colorRole, animationHint: t.animationHint, bboxNorm: t.bboxNorm }))
     .filter((style, i, arr) => arr.findIndex((x) => x.layoutRole === style.layoutRole && x.colorRole === style.colorRole) === i);
   let typoCursor = 0;
   const styledClips: TimelineClip[] = isBeatCut
@@ -3281,17 +3800,39 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         // Final guarantee: clean Chinese, single line (drawtext has no auto-wrap). Prefer the
         // curated per-role copy over a verbose/truncated prompt line so each card reads cleanly.
         if (!hasCjk(subtitleText) || (subtitleText && subtitleText.length > 16)) {
-          subtitleText = beatCutCjkFallback[clip.role] ?? (hasCjk(subtitleText) ? `${subtitleText!.slice(0, 15)}…` : "爆款结构迁移");
+          subtitleText = beatCutCjkFallback[clip.role] ?? (hasCjk(subtitleText) ? `${subtitleText!.slice(0, 15)}…` : (productName || "立即了解"));
         }
         // Keep visualIntent clean (no English slot-description leak into explainability text).
         const visualIntent = clip.visualIntent && FORBIDDEN_VISUAL_TEXT.test(clip.visualIntent) ? subtitleText : clip.visualIntent;
-        const primitive = clip.motionPrimitive ?? beatCutPrimitiveForClip(clip);
         // Never copy sample visuals into a beat-cut clip: if the only source is the sample itself
         // (self-reconstruction), drop it so the renderer draws the style-locked primitive / dynamic
         // proxy instead of cropping sample frames. Real TARGET assets are kept.
         const noSampleCopy = request.constraints?.noSampleVisualCopy ?? true;
-        const sampleSourced = Boolean(clip.sourceAssetId) && clip.sourceAssetId === source.assetId;
+        // v1.3 source-first: a genuinely reusable, DISTINCT (non-sample) authorized source keeps its
+        // pixels so the renderer composites real footage. Only an evidence-only / mock / learned-from-
+        // sample source is dropped (the self-reconstruction case the overfit report flagged).
+        const sourceReusable =
+          source.reusableAsMaterial === true &&
+          source.materialRole === "target_material" &&
+          !(template.sourceSampleIds ?? []).includes(source.assetId ?? "");
+        const sampleSourced =
+          Boolean(clip.sourceAssetId) && clip.sourceAssetId === source.assetId && !sourceReusable;
         const dropSampleVisual = noSampleCopy && sampleSourced;
+        // v1.3 evidence+material driven primitive selection (flag-guarded; default keeps the role-only
+        // path so golden output is byte-identical). demo:final opts in via recipeEvidencePrimitives.
+        const layerAssetId = clip.layers.find((l) => Boolean(l.assetId))?.assetId;
+        const hasSourcePixels = !dropSampleVisual && (Boolean(clip.sourceAssetId) || Boolean(layerAssetId));
+        let primitive = clip.motionPrimitive ?? "";
+        let primitiveReason: string | undefined;
+        if (!clip.motionPrimitive) {
+          if (request.controls?.recipeEvidencePrimitives === true) {
+            const sel = selectPrimitive({ clip, template, hasSourcePixels });
+            primitive = sel.primitive;
+            primitiveReason = sel.reason;
+          } else {
+            primitive = beatCutPrimitiveForClip(clip);
+          }
+        }
         const typoHint = clip.role === "hook"
           ? typoStyles[0]
           : typoStyles.length ? typoStyles[(typoCursor++) % typoStyles.length] : undefined;
@@ -3303,10 +3844,14 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
           transitionIn: clip.startSec === 0 ? "none" : "hard_cut",
           transitionOut: "hard_cut",
           motionPrimitive: primitive,
+          ...(primitiveReason ? { primitiveReason } : {}),
           styleTokens: baseStyleTokens,
           beatTimestamps,
           placeholderSpec: undefined,
-          layers: beatCutLayersForClip(clip, primitive, subtitleText, ctaCopy, clip.role === "hook" ? heroDescriptor : undefined, typoHint, clip.role === "hook" ? heroElement : undefined)
+          layers: attachElementGeometry(
+            beatCutLayersForClip(clip, primitive, subtitleText, ctaCopy, clip.role === "hook" ? heroDescriptor : undefined, typoHint, clip.role === "hook" ? heroElement : undefined),
+            elementGeometryForClip(clip, template)
+          )
         };
       })
     : clips;
@@ -3332,15 +3877,18 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       beatGrid: isBeatCut ? { status: "ok", bpm: synthBeat.bpm, beats: synthBeat.beats, source: "synth_from_bpm" } : undefined,
       audioPolicy,
       audioRef,
-      audioPlan: isBeatCut
+      audioPlan: audioPolicy !== "silent"
         ? {
-            policy: audioPolicy === "sample_bgm" ? "sample_bgm" : "synth_beat_unless_sample_authorized",
+            policy: audioPolicy === "sample_bgm" ? "sample_bgm" : isBeatCut ? "synth_beat_unless_sample_authorized" : "synth_beat",
             bpm: synthBeat.bpm,
             required: true,
             beatGridSec: synthBeat.beats,
-            sfx: ["kick_on_segment_start", "flash_on_strong_beat", "ticker_clicks"],
+            sfx: isBeatCut ? ["kick_on_segment_start", "flash_on_strong_beat", "ticker_clicks"] : ["soft_downbeat", "ambient_riser"],
             // v3: learned layer balance from the sample's audio structure drives the procedural mix.
-            layers: (template.audioStructure?.estimatedLayers as Record<string, number> | undefined) ?? undefined
+            layers: learnedAudioLayers,
+            strongBeatsSec,
+            spectralCentroidMean,
+            spectralFlatnessMean
           }
         : undefined,
       rendererBackend: "remotion_mg",
@@ -3360,7 +3908,25 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         noSampleVisualCopy: request.constraints?.noSampleVisualCopy ?? true,
         sampleAssetReuse: request.constraints?.sampleAssetReuse ?? "disabled"
       },
-      notes: "P0 renderer target is html_preview; FFmpeg/Remotion/HyperFrames available as adapters."
+      notes: "P0 renderer target is html_preview; FFmpeg/Remotion/HyperFrames available as adapters.",
+      // v1.3: renderer-agnostic render contract compiled from the final styled clips.
+      renderRecipe: buildRenderRecipe({
+        styledClips,
+        isBeatCut,
+        videoType: template.videoType,
+        aspectRatio,
+        width: aspectRatio === "9:16" ? 720 : 1280,
+        height: aspectRatio === "9:16" ? 1280 : 720,
+        durationSec,
+        synthBeat,
+        audioPolicy,
+        background: isBeatCut ? "#05060a" : renderBackgroundForControls(request.controls),
+        brief,
+        template,
+        source,
+        request,
+        warnings: []
+      })
     },
     warnings: [
       ...source.warnings,

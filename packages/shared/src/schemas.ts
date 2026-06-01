@@ -570,6 +570,197 @@ export const generatedAssetCandidateSchema = {
   }
 } as const;
 
+export const renderRecipeSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/render-recipe.schema.json",
+  title: "RenderRecipe",
+  description: "Spec v1.3 renderer contract carried at timeline.renderPlan.renderRecipe.",
+  type: "object",
+  additionalProperties: false,
+  required: ["schemaVersion", "videoType", "productTheme", "sourcePolicy", "global", "clips", "warnings"],
+  properties: {
+    schemaVersion: { const: "render-recipe-v1" },
+    videoType: { enum: ["product_mg", "beat_cut_product", "motion_graph", "fallback_cards"] },
+    productTheme: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "category", "sellingPoints", "cta"],
+      properties: {
+        name: { type: "string" },
+        category: { type: "string" },
+        sellingPoints: { type: "array", items: { type: "string" } },
+        cta: { type: "string" }
+      }
+    },
+    sourcePolicy: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sampleUse", "sourceVideoUse", "targetAssetUse", "sampleFrameCopyAllowed", "sampleAudioCopyAllowed"],
+      properties: {
+        sampleUse: { enum: ["structure_evidence_only", "authorized_reuse"] },
+        sourceVideoUse: { enum: ["renderable_user_material", "missing"] },
+        targetAssetUse: { enum: ["renderable_target_material", "missing"] },
+        sampleFrameCopyAllowed: { const: false },
+        sampleAudioCopyAllowed: { const: false }
+      }
+    },
+    global: {
+      type: "object",
+      additionalProperties: false,
+      required: ["aspectRatio", "width", "height", "fps", "durationSec", "palette", "cutPattern", "audioPlan"],
+      properties: {
+        aspectRatio: { type: "string" },
+        width: { type: "integer", minimum: 1 },
+        height: { type: "integer", minimum: 1 },
+        fps: { type: "integer", minimum: 1 },
+        durationSec: { type: "number", exclusiveMinimum: 0 },
+        palette: { type: "array", items: { type: "string" } },
+        bpm: { type: "number" },
+        beatGridSec: { type: "array", items: { type: "number" } },
+        cutPattern: {
+          type: "object",
+          additionalProperties: false,
+          required: ["targetCutCount", "avgShotDurationSec", "fastZones"],
+          properties: {
+            targetCutCount: { type: "integer", minimum: 0 },
+            avgShotDurationSec: { type: "number", exclusiveMinimum: 0 },
+            fastZones: {
+              type: "array",
+              items: {
+                type: "array",
+                minItems: 2,
+                maxItems: 2,
+                items: { type: "number" }
+              }
+            }
+          }
+        },
+        audioPlan: {
+          type: "object",
+          additionalProperties: false,
+          required: ["policy", "layers"],
+          properties: {
+            policy: { enum: ["procedural_bgm", "user_bgm", "authorized_sample_bgm", "silent"] },
+            layers: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                kick: { type: "number" },
+                bass: { type: "number" },
+                drone: { type: "number" },
+                hats: { type: "number" },
+                riser: { type: "number" },
+                impact: { type: "number" }
+              }
+            }
+          }
+        }
+      }
+    },
+    clips: {
+      type: "array",
+      minItems: 1,
+      items: { $ref: "#/$defs/renderRecipeClip" }
+    },
+    warnings: { type: "array", items: { type: "string" } }
+  },
+  $defs: {
+    renderRecipeClip: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "clipId",
+        "role",
+        "startSec",
+        "endSec",
+        "slotId",
+        "visualFormFamily",
+        "selectedPrimitive",
+        "primitiveReason",
+        "rendererTarget",
+        "material",
+        "layout",
+        "motion",
+        "text"
+      ],
+      properties: {
+        clipId: { type: "string" },
+        role: { enum: ["hook", "setup", "body", "proof", "transition", "cta"] },
+        startSec: { type: "number", minimum: 0 },
+        endSec: { type: "number", minimum: 0 },
+        slotId: { type: "string" },
+        visualFormFamily: {
+          enum: [
+            "source_video_montage",
+            "product_hero",
+            "media_cards",
+            "kinetic_typography",
+            "feature_list",
+            "impact_fx",
+            "brand_cta",
+            "procedural_proxy"
+          ]
+        },
+        selectedPrimitive: {
+          enum: [
+            "SourceClipBeatMontage",
+            "ProductHeroOrbit",
+            "FanHeroSpin",
+            "FeatureCardStack",
+            "TypographyLayoutSequence",
+            "ImpactFlash",
+            "CTAEndSlate",
+            "DynamicProxyMontage"
+          ]
+        },
+        primitiveReason: { type: "string", minLength: 1 },
+        rendererTarget: { enum: ["remotion_recipe", "ffmpeg", "hyperframes_recipe"] },
+        material: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "assetIds", "policy"],
+          properties: {
+            kind: { enum: ["source_video", "target_image", "target_image_set", "generated_target_asset", "procedural", "none"] },
+            assetIds: { type: "array", items: { type: "string" } },
+            sourceShotIds: { type: "array", items: { type: "string" } },
+            policy: { enum: ["renderable", "evidence_only", "missing"] }
+          }
+        },
+        layout: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            positionClass: { type: "string" },
+            bboxTrackNorm: { type: "array", items: {} },
+            typographyLayout: { enum: ["center_title", "lower_third", "diagonal_tag", "keyword_scatter", "top_tag"] }
+          }
+        },
+        motion: {
+          type: "object",
+          additionalProperties: false,
+          required: ["pattern", "beatAligned", "beatTimestampsSec"],
+          properties: {
+            pattern: { enum: ["orbit", "spin", "zoom_pulse", "hard_cut", "shake", "pan", "card_stack", "none"] },
+            beatAligned: { type: "boolean" },
+            beatTimestampsSec: { type: "array", items: { type: "number" } },
+            trajectory: { type: "array", items: {} }
+          }
+        },
+        text: {
+          type: "object",
+          additionalProperties: false,
+          required: ["copy", "colorRoles", "animationHint"],
+          properties: {
+            copy: { type: "string" },
+            colorRoles: { type: "array", items: { type: "string" } },
+            animationHint: { enum: ["per_char_reveal", "shake", "scale", "flash", "none"] }
+          }
+        }
+      }
+    }
+  }
+} as const;
+
 export const timelineSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "https://viral-video-structure-transfer.local/schemas/timeline.schema.json",

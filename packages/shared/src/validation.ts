@@ -9,6 +9,7 @@ import {
   knowledgeAtomSchema,
   materialGenerationBriefSchema,
   projectSchema,
+  renderRecipeSchema,
   structureTemplateSchema,
   timelineSchema
 } from "./schemas.js";
@@ -28,6 +29,7 @@ const schemaMap = {
   aigc_material_fill_config: aigcMaterialFillConfigSchema,
   material_generation_brief: materialGenerationBriefSchema,
   generated_asset_candidate: generatedAssetCandidateSchema,
+  render_recipe: renderRecipeSchema,
   timeline: timelineSchema,
   job: jobSchema
 } as const;
@@ -86,6 +88,10 @@ export function validateMaterialGenerationBrief(value: unknown): ValidationResul
 
 export function validateGeneratedAssetCandidate(value: unknown): ValidationResult {
   return runValidator("generated_asset_candidate", value);
+}
+
+export function validateRenderRecipe(value: unknown): ValidationResult {
+  return runValidator("render_recipe", value);
 }
 
 export function validateTimeline(value: unknown): ValidationResult {

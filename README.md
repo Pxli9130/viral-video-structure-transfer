@@ -41,7 +41,36 @@
 - [演示脚本](./spec_v2/demo-playbook.md)
 - [Schema](./spec_v2/schemas/)
 
-旧版 `specs_v1/` 和 `spec_v1_1/` 仅保留作历史追踪，当前以 `spec_v2/` 为准。
+**最终提交规范以 [`spec_v3/`](./spec_v3/) 为准**（Spec v1.3 — Source-first RenderRecipe Engine）；`spec_v2/` 仍是更广的产品规范，`specs_v1/` 和 `spec_v1_1/` 仅作历史追踪。
+
+- [Spec v1.3 需求](./spec_v3/requirements.md)、[系统设计](./spec_v3/design.md)、[RenderRecipe schema](./spec_v3/schemas/render-recipe.schema.json)、[实现状态](./spec_v3/implementation-status.md)、[演示脚本](./spec_v3/demo-playbook.md)
+
+## Spec v1.3 — Source-first RenderRecipe（最终提交演示）
+
+针对「渲染 overfit」investigation（[REPORT](./docs/artifacts/render_overfit_findings/REPORT.md)）暴露的「样例无关的固定模具」问题（同类 beat_cut 输入坍缩成同一 6-primitive 序列，跨样例布局 NCC 0.868–1.000），v1.3 把渲染改成 **source-first + RenderRecipe 单一契约**：
+
+```text
+样例视频 = 仅结构证据（不复制帧/音频/水印）
+目标素材 / 源视频 = 进画面的输出素材
+→ buildRenderRecipe（timeline.renderPlan.renderRecipe，唯一渲染契约，每个 clip 带可审计 primitiveReason）
+→ FFmpeg（合成真实素材像素 + 卡点字幕 + 程序化 BGM，产出 final.mp4）
+   与 Remotion ViralRecipe composition（消费同一 recipe，产出 final.remotion.mp4）
+```
+
+最终演示产品是 **AeroSpin 便携涡轮小风扇**产品广告。仓库无真实风扇素材，故目标素材由**真实 Gemini 2.5 Flash Image（Nano Banana）生成**并标注 provenance `aigc_generated_material`（非用户上传、非真实产品照）。
+
+```bash
+# 工具链前缀（系统 node 是过期 v12；ffmpeg/python 在 viral conda env）
+export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
+
+# 1) 生成真实 AIGC 风扇目标 fixture（需 GEMINI_API_KEY + 外部 provider opt-in）
+node scripts/generate-aerospin-fan-fixture.mjs
+
+# 2) 最终提交演示：Demo A（editing.mov beat_cut + 风扇）+ Demo B（motion_graph + 同一风扇素材）+ 反 overfit 多样性
+npm run demo:final
+```
+
+产物：`docs/artifacts/final_submission/`（`demo_a_editing_fan/`、`demo_b_motion_graph_fan/`、`diversity_eval/`、`FINAL_REPORT.md`）。每个 demo 含 `final.mp4`（FFmpeg）、`final.remotion.mp4`（Remotion）、`render-recipe.json`、`quality-gates.json`、`sample-copy-safety.json`、`source-material-usage.json`、contact sheet、`HUMAN_REVIEW_REPORT.md`。**跨样例反 overfit 结果：layout NCC ≈ 0.01**（同样素材、不同样例产出结构迥异的视频，固定模具被打破）。
 
 ## 目录结构
 

@@ -24,7 +24,11 @@ test_videos/corpus/*/.frames_tmp/
 
 assets/
 spec_v2/implementation-status.md
+# Ignore generated docs/artifacts by default, but allow curated docs to be tracked.
 docs/
+!docs/
+docs/*
+!docs/vvst-eval-usage.md
 storage/
 test_videos/manual/
 marketing_demo/
