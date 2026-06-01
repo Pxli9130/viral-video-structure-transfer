@@ -1,0 +1,11 @@
+{
+  "source": "aigc_generated",
+  "provider": "seedance_2_0",
+  "model": "seedance-2.0",
+  "promptHash": "sha256:6c1f8a12b3a44c9e",
+  "userPromptExcerpt": "Generate a 4s glossy product motion insert for a portable fan.",
+  "generatedAt": "2026-06-01T00:00:00.000Z",
+  "sampleDerived": false,
+  "renderable": true,
+  "materialRole": "aigc_video_fill"
+}

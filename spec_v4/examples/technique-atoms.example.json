@@ -1,0 +1,58 @@
+[
+  {
+    "id": "atom_ribbon_poster_001",
+    "name": "白底 3D ribbon 动态海报",
+    "category": "motion_graph",
+    "sourceSampleId": "sample_marketing",
+    "sourceEvidenceRefs": [
+      "evidence://sample_marketing/motion/ma_ribbon_001"
+    ],
+    "visualPattern": {
+      "family": "ribbon_poster",
+      "description": "white poster, product/title center, colorful ribbon sweeps right-to-left",
+      "colorPalette": [
+        "#F3F3F1",
+        "#1C55FF",
+        "#FF6B8A"
+      ]
+    },
+    "timingPattern": {
+      "startRole": "opening",
+      "durationRangeSec": [
+        2.0,
+        4.0
+      ],
+      "beatSync": true,
+      "cutDensity": "medium"
+    },
+    "requiredAssets": [
+      {
+        "role": "hero_image",
+        "type": "image",
+        "minCount": 1,
+        "importance": "high"
+      },
+      {
+        "role": "cta_text",
+        "type": "text",
+        "minCount": 1,
+        "importance": "medium"
+      }
+    ],
+    "renderer": {
+      "preferred": "remotion",
+      "component": "ParametricRibbonSurface",
+      "fallbackComponent": "LightLeakTransition"
+    },
+    "transferRules": {
+      "canUseTargetImages": true,
+      "canUseSourceVideo": false,
+      "canUseAigcFill": true,
+      "samplePixelsAllowed": false,
+      "fallbackStrategies": [
+        "procedural_motion",
+        "packaging_fill"
+      ]
+    }
+  }
+]

@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssetProfile v4",
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "provenance"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "image",
+        "video",
+        "text",
+        "audio",
+        "generated"
+      ]
+    },
+    "uri": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "source",
+        "sampleDerived",
+        "renderable"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "user_uploaded",
+            "aigc_generated",
+            "fixture",
+            "source_video",
+            "sample_evidence"
+          ]
+        },
+        "sampleDerived": {
+          "type": "boolean"
+        },
+        "renderable": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "enum": [
+            "product",
+            "person",
+            "scene",
+            "logo",
+            "screenshot",
+            "unknown"
+          ]
+        },
+        "bboxNorm": {
+          "type": "object",
+          "required": [
+            "x",
+            "y",
+            "w",
+            "h"
+          ],
+          "properties": {
+            "x": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "y": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "w": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "h": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "dominantColors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "suitableFor": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "hero",
+              "card",
+              "background",
+              "cta",
+              "cover"
+            ]
+          }
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "properties": {
+        "shots": {
+          "type": "array"
+        },
+        "highlights": {
+          "type": "array"
+        }
+      }
+    },
+    "textFeatures": {
+      "type": "object",
+      "properties": {
+        "sellingPoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ctaCandidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subtitleCandidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

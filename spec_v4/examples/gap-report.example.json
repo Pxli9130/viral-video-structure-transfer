@@ -1,0 +1,29 @@
+{
+  "version": "gap-report-v4",
+  "gaps": [
+    {
+      "id": "gap_opening_motion_001",
+      "slotId": "slot_opening_hook_visual",
+      "atomId": "atom_ribbon_poster_001",
+      "status": "missing",
+      "requiredAsset": "moving ribbon / dynamic poster motion",
+      "matchedAssetIds": [],
+      "reason": "User provided product image but no moving MG material.",
+      "impact": "high",
+      "repairOptions": [
+        {
+          "type": "procedural_motion",
+          "description": "Generate a Remotion parametric ribbon layer around product image.",
+          "selected": true,
+          "expectedVisualResult": "White poster with animated 2.5D ribbon sweep."
+        },
+        {
+          "type": "packaging_fill",
+          "description": "Add kinetic title and impact flash to compensate for missing video motion.",
+          "selected": false,
+          "expectedVisualResult": "More text-driven poster."
+        }
+      ]
+    }
+  ]
+}

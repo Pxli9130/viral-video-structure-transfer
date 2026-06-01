@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-structure-transfer/spec_v4_1/aigc-provider.schema.json",
+  "title": "AIGCProvider",
+  "type": "object",
+  "required": ["kind", "provider", "purpose", "optional", "provenanceRequired", "fallbackStrategy"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["image", "video", "audio", "asr", "tts", "sfx", "music", "cleanup", "dubbing"]
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "seedance_2_0",
+        "veo_3_1",
+        "kling_3_0",
+        "runway_gen_4",
+        "seedream_4_0",
+        "gpt_image_2",
+        "nano_banana_2",
+        "local_flux",
+        "elevenlabs_scribe",
+        "elevenlabs_tts",
+        "elevenlabs_sound_effects",
+        "elevenlabs_music",
+        "elevenlabs_audio_isolation",
+        "elevenlabs_dubbing",
+        "elevenlabs_lip_sync",
+        "local_faster_whisper",
+        "procedural_audio"
+      ]
+    },
+    "purpose": {
+      "type": "string",
+      "enum": [
+        "background_fill",
+        "hero_image_fill",
+        "cover_image",
+        "poster_card",
+        "cta_visual",
+        "opening_hook_motion",
+        "product_motion_insert",
+        "moving_background",
+        "missing_use_case_clip",
+        "transition_clip",
+        "voiceover",
+        "asr",
+        "captioning",
+        "sound_effect",
+        "bgm",
+        "audio_cleanup",
+        "dubbing",
+        "lip_sync"
+      ]
+    },
+    "maxDurationSec": { "type": "number", "minimum": 0 },
+    "optional": { "type": "boolean", "const": true },
+    "provenanceRequired": { "type": "boolean", "const": true },
+    "fallbackStrategy": { "type": "string", "minLength": 1 },
+    "sampleFramesAllowedAsInput": { "type": "boolean", "const": false },
+    "sampleAudioAllowedAsInput": { "type": "boolean", "const": false },
+    "userAssetsAllowedAsInput": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

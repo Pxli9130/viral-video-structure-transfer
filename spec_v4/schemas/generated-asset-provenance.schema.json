@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viral-structure-transfer/spec_v4_1/generated-asset-provenance.schema.json",
+  "title": "GeneratedAssetProvenance",
+  "type": "object",
+  "required": ["source", "provider", "promptHash", "generatedAt", "sampleDerived", "renderable", "materialRole"],
+  "properties": {
+    "source": { "type": "string", "const": "aigc_generated" },
+    "provider": { "type": "string", "minLength": 1 },
+    "model": { "type": "string" },
+    "promptHash": { "type": "string", "minLength": 8 },
+    "userPromptExcerpt": { "type": "string" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "sampleDerived": { "type": "boolean", "const": false },
+    "renderable": { "type": "boolean", "const": true },
+    "materialRole": {
+      "type": "string",
+      "enum": ["aigc_video_fill", "aigc_image_fill", "aigc_voiceover", "aigc_sound_effect", "aigc_music"]
+    }
+  },
+  "additionalProperties": false
+}

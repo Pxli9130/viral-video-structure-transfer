@@ -1,0 +1,691 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RenderRecipe v4.1 Schema",
+  "type": "object",
+  "required": [
+    "version",
+    "composition",
+    "productTheme",
+    "sourcePolicy",
+    "evidenceSummary",
+    "clips",
+    "layers"
+  ],
+  "properties": {
+    "version": {
+      "const": "render-recipe-v4.1"
+    },
+    "composition": {
+      "type": "object",
+      "required": [
+        "width",
+        "height",
+        "fps",
+        "durationSec",
+        "aspectRatio"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "fps": {
+          "type": "number"
+        },
+        "durationSec": {
+          "type": "number"
+        },
+        "aspectRatio": {
+          "enum": [
+            "9:16",
+            "16:9",
+            "1:1"
+          ]
+        }
+      }
+    },
+    "productTheme": {
+      "type": "object",
+      "required": [
+        "productName",
+        "sellingPoints",
+        "ctaText"
+      ],
+      "properties": {
+        "productName": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "brandName": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "brief": {
+          "type": "string"
+        },
+        "sellingPoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ctaText": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "generationPrompt": {
+          "type": "string"
+        }
+      }
+    },
+    "sourcePolicy": {
+      "type": "object",
+      "required": [
+        "sampleUse",
+        "sampleFrameCopyAllowed",
+        "sampleAudioCopyAllowed",
+        "sourceVideoUse",
+        "targetAssetUse"
+      ],
+      "properties": {
+        "sampleUse": {
+          "enum": [
+            "structure_evidence_only",
+            "authorized_reuse"
+          ]
+        },
+        "sampleFrameCopyAllowed": {
+          "const": false
+        },
+        "sampleAudioCopyAllowed": {
+          "const": false
+        },
+        "sourceVideoUse": {
+          "enum": [
+            "missing",
+            "renderable_user_material"
+          ]
+        },
+        "targetAssetUse": {
+          "enum": [
+            "renderable_target_material",
+            "missing"
+          ]
+        }
+      }
+    },
+    "evidenceSummary": {
+      "type": "object",
+      "required": [
+        "sourceSampleIds",
+        "preservedEvidence",
+        "droppedEvidence"
+      ],
+      "properties": {
+        "sourceSampleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "preservedEvidence": {
+          "type": "object",
+          "required": [
+            "visualElements",
+            "typographyRuns",
+            "motionAtoms",
+            "audioLayers"
+          ],
+          "properties": {
+            "visualElements": {
+              "type": "integer"
+            },
+            "typographyRuns": {
+              "type": "integer"
+            },
+            "motionAtoms": {
+              "type": "integer"
+            },
+            "audioLayers": {
+              "type": "integer"
+            }
+          }
+        },
+        "droppedEvidence": {
+          "type": "array"
+        }
+      }
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "startSec",
+          "durationSec",
+          "atomIds",
+          "layerIds",
+          "primitiveReason",
+          "evidenceRefs"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "hook",
+              "setup",
+              "proof",
+              "demo",
+              "benefit",
+              "transition",
+              "cta"
+            ]
+          },
+          "startSec": {
+            "type": "number"
+          },
+          "durationSec": {
+            "type": "number"
+          },
+          "atomIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "layerIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "primitiveReason": {
+            "type": "string"
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/mediaLayer"
+          },
+          {
+            "$ref": "#/$defs/textLayer"
+          },
+          {
+            "$ref": "#/$defs/motionAtomLayer"
+          },
+          {
+            "$ref": "#/$defs/audioLayer"
+          },
+          {
+            "$ref": "#/$defs/shapeLayer"
+          },
+          {
+            "$ref": "#/$defs/transitionLayer"
+          }
+        ]
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "baseLayer": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "zIndex",
+        "startSec",
+        "durationSec",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "clipId": {
+          "type": "string"
+        },
+        "zIndex": {
+          "type": "integer"
+        },
+        "startSec": {
+          "type": "number"
+        },
+        "durationSec": {
+          "type": "number"
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fallbackReason": {
+          "type": "string"
+        }
+      }
+    },
+    "mediaLayer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLayer"
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "material",
+            "layout"
+          ],
+          "properties": {
+            "type": {
+              "const": "media"
+            },
+            "material": {
+              "type": "object",
+              "required": [
+                "kind",
+                "assetIds",
+                "policy",
+                "provenance"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "source_video",
+                    "target_image",
+                    "target_image_set",
+                    "generated_target_asset",
+                    "procedural"
+                  ]
+                },
+                "assetIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "sourceShotIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "policy": {
+                  "enum": [
+                    "renderable",
+                    "missing",
+                    "evidence_only"
+                  ]
+                },
+                "provenance": {
+                  "enum": [
+                    "user_uploaded",
+                    "aigc_generated",
+                    "source_video",
+                    "fixture"
+                  ]
+                }
+              }
+            },
+            "layout": {
+              "type": "object",
+              "required": [
+                "fit"
+              ],
+              "properties": {
+                "bboxNorm": {
+                  "type": "object",
+                  "required": [
+                    "x",
+                    "y",
+                    "w",
+                    "h"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "w": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "h": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "fit": {
+                  "enum": [
+                    "cover",
+                    "contain",
+                    "heroFill",
+                    "cardInset",
+                    "backgroundFill"
+                  ]
+                },
+                "minAreaRatio": {
+                  "type": "number"
+                },
+                "safeArea": {
+                  "enum": [
+                    "full",
+                    "title",
+                    "body",
+                    "cta"
+                  ]
+                }
+              }
+            },
+            "motion": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "textLayer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLayer"
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "text",
+            "layout",
+            "typography",
+            "animation"
+          ],
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "text": {
+              "type": "object",
+              "required": [
+                "content",
+                "role"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "headline",
+                    "subtitle",
+                    "badge",
+                    "selling_point",
+                    "cta",
+                    "price"
+                  ]
+                },
+                "maxChars": {
+                  "type": "integer"
+                }
+              }
+            },
+            "layout": {
+              "type": "object",
+              "required": [
+                "bboxNorm",
+                "align"
+              ],
+              "properties": {
+                "bboxNorm": {
+                  "type": "object",
+                  "required": [
+                    "x",
+                    "y",
+                    "w",
+                    "h"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "w": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "h": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "align": {
+                  "enum": [
+                    "left",
+                    "center",
+                    "right"
+                  ]
+                },
+                "anchor": {
+                  "enum": [
+                    "center",
+                    "top-left",
+                    "bottom-center"
+                  ]
+                }
+              }
+            },
+            "typography": {
+              "type": "object",
+              "required": [
+                "fontSizeRatio"
+              ],
+              "properties": {
+                "fontSizeRatio": {
+                  "type": "number"
+                },
+                "weight": {
+                  "type": "integer"
+                },
+                "colorRole": {
+                  "enum": [
+                    "primary",
+                    "accent",
+                    "on_dark",
+                    "muted"
+                  ]
+                },
+                "color": {
+                  "type": "string"
+                }
+              }
+            },
+            "animation": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "motionAtomLayer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLayer"
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "atom"
+          ],
+          "properties": {
+            "type": {
+              "const": "motion_atom"
+            },
+            "atom": {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "parametric_ribbon_surface",
+                    "text_sweep_mask",
+                    "impact_flash",
+                    "light_sweep"
+                  ]
+                }
+              }
+            },
+            "fallback": {
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "audioLayer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLayer"
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "audio"
+          ],
+          "properties": {
+            "type": {
+              "const": "audio"
+            },
+            "audio": {
+              "type": "object",
+              "required": [
+                "kind",
+                "policy",
+                "weight"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "kick",
+                    "bass",
+                    "hat",
+                    "drone",
+                    "riser",
+                    "impact",
+                    "voice",
+                    "music"
+                  ]
+                },
+                "policy": {
+                  "enum": [
+                    "procedural",
+                    "user_audio",
+                    "licensed",
+                    "missing"
+                  ]
+                },
+                "weight": {
+                  "type": "number"
+                },
+                "bpm": {
+                  "type": "number"
+                },
+                "accentPattern": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "atSec": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "shapeLayer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLayer"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "shape"
+            }
+          }
+        }
+      ]
+    },
+    "transitionLayer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLayer"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "transition"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "additionalProperties": true,
+  "$id": "render-recipe-v4-1.schema.json"
+}

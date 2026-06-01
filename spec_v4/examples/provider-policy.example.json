@@ -1,0 +1,47 @@
+{
+  "providers": [
+    {
+      "provider": "seedance_2_0",
+      "category": "video",
+      "requiredForCoreDemo": false,
+      "enabledByDefault": false,
+      "fallbackStrategy": "remotion_motion_graph_plus_ffmpeg_mux",
+      "provenanceRequired": true,
+      "sampleFramesAllowedAsInput": false,
+      "sampleAudioAllowedAsInput": false,
+      "userAssetsAllowedAsInput": true,
+      "generatedAssetLabelRequired": true,
+      "maxCostUsdPerRun": 2.0,
+      "maxDurationSec": 6,
+      "riskLevel": "high"
+    },
+    {
+      "provider": "seedream_4_0",
+      "category": "image",
+      "requiredForCoreDemo": false,
+      "enabledByDefault": false,
+      "fallbackStrategy": "remotion_generated_poster_card",
+      "provenanceRequired": true,
+      "sampleFramesAllowedAsInput": false,
+      "sampleAudioAllowedAsInput": false,
+      "userAssetsAllowedAsInput": true,
+      "generatedAssetLabelRequired": true,
+      "maxCostUsdPerRun": 0.5,
+      "riskLevel": "medium"
+    },
+    {
+      "provider": "elevenlabs_music",
+      "category": "audio",
+      "requiredForCoreDemo": false,
+      "enabledByDefault": false,
+      "fallbackStrategy": "procedural_bgm_from_audio_layers",
+      "provenanceRequired": true,
+      "sampleFramesAllowedAsInput": false,
+      "sampleAudioAllowedAsInput": false,
+      "userAssetsAllowedAsInput": false,
+      "generatedAssetLabelRequired": true,
+      "maxCostUsdPerRun": 0.5,
+      "riskLevel": "medium"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+只做 P0 hard fixes：
+1. buildFallbackTemplate evidence carry-forward。
+2. productTheme prompt pollution。
+3. Remotion TypographyLayoutSequence 0 pics。
+4. RenderRecipe layers[] minimal schema。
+5. inspect-learning-fidelity.mjs。
+
+不要做 TechniqueAtom 大改。不要引入 DB/queue。加 regression tests。
