@@ -233,8 +233,9 @@ const explicitTargetManifestPath = targetAssetsManifestArg
 const targetManifestPath = explicitTargetManifestPath ?? (withMalformedTargetAssets ? malformedFixtureManifestPath : withPartialTargetAssets ? partialFixtureManifestPath : withTargetAssets ? fixtureManifestPath : null);
 const usesTargetAssetManifest = Boolean(targetManifestPath);
 const usesAigcMaterials = withAigcMaterials;
-const supportedAigcProviders = new Set(["mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"]);
-const resolvedAigcProvider = aigcProviderArg === "env" ? (process.env.AIGC_IMAGE_PROVIDER ?? "mock_provider") : (aigcProviderArg ?? "mock_provider");
+const supportedAigcProviders = new Set(["deterministic_local_image_fill", "mock_provider", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"]);
+const normalizeAigcProviderId = (id) => id === "mock_provider" ? "deterministic_local_image_fill" : id;
+const resolvedAigcProvider = normalizeAigcProviderId(aigcProviderArg === "env" ? (process.env.AIGC_IMAGE_PROVIDER ?? "deterministic_local_image_fill") : (aigcProviderArg ?? "deterministic_local_image_fill"));
 if (usesAigcMaterials && !supportedAigcProviders.has(resolvedAigcProvider)) {
   throw new Error(`Unsupported AIGC provider "${resolvedAigcProvider}".`);
 }
@@ -1137,7 +1138,7 @@ async function main() {
       }
     });
     const provider = getAigcMaterialProvider(resolvedAigcProvider);
-    const fallbackProvider = getAigcMaterialProvider("mock_provider");
+    const fallbackProvider = getAigcMaterialProvider("deterministic_local_image_fill");
     const generatedAssetsDir = path.join(artifactDir, "generated-assets");
     await mkdir(generatedAssetsDir, { recursive: true });
     for (const brief of aigcMaterialBriefs) {
@@ -1153,11 +1154,11 @@ async function main() {
       } catch (error) {
         const reason = sanitizeAigcProviderError(error);
         aigcProviderErrors.push(`${resolvedAigcProvider}: ${reason}`);
-        if (!externalAigcProvider || resolvedAigcProvider === "mock_provider") {
+        if (!externalAigcProvider || resolvedAigcProvider === "deterministic_local_image_fill") {
           throw error;
         }
-        activeAigcProvider = "mock_provider";
-        aigcProviderFallbackReason ??= `External AIGC provider ${resolvedAigcProvider} failed (${reason}); used deterministic mock_provider fallback.`;
+        activeAigcProvider = "deterministic_local_image_fill";
+        aigcProviderFallbackReason ??= `External AIGC provider ${resolvedAigcProvider} failed (${reason}); used deterministic_local_image_fill fallback.`;
         candidates = await fallbackProvider.generate(brief, {
           outputDir: generatedAssetsDir,
           publicPathPrefix: "docs/artifacts/motion_graph_case/generated-assets",
@@ -1482,7 +1483,7 @@ async function main() {
       gate("generated_assets_used_in_render", generatedAssetsUsed, rendererCapabilitySummary(generation.fillPlan), "usable generated material is registered as target material and selected by renderer fill plan."),
       gate(
         "external_provider_not_called_by_default",
-        (resolvedAigcProvider === "mock_provider" && !externalProviderUsed) ||
+        (resolvedAigcProvider === "deterministic_local_image_fill" && !externalProviderUsed) ||
           (externalAigcProvider && allowExternalAigc && generatedAssetCandidates.every((candidate) => candidate.provenance.sampleFramesSentExternally === false)),
         {
           requestedProvider: resolvedAigcProvider,
@@ -1490,7 +1491,7 @@ async function main() {
           fallbackReason: aigcProviderFallbackReason,
           candidates: generatedAssetCandidates.map((candidate) => ({ provider: candidate.provider, external: candidate.provenance.externalProviderUsed, sampleFrames: candidate.provenance.sampleFramesSentExternally }))
         },
-        "Default AIGC uses mock_provider; external providers require explicit opt-in and never receive sample frames."
+        "Default AIGC uses deterministic_local_image_fill; external providers require explicit opt-in and never receive sample frames."
       ),
       gate("generated_assets_labeled_not_user_provided", aigcGeneratedTargetAssets.length > 0 && aigcGeneratedTargetAssets.every((asset) => asset.metadata?.materialRole === "aigc_generated_material" && asset.tags?.includes("aigc_generated_material")), aigcGeneratedTargetAssets.map((asset) => asset.id), "generated assets are labeled as AIGC material, not user-provided assets.")
     );
@@ -1502,7 +1503,7 @@ async function main() {
           Boolean(aigcProviderFallbackReason)
         ),
         { requestedProvider: resolvedAigcProvider, activeProvider: activeAigcProvider, allowExternalAigc, externalProviderUsed, fallbackReason: aigcProviderFallbackReason },
-        "External AIGC runs only with an explicit external-provider flag; provider failures are recorded and may fall back to mock_provider."
+        "External AIGC runs only with an explicit external-provider flag; provider failures are recorded and may fall back to deterministic_local_image_fill."
       ));
     }
   }
@@ -1607,10 +1608,10 @@ async function main() {
           sampleFramesSentExternally: generatedAssetCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
           generatedAssetCount: aigcGeneratedTargetAssets.length,
           note: aigcProviderFallbackReason
-            ? "AIGC material fill is optional; the requested external provider failed and deterministic mock_provider fallback was used."
+            ? "AIGC material fill is optional; the requested external provider failed and deterministic_local_image_fill fallback was used."
             : externalAigcProvider
             ? "AIGC material fill is optional; this run used Volcengine Seedream with explicit external-provider opt-in."
-            : "AIGC material fill is optional; this demo uses deterministic mock_provider output."
+            : "AIGC material fill is optional; this demo uses deterministic_local_image_fill output."
         }
       : null
   };

@@ -10,6 +10,7 @@ import {
   materialGenerationBriefSchema,
   projectSchema,
   renderRecipeSchema,
+  renderRecipeV41Schema,
   structureTemplateSchema,
   timelineSchema
 } from "./schemas.js";
@@ -30,6 +31,7 @@ const schemaMap = {
   material_generation_brief: materialGenerationBriefSchema,
   generated_asset_candidate: generatedAssetCandidateSchema,
   render_recipe: renderRecipeSchema,
+  render_recipe_v4_1: renderRecipeV41Schema,
   timeline: timelineSchema,
   job: jobSchema
 } as const;
@@ -91,7 +93,14 @@ export function validateGeneratedAssetCandidate(value: unknown): ValidationResul
 }
 
 export function validateRenderRecipe(value: unknown): ValidationResult {
+  if (value && typeof value === "object" && (value as { version?: unknown }).version === "render-recipe-v4.1") {
+    return runValidator("render_recipe_v4_1", value);
+  }
   return runValidator("render_recipe", value);
+}
+
+export function validateRenderRecipeV4_1(value: unknown): ValidationResult {
+  return runValidator("render_recipe_v4_1", value);
 }
 
 export function validateTimeline(value: unknown): ValidationResult {

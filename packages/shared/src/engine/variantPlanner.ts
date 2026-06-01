@@ -1,7 +1,7 @@
 import type { GenerationControls, GenerationRequest } from "../types.js";
 
 export interface EngineVariantSpec {
-  label: "main" | "high_ctr" | "high_quality" | "high_fidelity";
+  label: "main" | "high_click" | "high_conversion" | "high_quality" | "high_fidelity";
   displayName: string;
   controls: Partial<GenerationControls>;
   promptAddendum?: string;
@@ -14,10 +14,16 @@ export const DEFAULT_ENGINE_VARIANTS: EngineVariantSpec[] = [
     controls: { creativeMode: "final_creative", pace: "fast", hookIntensity: "strong", packagingStyle: "mg_motion", ctaStyle: "direct" }
   },
   {
-    label: "high_ctr",
-    displayName: "High CTR",
+    label: "high_click",
+    displayName: "High click",
     controls: { creativeMode: "final_creative", pace: "fast", hookIntensity: "aggressive", packagingStyle: "mg_motion", ctaStyle: "direct" },
     promptAddendum: "Keep the opening high-contrast and attention-led while preserving the source structure."
+  },
+  {
+    label: "high_conversion",
+    displayName: "High conversion",
+    controls: { creativeMode: "final_creative", pace: "medium", hookIntensity: "strong", packagingStyle: "bold", ctaStyle: "direct", ctaTiming: "early", subtitleDensity: "dense" },
+    promptAddendum: "Move product information and proof earlier, keep CTA visible longer, and order selling points by conversion value."
   },
   {
     label: "high_quality",

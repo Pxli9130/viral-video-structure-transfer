@@ -493,7 +493,7 @@ export const aigcMaterialFillConfigSchema = {
   additionalProperties: false,
   properties: {
     enabled: { type: "boolean" },
-    provider: { enum: ["mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    provider: { enum: ["deterministic_local_image_fill", "mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
     maxAssetsPerRun: { type: "number", minimum: 0 },
     maxCostUsd: { type: "number", minimum: 0 },
     allowExternalUpload: { type: "boolean" },
@@ -558,7 +558,7 @@ export const generatedAssetCandidateSchema = {
     id: { type: "string" },
     briefId: { type: "string" },
     slotId: { type: "string" },
-    provider: { enum: ["mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    provider: { enum: ["deterministic_local_image_fill", "mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
     model: { type: "string" },
     type: { enum: ["image", "video", "copy"] },
     materialRole: { const: "aigc_generated_material" },
@@ -754,6 +754,184 @@ export const renderRecipeSchema = {
             copy: { type: "string" },
             colorRoles: { type: "array", items: { type: "string" } },
             animationHint: { enum: ["per_char_reveal", "shake", "scale", "flash", "none"] }
+          }
+        }
+      }
+    }
+  }
+} as const;
+
+const bboxObjectSchema = {
+  type: "object",
+  required: ["x", "y", "w", "h"],
+  additionalProperties: false,
+  properties: {
+    x: { type: "number", minimum: 0, maximum: 1 },
+    y: { type: "number", minimum: 0, maximum: 1 },
+    w: { type: "number", minimum: 0, maximum: 1 },
+    h: { type: "number", minimum: 0, maximum: 1 }
+  }
+} as const;
+
+export const renderRecipeV41Schema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://viral-video-structure-transfer.local/schemas/render-recipe-v4-1.schema.json",
+  title: "RenderRecipe v4.1",
+  type: "object",
+  required: ["version", "composition", "productTheme", "sourcePolicy", "evidenceSummary", "clips", "layers"],
+  additionalProperties: true,
+  properties: {
+    version: { const: "render-recipe-v4.1" },
+    composition: {
+      type: "object",
+      required: ["width", "height", "fps", "durationSec", "aspectRatio"],
+      additionalProperties: true,
+      properties: {
+        width: { type: "integer", minimum: 1 },
+        height: { type: "integer", minimum: 1 },
+        fps: { type: "number", exclusiveMinimum: 0 },
+        durationSec: { type: "number", exclusiveMinimum: 0 },
+        aspectRatio: { enum: ["9:16", "16:9", "1:1"] }
+      }
+    },
+    productTheme: {
+      type: "object",
+      required: ["productName", "sellingPoints", "ctaText"],
+      additionalProperties: true,
+      properties: {
+        name: { type: "string", maxLength: 64 },
+        productName: { type: "string", minLength: 1, maxLength: 64 },
+        brandName: { type: "string", maxLength: 64 },
+        brief: { type: "string" },
+        sellingPoints: { type: "array", items: { type: "string" } },
+        cta: { type: "string", maxLength: 64 },
+        ctaText: { type: "string", minLength: 1, maxLength: 64 },
+        generationPrompt: { type: "string" },
+        rawPrompt: { type: "string" }
+      }
+    },
+    sourcePolicy: {
+      type: "object",
+      required: ["sampleUse", "sampleFrameCopyAllowed", "sampleAudioCopyAllowed", "sourceVideoUse", "targetAssetUse"],
+      additionalProperties: true,
+      properties: {
+        sampleUse: { enum: ["structure_evidence_only", "authorized_reuse"] },
+        sampleFrameCopyAllowed: { const: false },
+        sampleAudioCopyAllowed: { const: false },
+        sourceVideoUse: { enum: ["missing", "renderable_user_material"] },
+        targetAssetUse: { enum: ["renderable_target_material", "missing"] }
+      }
+    },
+    evidenceSummary: {
+      type: "object",
+      required: ["sourceSampleIds", "preservedEvidence", "droppedEvidence"],
+      additionalProperties: true,
+      properties: {
+        sourceSampleIds: { type: "array", items: { type: "string" } },
+        preservedEvidence: {
+          type: "object",
+          required: ["visualElements", "typographyRuns", "motionAtoms", "audioLayers"],
+          additionalProperties: true,
+          properties: {
+            visualElements: { type: "integer", minimum: 0 },
+            typographyRuns: { type: "integer", minimum: 0 },
+            motionAtoms: { type: "integer", minimum: 0 },
+            audioLayers: { type: "integer", minimum: 0 }
+          }
+        },
+        droppedEvidence: { type: "array", items: { type: "object", additionalProperties: true } }
+      }
+    },
+    clips: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "role", "startSec", "durationSec", "atomIds", "layerIds", "primitiveReason", "evidenceRefs"],
+        additionalProperties: true,
+        properties: {
+          id: { type: "string" },
+          clipId: { type: "string" },
+          role: { enum: ["hook", "setup", "body", "proof", "demo", "benefit", "transition", "cta"] },
+          startSec: { type: "number" },
+          durationSec: { type: "number", exclusiveMinimum: 0 },
+          atomIds: { type: "array", items: { type: "string" } },
+          layerIds: { type: "array", items: { type: "string" } },
+          primitiveReason: { type: "string", minLength: 1 },
+          evidenceRefs: { type: "array", items: { type: "string" } }
+        }
+      }
+    },
+    layers: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "type", "zIndex", "startSec", "durationSec", "evidenceRefs"],
+        additionalProperties: true,
+        anyOf: [
+          { required: ["evidenceRefs"] },
+          { required: ["fallbackReason"] }
+        ],
+        properties: {
+          id: { type: "string" },
+          type: { enum: ["media", "text", "motion_atom", "audio", "shape", "transition"] },
+          clipId: { type: "string" },
+          zIndex: { type: "integer" },
+          startSec: { type: "number" },
+          durationSec: { type: "number", exclusiveMinimum: 0 },
+          evidenceRefs: { type: "array", items: { type: "string" } },
+          fallbackReason: { type: "string" },
+          material: {
+            type: "object",
+            required: ["kind", "assetIds", "policy", "provenance"],
+            additionalProperties: true,
+            properties: {
+              kind: { enum: ["source_video", "target_image", "target_image_set", "generated_target_asset", "procedural"] },
+              assetIds: { type: "array", items: { type: "string" } },
+              policy: { enum: ["renderable", "missing", "evidence_only"] },
+              provenance: { enum: ["user_uploaded", "aigc_generated", "source_video", "fixture"] }
+            }
+          },
+          layout: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              bboxNorm: bboxObjectSchema,
+              fit: { enum: ["cover", "contain", "heroFill", "cardInset", "backgroundFill"] },
+              align: { enum: ["left", "center", "right"] }
+            }
+          },
+          text: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              content: { type: "string" },
+              role: { enum: ["headline", "subtitle", "badge", "selling_point", "cta", "price"] }
+            }
+          },
+          typography: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              fontSizeRatio: { type: "number", exclusiveMinimum: 0 }
+            }
+          },
+          atom: {
+            type: "object",
+            required: ["kind"],
+            additionalProperties: true,
+            properties: {
+              kind: { enum: ["parametric_ribbon_surface", "text_sweep_mask", "impact_flash", "light_sweep"] }
+            }
+          },
+          audio: {
+            type: "object",
+            required: ["kind", "policy", "weight"],
+            additionalProperties: true,
+            properties: {
+              kind: { enum: ["kick", "bass", "hat", "drone", "riser", "impact", "voice", "music"] },
+              policy: { enum: ["procedural", "user_audio", "licensed", "missing"] },
+              weight: { type: "number" }
+            }
           }
         }
       }

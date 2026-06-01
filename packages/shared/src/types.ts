@@ -1,3 +1,5 @@
+import type { ModelRouteSummary, ProviderDecision } from "./model-router/types.js";
+
 export type Vertical = "b2b_marketing_mg" | "vlog" | "talking_head" | "beat_cut" | "short_drama" | "ecommerce";
 export type AspectRatio = "9:16" | "16:9" | "1:1";
 export type AssetRole =
@@ -131,7 +133,16 @@ export type FillStrategy =
   | "target_source_clips_by_motion"
   | "procedural_dynamic_proxy";
 
+export type GapRepairStrategy =
+  | "structure_reorder"
+  | "text_fill"
+  | "packaging_fill"
+  | "aigc_fill"
+  | "asset_reuse"
+  | "procedural_motion";
+
 export type AigcMaterialProviderId =
+  | "deterministic_local_image_fill"
   | "mock_provider"
   | "google_gemini_image"
   | "local_folder_provider"
@@ -142,6 +153,73 @@ export type AigcMaterialProviderId =
   | "none";
 export type AigcMaterialAssetType = "image" | "image_set" | "short_video" | "copy" | "logo_placeholder";
 export type GeneratedAssetCandidateType = "image" | "video" | "copy";
+
+export type AssetProfileKind = "image" | "video" | "text" | "audio" | "generated";
+
+export interface AssetProfile {
+  id: string;
+  kind: AssetProfileKind;
+  role?: string;
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  hasAudio?: boolean;
+  provenance: "user_uploaded" | "source_video" | "aigc_generated_material" | "procedural" | "fixture" | "unknown";
+  renderable: boolean;
+  policy?: {
+    sampleFrameCopyAllowed?: boolean;
+    sampleAudioCopyAllowed?: boolean;
+    externalProviderAllowed?: boolean;
+  };
+  notes?: string[];
+}
+
+export type TechniqueAtomCategory =
+  | "typography"
+  | "motion_atom"
+  | "media_layout"
+  | "source_montage"
+  | "poster_layout"
+  | "transition"
+  | "cta"
+  | "audio"
+  | "comparison"
+  | "object_reveal"
+  | "pricing";
+
+export interface TechniqueAtom {
+  id: string;
+  name:
+    | "KineticTypographySweep"
+    | "ParametricRibbonSurface"
+    | "MediaCardCascade"
+    | "ProductPosterHero"
+    | "SourceClipBeatMontage"
+    | "FeatureCardStack"
+    | "ImpactFlash"
+    | "CTAEndSlate"
+    | "PriceBadgePulse"
+    | "LightLeakTransition"
+    | "ObjectTrackReveal"
+    | "SplitScreenCompare"
+    | (string & {});
+  category: TechniqueAtomCategory;
+  sourceSampleId: string;
+  sourceEvidenceRefs: string[];
+  visualPattern: string;
+  timingPattern: string;
+  requiredAssets: AssetProfileKind[];
+  renderer: {
+    preferred: RendererBackend;
+    component: RenderRecipePrimitive | string;
+  };
+  fallbackComponent?: RenderRecipePrimitive | string;
+  transferRules: string[];
+  qualityHints: string[];
+  confidence: number;
+  fallbackReason?: string;
+}
 
 export interface MotionSpec {
   type: "spin" | "scale" | "crop_zoom" | "ribbon_follow" | "pulse" | "slide" | "cascade" | "none";
@@ -308,6 +386,66 @@ export interface GeneratedAssetCandidate {
     usable?: boolean;
     issues?: string[];
   };
+}
+
+export type OptionalProviderId =
+  | "seedance_2_0"
+  | "seedream_4_0"
+  | "elevenlabs_scribe"
+  | "elevenlabs_tts"
+  | "elevenlabs_sound_effects"
+  | "elevenlabs_music"
+  | "elevenlabs_audio_isolation"
+  | "local_remotion_procedural"
+  | "local_ffmpeg_procedural"
+  | "local_faster_whisper";
+
+export type ProviderTask =
+  | "video_generation"
+  | "image_generation"
+  | "speech_to_text"
+  | "text_to_speech"
+  | "sound_effects"
+  | "music_generation"
+  | "audio_isolation"
+  | "procedural_motion"
+  | "procedural_audio";
+
+export interface ProviderPolicy {
+  id: OptionalProviderId;
+  displayName: string;
+  tasks: ProviderTask[];
+  optional: true;
+  envVars: string[];
+  mayReceiveSampleFrames: false;
+  mayReceiveSampleAudio: false;
+  mayReceiveUserAssets: boolean;
+  generatedProvenance: "aigc_generated_material" | "procedural";
+  fallbackProviderId: OptionalProviderId;
+  fallbackReason: string;
+}
+
+export interface ProviderRoute {
+  task: ProviderTask;
+  requestedProviderId?: OptionalProviderId;
+  selectedProviderId: OptionalProviderId;
+  available: boolean;
+  fallbackUsed: boolean;
+  fallbackReason?: string;
+  policy: ProviderPolicy;
+}
+
+export interface ProviderCallRecord {
+  providerId: OptionalProviderId;
+  task: ProviderTask;
+  selectedAt: string;
+  available: boolean;
+  fallbackUsed: boolean;
+  fallbackReason?: string;
+  sampleFramesSentExternally: false;
+  sampleAudioSentExternally: false;
+  userAssetsSentExternally: boolean;
+  provenance: "aigc_generated_material" | "procedural";
 }
 
 export interface ReplacementSlot {
@@ -615,6 +753,8 @@ export interface VisualEvidenceTimeline {
   visualElementGraph?: VisualElementGraph;
   /** v3: audio structure (spectral richness + coarse layer estimate) beyond beat ticks. */
   audioStructure?: Record<string, unknown>;
+  /** v4.1: explicit motion atoms detected from the sample evidence. */
+  motionAtoms?: MotionAtomSpec[];
   ocrStatus: "ok" | "skipped" | "unavailable";
   asrStatus: "ok" | "skipped" | "unavailable";
   analyzerMode: string;
@@ -658,6 +798,8 @@ export interface VideoAnalysisResult {
   motionGeometry?: {
     ribbonMotion?: RibbonMotionGeometry;
   };
+  providerDecisions?: ProviderDecision[];
+  modelRouteSummary?: ModelRouteSummary;
 }
 
 export interface RequiredSlot {
@@ -777,6 +919,10 @@ export interface StructureTemplate {
   visualElementGraph?: VisualElementGraph;
   /** v3: learned audio structure (spectral richness + coarse layer balance) for procedural BGM. */
   audioStructure?: Record<string, unknown>;
+  /** v4.1: sample-derived procedural motion atoms such as parametric ribbons. */
+  motionAtoms?: MotionAtomSpec[];
+  /** v4.1 PR2: evidence-derived reusable visual/audio/renderer techniques. */
+  techniqueAtoms?: TechniqueAtom[];
   excludeSegments?: ExcludeSegment[];
   targetDurationSec?: number;
   segments: StructureSegment[];
@@ -791,6 +937,9 @@ export interface StructureTemplate {
   /** Whether AI (VLM/LLM) enrichment succeeded; "failed" must surface, never masquerade as a clean fallback. */
   aiEnrichmentStatus?: "ok" | "failed" | "skipped";
   aiEnrichmentError?: string;
+  providerDecisionRefs?: string[];
+  modelRouteSummary?: ModelRouteSummary;
+  buildEvidenceSource?: "deterministic_evidence" | "vlm" | "fallback";
   sourcePolicy: SourcePolicyBlock;
   createdAt: string;
   updatedAt?: string;
@@ -948,11 +1097,18 @@ export interface SlotMapping {
 }
 
 export type GapCategory =
+  | "opening_hook_visual_missing"
   | "hook_visual_missing"
   | "product_closeup_missing"
+  | "use_case_video_missing"
   | "usage_scene_missing"
   | "comparison_missing"
+  | "source_moving_material_missing"
   | "cta_visual_missing"
+  | "logo_missing"
+  | "text_selling_points_missing"
+  | "motion_atom_renderer_missing"
+  | "audio_layer_missing"
   | "subtitle_text_missing"
   | "title_card_missing"
   | "transition_missing"
@@ -1000,6 +1156,22 @@ export interface GapReportItem {
   mappedAssetId?: string;
   fillSource?: "target_asset" | "source_video" | "procedural_generation" | "text_or_copy" | "proxy_placeholder" | "user_asset" | "none";
   fulfilledByBackend?: RendererBackend;
+  repairOptions?: GapRepairOption[];
+  selectedRepair?: GapRepairOption;
+  rankedRepairOptions?: unknown[];
+  providerDecisions?: ProviderDecision[];
+  providerPromptPlans?: unknown[];
+  expectedVisualResult?: string;
+}
+
+export interface GapRepairOption {
+  strategy: GapRepairStrategy;
+  label: string;
+  renderer?: RendererBackend;
+  requiredInputs: string[];
+  risk: "low" | "medium" | "high";
+  preservesStructure: boolean;
+  reason: string;
 }
 
 export interface RendererInstruction {
@@ -1029,9 +1201,59 @@ export interface FillAction {
   backend?: RendererBackend;
   fallbackUsed?: boolean;
   fallbackReason?: string;
+  providerDecision?: ProviderDecision;
+  providerPromptPlans?: unknown[];
+  rankedRepairOptions?: unknown[];
   visualFormFamily?: VisualFormFamily;
   selectedStrategy?: FillStrategy;
   fulfilledBy?: RendererInstruction["fulfilledBy"];
+  repairSourceGapId?: string;
+  expectedVisualResult?: string;
+}
+
+export interface FillPlan {
+  actions: FillAction[];
+  source: "planner" | "repair_options";
+  createdAt?: string;
+  notes?: string[];
+}
+
+export type VersionStrategy = "high_click" | "high_conversion" | "high_quality";
+
+export interface VersionDiffItem {
+  dimension:
+    | "hook_duration"
+    | "text_density"
+    | "cta_placement"
+    | "motion_intensity"
+    | "audio_density"
+    | "selling_point_order"
+    | "packaging_style";
+  before: unknown;
+  after: unknown;
+  reason: string;
+}
+
+export interface VersionDiff {
+  strategy: VersionStrategy;
+  summary: string;
+  changedDimensions: VersionDiffItem[];
+}
+
+export interface RecipePatchOperation {
+  op: "add" | "remove" | "replace" | "move" | "scale";
+  path: string;
+  value?: unknown;
+  from?: string;
+  reason: string;
+}
+
+export interface NaturalLanguageRecipePatch {
+  command: string;
+  summary: string;
+  operations: RecipePatchOperation[];
+  updatedRecipe: RenderRecipe;
+  renderNeeded: boolean;
 }
 
 export interface StoryboardItem {
@@ -1198,9 +1420,17 @@ export type RenderRecipePrimitive =
   | "SourceClipBeatMontage"
   | "ProductHeroOrbit"
   | "FanHeroSpin"
+  | "ProductPosterHero"
   | "FeatureCardStack"
+  | "MediaCardCascade"
+  | "KineticTypographySweep"
+  | "ParametricRibbonSurface"
   | "TypographyLayoutSequence"
   | "ImpactFlash"
+  | "PriceBadgePulse"
+  | "LightLeakTransition"
+  | "ObjectTrackReveal"
+  | "SplitScreenCompare"
   | "CTAEndSlate"
   | "DynamicProxyMontage";
 
@@ -1215,10 +1445,17 @@ export type RenderRecipeFamily =
   | "procedural_proxy";
 
 export interface RenderRecipeClip {
+  /** v4.1 compatibility id; equals clipId for migrated legacy clips. */
+  id?: string;
   clipId: string;
   role: "hook" | "setup" | "body" | "proof" | "transition" | "cta";
   startSec: number;
   endSec: number;
+  /** v4.1 compatibility duration; computed from endSec - startSec. */
+  durationSec?: number;
+  atomIds?: string[];
+  layerIds?: string[];
+  evidenceRefs?: string[];
   slotId: string;
   visualFormFamily: RenderRecipeFamily;
   selectedPrimitive: RenderRecipePrimitive;
@@ -1230,10 +1467,13 @@ export interface RenderRecipeClip {
     assetIds: string[];
     sourceShotIds?: string[];
     policy: "renderable" | "evidence_only" | "missing";
+    provenance?: "user_uploaded" | "aigc_generated" | "source_video" | "fixture";
   };
   layout: {
     positionClass?: string;
     bboxTrackNorm?: unknown[];
+    bboxNorm?: BBoxNormObject;
+    mediaBBoxNorm?: BBoxNormObject;
     typographyLayout?: "center_title" | "lower_third" | "diagonal_tag" | "keyword_scatter" | "top_tag";
   };
   motion: {
@@ -1246,7 +1486,130 @@ export interface RenderRecipeClip {
     copy: string;
     colorRoles: string[];
     animationHint: "per_char_reveal" | "shake" | "scale" | "flash" | "none";
+    fontSizeRatio?: number;
   };
+}
+
+export interface BBoxNormObject {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export type RenderRecipeLayer =
+  | RenderRecipeMediaLayer
+  | RenderRecipeTextLayer
+  | RenderRecipeMotionAtomLayer
+  | RenderRecipeAudioLayer
+  | RenderRecipeShapeLayer
+  | RenderRecipeTransitionLayer;
+
+export interface RenderRecipeBaseLayer {
+  id: string;
+  type: "media" | "text" | "motion_atom" | "audio" | "shape" | "transition";
+  clipId?: string;
+  zIndex: number;
+  startSec: number;
+  durationSec: number;
+  evidenceRefs: string[];
+  fallbackReason?: string;
+}
+
+export interface RenderRecipeMediaLayer extends RenderRecipeBaseLayer {
+  type: "media";
+  material: {
+    kind: "source_video" | "target_image" | "target_image_set" | "generated_target_asset" | "procedural";
+    assetIds: string[];
+    sourceShotIds?: string[];
+    policy: "renderable" | "missing" | "evidence_only";
+    provenance: "user_uploaded" | "aigc_generated" | "source_video" | "fixture";
+  };
+  layout: {
+    bboxNorm?: BBoxNormObject;
+    fit: "cover" | "contain" | "heroFill" | "cardInset" | "backgroundFill";
+    minAreaRatio?: number;
+    safeArea?: "full" | "title" | "body" | "cta";
+  };
+  motion?: {
+    pattern: "static" | "zoom" | "pan" | "orbit" | "spin" | "card_stack" | "hard_cut";
+    beatAligned?: boolean;
+    beatTimestampsSec?: number[];
+    keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotate?: number; opacity?: number }>;
+  };
+}
+
+export interface RenderRecipeTextLayer extends RenderRecipeBaseLayer {
+  type: "text";
+  text: {
+    content: string;
+    role: "headline" | "subtitle" | "badge" | "selling_point" | "cta" | "price";
+    maxChars?: number;
+  };
+  layout: {
+    bboxNorm: BBoxNormObject;
+    align: "left" | "center" | "right";
+    anchor?: "center" | "top-left" | "bottom-center";
+  };
+  typography: {
+    fontSizeRatio: number;
+    weight?: number;
+    colorRole?: "primary" | "accent" | "on_dark" | "muted";
+    color?: string;
+    stroke?: { color: string; widthRatio: number };
+    shadow?: { color: string; blurRatio: number; dxRatio: number; dyRatio: number };
+    background?: { color: string; radiusRatio: number; paddingRatio: number };
+  };
+  animation: {
+    enter?: "pop" | "scale" | "slide_left" | "slide_right" | "sweep" | "typewriter" | "none";
+    exit?: "fade" | "slide" | "none";
+    beatReactive?: { property: "scale" | "opacity" | "x" | "y" | "rotation"; amplitude: number; beatRefs: number[] };
+  };
+}
+
+export interface RenderRecipeMotionAtomLayer extends RenderRecipeBaseLayer {
+  type: "motion_atom";
+  atom:
+    | {
+        kind: "parametric_ribbon_surface";
+        direction: "right_to_left" | "left_to_right";
+        path: "s_curve_orbit" | "diagonal_sweep" | "horizontal_wave";
+        thicknessRatio: number;
+        twist: number;
+        opacity: number;
+        colorRoles: string[];
+      }
+    | {
+        kind: "text_sweep_mask";
+        targetTextLayerId: string;
+        direction: "right_to_left" | "left_to_right";
+        widthRatio: number;
+        softnessRatio: number;
+      }
+    | { kind: "impact_flash"; intensity: number; beatRefs: number[] }
+    | { kind: "light_sweep"; direction: "diagonal" | "horizontal" | "vertical"; opacity: number };
+  fallback?: { renderer: "ffmpeg" | "remotion"; mode: "2d_svg" | "simple_overlay" | "skip"; reason: string };
+}
+
+export interface RenderRecipeAudioLayer extends RenderRecipeBaseLayer {
+  type: "audio";
+  audio: {
+    kind: "kick" | "bass" | "hat" | "drone" | "riser" | "impact" | "voice" | "music";
+    policy: "procedural" | "user_audio" | "licensed" | "missing";
+    weight: number;
+    bpm?: number;
+    accentPattern?: number[];
+    atSec?: number[];
+    densityCurve?: Array<{ t: number; value: number }>;
+  };
+}
+
+export interface RenderRecipeShapeLayer extends RenderRecipeBaseLayer {
+  type: "shape";
+}
+
+export interface RenderRecipeTransitionLayer extends RenderRecipeBaseLayer {
+  type: "transition";
 }
 
 /**
@@ -1259,12 +1622,29 @@ export interface RenderRecipeClip {
  */
 export interface RenderRecipe {
   schemaVersion: "render-recipe-v1";
+  /** v4.1 layer-based contract marker. Legacy fields remain for old renderers. */
+  version?: "render-recipe-v4.1";
+  versionStrategy?: VersionStrategy;
+  versionDiff?: VersionDiff;
+  composition?: {
+    width: number;
+    height: number;
+    fps: number;
+    durationSec: number;
+    aspectRatio: AspectRatio | (string & {});
+  };
   videoType: "product_mg" | "beat_cut_product" | "motion_graph" | "fallback_cards";
   productTheme: {
     name: string;
     category: string;
     sellingPoints: string[];
     cta: string;
+    productName?: string;
+    brandName?: string;
+    brief?: string;
+    ctaText?: string;
+    generationPrompt?: string;
+    rawPrompt?: string;
   };
   sourcePolicy: {
     sampleUse: "structure_evidence_only" | "authorized_reuse";
@@ -1273,6 +1653,23 @@ export interface RenderRecipe {
     sampleFrameCopyAllowed: false;
     sampleAudioCopyAllowed: false;
   };
+  evidenceSummary?: {
+    sourceSampleIds: string[];
+    preservedEvidence: {
+      visualElements: number;
+      typographyRuns: number;
+      motionAtoms: number;
+      audioLayers: number;
+    };
+    droppedEvidence: Array<{ kind: string; stage: string; reason: string; severity: "info" | "warn" | "fatal" }>;
+  };
+  providerDecisions?: ProviderDecision[];
+  modelRouteSummary?: ModelRouteSummary;
+  recipeLintReport?: unknown;
+  videoCriticReport?: unknown;
+  structureExplanation?: unknown;
+  layers?: RenderRecipeLayer[];
+  motionAtoms?: MotionAtomSpec[];
   global: {
     aspectRatio: AspectRatio | (string & {});
     width: number;
@@ -1360,6 +1757,11 @@ export interface GenerationResult {
     generationRequest: ValidationResult;
     timeline: ValidationResult;
   };
+  providerDecisions?: ProviderDecision[];
+  modelRouteSummary?: ModelRouteSummary;
+  recipeLintReport?: unknown;
+  videoCriticReport?: unknown;
+  structureExplanation?: unknown;
   migrationExplanation: string;
   warnings: string[];
   aigcMaterialFill?: {

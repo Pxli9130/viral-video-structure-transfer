@@ -9,6 +9,7 @@ import type {
   FillAction,
   FillStrategy,
   GapCategory,
+  GapRepairOption,
   GapReportItem,
   GenerationRequest,
   GenerationResult,
@@ -40,6 +41,7 @@ import type {
   StructureTemplate,
   TargetAssetInput,
   TargetAssetKind,
+  TechniqueAtom,
   Timeline,
   TimelineClip,
   TimelineClipType,
@@ -58,6 +60,20 @@ import {
   validateStructureTemplate,
   validateTimeline
 } from "../validation.js";
+import {
+  extractBrandName,
+  extractCtaTextFromPrompt,
+  extractProductNameFromPrompt,
+  migrateRenderRecipeToV4_1,
+  sanitizeDisplayText
+} from "./renderRecipeV41.js";
+import { extractTechniqueAtoms } from "./atomExtractor.js";
+import { buildDefaultProviderDecisions, buildModelRouteSummary } from "../model-router/index.js";
+import { applyRankedRepairOptions, rankGapRepairOptions } from "./gapRepairRanker.js";
+import { compileProviderPromptPlan } from "./providerPromptCompiler.js";
+import { generateStructureExplanation } from "./structureExplanation.js";
+import { lintRenderRecipe } from "./recipeLint.js";
+import { critiqueVideoOffline } from "./videoCritic.js";
 
 export function stableId(prefix: string, ...parts: unknown[]): string {
   const input = parts.map((part) => JSON.stringify(part)).join("|");
@@ -853,6 +869,76 @@ function visualStyleFromVlm(vlm: VLMVideoAnalysis | undefined, analysis?: VideoA
   };
 }
 
+function motionAtomFromRibbonMotion(ribbonMotion: RibbonMotionGeometry, durationSec: number): MotionAtomSpec {
+  const normalised = normaliseRibbonMotionGeometry(ribbonMotion);
+  return {
+    type: "parametric_ribbon_surface",
+    fulfilledBy: "procedural_generation",
+    keywords: ["STRUCTURE", "REMIX", "TIMELINE", "AIGC", "CREATION"],
+    colorProgression: ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"],
+    gradientStops: ["#2563eb", "#7c3aed", "#ec4899", "#f97316", "#eab308", "#22c55e"],
+    style: "mg_motion",
+    density: 3,
+    speed: 0.92,
+    opacity: 0.62,
+    bandWidth: normalised.surfaceType === "thin_line" ? 10 : 82,
+    edgeWidth: normalised.surfaceType === "thin_line" ? 2 : 14,
+    frontLayerCount: normalised.surfaceType === "thin_line" ? 1 : 2,
+    backLayerCount: normalised.surfaceType === "thin_line" ? 1 : 2,
+    textOnRibbon: normalised.textRelation === "text_on_ribbon",
+    depthLayering: normalised.depthBehavior !== "flat",
+    twistIntensity: 0.56,
+    perspectiveStrength: 0.48,
+    specularHighlight: normalised.surfaceType !== "thin_line",
+    shadowOpacity: 0.42,
+    climaxBuild: true,
+    ...normalised,
+    startSec: 0,
+    endSec: durationSec
+  };
+}
+
+function motionAtomsFromUnknown(value: unknown): MotionAtomSpec[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is MotionAtomSpec =>
+    Boolean(item && typeof item === "object" && (item as { type?: unknown }).type === "parametric_ribbon_surface")
+  );
+}
+
+function evidenceMotionAtomsFromAnalysis(analysis: VideoAnalysisResult, vlm?: VLMVideoAnalysis): MotionAtomSpec[] {
+  const ev = analysis.evidenceTimeline as (VideoAnalysisResult["evidenceTimeline"] & { motionAtoms?: unknown }) | undefined;
+  const direct = [
+    ...motionAtomsFromUnknown(ev?.motionAtoms),
+    ...motionAtomsFromUnknown((analysis as { motionAtoms?: unknown }).motionAtoms),
+    ...motionAtomsFromUnknown((analysis as { renderPlan?: { motionAtoms?: unknown } }).renderPlan?.motionAtoms)
+  ];
+  if (direct.length) return direct;
+  const ribbonMotion = analysis.motionGeometry?.ribbonMotion ?? vlm?.visualStyle?.ribbonMotion;
+  return ribbonMotion ? [motionAtomFromRibbonMotion(ribbonMotion, analysis.metadata.durationSec)] : [];
+}
+
+export function attachEvidenceToTemplate(
+  baseTemplate: StructureTemplate,
+  analysis: VideoAnalysisResult,
+  vlm?: VLMVideoAnalysis
+): StructureTemplate {
+  const ev = analysis.evidenceTimeline;
+  const motionAtoms = evidenceMotionAtomsFromAnalysis(analysis, vlm);
+  const enriched: StructureTemplate = {
+    ...baseTemplate,
+    ...(ev?.heroDescriptor ? { heroDescriptor: ev.heroDescriptor } : {}),
+    ...(ev?.typographyEvidence ? { typographyEvidence: ev.typographyEvidence } : {}),
+    ...(ev?.visualElementGraph ? { visualElementGraph: ev.visualElementGraph } : {}),
+    ...(ev?.audioStructure ? { audioStructure: ev.audioStructure } : {}),
+    ...(motionAtoms.length ? { motionAtoms } : {})
+  };
+  const techniqueAtoms = extractTechniqueAtoms(enriched);
+  return {
+    ...enriched,
+    ...(techniqueAtoms.length ? { techniqueAtoms } : {})
+  };
+}
+
 function buildSourcePolicy(): SourcePolicyBlock {
   return {
     sampleSource: "demo_only",
@@ -1069,7 +1155,7 @@ export function buildBeatCutTemplate(
     createdAt,
     updatedAt: createdAt
   };
-  return template;
+  return attachEvidenceToTemplate(template, analysis, vlm);
 }
 
 export function buildFallbackTemplate(
@@ -1117,16 +1203,18 @@ export function buildFallbackTemplate(
     createdAt,
     updatedAt: createdAt
   };
-  return augmentTemplateWithInducedSlots(template, analysis, vlm);
+  return attachEvidenceToTemplate(augmentTemplateWithInducedSlots(template, analysis, vlm), analysis, vlm);
 }
 
 export interface ParsedBrief {
   topic: string;
   productName: string;
+  brandName?: string;
   targetAudience: string;
   sellingPoints: string[];
   tone: string;
   cta: string;
+  rawPrompt: string;
   forbiddenContent: string[];
 }
 
@@ -1157,14 +1245,18 @@ export function parsePromptToBrief(request: GenerationRequest): ParsedBrief {
     .split(/[、,，;；\n]/)
     .map((item) => item.trim())
     .filter(Boolean);
-  const topic = matchLine("主题|topic") ?? matchLine("商品|产品|product") ?? matchLooseProduct() ?? "B2B marketing promo";
+  const rawProduct = matchLine("商品|产品|product") ?? matchLine("主题|topic") ?? matchLooseProduct();
+  const productName = sanitizeDisplayText(rawProduct, extractProductNameFromPrompt(prompt, "Demo product"));
+  const cta = extractCtaTextFromPrompt(prompt, sanitizeDisplayText(matchLine("CTA|引导|结尾"), "Click to learn more", 18));
   return {
-    topic,
-    productName: matchLine("商品|产品|product") ?? matchLine("主题|topic") ?? matchLooseProduct() ?? "Demo product",
+    topic: productName,
+    productName,
+    ...(extractBrandName(productName) ? { brandName: extractBrandName(productName) } : {}),
     targetAudience: matchLine("目标用户|audience|target") ?? "business users",
     sellingPoints: sellingPoints.length ? sellingPoints : ["clear value", "easy to understand", "mobile-friendly"],
     tone: matchLine("风格|style|tone") ?? "fast MG promo",
-    cta: matchLine("CTA|引导|结尾") ?? "Click to learn more",
+    cta,
+    rawPrompt: prompt,
     forbiddenContent: request.constraints?.forbiddenWords ?? []
   };
 }
@@ -2085,6 +2177,150 @@ function hasRibbonOrbitMotif(template: StructureTemplate | undefined): boolean {
   return RIBBON_MOTIF_PATTERN.test(haystack);
 }
 
+function repairOptionsForGap(gap: {
+  gapType?: GapCategory;
+  slotType?: SlotType;
+  visualFormFamily?: VisualFormFamily;
+  recommendedFillStrategies?: FillStrategy[];
+}): GapRepairOption[] {
+  const options: GapRepairOption[] = [];
+  const add = (option: GapRepairOption) => {
+    if (!options.some((item) => item.strategy === option.strategy)) options.push(option);
+  };
+  const visualFamily = gap.visualFormFamily;
+  const slotType = gap.slotType;
+  const gapType = gap.gapType;
+
+  if (slotType === "subtitle_text" || slotType === "title_card" || gapType === "voiceover_or_script_missing" || gapType === "subtitle_density_low") {
+    add({
+      strategy: "text_fill",
+      label: "Generate target copy/text from the brief",
+      renderer: "remotion_mg",
+      requiredInputs: ["target_brief_copy"],
+      risk: "low",
+      preservesStructure: true,
+      reason: "The missing material is textual; target copy can fill it without copying sample pixels."
+    });
+  }
+  if (slotType === "cta_visual" || visualFamily === "brand_cta" || gapType === "brand_cta_missing") {
+    add({
+      strategy: "packaging_fill",
+      label: "Render CTA/end-slate packaging",
+      renderer: "remotion_recipe_compose",
+      requiredInputs: ["cta_copy", "brand_or_product_name"],
+      risk: "low",
+      preservesStructure: true,
+      reason: "CTA visual can be recreated as deterministic packaging from target brief fields."
+    });
+  }
+  if (
+    visualFamily === "geometric_mg" ||
+    visualFamily === "kinetic_typography" ||
+    gapType === "dynamic_3d_ribbon_asset" ||
+    gapType === "rotating_hero_object_missing" ||
+    gapType === "bgm_missing"
+  ) {
+    add({
+      strategy: "procedural_motion",
+      label: "Use local procedural motion/audio",
+      renderer: visualFamily === "geometric_mg" || gapType === "dynamic_3d_ribbon_asset" ? "remotion_recipe_compose" : "ffmpeg_compose",
+      requiredInputs: ["template_motion_or_audio_evidence"],
+      risk: "medium",
+      preservesStructure: true,
+      reason: "The technique is structural; local procedural rendering preserves motion timing without sending sample media to providers."
+    });
+  }
+  if (
+    visualFamily === "media_cards" ||
+    visualFamily === "object_motion" ||
+    visualFamily === "live_action_montage" ||
+    gapType === "moving_material_missing" ||
+    gapType === "media_cards_missing" ||
+    gapType === "action_montage_missing"
+  ) {
+    add({
+      strategy: "asset_reuse",
+      label: "Use uploaded target/source material",
+      renderer: "ffmpeg_compose",
+      requiredInputs: ["target_image_or_video"],
+      risk: "low",
+      preservesStructure: true,
+      reason: "Real target material is the highest-fidelity fill when the sample only supplies structure."
+    });
+    add({
+      strategy: "aigc_fill",
+      label: "Optionally generate target material",
+      renderer: "remotion_mg",
+      requiredInputs: ["text_only_generation_prompt", "provider_env_opt_in"],
+      risk: "medium",
+      preservesStructure: true,
+      reason: "External AIGC is optional and must use text-only prompts with generated-asset provenance."
+    });
+  }
+  if (gap.recommendedFillStrategies?.includes("reorder_structure")) {
+    add({
+      strategy: "structure_reorder",
+      label: "Merge into a matched sibling slot",
+      renderer: "remotion_mg",
+      requiredInputs: ["matched_sibling_slot"],
+      risk: "medium",
+      preservesStructure: false,
+      reason: "When no asset or procedural component can fill the slot, reordering keeps the ad coherent."
+    });
+  }
+  if (!options.length) {
+    add({
+      strategy: "packaging_fill",
+      label: "Use deterministic packaging fallback",
+      renderer: "remotion_mg",
+      requiredInputs: ["target_brief_copy"],
+      risk: "medium",
+      preservesStructure: true,
+      reason: "A visible deterministic fill is safer than silently dropping the missing slot."
+    });
+  }
+  return options;
+}
+
+function selectRepairOption(options: GapRepairOption[]): GapRepairOption {
+  const rank = new Map([
+    ["asset_reuse", 6],
+    ["procedural_motion", 5],
+    ["text_fill", 4],
+    ["packaging_fill", 3],
+    ["structure_reorder", 2],
+    ["aigc_fill", 1]
+  ]);
+  return options.slice().sort((a, b) => (rank.get(b.strategy) ?? 0) - (rank.get(a.strategy) ?? 0))[0] ?? options[0];
+}
+
+function expectedVisualResultForGap(gap: {
+  gapType?: GapCategory;
+  gapLabel?: string;
+  slotType?: SlotType;
+  visualFormFamily?: VisualFormFamily;
+}, repair: GapRepairOption): string {
+  const label = gap.gapLabel ?? gap.gapType ?? gap.visualFormFamily ?? gap.slotType ?? "missing material";
+  if (repair.strategy === "asset_reuse") return `${label}: target asset is placed with learned timing/geometry.`;
+  if (repair.strategy === "procedural_motion") return `${label}: local procedural motion/audio visibly fills the learned technique.`;
+  if (repair.strategy === "text_fill") return `${label}: target copy is rendered in learned typography layout.`;
+  if (repair.strategy === "packaging_fill") return `${label}: deterministic CTA/packaging card replaces the missing visual.`;
+  if (repair.strategy === "aigc_fill") return `${label}: optional generated target material may replace the procedural fallback.`;
+  return `${label}: slot is merged into a matched neighboring structure.`;
+}
+
+function withRepairOptions(gap: GapReportItem): GapReportItem {
+  if (gap.status === "matched") return gap;
+  const repairOptions = repairOptionsForGap(gap);
+  const selectedRepair = selectRepairOption(repairOptions);
+  return {
+    ...gap,
+    repairOptions,
+    selectedRepair,
+    expectedVisualResult: expectedVisualResultForGap(gap, selectedRepair)
+  };
+}
+
 export function generateGapReport(mappings: SlotMapping[], context: GapReportContext = {}): GapReportItem[] {
   const transcript = context.source?.transcript ?? [];
   const ocrText = context.source?.ocrText ?? [];
@@ -2250,7 +2486,7 @@ export function generateGapReport(mappings: SlotMapping[], context: GapReportCon
     const existing = dedup.get(key);
     if (!existing || (severityRank[gap.severity] ?? 0) > (severityRank[existing.severity] ?? 0)) dedup.set(key, gap);
   }
-  return Array.from(dedup.values());
+  return Array.from(dedup.values()).map(withRepairOptions);
 }
 
 
@@ -2884,19 +3120,28 @@ function recipeFamilyFor(component: RenderRecipePrimitive): RenderRecipeFamily {
   switch (component) {
     case "ProductHeroOrbit":
     case "FanHeroSpin":
+    case "ProductPosterHero":
+    case "ObjectTrackReveal":
       return "product_hero";
     case "SourceClipBeatMontage":
       return "source_video_montage";
     case "DynamicProxyMontage":
       return "procedural_proxy";
     case "TypographyLayoutSequence":
+    case "KineticTypographySweep":
+    case "PriceBadgePulse":
       return "kinetic_typography";
     case "FeatureCardStack":
+    case "MediaCardCascade":
+    case "SplitScreenCompare":
       return "media_cards";
     case "ImpactFlash":
+    case "LightLeakTransition":
       return "impact_fx";
     case "CTAEndSlate":
       return "brand_cta";
+    case "ParametricRibbonSurface":
+      return "procedural_proxy";
     default:
       return "procedural_proxy";
   }
@@ -2907,14 +3152,22 @@ function recipeMotionFor(component: RenderRecipePrimitive): RenderRecipeClip["mo
     case "FanHeroSpin":
       return "spin";
     case "ProductHeroOrbit":
+    case "ProductPosterHero":
+    case "ObjectTrackReveal":
       return "orbit";
     case "SourceClipBeatMontage":
       return "hard_cut";
     case "DynamicProxyMontage":
+    case "ParametricRibbonSurface":
+    case "LightLeakTransition":
       return "pan";
     case "TypographyLayoutSequence":
+    case "KineticTypographySweep":
+    case "PriceBadgePulse":
       return "zoom_pulse";
     case "FeatureCardStack":
+    case "MediaCardCascade":
+    case "SplitScreenCompare":
       return "card_stack";
     case "ImpactFlash":
       return "shake";
@@ -2923,6 +3176,76 @@ function recipeMotionFor(component: RenderRecipePrimitive): RenderRecipeClip["mo
     default:
       return "none";
   }
+}
+
+const TECHNIQUE_COMPONENTS: ReadonlySet<string> = new Set([
+  "SourceClipBeatMontage",
+  "ProductPosterHero",
+  "FeatureCardStack",
+  "MediaCardCascade",
+  "KineticTypographySweep",
+  "ParametricRibbonSurface",
+  "ImpactFlash",
+  "CTAEndSlate",
+  "PriceBadgePulse",
+  "LightLeakTransition",
+  "ObjectTrackReveal",
+  "SplitScreenCompare"
+]);
+
+function isRenderRecipePrimitive(value: unknown): value is RenderRecipePrimitive {
+  return (
+    (typeof value === "string" && TECHNIQUE_COMPONENTS.has(value)) ||
+    value === "ProductHeroOrbit" ||
+    value === "FanHeroSpin" ||
+    value === "TypographyLayoutSequence" ||
+    value === "DynamicProxyMontage"
+  );
+}
+
+function techniqueAtomsForClip(clip: TimelineClip, template: StructureTemplate): TechniqueAtom[] {
+  const atoms = template.techniqueAtoms ?? extractTechniqueAtoms(template);
+  const fam = String(clip.visualFormFamily ?? "");
+  const role = clip.role;
+  const wants: TechniqueAtom["name"][] = [];
+  if (role === "cta" || fam === "brand_cta") wants.push("CTAEndSlate");
+  if (role === "hook") wants.push("ProductPosterHero", "ObjectTrackReveal", "ParametricRibbonSurface", "KineticTypographySweep");
+  if (fam === "media_cards") wants.push("MediaCardCascade", "FeatureCardStack");
+  if (fam === "live_action_montage") wants.push("SourceClipBeatMontage");
+  if (fam === "object_motion") wants.push("ObjectTrackReveal", "ProductPosterHero");
+  if (fam === "kinetic_typography" || Boolean(clip.subtitleText)) wants.push("KineticTypographySweep", "PriceBadgePulse");
+  if (fam === "geometric_mg") wants.push("ParametricRibbonSurface", "LightLeakTransition");
+  if (role === "transition") wants.push("ImpactFlash", "LightLeakTransition", "ParametricRibbonSurface");
+  if (role === "proof") wants.push("SourceClipBeatMontage", "SplitScreenCompare", "FeatureCardStack", "ProductPosterHero");
+  return atoms
+    .filter((atom) => wants.includes(atom.name))
+    .sort((a, b) => {
+      const ai = wants.indexOf(a.name);
+      const bi = wants.indexOf(b.name);
+      if (ai !== bi) return ai - bi;
+      return b.confidence - a.confidence;
+    });
+}
+
+function componentFromTechniqueAtoms(
+  clip: TimelineClip,
+  template: StructureTemplate,
+  opts: { fallback: RenderRecipePrimitive; hasSourcePixels: boolean; hasTargetMaterial: boolean }
+): { component: RenderRecipePrimitive; atomIds: string[]; reason?: string } {
+  const candidates = techniqueAtomsForClip(clip, template);
+  for (const atom of candidates) {
+    const component = atom.renderer.component;
+    if (!isRenderRecipePrimitive(component)) continue;
+    if (component === "SourceClipBeatMontage" && !opts.hasSourcePixels) continue;
+    if ((component === "MediaCardCascade" || component === "FeatureCardStack") && !opts.hasTargetMaterial && clip.visualFormFamily !== "media_cards") continue;
+    if ((component === "ProductPosterHero" || component === "ObjectTrackReveal") && !opts.hasTargetMaterial && !opts.hasSourcePixels && clip.role !== "hook") continue;
+    return {
+      component,
+      atomIds: [atom.id],
+      reason: `TechniqueAtom ${atom.name} (${atom.sourceEvidenceRefs.length ? atom.sourceEvidenceRefs[0] : atom.fallbackReason}) → ${component}`
+    };
+  }
+  return { component: opts.fallback, atomIds: [] };
 }
 
 function recipeTypographyLayout(
@@ -3026,9 +3349,10 @@ function recipePalette(background: string, isBeatCut: boolean, template: Structu
 }
 
 function recipeAudioLayers(
-  estimated: Record<string, unknown> | undefined
+  estimated: Record<string, unknown> | undefined,
+  audioStructure: Record<string, unknown> | undefined = undefined
 ): RenderRecipe["global"]["audioPlan"]["layers"] {
-  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : undefined);
   const e = estimated ?? {};
   const layers: RenderRecipe["global"]["audioPlan"]["layers"] = {};
   const kick = num(e.kick) ?? num(e.bass_kick);
@@ -3045,6 +3369,14 @@ function recipeAudioLayers(
   if (riser !== undefined) layers.riser = riser;
   const impact = num(e.impact);
   if (impact !== undefined) layers.impact = impact;
+  const strongBeats = Array.isArray(audioStructure?.strongBeats) ? audioStructure.strongBeats.length : 0;
+  const onsets = Array.isArray(audioStructure?.onsets) ? audioStructure.onsets.length : 0;
+  const centroid = typeof audioStructure?.spectralCentroidMean === "number" ? audioStructure.spectralCentroidMean : undefined;
+  const flatness = typeof audioStructure?.spectralFlatnessMean === "number" ? audioStructure.spectralFlatnessMean : undefined;
+  if (layers.hats === undefined && centroid !== undefined) layers.hats = Math.max(0.08, Math.min(1, centroid / 5200));
+  if (layers.drone === undefined && flatness !== undefined) layers.drone = Math.max(0.08, Math.min(0.8, 1 - flatness));
+  if (layers.impact === undefined && strongBeats > 0) layers.impact = Math.min(1, 0.18 + strongBeats / 40);
+  if (layers.riser === undefined && onsets > 8) layers.riser = Math.min(0.8, 0.12 + onsets / 80);
   return layers;
 }
 
@@ -3059,11 +3391,40 @@ interface BuildRenderRecipeArgs {
   synthBeat: { bpm: number; beats: number[] };
   audioPolicy: "sample_bgm" | "synth_beat" | "silent";
   background: string;
-  brief: { topic?: string; sellingPoints: string[]; cta?: string };
+  brief: ParsedBrief;
   template: StructureTemplate;
   source: SourceVideoUnderstanding;
   request: GenerationRequest;
   warnings: string[];
+  motionAtoms?: MotionAtomSpec[];
+}
+
+function bboxNormObject(value: unknown): { x: number; y: number; w: number; h: number } | undefined {
+  if (!Array.isArray(value) || value.length !== 4 || !value.every((item) => typeof item === "number" && Number.isFinite(item))) return undefined;
+  const [x, y, w, h] = value;
+  return { x, y, w, h };
+}
+
+function evidenceRefsForRecipeClip(template: StructureTemplate, clip: TimelineClip): string[] {
+  const sample = template.sourceSampleIds[0] ?? "sample";
+  if (clip.sourceShotId) return [`evidence://${sample}/shot/${clip.sourceShotId}`];
+  const typo = clip.layers
+    .map((layer) => (layer.style as { typography?: { textLayerId?: string } } | undefined)?.typography?.textLayerId)
+    .find(Boolean);
+  if (typo) return [`evidence://${sample}/typography/${typo}`];
+  return [`evidence://${sample}/clip/${clip.id}`];
+}
+
+function materialProvenanceForRecipe(kind: RenderRecipeClip["material"]["kind"], assetIds: string[]): RenderRecipeClip["material"]["provenance"] {
+  if (kind === "source_video") return "source_video";
+  if (kind === "generated_target_asset" || assetIds.some((id) => /^fan_|^aigc_|generated/i.test(id))) return "aigc_generated";
+  if (kind === "target_image" || kind === "target_image_set") return "user_uploaded";
+  return undefined;
+}
+
+function estimatedAudioLayerCount(template: StructureTemplate): number {
+  const layers = (template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined) ?? {};
+  return Object.values(layers).filter((value) => typeof value === "number" && Number.isFinite(value)).length;
 }
 
 /**
@@ -3075,7 +3436,8 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
     styledClips, isBeatCut, aspectRatio, width, height, durationSec,
     synthBeat, audioPolicy, background, brief, template, source, request, warnings
   } = args;
-  const name = (brief.topic ?? "").trim() || "Product";
+  const name = sanitizeDisplayText(brief.productName || brief.topic, "Product");
+  const ctaText = sanitizeDisplayText(brief.cta, "Click to learn more", 36);
   const isFan = /fan|风扇|涡轮|turbo/i.test(`${name} ${brief.sellingPoints.join(" ")} ${request.prompt}`);
   const sampleIds = new Set(template.sourceSampleIds ?? []);
   const sourceIsDistinct =
@@ -3089,21 +3451,47 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
     : args.videoType === "motion_graph"
       ? "motion_graph"
       : "product_mg";
+  const audioStructure = (template.audioStructure ?? {}) as Record<string, unknown>;
+  const learnedBeatGrid = Array.isArray(audioStructure.strongBeats)
+    ? audioStructure.strongBeats
+        .map((value) => (typeof value === "number" && Number.isFinite(value) ? Number(value.toFixed(3)) : undefined))
+        .filter((value): value is number => value !== undefined)
+        .slice(0, 64)
+    : [];
+  const learnedBpm = typeof audioStructure.bpm === "number" && Number.isFinite(audioStructure.bpm) ? audioStructure.bpm : synthBeat.bpm;
 
+  const templateTypoStyles = (template.typographyEvidence ?? [])
+    .slice()
+    .sort((a, b) => b.fontSizeRatio - a.fontSizeRatio)
+    .map((t) => ({
+      textLayerId: t.textLayerId,
+      layoutRole: t.layoutRole,
+      colorRole: t.colorRole,
+      animationHint: t.animationHint,
+      bboxNorm: t.bboxNorm,
+      fontSizeRatio: t.fontSizeRatio
+    }));
+  let templateTypoCursor = 0;
   const clips: RenderRecipeClip[] = styledClips.map((clip) => {
     const layerAssetId = (clip.layers ?? []).find((l) => Boolean(l.assetId))?.assetId;
     const hasSourcePixels = Boolean(clip.sourceAssetId) || Boolean(layerAssetId);
-    const component = recipeComponentFor(clip.motionPrimitive, { isFan, hasSourcePixels });
+    const fallbackComponent = recipeComponentFor(clip.motionPrimitive, { isFan, hasSourcePixels });
     const heroLayer = (clip.layers ?? []).find((l) => l.kind === "moving_material" || l.kind === "moving_video");
     const heroElement = (heroLayer?.style as
       | { heroElement?: { positionClass?: string; centerTrajectory?: Array<[number, number]> } }
       | undefined)?.heroElement;
+    const learnedGeometry = (clip.layers ?? [])
+      .map((l) => (l.style as { elementGeometry?: { bbox?: [number, number, number, number]; motionPattern?: string; reuseReason?: string } } | undefined)?.elementGeometry)
+      .find((value) => value?.bbox);
     const textLayer = (clip.layers ?? []).find(
       (l) => l.kind === "text" || l.kind === "text_overlay" || l.kind === "ticker"
     );
-    const typo = (textLayer?.style as
-      | { typography?: { layoutRole?: string; colorRole?: string; animationHint?: string } }
+    let typo = (textLayer?.style as
+      | { typography?: { layoutRole?: string; colorRole?: string; animationHint?: string; bboxNorm?: [number, number, number, number]; fontSizeRatio?: number; textLayerId?: string } }
       | undefined)?.typography;
+    if (!typo && clip.subtitleText && templateTypoStyles.length) {
+      typo = templateTypoStyles[templateTypoCursor++ % templateTypoStyles.length];
+    }
 
     let materialKind: RenderRecipeClip["material"]["kind"];
     const assetIds: string[] = [];
@@ -3116,29 +3504,50 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
     } else {
       materialKind = "procedural";
     }
+    const selected = componentFromTechniqueAtoms(clip, template, {
+      fallback: fallbackComponent,
+      hasSourcePixels,
+      hasTargetMaterial: assetIds.length > 0
+    });
+    const component = selected.component;
     const policy: RenderRecipeClip["material"]["policy"] =
       materialKind !== "procedural" ? "renderable" : component === "DynamicProxyMontage" ? "missing" : "renderable";
 
     const typographyLayout = recipeTypographyLayout(typo?.layoutRole);
+    const evidenceRefs = evidenceRefsForRecipeClip(template, clip);
+    const clipId = clip.id;
+    const layerIds = [
+      ...(materialKind !== "procedural" && assetIds.length ? [`layer_${clipId}_media`] : []),
+      ...(clip.subtitleText ? [`layer_${clipId}_text`] : [])
+    ];
+    const materialProvenance = materialProvenanceForRecipe(materialKind, assetIds);
     return {
+      id: clipId,
       clipId: clip.id,
       role: clip.role === "global" ? "body" : clip.role,
       startSec: clip.startSec,
       endSec: round(clip.startSec + clip.durationSec),
+      durationSec: clip.durationSec,
+      atomIds: selected.atomIds,
+      layerIds,
+      evidenceRefs,
       slotId: (clip.layers ?? []).find((l) => l.slotId)?.slotId ?? clip.id,
       visualFormFamily: recipeFamilyFor(component),
       selectedPrimitive: component,
-      primitiveReason: clip.primitiveReason ?? recipePrimitiveReason(clip, component),
+      primitiveReason: selected.reason ?? clip.primitiveReason ?? recipePrimitiveReason(clip, component),
       rendererTarget: "remotion_recipe",
       material: {
         kind: materialKind,
         assetIds,
         ...(clip.sourceShotId ? { sourceShotIds: [clip.sourceShotId] } : {}),
-        policy
+        policy,
+        ...(materialProvenance ? { provenance: materialProvenance } : {})
       },
       layout: {
         ...(heroElement?.positionClass ? { positionClass: heroElement.positionClass } : {}),
         ...(heroElement?.centerTrajectory?.length ? { bboxTrackNorm: heroElement.centerTrajectory } : {}),
+        ...(bboxNormObject(typo?.bboxNorm) ? { bboxNorm: bboxNormObject(typo?.bboxNorm) } : {}),
+        ...(bboxNormObject(learnedGeometry?.bbox) ? { mediaBBoxNorm: bboxNormObject(learnedGeometry?.bbox) } : {}),
         ...(typographyLayout ? { typographyLayout } : {})
       },
       motion: {
@@ -3150,19 +3559,24 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
       text: {
         copy: clip.subtitleText ?? "",
         colorRoles: typo?.colorRole ? [typo.colorRole] : ["red", "yellow", "white"],
-        animationHint: recipeAnimationHint(typo?.animationHint)
+        animationHint: recipeAnimationHint(typo?.animationHint),
+        ...(typeof typo?.fontSizeRatio === "number" && Number.isFinite(typo.fontSizeRatio) ? { fontSizeRatio: typo.fontSizeRatio } : {})
       }
     };
   });
 
-  return {
+  const legacyRecipe: RenderRecipe = {
     schemaVersion: "render-recipe-v1",
     videoType,
     productTheme: {
       name,
+      productName: name,
+      ...(brief.brandName ? { brandName: brief.brandName } : {}),
       category: isFan ? "portable_fan" : "physical_product",
       sellingPoints: brief.sellingPoints,
-      cta: (brief.cta ?? "").trim()
+      cta: ctaText,
+      ctaText,
+      generationPrompt: brief.rawPrompt
     },
     sourcePolicy: {
       sampleUse: request.constraints?.sampleAssetReuse === "authorized" ? "authorized_reuse" : "structure_evidence_only",
@@ -3171,6 +3585,17 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
       sampleFrameCopyAllowed: false,
       sampleAudioCopyAllowed: false
     },
+    evidenceSummary: {
+      sourceSampleIds: template.sourceSampleIds ?? [],
+      preservedEvidence: {
+        visualElements: template.visualElementGraph?.elements?.length ?? 0,
+        typographyRuns: template.typographyEvidence?.length ?? 0,
+        motionAtoms: (args.motionAtoms ?? template.motionAtoms ?? []).length,
+        audioLayers: estimatedAudioLayerCount(template)
+      },
+      droppedEvidence: []
+    },
+    motionAtoms: args.motionAtoms ?? template.motionAtoms ?? [],
     global: {
       aspectRatio,
       width,
@@ -3178,7 +3603,8 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
       fps: 30,
       durationSec,
       palette: recipePalette(background, isBeatCut, template),
-      ...(isBeatCut ? { bpm: synthBeat.bpm, beatGridSec: synthBeat.beats } : {}),
+      ...(learnedBpm ? { bpm: learnedBpm } : {}),
+      ...((isBeatCut || learnedBeatGrid.length) ? { beatGridSec: learnedBeatGrid.length ? learnedBeatGrid : synthBeat.beats } : {}),
       cutPattern: {
         targetCutCount: clips.length,
         avgShotDurationSec: round(durationSec / Math.max(1, clips.length)),
@@ -3187,12 +3613,17 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
       audioPlan: {
         policy:
           audioPolicy === "sample_bgm" ? "authorized_sample_bgm" : audioPolicy === "synth_beat" ? "procedural_bgm" : "silent",
-        layers: recipeAudioLayers(template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined)
+        layers: recipeAudioLayers(template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined, audioStructure)
       }
     },
     clips,
     warnings
   };
+  return migrateRenderRecipeToV4_1(legacyRecipe, {
+    motionAtoms: args.motionAtoms ?? template.motionAtoms ?? [],
+    evidenceSummary: legacyRecipe.evidenceSummary,
+    rawPrompt: brief.rawPrompt
+  });
 }
 
 /** The beat-cut primitive for a slot = its first renderer candidate that is a known primitive. */
@@ -3432,26 +3863,69 @@ function adaptiveBeatCutSegments(template: StructureTemplate): StructureSegment[
 function elementGeometryForClip(
   clip: TimelineClip,
   template: StructureTemplate
-): { bbox: [number, number, number, number]; motionPattern?: string } | undefined {
+): { bbox: [number, number, number, number]; motionPattern?: string; reuseReason?: string; fit?: "heroFill" | "cover" | "contain" | "cardInset" | "backgroundFill"; minAreaRatio?: number } | undefined {
   const wantsImage =
     clip.role === "hook" || clip.role === "proof" ||
-    clip.visualFormFamily === "object_motion" || clip.visualFormFamily === "live_action_montage";
+    clip.visualFormFamily === "object_motion" || clip.visualFormFamily === "live_action_montage" || clip.visualFormFamily === "media_cards";
   if (!wantsImage) return undefined;
-  const el = (template.visualElementGraph?.elements ?? []).find((e) => e.family === "hero_object");
+  const elements = (template.visualElementGraph?.elements ?? []).filter((e) => (e.bboxTrackNorm?.length ?? 0) > 0);
+  if (!elements.length) return undefined;
+  const family = String(clip.visualFormFamily ?? "");
+  const preferredFamilies =
+    clip.role === "hook"
+      ? [/hero|product|object/i, /poster/i, /media_card|card/i]
+      : family === "live_action_montage"
+        ? [/montage|live_action|shot|video/i, /media_card|card/i, /hero|product|object/i]
+        : family === "object_motion"
+          ? [/object|hero|product/i, /poster/i]
+          : clip.role === "proof"
+            ? [/compare|split/i, /media_card|card/i, /montage|live_action/i, /hero|product|object/i]
+            : [/hero|product|object/i];
+  let candidates: typeof elements = [];
+  for (const pattern of preferredFamilies) {
+    candidates = elements.filter((e) => pattern.test(e.family));
+    if (candidates.length) break;
+  }
+  const reuseReason = candidates.length ? undefined : "No role/family-specific element track; using round-robin over all located visual elements.";
+  const pool = candidates.length ? candidates : elements;
+  const seed = Array.from(`${clip.id}:${clip.sourceShotId ?? ""}:${family}:${clip.role}`).reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+  const el = pool[seed % pool.length];
   const track = (el?.bboxTrackNorm ?? []) as Array<{ t: number; bbox: [number, number, number, number] }>;
   if (!track.length) return undefined;
-  const bbox = track[Math.floor(track.length / 2)]?.bbox ?? track[0].bbox;
+  let bbox = track[Math.floor(track.length / 2)]?.bbox ?? track[0].bbox;
   if (!Array.isArray(bbox) || bbox.length !== 4) return undefined;
-  return { bbox, motionPattern: el?.motionPattern };
+  const minAreaRatio = clip.role === "hook" ? 0.18 : clip.visualFormFamily === "object_motion" ? 0.14 : 0.1;
+  const area = Math.max(0, bbox[2]) * Math.max(0, bbox[3]);
+  if (area > 0 && area < minAreaRatio) {
+    const scale = Math.sqrt(minAreaRatio / area);
+    const cx = bbox[0] + bbox[2] / 2;
+    const cy = bbox[1] + bbox[3] / 2;
+    const nw = Math.min(0.9, bbox[2] * scale);
+    const nh = Math.min(0.9, bbox[3] * scale);
+    bbox = [
+      Math.max(0, Math.min(1 - nw, cx - nw / 2)),
+      Math.max(0, Math.min(1 - nh, cy - nh / 2)),
+      nw,
+      nh
+    ];
+  }
+  return {
+    bbox,
+    motionPattern: el?.motionPattern,
+    ...(reuseReason ? { reuseReason } : {}),
+    fit: clip.role === "hook" ? "heroFill" : family === "live_action_montage" ? "cover" : "contain",
+    minAreaRatio
+  };
 }
 
 function attachElementGeometry(
   layers: TimelineLayer[],
-  geom: { bbox: [number, number, number, number]; motionPattern?: string } | undefined
+  geom: { bbox: [number, number, number, number]; motionPattern?: string; reuseReason?: string; fit?: string; minAreaRatio?: number } | undefined
 ): TimelineLayer[] {
   if (!geom || !layers.length) return layers;
-  const [first, ...rest] = layers;
-  return [{ ...first, style: { ...(first.style ?? {}), elementGeometry: geom } }, ...rest];
+  const index = layers.findIndex((layer) => layer.kind === "moving_material" || layer.kind === "moving_video" || layer.kind === "base_visual");
+  const target = index >= 0 ? index : 0;
+  return layers.map((layer, i) => i === target ? { ...layer, style: { ...(layer.style ?? {}), elementGeometry: geom } } : layer);
 }
 
 export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; storyboard: StoryboardItem[] } {
@@ -3782,7 +4256,14 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
   const typoStyles = (template.typographyEvidence ?? [])
     .slice()
     .sort((a, b) => b.fontSizeRatio - a.fontSizeRatio)
-    .map((t) => ({ layoutRole: t.layoutRole, colorRole: t.colorRole, animationHint: t.animationHint, bboxNorm: t.bboxNorm }))
+    .map((t) => ({
+      textLayerId: t.textLayerId,
+      layoutRole: t.layoutRole,
+      colorRole: t.colorRole,
+      animationHint: t.animationHint,
+      bboxNorm: t.bboxNorm,
+      fontSizeRatio: t.fontSizeRatio
+    }))
     .filter((style, i, arr) => arr.findIndex((x) => x.layoutRole === style.layoutRole && x.colorRole === style.colorRole) === i);
   let typoCursor = 0;
   const styledClips: TimelineClip[] = isBeatCut
@@ -3855,6 +4336,8 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         };
       })
     : clips;
+  const timelineMotionAtoms = buildMotionAtoms(fillPlan, request, durationSec);
+  const recipeMotionAtoms = timelineMotionAtoms.length ? timelineMotionAtoms : (template.motionAtoms ?? []);
 
   const timeline: Timeline = {
     id: stableId("timeline", generationId, request.prompt),
@@ -3873,7 +4356,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       height: aspectRatio === "9:16" ? 1280 : 720,
       fps: 30,
       background: isBeatCut ? "#05060a" : renderBackgroundForControls(request.controls),
-      motionAtoms: buildMotionAtoms(fillPlan, request, durationSec),
+      motionAtoms: recipeMotionAtoms,
       beatGrid: isBeatCut ? { status: "ok", bpm: synthBeat.bpm, beats: synthBeat.beats, source: "synth_from_bpm" } : undefined,
       audioPolicy,
       audioRef,
@@ -3925,7 +4408,8 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
         template,
         source,
         request,
-        warnings: []
+        warnings: [],
+        motionAtoms: recipeMotionAtoms
       })
     },
     warnings: [
@@ -3979,6 +4463,74 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
   const selectedAtoms = selectedAtomIds.size > 0
     ? template.structureAtoms.filter((atom) => selectedAtomIds.has(atom.id))
     : template.structureAtoms;
+  const providerDecisions = buildDefaultProviderDecisions();
+  const modelRouteSummary = buildModelRouteSummary(providerDecisions);
+  const routeForGap = (gap: GapReportItem) => {
+    const haystack = [gap.gapType, gap.visualFormFamily, gap.visualForm, gap.slotId].join(" ").toLowerCase();
+    if (/audio|bgm|music|sound/.test(haystack)) {
+      return providerDecisions.find((decision) => decision.task === "music") ?? providerDecisions.find((decision) => decision.task === "sound_effect");
+    }
+    if (/motion|moving|hero|video|ribbon/.test(haystack)) return providerDecisions.find((decision) => decision.task === "video_fill");
+    return providerDecisions.find((decision) => decision.task === "image_fill");
+  };
+  const rankedRepairOptions = rankGapRepairOptions({
+    gapReport: timeline.gapReport,
+    providerDecisions,
+    versionStrategy: timeline.renderPlan?.renderRecipe?.versionStrategy
+  });
+  timeline.gapReport = applyRankedRepairOptions(timeline.gapReport, rankedRepairOptions).map((gap) => {
+    const providerDecision = routeForGap(gap);
+    const providerPromptPlans = providerDecision
+      ? [
+          compileProviderPromptPlan({
+            gap,
+            providerDecision,
+            productTheme: timeline.renderPlan?.renderRecipe?.productTheme
+          })
+        ]
+      : [];
+    return {
+      ...gap,
+      ...(providerDecision ? { providerDecisions: [providerDecision] } : {}),
+      ...(providerPromptPlans.length ? { providerPromptPlans } : {})
+    };
+  });
+  const integratedFillPlan = timeline.fillPlan.map((action) => {
+    const gap = timeline.gapReport.find((item) => item.slotId === action.slotId || item.slotId === action.repairSourceGapId);
+    const providerDecision = gap ? routeForGap(gap) : undefined;
+    const providerPromptPlans = gap?.providerPromptPlans ?? [];
+    return {
+      ...action,
+      ...(providerDecision ? { providerDecision } : {}),
+      ...(providerPromptPlans.length ? { providerPromptPlans } : {}),
+      rankedRepairOptions: gap?.rankedRepairOptions ?? []
+    };
+  });
+  timeline.fillPlan = integratedFillPlan;
+  let recipeLintReport: unknown;
+  let videoCriticReport: unknown;
+  let structureExplanation: unknown;
+  if (timeline.renderPlan?.renderRecipe) {
+    timeline.renderPlan.renderRecipe.providerDecisions = providerDecisions;
+    timeline.renderPlan.renderRecipe.modelRouteSummary = modelRouteSummary;
+    recipeLintReport = lintRenderRecipe(timeline.renderPlan.renderRecipe, { audioStructure: template.audioStructure });
+    videoCriticReport = critiqueVideoOffline({
+      renderRecipe: timeline.renderPlan.renderRecipe,
+      routeSummary: modelRouteSummary
+    });
+    structureExplanation = generateStructureExplanation({
+      evidenceSummary: timeline.renderPlan.renderRecipe.evidenceSummary,
+      techniqueAtoms: template.techniqueAtoms,
+      gapReport: timeline.gapReport,
+      fillPlan: integratedFillPlan,
+      renderRecipe: timeline.renderPlan.renderRecipe,
+      providerDecisions,
+      modelRouteSummary
+    });
+    timeline.renderPlan.renderRecipe.recipeLintReport = recipeLintReport;
+    timeline.renderPlan.renderRecipe.videoCriticReport = videoCriticReport;
+    timeline.renderPlan.renderRecipe.structureExplanation = structureExplanation;
+  }
 
   return {
     id: generationId,
@@ -3992,7 +4544,7 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
     sourceUnderstanding: source,
     slotMapping,
     gapReport: timeline.gapReport,
-    fillPlan,
+    fillPlan: integratedFillPlan,
     replacementSlots: timeline.replacementSlots,
     storyboard,
     timeline,
@@ -4000,6 +4552,11 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
       generationRequest: requestValidation,
       timeline: timelineValidation
     },
+    providerDecisions,
+    modelRouteSummary,
+    recipeLintReport,
+    videoCriticReport,
+    structureExplanation,
     migrationExplanation: `Transferred ${template.name} into a ${request.target.targetDurationSec}s ${request.target.vertical} reconstruction plan.`,
     warnings: timeline.warnings ?? [],
     createdAt: nowIso()

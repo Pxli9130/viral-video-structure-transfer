@@ -1743,7 +1743,7 @@ function motionGraphTargetAdaptationSection() {
       <article class="panel-card">
         <h3>Optional AIGC Material Fill</h3>
         <p>AIGC material fill is optional. Default runs do not generate external material.</p>
-        <p>This demo uses deterministic <code>mock_provider</code>. External generation requires user opt-in.</p>
+        <p>This demo uses deterministic <code>deterministic_local_image_fill</code>. The deprecated <code>mock_provider</code> id remains an alias. External generation requires user opt-in.</p>
         <p class="evidence">Sample evidence is used for structure only, not copied. Generated assets are clearly labeled as AI-generated material.</p>
       </article>
       <article class="panel-card">

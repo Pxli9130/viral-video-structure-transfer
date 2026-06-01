@@ -817,7 +817,8 @@ function motionGraphArtifactGates(options = {}) {
   }
   if (options.includeAigcMode) {
     const qualityOk = Array.isArray(aigcQuality) && aigcQuality.length > 0 && aigcQuality.every((result) => result.usable === true);
-    const candidatesOk = Array.isArray(aigcCandidates) && aigcCandidates.length > 0 && aigcCandidates.every((candidate) => candidate.provider === "mock_provider" && candidate.provenance?.externalProviderUsed === false);
+    const localProviderIds = new Set(["deterministic_local_image_fill", "mock_provider"]);
+    const candidatesOk = Array.isArray(aigcCandidates) && aigcCandidates.length > 0 && aigcCandidates.every((candidate) => localProviderIds.has(candidate.provider) && candidate.provenance?.externalProviderUsed === false);
     const generatedAssetFilesExist = Array.isArray(aigcCandidates) && aigcCandidates.length > 0 && aigcCandidates.every((candidate) => existsSync(path.resolve(repoRoot, candidate.path)));
     const explicitExternalOk =
       evalGate("external_provider_explicitly_enabled") === true &&

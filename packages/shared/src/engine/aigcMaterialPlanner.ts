@@ -11,7 +11,7 @@ import type {
 
 export const DEFAULT_AIGC_MATERIAL_FILL_CONFIG: AigcMaterialFillConfig = {
   enabled: false,
-  provider: "mock_provider",
+  provider: "deterministic_local_image_fill",
   maxAssetsPerRun: 8,
   allowExternalUpload: false,
   allowSampleFramesToProvider: false,
