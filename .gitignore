@@ -55,3 +55,7 @@ ideal_editing_mov_outputs_v2.zip
 artifacts/max-ability-run-20260601-221442/motion_graph_1/preview_frames/clip_1cnygd4.png
 artifacts1/
 artifacts/
+.env.bak.20260602T015901Z
+codegen/
+expected_codegen_eval_bundle/
+docs1/
