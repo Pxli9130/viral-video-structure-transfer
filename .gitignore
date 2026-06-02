@@ -25,25 +25,8 @@ test_videos/corpus/*/.frames_tmp/
 
 assets/
 spec_v2/implementation-status.md
-# Ignore generated docs/artifacts by default, but allow curated docs to be tracked.
+# Ignore local/generated docs.
 docs/
-!docs/
-docs/*
-!docs/vvst-eval-usage.md
-!docs/architecture.md
-!docs/structure-protocol.md
-!docs/provider-policy.md
-!docs/safety-boundary.md
-!docs/demo-script.md
-!docs/evaluation-report.md
-!docs/model-surface-audit.md
-!docs/model-router-v4-2.md
-!docs/model-candidate-matrix.md
-!docs/model-research-todos.md
-!docs/artifacts/
-docs/artifacts/*
-!docs/artifacts/showcase_report/
-!docs/artifacts/showcase_report/**
 storage/
 test_videos/manual/
 marketing_demo/
@@ -52,3 +35,10 @@ CURRENT_PROJECT_GUIDE.md
 test_fixtures/expected_editing_mov_case/
 packages/shared/src/__tests__/fixtures/
 ideal_editing_mov_outputs_v2.zip
+artifacts/max-ability-run-20260601-221442/motion_graph_1/preview_frames/clip_1cnygd4.png
+artifacts1/
+artifacts/
+.env.bak.20260602T015901Z
+codegen/
+expected_codegen_eval_bundle/
+docs1/
