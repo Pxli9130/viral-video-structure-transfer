@@ -4,7 +4,8 @@
  * download them, then ffmpeg-normalize + concat into one ~30s ad.
  *
  * doubao-seedance-2-0 t2v rejects duration=31, so the 31s storyboard is split into 3 acts.
- * Uses SEEDREAM_ARK_API_KEY (the key ending c6c07), loaded from repo .env. Key is redacted in logs.
+ * Uses SEEDANCE_ARK_API_KEY, SEEDANCE_API_KEY, SEEDREAM_ARK_API_KEY, or ARK_API_KEY,
+ * loaded from repo .env. Key is redacted in logs.
  *
  *   export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
  *   node scripts/run-seedance-aerospin-segments.mjs                 # 10s x3, 16:9, 720p, audio, no watermark
@@ -35,8 +36,8 @@ loadDotenv(path.join(ROOT, ".env"));
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const BASE = (process.env.SEEDREAM_ARK_BASE_URL || process.env.ARK_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
-const KEY = process.env.SEEDANCE_ARK_API_KEY || process.env.SEEDREAM_ARK_API_KEY;
-const MODEL = arg("--model", process.env.SEEDANCE_MODEL || "doubao-seedance-2-0-260128");
+const KEY = process.env.SEEDANCE_ARK_API_KEY || process.env.SEEDANCE_API_KEY || process.env.SEEDREAM_ARK_API_KEY || process.env.ARK_API_KEY;
+const MODEL = arg("--model", process.env.SEEDANCE_MODEL || process.env.AIGC_VIDEO_MODEL || "doubao-seedance-2-0-fast-260128");
 const DURATION = Number(arg("--duration", "10"));
 const RATIO = arg("--ratio", "16:9");
 const RESOLUTION = arg("--resolution", "720p");
@@ -49,7 +50,7 @@ const FFPROBE = process.env.FFPROBE_PATH && process.env.FFPROBE_PATH.includes("/
 const POLL_MS = 6000;
 const TIMEOUT_MS = 30 * 60 * 1000;
 
-if (!KEY) { console.error("✗ Missing SEEDREAM_ARK_API_KEY (the key ending c6c07)"); process.exit(1); }
+if (!KEY) { console.error("✗ Missing SEEDANCE_ARK_API_KEY, SEEDANCE_API_KEY, SEEDREAM_ARK_API_KEY, or ARK_API_KEY"); process.exit(1); }
 const redact = (s) => String(s ?? "").split(KEY).join("[ARK_KEY]");
 const headers = { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

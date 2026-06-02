@@ -18,11 +18,16 @@ import {
 import { runPython, hasCondaEnv } from "./condaPython.js";
 import { GeminiVLMAdapter } from "./gemini.js";
 import { GeminiAIAdapter } from "./geminiAi.js";
+import { ElevenLabsAdapter } from "./elevenlabs.js";
 import { OpenAICompatibleAIAdapter } from "./openaiCompatible.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
 const pythonScripts = path.join(repoRoot, "scripts", "python");
+
+function envFlag(env: NodeJS.ProcessEnv, key: string): boolean {
+  return /^(1|true|yes|on)$/i.test(env[key]?.trim() ?? "");
+}
 
 export class FFmpegVideoToolAdapter implements VideoToolAdapter {
   readonly name = "FFmpegVideoToolAdapter";
@@ -203,6 +208,28 @@ export class EasyOCRAdapter implements OCRAdapter {
   }
 }
 
+export class FallbackASRAdapter implements ASRAdapter {
+  readonly name: string;
+  readonly available: boolean;
+
+  constructor(private readonly primary: ASRAdapter, private readonly fallback: ASRAdapter) {
+    this.name = `${primary.name}+fallback:${fallback.name}`;
+    this.available = primary.available || fallback.available;
+  }
+
+  async transcribe(asset: Asset): Promise<TranscriptSegment[]> {
+    if (this.primary.available) {
+      try {
+        const transcript = await this.primary.transcribe(asset);
+        if (transcript.length > 0) return transcript;
+      } catch (error) {
+        console.warn(`[ASR] ${this.primary.name} failed; trying ${this.fallback.name}: ${(error as Error).message}`);
+      }
+    }
+    return this.fallback.available ? this.fallback.transcribe(asset) : [];
+  }
+}
+
 export class DisabledVLMAdapter implements VLMAdapter {
   readonly name = "DisabledVLMAdapter";
   readonly available = false;
@@ -218,8 +245,8 @@ export class KeyframeHeuristicVLMAdapter implements VLMAdapter {
   async describeFrames(frames: Array<{ path: string; timeSec: number }>) {
     return frames.map((frame, index) => ({
       timeSec: frame.timeSec,
-      tags: index === 0 ? ["hook_candidate"] : index % 3 === 0 ? ["product_like"] : ["background"],
-      description: `Heuristic VLM placeholder for frame ${index + 1}.`
+      tags: ["local_heuristic_fallback", index === 0 ? "opening_frame" : "evidence_frame"],
+      description: `Local heuristic fallback for frame ${index + 1}; no semantic external VLM review was used.`
     }));
   }
 }
@@ -260,7 +287,22 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
     // No mock AI adapter: require a real provider. Fail loudly on misconfiguration.
     throw new Error(`AI_PROVIDER must be one of gemini|ark_doubao|openai_compatible (got "${aiProvider}"; mock removed)`);
   }
-  const asrAdapter = env.ASR_PROVIDER === "faster_whisper" ? new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" }) : new DisabledASRAdapter();
+  const asrAdapter =
+    env.ASR_PROVIDER === "faster_whisper"
+      ? new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" })
+      : env.ASR_PROVIDER === "elevenlabs_scribe"
+        ? new FallbackASRAdapter(
+            new ElevenLabsAdapter({
+              apiKey: env.ELEVENLABS_API_KEY,
+              enabled:
+                envFlag(env, "ENABLE_ELEVENLABS_LIVE_TESTS") ||
+                envFlag(env, "ELEVENLABS_ENABLE_CLOUD") ||
+                envFlag(env, "ELEVENLABS_ENABLE_SCRIBE") ||
+                envFlag(env, "ELEVENLABS_ENABLE_ASR")
+            }),
+            new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" })
+          )
+        : new DisabledASRAdapter();
   const ocrAdapter = env.OCR_PROVIDER === "easyocr" ? new EasyOCRAdapter() : new DisabledOCRAdapter();
   const vlmAdapter =
     env.VLM_PROVIDER === "gemini"
@@ -273,6 +315,7 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
 
 export { GeminiVLMAdapter };
 export { GeminiAIAdapter };
+export { ElevenLabsAdapter };
 
 export const RENDERER_TARGETS_ENV: Record<string, RendererTarget> = {
   html_preview: "html_preview",

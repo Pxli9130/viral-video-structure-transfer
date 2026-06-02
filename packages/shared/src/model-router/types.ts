@@ -24,6 +24,9 @@ export type ModelTask =
   | "sound_effect"
   | "music"
   | "audio_cleanup"
+  | "forced_alignment"
+  | "model_discovery"
+  | "voice_discovery"
   | "dubbing"
   | "knowledge_retrieval"
   | "quality_judge";
@@ -38,6 +41,9 @@ export type ProviderClass =
   | "image_generation"
   | "video_generation"
   | "audio_generation"
+  | "audio_cleanup"
+  | "audio_analysis"
+  | "capability_discovery"
   | "embedding"
   | "quality_judge"
   | "renderer"
@@ -93,8 +99,10 @@ export type ProviderAvailability = {
   available: boolean;
   reason?: string;
   envMissing?: string[];
+  disabledByEnv?: string[];
   binaryMissing?: string[];
   packageMissing?: string[];
+  weightsMissing?: string[];
 };
 
 export type ProviderDecision = {
@@ -135,6 +143,9 @@ export interface ModelProviderDefinition {
   cloud: boolean;
   implemented: boolean;
   envVars?: string[];
+  enableEnvVars?: string[];
+  heavyLocal?: boolean;
+  weightEnvVars?: string[];
   binaries?: string[];
   packages?: string[];
   aliasFor?: string;

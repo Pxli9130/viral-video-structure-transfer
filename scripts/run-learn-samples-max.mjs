@@ -5,13 +5,14 @@
  * Superset of run-learn-samples.mjs. For EACH sample it:
  *   1. uploads + analyzes through the REAL API server (FFmpeg + evidence analyzer + Gemini VLM + ASR/OCR)
  *      → a learned StructureTemplate;
- *   2. in-process generates + polishes a timeline + RenderRecipe with the SAME AeroSpin fan target assets;
+ *   2. generates through the API by default so real AIGC material fill / LLM subtitles / provider routing run;
  *   3. renders it BOTH ways — FFmpeg (final.mp4) AND Remotion ViralRecipe composition (final.remotion.mp4);
  *   4. grades the FFmpeg render with the v3 render-quality gate (evaluate-render-quality.mjs --gates v3);
  *   5. writes full human-review artifacts.
  * Finally it computes cross-sample layout-NCC diversity matrices for both renderer outputs.
  *
- * Prompt + target material are held constant, so the only variable across outputs is the learned structure.
+ * Prompt is held constant; target images are generated per case by default. Use
+ * --use-fixture-target-assets only when intentionally testing the old fixed-fixture path.
  * NOTE: --gates v3 is a beat_cut-fidelity gate; non-beat_cut samples (motion_graph/marketing) are EXPECTED
  * to flag beat_cut-specific gates. The per-sample universal gates (resolution/duration/recipe/primitiveReason/
  * target-material/sample-copy) are the authoritative pass/fail for this learn flow.
@@ -51,7 +52,16 @@ const arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] 
 const KEEP_SERVER = argv.includes("--keep-server");
 const NO_REMOTION = argv.includes("--no-remotion");
 const NO_GATE = argv.includes("--no-gate");
-const SAMPLES = arg("--samples", "test_videos/editing.mov,test_videos/marketing.mov,test_videos/motion_graph_1.mov,test_videos/motion_graph_2.mov")
+const OFFLINE = argv.includes("--offline");
+const API_GENERATION = !argv.includes("--in-process-generation");
+const ALLOW_EXTERNAL_AIGC = !argv.includes("--no-external-aigc");
+const USE_FIXTURE_TARGET_ASSETS = argv.includes("--use-fixture-target-assets");
+const ALLOW_IN_PROCESS_FALLBACK = !argv.includes("--no-generation-fallback");
+const CASE = arg("--case", "");
+const DEFAULT_SAMPLES = CASE
+  ? `test_videos/${CASE}.mov`
+  : "test_videos/editing.mov,test_videos/marketing.mov,test_videos/motion_graph_1.mov,test_videos/motion_graph_2.mov";
+const SAMPLES = arg("--samples", DEFAULT_SAMPLES)
   .split(",").map((s) => s.trim()).filter(Boolean);
 const OUT = path.resolve(arg("--out", "docs/artifacts/learned_samples_max"));
 const PROMPT =
@@ -60,7 +70,16 @@ const PROMPT =
 
 // ---------- helpers ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SECRETS = ["GEMINI_API_KEY", "ARK_API_KEY", "SEEDREAM_ARK_API_KEY"].map((k) => process.env[k]).filter((v) => v && v.length >= 8);
+const SECRETS = [
+  "GEMINI_API_KEY",
+  "ARK_API_KEY",
+  "SEEDREAM_ARK_API_KEY",
+  "SEEDANCE_ARK_API_KEY",
+  "SEEDANCE_API_KEY",
+  "ELEVENLABS_API_KEY",
+  "OPENAI_COMPATIBLE_API_KEY",
+  "OPENAI_API_KEY"
+].map((k) => process.env[k]).filter((v) => v && v.length >= 8);
 const redact = (t) => { let o = String(t ?? ""); for (const s of SECRETS) o = o.split(s).join("[REDACTED]"); return o; };
 
 async function api(method, route, body, isForm = false) {
@@ -73,12 +92,32 @@ async function api(method, route, body, isForm = false) {
   if (!res.ok) throw new Error(`${method} ${route} -> ${res.status}: ${redact(text).slice(0, 300)}`);
   return json && typeof json === "object" && "data" in json ? json.data : json;
 }
+async function pollJob(jobId, label, timeoutMs = 20 * 60_000) {
+  const startedAt = Date.now();
+  for (;;) {
+    const job = await api("GET", `/api/jobs/${jobId}`);
+    if (job.status === "completed") return job;
+    if (job.status === "failed") throw new Error(`${label} failed: ${job.error ?? job.steps?.map((s) => s.message).filter(Boolean).join("; ") ?? "unknown error"}`);
+    if (Date.now() - startedAt > timeoutMs) throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    await sleep(3000);
+  }
+}
 function probe(file) {
   const r = spawnSync(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "format=duration:stream=width,height", "-of", "json", file], { encoding: "utf8" });
   try { const j = JSON.parse(r.stdout || "{}"); return { duration: Number(j.format?.duration ?? 0), width: j.streams?.[0]?.width ?? 0, height: j.streams?.[0]?.height ?? 0 }; } catch { return { duration: 0, width: 0, height: 0 }; }
 }
 function sh(cmd, a) { return new Promise((res) => { const p = spawn(cmd, a, { stdio: ["ignore", "pipe", "pipe"] }); let e = ""; p.stderr.on("data", (d) => (e += d)); p.on("close", (code) => res({ code, err: e })); }); }
 async function contactSheet(mp4, outPng) { await sh(FFMPEG, ["-y", "-i", mp4, "-vf", "fps=1/1.6,scale=200:-1,tile=3x4", "-frames:v", "1", outPng]); }
+async function clipPreviewFrames(mp4, clips, outDir) {
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+  for (let index = 0; index < clips.length; index += 1) {
+    const clip = clips[index];
+    const t = Math.max(0, Number((clip.startSec + Math.max(0.05, clip.durationSec / 2)).toFixed(3)));
+    await sh(FFMPEG, ["-y", "-ss", String(t), "-i", mp4, "-frames:v", "1", path.join(outDir, `${clip.id}.png`)]);
+    await sh(FFMPEG, ["-y", "-ss", String(t), "-i", mp4, "-frames:v", "1", path.join(outDir, `clip_${index + 1}.png`)]);
+  }
+}
 
 let serverProc = null;
 async function ensureServer() {
@@ -118,6 +157,15 @@ const FAN_TARGETS = [
   { id: "fan_feature", kind: "copy", role: "ui_showcase", text: (copy.features ?? []).join("\n") },
   { id: "fan_kinetic", kind: "copy", role: "kinetic_typography", text: copy.productName ?? copy.brandName ?? "AeroSpin" }
 ];
+const FAN_COPY_ONLY_TARGETS = [
+  { id: "fan_feature_copy", kind: "copy", role: "ui_showcase", text: (copy.features ?? []).join("\n") },
+  { id: "fan_kinetic_copy", kind: "copy", role: "kinetic_typography", text: copy.productName ?? copy.brandName ?? "AeroSpin" },
+  { id: "fan_cta_copy", kind: "copy", role: "brand_cta", text: copy.cta ?? "现在入手，随时随地降温" }
+];
+function targetAssetsForGeneration() {
+  return USE_FIXTURE_TARGET_ASSETS ? FAN_TARGETS : FAN_COPY_ONLY_TARGETS;
+}
+const isRenderableFanMediaId = (id) => /^fan_(hero|card|mc|logo)/.test(id);
 function polish(timeline) {
   const features = (copy.features ?? []).filter(Boolean);
   let cc = 0, fc = 0;
@@ -144,7 +192,16 @@ function polish(timeline) {
     const tc = timeline.clips.find((c) => c.id === rc.clipId);
     if (!tc) continue;
     rc.text = { ...(rc.text ?? {}), copy: tc.subtitleText ?? rc.text?.copy ?? "" };
-    if (typeof tc.sourceAssetId === "string" && tc.sourceAssetId.startsWith("fan_")) rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+    if (typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+  }
+  if (recipe?.layers) for (const layer of recipe.layers) {
+    if (!layer.clipId) continue;
+    const tc = timeline.clips.find((c) => c.id === layer.clipId);
+    if (!tc) continue;
+    if (layer.type === "text" && layer.text && tc.subtitleText) layer.text.content = tc.subtitleText;
+    if (layer.type === "media" && layer.material && typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) {
+      layer.material.assetIds = [tc.sourceAssetId];
+    }
   }
   return timeline;
 }
@@ -184,74 +241,153 @@ function runV3Gate(dir, sampleAbs) {
   return report;
 }
 
+function maxAbilityRequest(projectId, template, sampleAssetId) {
+  return {
+    projectId,
+    inputMode: "brief_assets",
+    selectedTemplateIds: [template.id],
+    sampleReferenceAssetId: sampleAssetId,
+    prompt: PROMPT,
+    targetAssets: targetAssetsForGeneration(),
+    target: { vertical: "b2b_marketing_mg", targetDurationSec: 15, aspectRatio: "9:16", outputMode: "mp4_render" },
+    controls: {
+      pace: "fast",
+      hookIntensity: "strong",
+      packagingStyle: "mg_motion",
+      ctaStyle: "direct",
+      recipeEvidencePrimitives: true,
+      recipeAdaptiveStructure: true,
+      allowAigcMaterialGeneration: true,
+      allowExternalAigcProvider: ALLOW_EXTERNAL_AIGC,
+      subtitleGenerationMode: "auto"
+    },
+    constraints: { noSampleVisualCopy: true, sampleAssetReuse: "disabled" }
+  };
+}
+
+async function generateViaApi(projectId, template, sampleAssetId) {
+  const request = maxAbilityRequest(projectId, template, sampleAssetId);
+  const started = await api("POST", "/api/generations?async=true", request);
+  const job = await pollJob(started.jobId, "API generation");
+  const generationId = job.outputRefs?.generationId;
+  if (!generationId) throw new Error(`API generation completed without outputRefs.generationId: ${JSON.stringify(job.outputRefs ?? null)}`);
+  return api("GET", `/api/generations/${generationId}`);
+}
+
+async function renderViaApi(generationId, rendererTarget, outputPath) {
+  const response = await api("POST", `/api/generations/${generationId}/render`, { rendererTarget });
+  if (response.status !== "completed" || !response.render?.outputPath) {
+    throw new Error(`${rendererTarget} API render failed: ${response.render?.error ?? response.status ?? "unknown error"}`);
+  }
+  await copyFile(response.render.outputPath, outputPath);
+  return { ok: true, meta: probe(outputPath), path: outputPath, render: response.render };
+}
+
 async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
   const name = path.basename(samplePath).replace(/\.[^.]+$/, "");
   const dir = path.join(OUT, name);
   await mkdir(dir, { recursive: true });
-  console.log(`\n=== ${name}: learn (server analyze) → generate → FFmpeg + Remotion render → v3 gate ===`);
+  console.log(`\n=== ${name}: ${OFFLINE ? "offline analysis replay" : "learn (server analyze)"} → generate → FFmpeg + Remotion render → v3 gate ===`);
 
   // 1) project + upload + analyze (REAL learning on the server)
-  const project = await api("POST", "/api/projects", { name: `learn-max ${name}`, vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15 });
-  const buf = await readFile(path.join(ROOT, samplePath));
-  const form = new FormData();
-  form.append("file", new Blob([buf], { type: "video/quicktime" }), path.basename(samplePath));
-  form.append("role", "example_video");
-  form.append("sourcePolicy", "user_authorized");
-  const asset = await api("POST", `/api/projects/${project.id}/assets`, form, true);
-  console.log(`  uploaded ${name} → ${asset.id}; analyzing (real Gemini VLM + evidence + ASR/OCR, can take minutes)…`);
-  const res = await api("POST", `/api/assets/${asset.id}/analyze`, { purpose: "sample" });
-  const template = res.template;
+  let project = { id: `offline_${name}` };
+  let template;
+  let videoTl;
+  let sampleAssetId;
+  if (OFFLINE) {
+    const existingAnalysisPath = [
+      path.join(dir, "analysis.json"),
+      path.join(ROOT, "docs/artifacts/learned_samples_max", name, "analysis.json"),
+      path.join(ROOT, "docs/artifacts/learned_samples", name, "analysis.json")
+    ].find((candidate) => existsSync(candidate));
+    if (!existingAnalysisPath) throw new Error(`offline analysis not found for ${name}`);
+    videoTl = JSON.parse(readFileSync(existingAnalysisPath, "utf8"));
+    const { buildFallbackTemplate } = await loadShared();
+    template = buildFallbackTemplate(videoTl, "b2b_marketing_mg", project.id);
+    console.log(`  offline replay: ${path.relative(ROOT, existingAnalysisPath)} → rebuilt template evidence visual=${template.visualElementGraph?.elements?.length ?? 0}`);
+  } else {
+    project = await api("POST", "/api/projects", { name: `learn-max ${name}`, vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 15 });
+    const buf = await readFile(path.join(ROOT, samplePath));
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type: "video/quicktime" }), path.basename(samplePath));
+    form.append("role", "example_video");
+    form.append("sourcePolicy", "user_authorized");
+    const asset = await api("POST", `/api/projects/${project.id}/assets`, form, true);
+    sampleAssetId = asset.id;
+    console.log(`  uploaded ${name} → ${asset.id}; analyzing (real Gemini VLM + evidence + ASR/OCR, can take minutes)…`);
+    const res = await api("POST", `/api/assets/${asset.id}/analyze`, { purpose: "sample" });
+    template = res.template;
+    videoTl = res.analysis?.video ?? res.analysis;
+  }
   if (!template) throw new Error("analyze did not return a learned template");
   await writeFile(path.join(dir, "learned-template.json"), JSON.stringify(template, null, 2));
-  const videoTl = res.analysis?.video ?? res.analysis;
   await writeFile(path.join(dir, "analysis.json"), JSON.stringify(videoTl ?? null, null, 2));
   console.log(`  learned: videoType=${template.videoType}, slots=${template.requiredSlots?.length ?? 0}, aiEnrichment=${template.aiEnrichmentStatus ?? "?"}`);
 
-  // 2) in-process generate + polish (learned template + fan material, MAX controls)
+  // 2) Generate through the real API by default so AIGC material fill, LLM subtitles and
+  // provider routing actually run. In-process generation is now only an explicit fallback.
   const { generateMigrationResult } = await loadShared();
   const { FFmpegRenderer } = await loadRenderer();
-  const request = {
-    projectId: project.id, inputMode: "brief_assets", selectedTemplateIds: [template.id],
-    prompt: PROMPT, targetAssets: FAN_TARGETS,
-    target: { vertical: "b2b_marketing_mg", targetDurationSec: 15, aspectRatio: "9:16", outputMode: "storyboard_preview" },
-    controls: { pace: "fast", hookIntensity: "strong", packagingStyle: "mg_motion", ctaStyle: "direct", recipeEvidencePrimitives: true, recipeAdaptiveStructure: true },
-    constraints: { noSampleVisualCopy: true }
-  };
-  const gen = generateMigrationResult({ template, request });
-  polish(gen.timeline);
+  let gen;
+  let generationMode = "api_generation";
+  try {
+    if (!API_GENERATION || OFFLINE) throw new Error(API_GENERATION ? "offline replay uses in-process generation" : "--in-process-generation requested");
+    gen = await generateViaApi(project.id, template, sampleAssetId);
+  } catch (error) {
+    const reason = redact(error?.message ?? String(error));
+    await writeFile(path.join(dir, "api-generation-error.txt"), `${reason}\n`, "utf8");
+    if (!ALLOW_IN_PROCESS_FALLBACK) throw error;
+    generationMode = "in_process_fallback";
+    console.log(`  ⚠ API generation unavailable; using explicit in-process fallback: ${reason.slice(0, 220)}`);
+    const request = maxAbilityRequest(project.id, template, sampleAssetId);
+    gen = generateMigrationResult({ template, request });
+    if (USE_FIXTURE_TARGET_ASSETS) polish(gen.timeline);
+  }
 
   const sampleIds = new Set(template.sourceSampleIds ?? []);
 
   // 3a) FFmpeg render → final.mp4
-  const tmp = path.join(dir, "_render");
-  await rm(tmp, { recursive: true, force: true });
-  await mkdir(tmp, { recursive: true });
-  const ff = new FFmpegRenderer({ generatedDir: tmp, assetResolver: resolver });
-  const ffout = await ff.render(gen.timeline, gen.id);
-  if (ffout.status !== "completed" || !ffout.outputPath) throw new Error(`FFmpeg render failed: ${ffout.error ?? "unknown"}`);
   const finalMp4 = path.join(dir, "final.mp4");
-  await copyFile(ffout.outputPath, finalMp4);
-  await rm(tmp, { recursive: true, force: true });
+  if (generationMode === "api_generation") {
+    await renderViaApi(gen.id, "ffmpeg", finalMp4);
+  } else {
+    const tmp = path.join(dir, "_render");
+    await rm(tmp, { recursive: true, force: true });
+    await mkdir(tmp, { recursive: true });
+    const ff = new FFmpegRenderer({ generatedDir: tmp, assetResolver: resolver });
+    const ffout = await ff.render(gen.timeline, gen.id);
+    if (ffout.status !== "completed" || !ffout.outputPath) throw new Error(`FFmpeg render failed: ${ffout.error ?? "unknown"}`);
+    await copyFile(ffout.outputPath, finalMp4);
+    await rm(tmp, { recursive: true, force: true });
+  }
   await contactSheet(finalMp4, path.join(dir, "render-contact-sheet.png"));
   const meta = probe(finalMp4);
+  await clipPreviewFrames(finalMp4, gen.timeline.clips, path.join(dir, "preview_frames"));
 
   // 3b) Remotion render → final.remotion.mp4 (best-effort; failure does not abort the sample)
   let remotion = { ok: false, error: NO_REMOTION ? "skipped (--no-remotion)" : undefined };
   if (!NO_REMOTION) {
     try {
-      const r = getRemotionRenderer(RemotionRenderer, sharedRemotionDir);
-      const rout = await r.render(gen.timeline, gen.id);
-      if (rout.status === "completed" && rout.outputPath && existsSync(rout.outputPath)) {
-        const remMp4 = path.join(dir, "final.remotion.mp4");
-        await copyFile(rout.outputPath, remMp4);
-        await rm(rout.outputPath, { force: true });
-        await contactSheet(remMp4, path.join(dir, "render-contact-sheet.remotion.png"));
-        remotion = { ok: true, meta: probe(remMp4), path: remMp4 };
-        console.log(`  ✓ Remotion render: ${remotion.meta.width}x${remotion.meta.height} ${remotion.meta.duration.toFixed(2)}s`);
+      const remMp4 = path.join(dir, "final.remotion.mp4");
+      if (generationMode === "api_generation") {
+        // remotion_recipe → ViralRecipe composition (ViralRecipeRoot), which draws the generated
+        // material per clip. Plain "remotion" routes to the ViralReconstruction title-card mold.
+        remotion = await renderViaApi(gen.id, "remotion_recipe", remMp4);
       } else {
-        remotion = { ok: false, error: redact(rout.error ?? "remotion render returned no output").slice(0, 240) };
-        console.log(`  ⚠ Remotion render failed: ${remotion.error}`);
+        const r = getRemotionRenderer(RemotionRenderer, sharedRemotionDir);
+        const rout = await r.render(gen.timeline, gen.id);
+        if (rout.status === "completed" && rout.outputPath && existsSync(rout.outputPath)) {
+          await copyFile(rout.outputPath, remMp4);
+          await rm(rout.outputPath, { force: true });
+          remotion = { ok: true, meta: probe(remMp4), path: remMp4 };
+        } else {
+          remotion = { ok: false, error: redact(rout.error ?? "remotion render returned no output").slice(0, 240) };
+        }
       }
+      if (remotion.ok) {
+        await contactSheet(remMp4, path.join(dir, "render-contact-sheet.remotion.png"));
+        console.log(`  ✓ Remotion render: ${remotion.meta.width}x${remotion.meta.height} ${remotion.meta.duration.toFixed(2)}s`);
+      } else console.log(`  ⚠ Remotion render failed: ${remotion.error}`);
     } catch (e) { remotion = { ok: false, error: redact(String(e?.message ?? e)).slice(0, 240) }; console.log(`  ⚠ Remotion threw: ${remotion.error}`); }
   }
 
@@ -262,9 +398,20 @@ async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
   await writeFile(path.join(dir, "timeline.json"), JSON.stringify(gen.timeline, null, 2));
   await writeFile(path.join(dir, "slot-mapping.json"), JSON.stringify(gen.slotMapping ?? [], null, 2));
   await writeFile(path.join(dir, "gap-report.json"), JSON.stringify(gen.gapReport ?? gen.timeline.gapReport ?? [], null, 2));
+  await writeFile(path.join(dir, "generation-mode.json"), JSON.stringify({
+    generationMode,
+    apiGenerationDefault: API_GENERATION,
+    externalAigcAllowed: ALLOW_EXTERNAL_AIGC,
+    fixtureTargetAssets: USE_FIXTURE_TARGET_ASSETS,
+    aigcMaterialFill: gen.aigcMaterialFill ?? null
+  }, null, 2));
 
   // universal (flow-authoritative) gates
-  const realClips = gen.timeline.clips.filter((c) => typeof c.sourceAssetId === "string" && c.sourceAssetId.startsWith("fan_"));
+  const generatedAssetIds = new Set((gen.aigcMaterialFill?.generatedTargetAssets ?? []).map((asset) => asset.id));
+  const realClips = gen.timeline.clips.filter((c) =>
+    (typeof c.sourceAssetId === "string" && (c.sourceAssetId.startsWith("fan_") || generatedAssetIds.has(c.sourceAssetId))) ||
+    c.layers?.some((layer) => typeof layer.assetId === "string" && generatedAssetIds.has(layer.assetId))
+  );
   const sampleCopy = gen.timeline.clips.filter((c) => c.sourceAssetId && sampleIds.has(c.sourceAssetId));
   const primitiveSeq = recipe?.clips?.map((c) => c.selectedPrimitive) ?? [];
   const universal = {
@@ -274,6 +421,8 @@ async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
     render_recipe_exists: Boolean(recipe),
     every_clip_has_primitiveReason: Boolean(recipe?.clips?.every((c) => c.primitiveReason?.length)),
     target_material_appears: realClips.length > 0,
+    api_generation_or_explicit_fallback: generationMode === "api_generation" || ALLOW_IN_PROCESS_FALLBACK,
+    external_aigc_not_faked: gen.aigcMaterialFill?.enabled ? gen.aigcMaterialFill.provider !== "mock_provider" : generationMode !== "api_generation" || !ALLOW_EXTERNAL_AIGC,
     sample_copy_eq_0: sampleCopy.length === 0,
     remotion_render_exists: remotion.ok
   };
@@ -299,7 +448,7 @@ async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
     `- Template: ${template.name ?? "n/a"}; required slots: ${template.requiredSlots?.length ?? 0}; AI enrichment: ${template.aiEnrichmentStatus ?? "?"}`,
     `- FFmpeg output: \`final.mp4\` ${meta.width}x${meta.height} ${meta.duration.toFixed(2)}s`,
     `- Remotion output: ${remotion.ok ? `\`final.remotion.mp4\` ${remotion.meta.width}x${remotion.meta.height} ${remotion.meta.duration.toFixed(2)}s` : `❌ ${remotion.error}`}`,
-    `- Real fan assets composited on ${realClips.length} clips: ${[...new Set(realClips.map((c) => c.sourceAssetId))].join(", ")}`,
+    `- Target/generated assets composited on ${realClips.length} clips: ${[...new Set(realClips.map((c) => c.sourceAssetId).filter(Boolean))].join(", ")}`,
     `- Primitive sequence: ${primitiveSeq.join(" → ")}`,
     `- Sample frames copied to canvas: ${sampleCopy.length} (must be 0)`,
     "",
@@ -312,7 +461,9 @@ async function learnAndRender(samplePath, RemotionRenderer, sharedRemotionDir) {
       : `_This sample learned \`${template.videoType}\` (not beat_cut); beat_cut-specific v3 gates are EXPECTED to flag. Treat the universal gates above as authoritative._`,
     v3.failures?.length ? `- Failing gates: ${v3.failures.join(", ")}` : "- No failing gates.",
     "",
-    "The prompt + target material were identical across all samples; the only variable is the learned structure.",
+    USE_FIXTURE_TARGET_ASSETS
+      ? "The prompt + fixed target fixtures were identical across all samples; this is the legacy fixture mode."
+      : "The prompt was identical across samples; target visual material was generated per case unless the API generation fell back.",
     ""
   ].join("\n"));
 
@@ -336,7 +487,7 @@ async function main() {
   if (!NO_REMOTION && !REMOTION_BROWSER) console.log("⚠ no chrome-headless-shell found in known paths; Remotion will rely on its own default and may fail.");
   else if (!NO_REMOTION) console.log(`• Remotion browser: ${REMOTION_BROWSER}`);
 
-  const startedServer = await ensureServer();
+  const startedServer = OFFLINE ? false : await ensureServer();
   const { RemotionRenderer } = await loadRenderer();
   const sharedRemotionDir = path.join(OUT, "_remotion_tmp");
   await mkdir(sharedRemotionDir, { recursive: true });
@@ -366,7 +517,7 @@ async function main() {
   const lines = [
     "# Learn-from-each-sample — FULL MAX summary",
     "",
-    "Each row: a sample video → learned structure → an AeroSpin fan video, dual-rendered (FFmpeg + Remotion), graded by the v3 render-quality gate. Same prompt + same fan target assets across all samples — the only variable is the learned structure.",
+    "Each row: a sample video → learned structure → an AeroSpin fan video, dual-rendered (FFmpeg + Remotion), graded by the v3 render-quality gate. Same prompt across all samples; target images are generated per case by default, with fixed fixtures only when --use-fixture-target-assets is explicit.",
     "",
     "| sample | learned videoType | FFmpeg dur | Remotion | universal gates | v3 gate | primitives |",
     "|---|---|---|---|---|---|---|",
@@ -391,5 +542,6 @@ async function main() {
   console.log(`\n[done] ${ffOk.length}/${results.length} samples FFmpeg-rendered, ${remOk.length} Remotion-rendered → ${OUT}`);
   console.log("ffmpeg diversity:", ffMatrix.map((m) => `${m.a}×${m.b}=${m.layout_ncc_mean}`).join("  "));
   if (ffOk.length === 0) process.exit(1);
+  process.exit(0);
 }
 main().catch((e) => { console.error("[FAIL]", redact(e?.stack ?? String(e))); if (serverProc && !KEEP_SERVER) { try { serverProc.kill("SIGTERM"); } catch { /* */ } } process.exit(1); });

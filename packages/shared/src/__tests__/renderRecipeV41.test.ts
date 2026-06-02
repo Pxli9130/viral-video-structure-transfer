@@ -164,6 +164,16 @@ describe("RenderRecipe v4.1 migration and evidence fidelity", () => {
     expect(template.motionAtoms?.[0]?.type).toBe("parametric_ribbon_surface");
   });
 
+  it("derives motion atoms from visual element motion when explicit motion geometry is absent", () => {
+    const analysis = evidenceAnalysis();
+    delete analysis.motionGeometry;
+    const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_v41");
+    expect(template.motionAtoms?.[0]?.type).toBe("parametric_ribbon_surface");
+    expect(template.motionAtoms?.[0]?.pathFamily).toBe("vertical_helix");
+    expect(template.motionAtoms?.[0]?.axis).toBe("screen_y");
+    expect(template.motionAtoms?.[0]?.evidenceFrames?.length).toBeGreaterThan(0);
+  });
+
   it("parses display-safe Chinese product and CTA fields", () => {
     const brief = parsePromptToBrief(request());
     expect(brief.productName).toBe("AeroSpin 便携涡轮小风扇");
@@ -198,6 +208,32 @@ describe("RenderRecipe v4.1 migration and evidence fidelity", () => {
     expect(recipe!.layers?.filter((layer) => layer.type === "text").some((layer) => Boolean(layer.layout.bboxNorm) && layer.typography.fontSizeRatio > 0)).toBe(true);
     expect(recipe!.layers?.some((layer) => layer.type === "motion_atom")).toBe(true);
     expect(recipe!.layers?.some((layer) => layer.type === "audio")).toBe(true);
+    const audioKinds = recipe!.layers?.filter((layer) => layer.type === "audio").map((layer) => layer.audio.kind) ?? [];
+    expect(audioKinds).toContain("drone");
+    expect(audioKinds).toContain("riser");
+    expect(audioKinds).not.toContain("kick");
+    expect(audioKinds).not.toContain("bass");
     expect(findRenderRecipeSafetyIssues(recipe!)).toEqual([]);
+  });
+
+  it("does not turn copy assets into media layers and keeps repeated non-beat layer ids unique", () => {
+    const template: StructureTemplate = buildFallbackTemplate(evidenceAnalysis(), "b2b_marketing_mg", "project_v41");
+    const req = request();
+    req.targetAssets = [
+      { id: "fan_hero", kind: "image", role: "object_motion", path: "docs/fixtures/final_aerospin_fan/fan_hero.png" },
+      { id: "fan_feature", kind: "copy", role: "ui_showcase", text: "三档强风\nUSB-C 快充" }
+    ];
+    const generation = generateMigrationResult({ template, request: req });
+    const recipe = generation.timeline.renderPlan?.renderRecipe;
+    expect(recipe).toBeDefined();
+    expect(new Set(generation.timeline.clips.map((clip) => clip.id)).size).toBe(generation.timeline.clips.length);
+    expect(new Set((recipe!.layers ?? []).map((layer) => layer.id)).size).toBe(recipe!.layers?.length ?? 0);
+    const mediaLayers = recipe!.layers?.filter((layer) => layer.type === "media") ?? [];
+    expect(mediaLayers.some((layer) => layer.material.assetIds.includes("fan_hero"))).toBe(true);
+    expect(mediaLayers.some((layer) => layer.material.assetIds.includes("fan_feature"))).toBe(false);
+    expect(mediaLayers.every((layer) => {
+      const bbox = layer.layout.bboxNorm;
+      return Boolean(bbox && bbox.w * bbox.h >= (layer.layout.minAreaRatio ?? 0.1) * 0.98);
+    })).toBe(true);
   });
 });

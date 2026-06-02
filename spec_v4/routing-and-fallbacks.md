@@ -1,5 +1,7 @@
 # Routing and Fallbacks v4.1
 
+> Note: This spec doc is versioned v4.1. The implemented route engine is the typed `model-router-v4.2` summary literal (`packages/shared/src/model-router/router.ts`); routing tables below reflect that engine.
+
 ## 1. Router goals
 
 The router should choose models by task, quality, cost, and availability. It must never block the core demo if an optional provider is missing.
@@ -8,12 +10,12 @@ The router should choose models by task, quality, cost, and availability. It mus
 
 | Task | Primary route | Fallback route | Local deterministic fallback |
 |---|---|---|---|
-| Structure VLM | Gemini 3.1 Pro | Qwen3-VL / Doubao multimodal | frame-sheet heuristics + OCR/CV evidence |
-| JSON planning | Gemini 3.1 Pro / GPT-5 | Qwen3 / Doubao-Seed-2.0-lite | rule-based template compiler |
-| ASR | faster-whisper | ElevenLabs Scribe | no transcript + OCR-only mode |
+| Structure VLM | Gemini (default `gemini-3.5-flash`; alt `gemini-2.5-pro`) | Qwen3-VL / Doubao multimodal | frame-sheet heuristics + OCR/CV evidence |
+| JSON planning / creative-effect codegen | Gemini (default `gemini-3.5-flash`) / GPT-5 | Qwen3 / Doubao-Seed-2.0-lite | rule-based template compiler / local_fallback effect |
+| ASR | ElevenLabs Scribe (elevenlabs_scribe) | faster-whisper | no transcript + OCR-only mode (no_asr_with_warning) |
 | OCR | PaddleOCR / EasyOCR | Qwen3-VL OCR | manual/empty typography with warning |
-| Static image fill | Seedream 4.0 | GPT Image 2 / Nano Banana 2 | Remotion poster/card |
-| Video fill | Seedance 2.0 | Veo 3.1 / Kling / Runway | Remotion motion atom layer |
+| Static image fill | google_gemini_image (default gemini-3.1-flash-image = Nano Banana 2; alt gemini-3-pro-image / imagen-4.0-generate-001 / gemini-2.5-flash-image) | volcengine_seedream (model from SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL, no default) | deterministic_local_image_fill / Remotion shape card |
+| Video fill | Seedance 2.0 (doubao-seedance-2-0-fast-260128) | remotion_procedural_motion (Veo/Kling/Runway are unimplemented candidates) | ffmpeg_proxy_motion |
 | Voiceover | ElevenLabs TTS | provider-specific TTS | no voiceover + subtitle emphasis |
 | Sound effects | ElevenLabs SFX | procedural SFX | FFmpeg generated hits/whooshes |
 | Music | ElevenLabs Music | stock/user audio | procedural synth from AudioLayer |
@@ -43,11 +45,11 @@ type ModelRoutingPolicy = {
 
 ```json
 {
-  "task": "aigc_video_fill",
+  "task": "video_fill",
   "candidates": [
     {
       "provider": "seedance_2_0",
-      "model": "seedance-2.0",
+      "model": "doubao-seedance-2-0-fast-260128",
       "priority": 1,
       "enabled": false,
       "maxCostUsd": 2.0,
@@ -70,6 +72,8 @@ type ModelRoutingPolicy = {
   }
 }
 ```
+
+> Note: `veo_3_1` is an aspirational candidate and is **not** present in `modelRegistry.ts`. The implemented `video_fill` route is `seedance_2_0` → `remotion_procedural_motion` → `ffmpeg_proxy_motion`.
 
 ## 5. Provider telemetry
 

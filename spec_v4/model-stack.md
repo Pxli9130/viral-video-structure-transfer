@@ -1,5 +1,9 @@
 # Model Stack v4.1
 
+> Spec version: v4.1. The implemented typed model-router summary literal is `model-router-v4.2` (`router.ts`, `types.ts`); see `docs/model-router-v4-2.md`.
+
+> **Current default models (v4.2, env-configurable — see `.env.example`):** LLM / VLM / creative-effect codegen = `gemini-3.5-flash`; native image fill = `gemini-3.1-flash-image` (Nano Banana 2); video fill = Seedance 2.0 (kept). Prior `gemini-2.5-*` ids are now **selectable alternatives** via env. Other Google options (Nano Banana Pro / Imagen 4, Gemini TTS, Lyria, Veo 3.1) are documented alternatives that need a dedicated adapter. The tables below name the role + the current default; swap models via the env vars without code changes.
+
 ## v4.2 routing status
 
 Phase 1-2 introduces a typed ModelTask router in `packages/shared/src/model-router/`. This document remains the candidate stack inventory; the canonical implementation of route decisions, fallback reasons, and media access policy is now the shared router plus `docs/model-router-v4-2.md`.
@@ -28,10 +32,11 @@ These are required or strongly recommended for the core demo because they suppor
 | Video metadata / mux | FFmpeg / FFprobe | — | duration, fps, waveform, final mux, fallback render |
 | CV / video analysis | OpenCV, PySceneDetect, optical flow | frame-diff heuristics | scene cuts, motion energy, bbox tracks, visual candidates |
 | Audio analysis | librosa | FFmpeg audio filters | BPM, onsets, beat grid, energy curve |
-| ASR | faster-whisper | ElevenLabs Scribe in cloud mode | transcript, word timestamps, dialogue zones |
+| ASR | ElevenLabs Scribe (cloud, default `ASR_PROVIDER=elevenlabs_scribe`) | faster-whisper (local fallback) → no_asr_with_warning | transcript, word timestamps, dialogue zones |
 | OCR | PaddleOCR or EasyOCR | VLM OCR fallback | subtitle bbox, on-screen text, typography evidence |
-| VLM | Gemini 3.1 Pro or Qwen3-VL | Doubao multimodal if available | frame-sheet interpretation, visual naming, material suitability |
-| Text planner | Gemini 3.1 Pro / GPT-5 / Qwen3 | Doubao-Seed-2.0-lite | TechniqueAtoms, GapReport, TransferPlan, JSON normalization |
+| VLM | Gemini (default `gemini-3.5-flash` via `VLM_MODEL`; alt `gemini-2.5-pro`/`gemini-2.5-flash`) | heuristic / frame-sheet fallback (Qwen3-VL / Doubao multimodal are unimplemented candidates) | frame-sheet interpretation, visual naming, material suitability |
+| Text planner | Gemini (default `gemini-3.5-flash` via `AI_GEMINI_MODEL`; alt `gemini-2.5-pro`/`gemini-2.5-flash`) | GPT-5 / Qwen3 / Doubao-Seed-2.0-lite are unimplemented candidates | TechniqueAtoms, GapReport, TransferPlan, JSON normalization |
+| Creative-effect codegen | Gemini (default `gemini-3.5-flash` via `GEMINI_CODEGEN_MODEL`) | `local_fallback` template | generate a reusable props-driven Remotion effect component (zod schema in `schema.ts`), statically validated before apply |
 | Renderer | Remotion + FFmpeg | HyperFrames optional | layer-based motion graphics + final mp4 |
 
 ## 2. Optional AIGC visual providers
@@ -40,11 +45,11 @@ These are useful but must not be mandatory for core success.
 
 | Use case | Preferred | Backup | Fallback without API |
 |---|---|---|---|
-| Missing moving visual insert | Seedance 2.0 | Veo 3.1, Kling 3.0, Runway Gen-4 | Remotion procedural motion + existing assets |
-| Product-in-motion / hero motion | Seedance 2.0 image-to-video | Veo / Kling | product image + Remotion orbit/zoom/sweep |
-| Cinematic motion background | Seedance 2.0 | Runway / Kling | procedural gradients, ribbons, particles |
-| Static poster / background / cover | Seedream 4.0 | GPT Image 2, Nano Banana 2, FLUX | Remotion generated poster/card |
-| CTA visual / product card | Seedream 4.0 | GPT Image 2, Nano Banana 2 | text + card + existing product image |
+| Missing moving visual insert | Seedance 2.0 (`doubao-seedance-2-0-fast-260128`) | `remotion_procedural_motion` (Veo 3.1 / Kling / Runway are unimplemented candidates) | `ffmpeg_proxy_motion` + existing assets |
+| Product-in-motion / hero motion | Seedance 2.0 image-to-video | `remotion_procedural_motion` (Veo / Kling unimplemented) | product image + Remotion orbit/zoom/sweep |
+| Cinematic motion background | Seedance 2.0 | `remotion_procedural_motion` (Runway / Kling unimplemented) | procedural gradients, ribbons, particles |
+| Static poster / background / cover | google_gemini_image (default `gemini-3.1-flash-image` = Nano Banana 2; alt `gemini-3-pro-image` Nano Banana Pro / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`) | volcengine_seedream (model from `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL`, no default) | `deterministic_local_image_fill` / Remotion shape card |
+| CTA visual / product card | google_gemini_image (default `gemini-3.1-flash-image`; alt Nano Banana Pro / Imagen 4 / `gemini-2.5-flash-image`) | volcengine_seedream (env-driven model) | `deterministic_local_image_fill` / card + existing product image |
 
 ## 3. ElevenLabs audio stack
 
@@ -57,8 +62,9 @@ ElevenLabs should be used for audio intelligence and audio generation, not as th
 | SFX | ElevenLabs Sound Effects | whoosh, hit, riser, impact, UI clicks |
 | Music | ElevenLabs Music | custom BGM bed matching style, mood, duration |
 | Cleanup | ElevenLabs Audio Isolation | clean user source video audio |
-| Dubbing | ElevenLabs Dubbing | multilingual localization |
-| Lip Sync | ElevenLabs Lip Sync | optional talking-head insert only |
+| Forced Alignment | ElevenLabs Forced Alignment | word/phrase timing alignment for captions and voiceover sync |
+| Dubbing | not implemented / future candidate | `dubbing` ModelTask routes to `skip_with_warning` (no adapter method); listed for planning only |
+| Lip Sync | not implemented | no `lip_sync` ModelTask or provider exists |
 
 ## 4. Provider classification
 
@@ -80,19 +86,20 @@ Core:
 - librosa
 - faster-whisper
 - PaddleOCR or EasyOCR
-- Gemini 3.1 Pro or Qwen3-VL
-- Doubao-Seed-2.0-lite as contest-provided LLM fallback
+- Gemini VLM (default gemini-3.5-flash; alt gemini-2.5-pro/gemini-2.5-flash via VLM_MODEL) — Qwen3-VL / Doubao multimodal are unimplemented candidates
+- Gemini text planner + creative-effect codegen (default gemini-3.5-flash via AI_GEMINI_MODEL / GEMINI_CODEGEN_MODEL); Doubao-Seed-2.0-lite is an unimplemented candidate LLM fallback
 - Remotion + FFmpeg
 
 Optional upgrades:
-- Seedance 2.0 for missing moving visuals
-- Seedream 4.0 for static poster/background/cover fill
+- Seedance 2.0 (doubao-seedance-2-0-fast-260128) for missing moving visuals (kept as the video-fill default; Veo 3.1 is a documented alternative needing an adapter)
+- google_gemini_image (default gemini-3.1-flash-image = Nano Banana 2; alt gemini-3-pro-image / imagen-4.0-generate-001) for static poster/background/cover fill, with volcengine_seedream (env-driven model, no default) as backup
 - ElevenLabs Scribe for ASR
 - ElevenLabs TTS for voiceover
 - ElevenLabs Sound Effects for hits/whoosh/riser
 - ElevenLabs Music for BGM
 - ElevenLabs Audio Isolation for cleanup
-- ElevenLabs Dubbing/Lip Sync for localization/talking-head cases
+- ElevenLabs Forced Alignment for caption/voiceover timing
+- (Dubbing/Lip Sync are NOT implemented — dubbing routes to skip_with_warning, no lip_sync task)
 ```
 
 ## 6. Why this is the right balance

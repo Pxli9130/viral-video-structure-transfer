@@ -67,7 +67,33 @@ function familyForGap(gap: GapReportItem): VisualFormFamily | "poster_layout" | 
   return undefined;
 }
 
-function promptPackFor(family: VisualFormFamily | "poster_layout", count: number, targetTheme: string): string[] {
+function providerIsSeedance(provider: AigcMaterialFillConfig["provider"]): boolean {
+  return provider === "seedance_2_0" || provider === "ark_seedance_provider_stub";
+}
+
+function promptPackFor(
+  family: VisualFormFamily | "poster_layout",
+  count: number,
+  targetTheme: string,
+  provider: AigcMaterialFillConfig["provider"]
+): string[] {
+  if (providerIsSeedance(provider)) {
+    const videoBase = {
+      media_cards: "Original short motion-design video material: layered interface/media cards with case-specific timing, clean product-ad style, no readable random text",
+      live_action_montage: "Original short product/lifestyle montage video material with beat-cut motion, fresh target-theme scenes, no copied sample people or locations",
+      object_motion: "Original short hero-object motion video material: target-product style object movement, clean lighting, distinct camera motion",
+      poster_layout: "Original short commercial poster-motion video material with packaging reveal and transition-ready movement",
+      unknown: "Original short motion-design video material for the target product, visually distinct, no watermark",
+      brand_cta: "Original CTA motion panel for target copy only, no fabricated real logo",
+      kinetic_typography: "Original kinetic typography motion material using only target copy, no sample wording",
+      ui_showcase: "Original feature-list UI motion material using target product benefits only",
+      geometric_mg: "Original abstract motion-graphics video material with ribbons, sweeps, depth cues and transition-ready movement",
+      background: "Original moving dark-tech background video material with subtle light streaks, no copied sample frames",
+      storyboard: "Original tutorial/storyboard motion material for target instructions, no sample wording",
+      audio: "Original motion-supporting video material; no external audio reference"
+    } satisfies Record<VisualFormFamily | "poster_layout", string>;
+    return Array.from({ length: Math.max(1, count) }, (_, index) => `${videoBase[family]} · ${targetTheme} · variant ${index + 1}`);
+  }
   const base = {
     media_cards: "Clean abstract SaaS/product interface card, bold motion-graph composition, no logo, no watermark, no letters, no words, no readable text, icon-and-shape UI only",
     live_action_montage: "Cinematic product/lifestyle still for beat-cut montage, original generic scene, no watermark, no sample-like person",
@@ -85,7 +111,25 @@ function promptPackFor(family: VisualFormFamily | "poster_layout", count: number
   return Array.from({ length: Math.max(1, count) }, (_, index) => `${base[family]} · ${targetTheme} · variant ${index + 1}`);
 }
 
-function briefAssetTypeFor(family: VisualFormFamily | "poster_layout" | undefined, gap: GapReportItem): MaterialGenerationBrief["assetType"] | undefined {
+function briefAssetTypeFor(
+  family: VisualFormFamily | "poster_layout" | undefined,
+  gap: GapReportItem,
+  provider: AigcMaterialFillConfig["provider"]
+): MaterialGenerationBrief["assetType"] | undefined {
+  if (providerIsSeedance(provider)) {
+    if (
+      family === "media_cards" ||
+      family === "live_action_montage" ||
+      family === "object_motion" ||
+      family === "geometric_mg" ||
+      family === "background" ||
+      family === "poster_layout" ||
+      family === "unknown"
+    ) {
+      return "short_video";
+    }
+    return undefined;
+  }
   if (family === "media_cards") return "image_set";
   if (family === "live_action_montage") return "image_set";
   if (family === "object_motion") return "image";
@@ -96,14 +140,28 @@ function briefAssetTypeFor(family: VisualFormFamily | "poster_layout" | undefine
   return family === "unknown" ? "image" : undefined;
 }
 
-function briefCountFor(family: VisualFormFamily | "poster_layout" | undefined, gap: GapReportItem): number {
+function briefCountFor(
+  family: VisualFormFamily | "poster_layout" | undefined,
+  gap: GapReportItem,
+  provider: AigcMaterialFillConfig["provider"]
+): number {
+  if (providerIsSeedance(provider)) return 1;
   if (family === "media_cards") return Math.max(gap.missingCount ?? gap.assetRequirement?.minCount ?? 4, 4);
   if (family === "live_action_montage") return Math.max(gap.missingCount ?? 3, 3);
   return Math.max(gap.missingCount ?? 1, 1);
 }
 
-function hasTargetMaterialForFamily(family: VisualFormFamily | "poster_layout" | undefined, targetAssets: TargetAssetInput[] | undefined): boolean {
+function hasTargetMaterialForFamily(
+  family: VisualFormFamily | "poster_layout" | undefined,
+  targetAssets: TargetAssetInput[] | undefined,
+  provider: AigcMaterialFillConfig["provider"]
+): boolean {
   if (!family || !targetAssets?.length) return false;
+  if (providerIsSeedance(provider)) {
+    return targetAssets.some((asset) =>
+      asset.kind === "video" && (asset.role === family || asset.tags?.includes(family))
+    );
+  }
   if (family === "geometric_mg") return true;
   if (family === "media_cards") {
     return targetAssets.filter((asset) => asset.role === family || asset.tags?.includes("media_card")).length >= 4;
@@ -131,13 +189,13 @@ export function createMaterialGenerationBriefs(input: {
   const briefs: MaterialGenerationBrief[] = [];
   for (const gap of input.gapReport) {
     const family = familyForGap(gap);
-    if (hasTargetMaterialForFamily(family, input.targetAssets)) continue;
-    const assetType = briefAssetTypeFor(family, gap);
+    if (hasTargetMaterialForFamily(family, input.targetAssets, config.provider)) continue;
+    const assetType = briefAssetTypeFor(family, gap, config.provider);
     if (!assetType) continue;
     if ((family === "kinetic_typography" || family === "ui_showcase") && config.provider !== "copy_provider") continue;
     const slot = slotForGap(gap, input.inducedSlots);
-    const count = briefCountFor(family, gap);
-    const promptPack = promptPackFor(family ?? "unknown", count, targetTheme);
+    const count = briefCountFor(family, gap, config.provider);
+    const promptPack = promptPackFor(family ?? "unknown", count, targetTheme, config.provider);
     briefs.push({
       id: stableId("aigc_brief", input.request.projectId, input.generationId, gap.slotId, family, assetType, count),
       projectId: input.request.projectId,
@@ -160,7 +218,7 @@ export function createMaterialGenerationBriefs(input: {
         intendedRendererCapability: gap.rendererCandidates?.[0] ?? slot?.rendererCandidates[0] ?? "generic_asset_proxy",
         motionPattern: slot?.motionPattern ?? "preserve_slot_motion",
         slotRole: gap.slotRole ?? slot?.role ?? "body",
-        durationSec: undefined
+        durationSec: assetType === "short_video" ? Math.min(6, Math.max(1, Math.round(input.request.target.targetDurationSec))) : undefined
       },
       negativePrompts: [
         "do not copy sample frames",

@@ -2,44 +2,30 @@
 
 ## 1. Artifact Directory
 
+The as-built layout is FLAT: each case directory holds its artifacts directly (no
+`input/analysis/template/transfer/render/eval` sub-trees). The two real roots are:
+
+- `docs/artifacts/learned_samples_max/<case>/` — `inspect-learning-fidelity.mjs` default root.
+- `docs/artifacts/max_ability_runs/<timestamp>/<case>/` — `run-max-ability-four-samples.mjs` output.
+
 ```text
-artifacts/
-  learned_samples_max/
-    <case>/
-      input/
-        sample.mp4
-        target-assets/
-      analysis/
-        analysis.json
-        global_sheet.jpg
-        shot_sheet.jpg
-        transition_sheet.jpg
-        text_sheet.jpg
-        motion_sheet.jpg
-      template/
-        learned-template.json
-        technique-atoms.json
-      transfer/
-        asset-profiles.json
-        slot-mapping.json
-        gap-report.json
-        fill-plan.json
-        transfer-plan.json
-      render/
-        timeline.json
-        render-recipe.json
-        render-log.ffmpeg.json
-        render-log.remotion.json
-        final.mp4
-        final.remotion.mp4
-        previews/
-      eval/
-        evidence-fidelity.json
-        quality-gates.json
-        diversity.json
+docs/artifacts/learned_samples_max/
+  <case>/
+    analysis.json
+    learned-template.json
+    slot-mapping.json
+    gap-report.json
+    timeline.json
+    render-recipe.json
+    final.mp4
+    final.remotion.mp4
+    preview_frames/
+    render-contact-sheet.png
 ```
 
-Backward compatibility: if current repo stores files directly under case root, scripts should auto-detect both layouts.
+The deep `input/analysis/template/transfer/render/eval` tree above is a target/idealized
+layout, not the current on-disk shape. Backward compatibility: scripts should auto-detect
+both the flat (current) and deep (target) layouts.
 
 ## 2. ID Conventions
 
@@ -117,14 +103,20 @@ productTheme.name = productTheme.productName
 
 ## 6. Fallback Reasons
 
-Any unsupported evidence must generate:
+The recipe-layer `fallbackReason` is a plain descriptive string — the render-recipe-v4.1
+schema declares `baseLayer.fallbackReason` as `type: "string"` (e.g. `"full 3D unsupported;
+using 2D sweep overlay"`). It is not a structured object on the layer itself.
+
+The structured form below is a separate diagnostics surface (provider decisions), not the
+layer field. Note the implemented severity vocabulary is `info | warning | fatal`
+(`ProviderDecision.severity`, model-router/types.ts), not `warn`:
 
 ```json
 {
   "kind": "motionAtom:parametric_ribbon_surface",
   "stage": "ffmpeg_renderer",
   "reason": "full 3D unsupported; using 2D sweep overlay",
-  "severity": "warn"
+  "severity": "warning"
 }
 ```
 

@@ -162,7 +162,7 @@ provenance preserved
 
 | Requirement | Target |
 |---|---|
-| Local deploy | `pnpm install && pnpm demo:final` or documented equivalent |
+| Local deploy | `npm install && npm run demo:final` or documented equivalent |
 | Determinism | fixtures/golden tests deterministic |
 | No silent fallback | every dropped evidence has reason |
 | Explainability | every clip/layer has evidenceRefs or fallbackReason |

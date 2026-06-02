@@ -1,15 +1,21 @@
 # Implementation Delta from v4.0 to v4.1
 
+> Status (as built): most of P0–P5 is implemented — the typed model-router
+> (`model-router-v4.2`, `packages/shared/src/model-router/`), Seedance video fill,
+> Seedream/Gemini image fill, and the ElevenLabs audio stack are all wired into the
+> render path. The only remaining stub is Dubbing / lip sync (P3 item 6), which routes
+> to `skip_with_warning` with no adapter method.
+
 ## P0: Add provider configs without disrupting core render
 
 Files likely touched:
 
 ```text
 packages/shared/src/types.ts
-packages/shared/src/schemas/provider-policy.schema.json
-packages/shared/src/schemas/model-routing-policy.schema.json
+packages/shared/src/schemas.ts (provider/route validation consts)
+spec_v4/schemas/provider-policy.schema.json, spec_v4/schemas/model-routing-policy.schema.json
 packages/shared/src/engine/providerPolicy.ts
-packages/shared/src/engine/modelRouter.ts
+packages/shared/src/model-router/{router.ts, modelRegistry.ts, providerPolicy.ts, types.ts}
 apps/api/src/adapters/*.ts
 apps/api/src/adapters/renderers.ts
 apps/api/remotion/ViralRecipeRoot.tsx
@@ -80,13 +86,17 @@ Fallback: `RemotionPosterCard` or existing target image with package layer.
 Adapters:
 
 ```text
-elevenlabs_scribe.adapter.ts
-elevenlabs_tts.adapter.ts
-elevenlabs_sound_effects.adapter.ts
-elevenlabs_music.adapter.ts
-elevenlabs_audio_isolation.adapter.ts
-elevenlabs_dubbing.adapter.ts optional
+apps/api/src/adapters/elevenlabs.ts
 ```
+
+All ElevenLabs methods live in one consolidated adapter (`ElevenLabsAdapter` in
+`apps/api/src/adapters/elevenlabs.ts`): Scribe ASR (`transcribe`/`transcribeAudio`),
+TTS voiceover (`generateVoiceover`), sound effects (`generateSoundEffect`), music
+(`generateMusic`), audio isolation (`isolateAudio`), forced alignment (`forcedAlign`),
+and model/voice discovery (`listModels`/`listVoices`). Dubbing / lip sync is NOT an
+adapter method — the router route `dubbing` has `primary: skip_with_warning`
+(`packages/shared/src/model-router/modelRegistry.ts:806`) and there is no `lip_sync`
+ModelTask.
 
 Do not require all adapters immediately. Priority:
 

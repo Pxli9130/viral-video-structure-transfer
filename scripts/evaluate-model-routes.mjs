@@ -84,10 +84,29 @@ function localCapabilities() {
     const result = spawnSync(python, ["-c", `import ${pkg}`], { stdio: "ignore" });
     return result.status === 0;
   };
+  const weightEnvVars = [
+    "PADDLEOCR_MODEL_DIR",
+    "GROUNDING_DINO_CONFIG",
+    "GROUNDING_DINO_WEIGHTS",
+    "SAM2_CONFIG",
+    "SAM2_CHECKPOINT",
+    "COTRACKER_CHECKPOINT",
+    "BGE_M3_MODEL_PATH"
+  ];
+  const weights = Object.fromEntries(
+    weightEnvVars.map((key) => [`weight:${key}`, Boolean(process.env[key] && existsSync(process.env[key]))])
+  );
   return {
     "binary:python": existsSync(condaPython) || spawnSync("python3", ["--version"], { stdio: "ignore" }).status === 0,
     "package:faster_whisper": canImport("faster_whisper"),
-    "package:easyocr": canImport("easyocr")
+    "package:easyocr": canImport("easyocr"),
+    "package:paddleocr": canImport("paddleocr"),
+    "package:paddle": canImport("paddle"),
+    "package:groundingdino": canImport("groundingdino"),
+    "package:sam2": canImport("sam2"),
+    "package:cotracker": canImport("cotracker"),
+    "package:FlagEmbedding": canImport("FlagEmbedding"),
+    ...weights
   };
 }
 

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { createReadStream, existsSync, promises as fs } from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
@@ -88,6 +89,13 @@ function mimeForAssetExt(ext: string): string | undefined {
       return "image/webp";
     case ".gif":
       return "image/gif";
+    case ".mp4":
+    case ".m4v":
+      return "video/mp4";
+    case ".mov":
+      return "video/quicktime";
+    case ".webm":
+      return "video/webm";
     default:
       return undefined;
   }
@@ -155,7 +163,14 @@ function pickResolution(timeline: Timeline): { width: number; height: number } {
 }
 
 function ffmpegColor(hex: string | undefined, fallback: string): string {
-  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return fallback;
+  if (!hex) return fallback;
+  const rgba = /^rgba?\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})(?:,\s*([0-9.]+))?\)$/i.exec(hex.trim());
+  if (rgba) {
+    const channel = (value: string) => Math.max(0, Math.min(255, Number(value))).toString(16).padStart(2, "0");
+    const alpha = rgba[4] !== undefined ? `@${Math.max(0, Math.min(1, Number(rgba[4]))).toFixed(2)}` : "";
+    return `0x${channel(rgba[1])}${channel(rgba[2])}${channel(rgba[3])}${alpha}`;
+  }
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return fallback;
   return `0x${hex.slice(1)}`;
 }
 
@@ -241,7 +256,10 @@ function timelinePalette(timeline: Timeline): RenderPalette {
     primary: ffmpegColor(unique[1], "0xe11d2a"),
     accent: ffmpegColor(unique[2], "0xf5c518"),
     secondary: ffmpegColor(unique[3], "0xa855f7"),
-    cool: ffmpegColor(pickClosest(unique, [34, 211, 238], "#22d3ee"), "0x22d3ee"),
+    // Prefer the sample's learned palette for the "cool" accent so per-sample color identity reaches
+    // the bright bars/streaks. Falls back to the generic set (which contains #22d3ee) when no learned
+    // palette is present — so goldens whose generic palette already includes cyan are unchanged.
+    cool: ffmpegColor(pickClosest(learned.length ? learned : unique, [34, 211, 238], "#22d3ee"), "0x22d3ee"),
     text: ffmpegColor(text, "white"),
     muted: ffmpegColor(unique[4], "0x334155")
   };
@@ -308,6 +326,22 @@ function recipeMediaLayerForClip(timeline: Timeline, clip: TimelineClip): Render
     .sort((a, b) => b.zIndex - a.zIndex)[0];
 }
 
+function measureTextUnits(text: string): number {
+  return Array.from(text.replace(/\\:/g, ":").replace(/\\\\/g, "\\")).reduce((sum, ch) => {
+    if (/[\u4e00-\u9fff]/.test(ch)) return sum + 1;
+    if (/\s/.test(ch)) return sum + 0.32;
+    if (/[A-Z0-9]/.test(ch)) return sum + 0.68;
+    return sum + 0.55;
+  }, 0);
+}
+
+function fitFontSizeToBox(text: string, baseSize: number, boxW: number, boxH: number): number {
+  const units = Math.max(1, measureTextUnits(text));
+  const fitWidth = Math.floor(boxW / Math.max(0.56, units * 0.72));
+  const fitHeight = Math.floor(boxH * 0.68);
+  return Math.max(12, Math.min(baseSize, fitWidth, fitHeight));
+}
+
 function bboxObjectToArray(box: BBoxNormObject | undefined): [number, number, number, number] | undefined {
   return box ? [box.x, box.y, box.w, box.h] : undefined;
 }
@@ -316,18 +350,20 @@ function recipeDrawTextFilter(text: string, layer: RenderRecipeTextLayer | undef
   if (!text) return undefined;
   const box = layer?.layout.bboxNorm;
   if (!box) return drawTextFilter(text, fallbackStyle, fallbackStyle.sourceFontSize, "h-(text_h*2)");
-  const size = Math.max(18, Math.min(96, Math.round(H * (layer.typography.fontSizeRatio ?? Math.min(0.11, box.h * 0.72)))));
+  const boxW = Math.max(24, Math.round(W * box.w));
+  const boxH = Math.max(24, Math.round(H * box.h));
+  const baseSize = Math.max(12, Math.min(96, Math.round(H * (layer.typography.fontSizeRatio ?? Math.min(0.11, box.h * 0.72)))));
+  const size = fitFontSizeToBox(text, baseSize, boxW, boxH);
   const color = ffmpegColor(layer.typography.color, layer.typography.colorRole === "accent" ? "0xf5c518" : layer.typography.colorRole === "primary" ? "0xe11d2a" : fallbackStyle.fontColor);
   const left = Math.round(W * box.x);
   const top = Math.round(H * box.y);
-  const boxW = Math.max(24, Math.round(W * box.w));
   const alignExpr = layer.layout.align === "left"
     ? `${left}`
     : layer.layout.align === "right"
       ? `${left}+${boxW}-text_w`
       : `${left}+(${boxW}-text_w)/2`;
-  const yExpr = `${top}+(${Math.max(24, Math.round(H * box.h))}-text_h)/2`;
-  const shadow = layer.typography.shadow ? `:shadowcolor=${layer.typography.shadow.color ?? "black@0.75"}:shadowx=${Math.round(W * (layer.typography.shadow.dxRatio ?? 0.004))}:shadowy=${Math.round(H * (layer.typography.shadow.dyRatio ?? 0.004))}` : "";
+  const yExpr = `${top}+(${boxH}-text_h)/2`;
+  const shadow = layer.typography.shadow ? `:shadowcolor=${ffmpegColor(layer.typography.shadow.color, "black@0.75")}:shadowx=${Math.round(W * (layer.typography.shadow.dxRatio ?? 0.004))}:shadowy=${Math.round(H * (layer.typography.shadow.dyRatio ?? 0.004))}` : "";
   return `drawtext=${FONT_FILE_ARG}text='${text}':fontcolor=${color}:fontsize=${size}:x=${alignExpr}:y=${yExpr}:box=1:boxcolor=${fallbackStyle.boxColor}:boxborderw=12${shadow}`;
 }
 
@@ -343,8 +379,17 @@ function motionAtomFiltersFromRecipe(timeline: Timeline, clip: TimelineClip, W: 
     if (layer.atom.kind === "parametric_ribbon_surface") {
       const band = Math.max(10, Math.round(W * layer.atom.thicknessRatio));
       const opacity = Math.max(0.12, Math.min(0.82, layer.atom.opacity));
-      filters.push(`drawbox=x='mod(t*${Math.round(W * 0.42)}\\,iw+${Math.round(W * 0.45)})-${Math.round(W * 0.22)}':y='${Math.round(H * 0.42)}+${Math.round(H * 0.08)}*sin(t*3.1)':w=${Math.round(W * 0.62)}:h=${band}:color=${palette.cool}@${opacity.toFixed(2)}:t=fill:enable='${enable}'`);
-      filters.push(`drawbox=x='mod(t*${Math.round(W * 0.42)}\\,iw+${Math.round(W * 0.45)})-${Math.round(W * 0.18)}':y='${Math.round(H * 0.42)}+${Math.round(H * 0.08)}*sin(t*3.1)+${Math.round(band * 0.42)}':w=${Math.round(W * 0.48)}:h=${Math.max(3, Math.round(band * 0.16))}:color=white@0.35:t=fill:enable='${enable}'`);
+      if (layer.atom.path === "s_curve_orbit") {
+        const ribbonW = Math.max(12, Math.round(band * 0.72));
+        filters.push(`drawbox=x='${Math.round(W * 0.5)}+${Math.round(W * 0.22)}*sin(t*1.2)-${Math.round(ribbonW / 2)}':y='mod(t*${Math.round(H * 0.28)}\\,ih+${Math.round(H * 0.44)})-${Math.round(H * 0.22)}':w=${ribbonW}:h=${Math.round(H * 0.74)}:color=${palette.cool}@${opacity.toFixed(2)}:t=fill:enable='${enable}'`);
+        filters.push(`drawbox=x='${Math.round(W * 0.5)}+${Math.round(W * 0.22)}*sin(t*1.2)+${Math.round(ribbonW * 0.15)}':y='mod(t*${Math.round(H * 0.28)}\\,ih+${Math.round(H * 0.44)})-${Math.round(H * 0.2)}':w=${Math.max(3, Math.round(ribbonW * 0.18))}:h=${Math.round(H * 0.64)}:color=white@0.32:t=fill:enable='${enable}'`);
+      } else if (layer.atom.path === "horizontal_wave") {
+        filters.push(`drawbox=x='mod(t*${Math.round(W * 0.42)}\\,iw+${Math.round(W * 0.45)})-${Math.round(W * 0.22)}':y='${Math.round(H * 0.42)}+${Math.round(H * 0.08)}*sin(t*3.1)':w=${Math.round(W * 0.62)}:h=${band}:color=${palette.cool}@${opacity.toFixed(2)}:t=fill:enable='${enable}'`);
+        filters.push(`drawbox=x='mod(t*${Math.round(W * 0.42)}\\,iw+${Math.round(W * 0.45)})-${Math.round(W * 0.18)}':y='${Math.round(H * 0.42)}+${Math.round(H * 0.08)}*sin(t*3.1)+${Math.round(band * 0.42)}':w=${Math.round(W * 0.48)}:h=${Math.max(3, Math.round(band * 0.16))}:color=white@0.35:t=fill:enable='${enable}'`);
+      } else {
+        filters.push(`drawbox=x='mod(t*${Math.round(W * 0.58)}\\,iw+${Math.round(W * 0.55)})-${Math.round(W * 0.28)}':y='${Math.round(H * 0.22)}+mod(t*${Math.round(H * 0.24)}\\,${Math.round(H * 0.62)})':w=${Math.round(W * 0.7)}:h=${band}:color=${palette.cool}@${opacity.toFixed(2)}:t=fill:enable='${enable}'`);
+        filters.push(`drawbox=x='mod(t*${Math.round(W * 0.58)}\\,iw+${Math.round(W * 0.55)})-${Math.round(W * 0.2)}':y='${Math.round(H * 0.25)}+mod(t*${Math.round(H * 0.24)}\\,${Math.round(H * 0.58)})+${Math.round(band * 0.36)}':w=${Math.round(W * 0.46)}:h=${Math.max(3, Math.round(band * 0.16))}:color=white@0.34:t=fill:enable='${enable}'`);
+      }
     } else if (layer.atom.kind === "impact_flash") {
       filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.34:t=fill:enable='${enable}*lt(mod(t\\,0.32)\\,0.08)'`);
     } else if (layer.atom.kind === "light_sweep" || layer.atom.kind === "text_sweep_mask") {
@@ -613,12 +658,14 @@ export interface FFmpegRendererOptions {
 
 /** A strong moving streak field — the motion bed every beat-cut clip rides so even text clips are
  * not static. `energy` scales count/alpha (montage/hero use the strongest field). */
-function streakBedFilters(W: number, energy: "calm" | "strong" | "montage", palette: RenderPalette): string[] {
+function streakBedFilters(W: number, energy: "calm" | "strong" | "montage", palette: RenderPalette, speedScale = 1): string[] {
   const out: string[] = [];
   const cfg = energy === "montage" ? { n: 9, w: 0.08, a: 0.6, warm: true } : energy === "strong" ? { n: 8, w: 0.06, a: 0.5, warm: false } : { n: 7, w: 0.05, a: 0.42, warm: false };
   const barW = Math.max(6, Math.round(W * cfg.w));
   for (let i = 0; i < cfg.n; i += 1) {
-    const speed = Math.round(W * (0.5 + i * 0.32));
+    // speedScale ties the motion-bed tempo to the sample's BPM (default 120 → ×1.0), so a faster
+    // sample renders visibly faster streaks than a calmer one.
+    const speed = Math.round(W * (0.5 + i * 0.32) * speedScale);
     const off = Math.round((i * (W + barW)) / cfg.n);
     const color = cfg.warm && i % 3 === 0 ? palette.accent : i % 2 ? palette.secondary : palette.cool;
     out.push(`drawbox=x='mod(t*${speed}+${off}\\,iw+${barW})-${barW}':y=0:w=${barW}:h=ih:color=${color}@${cfg.a}:t=fill`);
@@ -643,6 +690,96 @@ function beatEqFilters(W: number, H: number, beatHz: string, palette: RenderPale
   return out;
 }
 
+// ---- v1.4 FFmpeg creative-effect fallback ----
+// FFmpeg cannot execute TSX effect components, so when a recipe selects a creative effect it records
+// the selection and adds motif-specific *visible* overlay filters as a fallback approximation.
+
+export interface FfmpegEffectFallbackPlan {
+  ffmpegEffectFallbackUsed: boolean;
+  effectProgramIds: string[];
+  motifFamily?: string;
+  fallbackReason?: string;
+  fallbackVisualLayersAdded: string[];
+}
+
+const MOTIF_FFMPEG_FALLBACK_LAYERS: Record<string, string[]> = {
+  poster_ribbon_marketing: ["ribbon_sweep_band", "poster_panel"],
+  card_orbit_motion_graph: ["card_stack_scatter"],
+  blue_spotlight_ui_pitch: ["blue_radial_spotlight", "ui_panel_cards"],
+  beat_cut_chinese_editing_tutorial: ["chinese_pop_text", "beat_flash", "slash_bars"],
+  split_screen_compare: ["split_tint_panels", "center_divider", "compare_labels"],
+  generic_motion_graph: []
+};
+
+/** Plan the FFmpeg fallback for a recipe's selected effect. Pure — used by the renderer + the gate. */
+export function planFfmpegEffectFallback(recipe: unknown): FfmpegEffectFallbackPlan {
+  const r = recipe as { effectProgramIds?: unknown; motifFamily?: unknown } | undefined;
+  const effectProgramIds = Array.isArray(r?.effectProgramIds)
+    ? r!.effectProgramIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const motifFamily = typeof r?.motifFamily === "string" ? r.motifFamily : undefined;
+  if (!effectProgramIds.length) {
+    return { ffmpegEffectFallbackUsed: false, effectProgramIds: [], fallbackVisualLayersAdded: [] };
+  }
+  const layers = motifFamily ? MOTIF_FFMPEG_FALLBACK_LAYERS[motifFamily] ?? [] : [];
+  return {
+    ffmpegEffectFallbackUsed: layers.length > 0,
+    effectProgramIds,
+    motifFamily,
+    fallbackReason: `Remotion TSX effects not executable in FFmpeg; applied motif fallback overlays for ${motifFamily ?? "unknown_motif"}.`,
+    fallbackVisualLayersAdded: layers
+  };
+}
+
+/** Build motif-specific ffmpeg overlay filter strings (drawbox/drawtext) for the FFmpeg fallback. */
+export function ffmpegFallbackOverlayFilters(
+  motifFamily: string | undefined,
+  W: number,
+  H: number,
+  palette: RenderPalette,
+  beatInterval: string
+): string[] {
+  const r = (frac: number) => Math.round(W * frac);
+  const rh = (frac: number) => Math.round(H * frac);
+  switch (motifFamily) {
+    case "poster_ribbon_marketing":
+      return [
+        `drawbox=x='mod(t*${r(0.5)}\\,iw+${r(0.5)})-${r(0.25)}':y=${rh(0.16)}:w=${r(0.22)}:h=${rh(0.5)}:color=${palette.accent}@0.45:t=fill`,
+        `drawbox=x=${r(0.06)}:y=${rh(0.06)}:w=${r(0.88)}:h=${rh(0.88)}:color=${palette.primary}@0.5:t=4`
+      ];
+    case "card_orbit_motion_graph":
+      return [0, 1, 2, 3, 4].map((i) => {
+        const cx = r(0.2 + (i % 3) * 0.3);
+        const cy = rh(0.28 + Math.floor(i / 3) * 0.34);
+        return `drawbox=x='${cx}+${r(0.04)}*sin(2*PI*t*0.5+${i})':y=${cy}:w=${r(0.16)}:h=${rh(0.12)}:color=${palette.cool}@0.6:t=3`;
+      });
+    case "blue_spotlight_ui_pitch":
+      return [
+        `drawbox=x='${r(0.2)}+${r(0.4)}*sin(t*0.8)':y='${rh(0.2)}+${rh(0.3)}*cos(t*0.6)':w=${r(0.3)}:h=${r(0.3)}:color=${palette.cool}@0.28:t=fill`,
+        `drawbox=x=${r(0.14)}:y=${rh(0.4)}:w=${r(0.66)}:h=${rh(0.09)}:color=${palette.cool}@0.5:t=2`,
+        `drawbox=x=${r(0.18)}:y=${rh(0.54)}:w=${r(0.6)}:h=${rh(0.09)}:color=${palette.cool}@0.5:t=2`
+      ];
+    case "beat_cut_chinese_editing_tutorial":
+      return [
+        `drawbox=x=0:y=${rh(0.3)}:w=iw:h=${rh(0.012)}:color=${palette.primary}@0.85:t=fill`,
+        `drawbox=x=0:y=${rh(0.66)}:w=iw:h=${rh(0.012)}:color=${palette.accent}@0.85:t=fill`,
+        `drawbox=x=0:y=0:w=iw:h=ih:color=white@0.18:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`,
+        `drawtext=${FONT_FILE_ARG}text='重点':fontcolor=${palette.accent}:fontsize=${rh(0.12)}:x=(w-text_w)/2:y=${rh(0.42)}:box=0:shadowcolor=black@0.8:shadowx=4:shadowy=4`
+      ];
+    case "split_screen_compare":
+      return [
+        // left/right tint panels, an animated center divider, and BEFORE/AFTER labels
+        `drawbox=x=0:y=0:w=${r(0.5)}:h=ih:color=${palette.primary}@0.18:t=fill`,
+        `drawbox=x=${r(0.5)}:y=0:w=${r(0.5)}:h=ih:color=${palette.cool}@0.18:t=fill`,
+        `drawbox=x='${r(0.5)}-${r(0.006)}+${r(0.02)}*sin(2*PI*t*0.5)':y=0:w=${r(0.012)}:h=ih:color=white@0.9:t=fill`,
+        `drawtext=${FONT_FILE_ARG}text='BEFORE':fontcolor=white:fontsize=${rh(0.04)}:x=${r(0.1)}:y=${rh(0.08)}:box=1:boxcolor=black@0.4:boxborderw=10`,
+        `drawtext=${FONT_FILE_ARG}text='AFTER':fontcolor=white:fontsize=${rh(0.04)}:x=${r(0.6)}:y=${rh(0.08)}:box=1:boxcolor=black@0.4:boxborderw=10`
+      ];
+    default:
+      return [];
+  }
+}
+
 type TextLayout = {
   yFrac: number;
   xFrac?: number;
@@ -653,14 +790,15 @@ type TextLayout = {
 };
 
 /** Read a typography hint (layoutRole/colorRole/animation) the planner attached to a text layer. */
-function typographyForClip(clip: TimelineClip): { layoutRole?: string; colorRole?: string; animationHint?: string; bboxNorm?: [number, number, number, number] } | undefined {
+function typographyForClip(clip: TimelineClip): { layoutRole?: string; colorRole?: string; animationHint?: string; bboxNorm?: [number, number, number, number]; fontSizeRatio?: number } | undefined {
   for (const layer of clip.layers ?? []) {
     const t = (layer.style as Record<string, unknown> | undefined)?.typography as Record<string, unknown> | undefined;
     const bbox = Array.isArray(t?.bboxNorm) && t.bboxNorm.length === 4 && t.bboxNorm.every((v) => typeof v === "number" && Number.isFinite(v))
       ? t.bboxNorm as [number, number, number, number]
       : undefined;
-    if (t && (t.layoutRole || t.colorRole || t.animationHint || bbox)) {
-      return { layoutRole: t.layoutRole as string, colorRole: t.colorRole as string, animationHint: t.animationHint as string, bboxNorm: bbox };
+    const fontSizeRatio = typeof t?.fontSizeRatio === "number" && Number.isFinite(t.fontSizeRatio) ? t.fontSizeRatio : undefined;
+    if (t && (t.layoutRole || t.colorRole || t.animationHint || bbox || fontSizeRatio)) {
+      return { layoutRole: t.layoutRole as string, colorRole: t.colorRole as string, animationHint: t.animationHint as string, bboxNorm: bbox, fontSizeRatio };
     }
   }
   return undefined;
@@ -699,6 +837,12 @@ function textLayoutForClip(clip: TimelineClip, primitive: string, palette: Rende
     else if (typ.layoutRole === "top_tag" || typ.layoutRole === "top_left_tag") base.yFrac = 0.27;
     else if (typ.layoutRole === "center_title") base.yFrac = 0.44;
     if (typ.animationHint === "per_char_reveal" || typ.animationHint === "shake") base.anim = typ.animationHint as TextLayout["anim"];
+    if (typeof typ.fontSizeRatio === "number" && typ.fontSizeRatio > 0) {
+      // Match the sample's text scale: the renderer's base text height is ~H*0.072, so a sample run
+      // measured at fontSizeRatio R renders at fontScale ≈ R/0.072 (clamped). A sample with big bold
+      // headlines renders big text; a sample with small captions renders smaller — per-sample.
+      base.fontScale = Math.max(0.7, Math.min(1.8, typ.fontSizeRatio / 0.072));
+    }
     if (typ.bboxNorm) {
       const [x, y, w, h] = typ.bboxNorm;
       base.xFrac = Math.max(0.08, Math.min(0.92, x + w / 2));
@@ -792,7 +936,7 @@ export class FFmpegRenderer implements RendererAdapter {
       const duration = Math.max(0.5, clip.durationSec);
       const usedSource = await this.renderClip(clip, segmentPath, { width, height, fps, duration, subtitle, warnings, timeline, textStyle });
       if (usedSource) sourceClipCount += 1;
-      else if (clip.motionPrimitive) primitiveClipCount += 1;
+      else if (clip.motionPrimitive || clip.type !== "placeholder") primitiveClipCount += 1;
       else placeholderClipCount += 1;
       if (!usedSource && (this.opts.preferSourceClips ?? false)) {
         warnings.push(`Clip ${clip.id}: no usable source asset; fell back to generated card.`);
@@ -814,9 +958,32 @@ export class FFmpegRenderer implements RendererAdapter {
     const outputPath = path.join(this.opts.generatedDir, `${outputBase}.mp4`);
     const renderQualityWarnings: string[] = [];
     const totalDuration = timeline.durationSec || timeline.clips.reduce((sum, c) => sum + Math.max(0.5, c.durationSec), 0);
-    const audioAdded = await this.addAudioTrack(silentPath, outputPath, timeline, totalDuration, warnings);
+
+    // v1.4 FFmpeg creative-effect fallback: when the recipe selected an effect (which only Remotion
+    // can render natively), apply motif-specific visible overlays here. Only runs when an effect is
+    // selected, so non-effect renders are byte-for-byte unchanged.
+    const effectFallback = planFfmpegEffectFallback(timeline.renderPlan?.renderRecipe);
+    let preAudioPath = silentPath;
+    if (effectFallback.ffmpegEffectFallbackUsed) {
+      const palette = timelinePalette(timeline);
+      const bpm = timeline.renderPlan?.renderRecipe?.global?.bpm ?? timeline.renderPlan?.audioPlan?.bpm ?? 120;
+      const beatInterval = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+      const overlays = ffmpegFallbackOverlayFilters(effectFallback.motifFamily, width, height, palette, beatInterval);
+      if (overlays.length) {
+        const overlaidPath = path.join(workDir, `${renderId}.effectfx.mp4`);
+        try {
+          await runFfmpeg(["-y", "-i", silentPath, "-vf", overlays.join(","), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", overlaidPath]);
+          preAudioPath = overlaidPath;
+          warnings.push(`FFmpeg effect fallback overlays applied for ${effectFallback.motifFamily}: ${effectFallback.fallbackVisualLayersAdded.join(", ")}.`);
+        } catch (error) {
+          warnings.push(`FFmpeg effect overlay pass failed (${(error as Error).message}); kept base composite.`);
+        }
+      }
+    }
+
+    const audioAdded = await this.addAudioTrack(preAudioPath, outputPath, timeline, totalDuration, warnings);
     if (!audioAdded) {
-      await fs.copyFile(silentPath, outputPath);
+      await fs.copyFile(preAudioPath, outputPath);
       if ((timeline.renderPlan?.audioPolicy ?? "silent") !== "silent") renderQualityWarnings.push("no_audio");
     }
 
@@ -857,6 +1024,14 @@ export class FFmpegRenderer implements RendererAdapter {
       previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
       clipPreviewFrames,
       renderQualityWarnings: renderQualityWarnings.length ? renderQualityWarnings : undefined,
+      ...(effectFallback.effectProgramIds.length ? { effectProgramIds: effectFallback.effectProgramIds } : {}),
+      ...(effectFallback.ffmpegEffectFallbackUsed
+        ? {
+            ffmpegEffectFallbackUsed: true,
+            effectFallbackReason: effectFallback.fallbackReason,
+            fallbackVisualLayersAdded: effectFallback.fallbackVisualLayersAdded
+          }
+        : {}),
       error: warnings.length ? warnings.join(" | ") : undefined,
       createdAt: nowIso()
     };
@@ -880,17 +1055,68 @@ export class FFmpegRenderer implements RendererAdapter {
     if (policy === "silent") return false;
     const dur = Math.max(1, durationSec).toFixed(2);
     try {
-      if (policy === "sample_bgm") {
-        const audioRef = timeline.renderPlan?.audioRef;
-        const audioFile = audioRef ? this.opts.assetResolver.resolve(audioRef) : undefined;
-        if (audioFile && existsSync(audioFile)) {
-          await runFfmpeg([
-            "-y", "-i", silentPath, "-stream_loop", "-1", "-i", audioFile,
-            "-map", "0:v:0", "-map", "1:a:0", "-t", dur,
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", finalPath
-          ]);
-          return true;
+      const audioRef = timeline.renderPlan?.audioRef;
+      const directAudioFile = audioRef && path.isAbsolute(audioRef) && existsSync(audioRef) ? audioRef : undefined;
+      const resolvedAudioFile = audioRef ? this.opts.assetResolver.resolve(audioRef) : undefined;
+      const audioFile = directAudioFile ?? (resolvedAudioFile && existsSync(resolvedAudioFile) ? resolvedAudioFile : undefined);
+      // ElevenLabs voiceover + SFX (best-effort) are layered over WHATEVER audio bed is used —
+      // an ElevenLabs music file, the procedural synth bed, or sample bgm — so a successful SFX/VO
+      // is never dropped just because the music bed fell back to procedural.
+      const auxPath = (key: string): string | undefined => {
+        const entry = (timeline.renderPlan?.adapterOptions as Record<string, unknown> | undefined)?.[key];
+        const candidate = entry && typeof entry === "object" ? (entry as { path?: unknown }).path : undefined;
+        if (typeof candidate !== "string" || !candidate) return undefined;
+        if (path.isAbsolute(candidate) && existsSync(candidate)) return candidate;
+        const resolved = this.opts.assetResolver.resolve(candidate);
+        return resolved && existsSync(resolved) ? resolved : undefined;
+      };
+      const voiceoverFile = auxPath("elevenLabsVoiceover");
+      const sfxFile = auxPath("elevenLabsSfx");
+      if (audioFile) {
+        if (voiceoverFile || sfxFile) {
+          try {
+            // Bed looped + ducked; voiceover full-volume slightly delayed; SFX at head. amix with
+            // duration=longest, capped by -t (no -shortest: VO/SFX are shorter than the video).
+            const inputs: string[] = ["-y", "-i", silentPath, "-stream_loop", "-1", "-i", audioFile];
+            const filters: string[] = ["[1:a]volume=0.42[bed]"];
+            const mixLabels: string[] = ["[bed]"];
+            let inputIndex = 2;
+            if (voiceoverFile) {
+              inputs.push("-i", voiceoverFile);
+              filters.push(`[${inputIndex}:a]aresample=44100,volume=1.25,adelay=400:all=1[vo]`);
+              mixLabels.push("[vo]");
+              inputIndex += 1;
+            }
+            if (sfxFile) {
+              inputs.push("-i", sfxFile);
+              filters.push(`[${inputIndex}:a]aresample=44100,volume=0.7[sfx]`);
+              mixLabels.push("[sfx]");
+              inputIndex += 1;
+            }
+            filters.push(`${mixLabels.join("")}amix=inputs=${mixLabels.length}:duration=longest:normalize=0,highpass=f=30,alimiter=limit=0.95[a]`);
+            await runFfmpeg([
+              ...inputs,
+              "-filter_complex", filters.join(";"),
+              "-map", "0:v:0", "-map", "[a]", "-t", dur,
+              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", finalPath
+            ]);
+            warnings.push(
+              `ElevenLabs audio layered: bed${voiceoverFile ? "+voiceover" : ""}${sfxFile ? "+sfx" : ""}.`
+            );
+            return true;
+          } catch (error) {
+            warnings.push(`ElevenLabs voice/SFX layered mux failed (${(error as Error).message}); muxing music bed only.`);
+          }
         }
+        await runFfmpeg([
+          "-y", "-i", silentPath, "-stream_loop", "-1", "-i", audioFile,
+          "-map", "0:v:0", "-map", "1:a:0", "-t", dur,
+          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", finalPath
+        ]);
+        return true;
+      }
+      if (audioRef) warnings.push(`Audio ref ${audioRef} did not resolve; falling back to synth beat.`);
+      if (policy === "sample_bgm") {
         warnings.push(`Audio policy sample_bgm but audioRef ${audioRef ?? "n/a"} did not resolve; falling back to synth beat.`);
       }
       // synth_beat (and sample_bgm fallback): a layered PROCEDURAL beat track at the timeline BPM —
@@ -910,23 +1136,26 @@ export class FFmpegRenderer implements RendererAdapter {
       ) as Record<string, number>;
       const timelineAudioLayers = (timeline.renderPlan?.audioPlan?.layers ?? {}) as Record<string, number>;
       const layers = Object.keys(timelineAudioLayers).length ? timelineAudioLayers : recipeAudioLayers;
-      const layer = (keys: string[], fallback: number): number => {
+      const readLayer = (keys: string[]): number | undefined => {
         for (const key of keys) {
           const value = layers[key];
           if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.min(1, value));
         }
-        return fallback;
+        return undefined;
       };
+      const layer = (keys: string[], fallback: number): number => readLayer(keys) ?? fallback;
       const motionDriven = timeline.clips.some((clip) => Boolean(clip.motionPrimitive));
       const spectralCentroid = timeline.renderPlan?.audioPlan?.spectralCentroidMean;
       const spectralFlatness = timeline.renderPlan?.audioPlan?.spectralFlatnessMean;
       const airBoost =
         (typeof spectralCentroid === "number" && spectralCentroid > 2000 ? 0.28 : 0) +
         (typeof spectralFlatness === "number" && spectralFlatness > 0.35 ? 0.22 : 0);
-      const gBass = 0.55 + layer(["bass", "kick", "bass_kick"], 0.5) * (motionDriven ? 0.95 : 0.55);
+      const drumWeight = readLayer(["bass", "kick", "bass_kick"]) ?? 0;
+      const gBass = drumWeight > 0 ? 0.55 + drumWeight * (motionDriven ? 0.95 : 0.55) : 0;
       const gMusic = 0.7 + layer(["drone", "music_harmonic"], 0.45) * 2.2;
-      const gAir = 0.45 + layer(["hats", "hats_air"], 0.2) * 2.6 + airBoost;
-      const gImpact = 0.35 + layer(["impact", "kick", "bass_kick"], 0.35) * 0.9;
+      const gAir = 0.45 + layer(["hats", "hats_air"], 0.12) * 2.6 + airBoost;
+      const gRiser = layer(["riser"], 0) * 1.6;
+      const gImpact = layer(["impact"], drumWeight > 0 ? 0.35 : 0.08) * 0.9;
       const strongBeats = (timeline.renderPlan?.audioPlan?.strongBeatsSec ?? [])
         .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= durationSec)
         .slice(0, 36);
@@ -936,6 +1165,7 @@ export class FFmpegRenderer implements RendererAdapter {
       const bass = `aevalsrc='${a(motionDriven ? 0.28 : 0.18, gBass)}*sin(2*PI*98*t)*exp(-7*mod(t\\,${bi}))':${sr}:d=${dur}`;
       const hat = `aevalsrc='${a(0.16, gAir)}*sin(2*PI*1400*t)*exp(-42*mod(t\\,${half}))':${sr}:d=${dur}`;
       const air = `anoisesrc=color=pink:amplitude=${a(0.05, gAir)}:duration=${dur}:sample_rate=44100`;
+      const riser = `aevalsrc='${a(0.08, gRiser)}*sin(2*PI*(160+80*t/${dur})*t)':${sr}:d=${dur}`;
       const impactExpr = strongBeats.length
         ? strongBeats
             .map((beat) => {
@@ -945,18 +1175,52 @@ export class FFmpegRenderer implements RendererAdapter {
             .join("+")
         : "0";
       const impact = `aevalsrc='${impactExpr}':${sr}:d=${dur}`;
+      const sources = [
+        drone,
+        ...(drumWeight > 0.05 ? [kick, bass] : []),
+        ...(gAir > 0.15 ? [hat, air] : []),
+        ...(gRiser > 0.05 ? [riser] : []),
+        ...(gImpact > 0.05 && strongBeats.length ? [impact] : [])
+      ];
+      const lavfiInputs = sources.flatMap((source) => ["-f", "lavfi", "-i", source]);
+      const labels = sources.map((_, index) => `[${index + 1}]`).join("");
+      // Layer any ElevenLabs voiceover/SFX onto the procedural bed. Inputs: 0=silent video,
+      // 1..N=lavfi beat sources, then the aux files. When aux is present we drop -shortest (aux is
+      // shorter than the video) and rely on -t; the lavfi sources are d=dur so the mix spans the clip.
+      const auxInputs: string[] = [];
+      const auxFilters: string[] = [];
+      const auxLabels: string[] = [];
+      let auxIndex = sources.length + 1;
+      if (voiceoverFile) {
+        auxInputs.push("-i", voiceoverFile);
+        auxFilters.push(`[${auxIndex}:a]aresample=44100,volume=1.25,adelay=400:all=1[vo]`);
+        auxLabels.push("[vo]");
+        auxIndex += 1;
+      }
+      if (sfxFile) {
+        auxInputs.push("-i", sfxFile);
+        auxFilters.push(`[${auxIndex}:a]aresample=44100,volume=0.7[sfx]`);
+        auxLabels.push("[sfx]");
+        auxIndex += 1;
+      }
+      const mixCount = sources.length + auxLabels.length;
+      const filterComplex = [
+        ...auxFilters,
+        `${labels}${auxLabels.join("")}amix=inputs=${mixCount}:duration=longest:normalize=0,highpass=f=30,alimiter=limit=0.9[a]`
+      ].join(";");
       await runFfmpeg([
         "-y", "-i", silentPath,
-        "-f", "lavfi", "-i", drone,
-        "-f", "lavfi", "-i", kick,
-        "-f", "lavfi", "-i", bass,
-        "-f", "lavfi", "-i", hat,
-        "-f", "lavfi", "-i", air,
-        "-f", "lavfi", "-i", impact,
-        "-filter_complex", "[1][2][3][4][5][6]amix=inputs=6:normalize=0,highpass=f=30,alimiter=limit=0.9[a]",
+        ...lavfiInputs,
+        ...auxInputs,
+        "-filter_complex", filterComplex,
         "-map", "0:v:0", "-map", "[a]", "-t", dur,
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", finalPath
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        ...(auxLabels.length ? [] : ["-shortest"]),
+        "-movflags", "+faststart", finalPath
       ]);
+      if (auxLabels.length) {
+        warnings.push(`ElevenLabs audio layered over procedural bed:${voiceoverFile ? " voiceover" : ""}${sfxFile ? " sfx" : ""}.`);
+      }
       return true;
     } catch (error) {
       warnings.push(`Audio mux failed (${(error as Error).message}); writing silent video.`);
@@ -1174,7 +1438,7 @@ export class FFmpegRenderer implements RendererAdapter {
 
     const filters: string[] = ["format=yuv420p"];
     // Strong moving streak bed so even text clips are not static (the montage rides the strongest).
-    filters.push(...streakBedFilters(W, primitive === "action_montage" ? "montage" : "strong", palette));
+    filters.push(...streakBedFilters(W, primitive === "action_montage" ? "montage" : "strong", palette, Math.max(0.6, Math.min(1.6, bpmSafe / 120))));
     filters.push(`drawbox=x=0:y='mod(t*${Math.round(H * 0.32)}\\,ih)':w=iw:h=3:color=${palette.cool}@0.3:t=fill`);
     // per-beat full-frame WHITE flash — brief, colour-neutral cut-like jumps
     filters.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
@@ -1287,7 +1551,7 @@ export class FFmpegRenderer implements RendererAdapter {
     const heroYOffset = Math.round(H * posOffsetFrac);
 
     const bg: string[] = ["format=yuv420p"];
-    bg.push(...streakBedFilters(W, "montage", palette));
+    bg.push(...streakBedFilters(W, "montage", palette, Math.max(0.6, Math.min(1.6, bpmSafe / 120))));
     bg.push(`drawbox=x=0:y=0:w=iw:h=ih:color=0xffffff@0.24:t=fill:enable='lt(mod(t\\,${beatInterval})\\,0.05)'`);
     if (!head) {
       // fallback: a big orbiting neon "head" blob (never just static boxes)
@@ -1549,33 +1813,77 @@ export class RemotionRenderer implements RendererAdapter {
           ].filter((assetId): assetId is string => Boolean(assetId))
         )
       );
-      const assetEntries = await Promise.all(
-        assetIds.flatMap(async (assetId) => {
-          const resolved = this.opts.assetResolver?.resolve(assetId);
-          if (!resolved || !existsSync(resolved)) return [];
-          return [[assetId, { src: await remotionAssetSrc(resolved), ext: path.extname(resolved).toLowerCase() }]];
-        })
-      );
-      const assetMap = Object.fromEntries(assetEntries.flat());
-      const inputProps = { timeline, assetMap };
-      const browserExecutable = this.opts.browserExecutable ?? resolveRemotionBrowserExecutable();
-      const composition = await selectComposition({
-        serveUrl: this.bundleLocation,
-        id: this.opts.compositionId ?? "ViralReconstruction",
-        inputProps,
-        browserExecutable
+      // Serve resolved local VIDEO assets over an ephemeral localhost http server: OffthreadVideo
+      // only accepts http/https sources (file:// is rejected and <Video> hangs loading its duration
+      // for local files). Images stay inlined as data: URLs via remotionAssetSrc.
+      const assetFileById = new Map<string, string>();
+      const assetServer = http.createServer((req, res) => {
+        const match = /^\/asset\/([^/?]+)/.exec(req.url ?? "");
+        const file = match ? assetFileById.get(decodeURIComponent(match[1])) : undefined;
+        if (!file || !existsSync(file)) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        res.setHeader("content-type", mimeForAssetExt(path.extname(file)) ?? "application/octet-stream");
+        createReadStream(file).pipe(res).on("error", () => {
+          res.statusCode = 500;
+          res.end();
+        });
       });
+      await new Promise<void>((resolve) => assetServer.listen(0, "127.0.0.1", () => resolve()));
+      const assetServerPort = (assetServer.address() as { port: number }).port;
+      const assetBase = `http://127.0.0.1:${assetServerPort}`;
 
-      await renderMedia({
-        composition,
-        serveUrl: this.bundleLocation,
-        codec: "h264",
-        outputLocation: outputPath,
-        inputProps,
-        browserExecutable,
-        chromiumOptions: { headless: true }
-      });
+      try {
+        const assetEntries = await Promise.all(
+          assetIds.flatMap(async (assetId) => {
+            const resolved = this.opts.assetResolver?.resolve(assetId);
+            if (!resolved || !existsSync(resolved)) return [];
+            const ext = path.extname(resolved).toLowerCase();
+            if (/\.(mp4|mov|webm|m4v)$/i.test(ext)) {
+              assetFileById.set(assetId, resolved);
+              return [[assetId, { src: `${assetBase}/asset/${encodeURIComponent(assetId)}`, ext }]];
+            }
+            return [[assetId, { src: await remotionAssetSrc(resolved), ext }]];
+          })
+        );
+        const assetMap = Object.fromEntries(assetEntries.flat());
+        const inputProps = { timeline, assetMap };
+        const browserExecutable = this.opts.browserExecutable ?? resolveRemotionBrowserExecutable();
+        // disableWebSecurity lets headless Chrome load local/cross-origin material without CORS blocks.
+        const chromiumOptions = { headless: true, disableWebSecurity: true } as const;
+        const composition = await selectComposition({
+          serveUrl: this.bundleLocation,
+          id: this.opts.compositionId ?? "ViralReconstruction",
+          inputProps,
+          browserExecutable,
+          chromiumOptions
+        });
 
+        await renderMedia({
+          composition,
+          serveUrl: this.bundleLocation,
+          codec: "h264",
+          outputLocation: outputPath,
+          inputProps,
+          browserExecutable,
+          chromiumOptions,
+          // Surface DEBUG_EFFECT_LABEL into the rendering browser so the effect label can show.
+          ...(process.env.DEBUG_EFFECT_LABEL
+            ? { envVariables: { DEBUG_EFFECT_LABEL: String(process.env.DEBUG_EFFECT_LABEL) } }
+            : {})
+        });
+      } finally {
+        assetServer.close();
+      }
+
+      // v1.4: record creative-effect selection / fallback from the recipe into the render report.
+      const recipe = timeline.renderPlan?.renderRecipe as
+        | { effectProgramIds?: string[]; effectFallbackReason?: string; effectSelection?: { source?: string } }
+        | undefined;
+      const effectProgramIds = recipe?.effectProgramIds ?? [];
+      const effectFallbackReason = recipe?.effectFallbackReason;
       return {
         renderId,
         generationId,
@@ -1583,6 +1891,9 @@ export class RemotionRenderer implements RendererAdapter {
         status: "completed",
         outputPath,
         previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
+        ...(effectProgramIds.length ? { effectProgramIds } : {}),
+        ...(effectFallbackReason ? { effectFallbackReason } : {}),
+        ...(recipe?.effectSelection?.source ? { effectSelectionSource: recipe.effectSelection.source } : {}),
         createdAt: nowIso()
       };
     } catch (error) {

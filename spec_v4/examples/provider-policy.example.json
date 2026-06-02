@@ -16,7 +16,7 @@
       "riskLevel": "high"
     },
     {
-      "provider": "seedream_4_0",
+      "provider": "volcengine_seedream",
       "category": "image",
       "requiredForCoreDemo": false,
       "enabledByDefault": false,

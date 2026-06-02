@@ -118,7 +118,7 @@ FFmpeg:
 
 ## 3. Recommended Repo Shape
 
-Use current monorepo. Add modules incrementally:
+Use current monorepo. As-built shape of the modules that implement this spec:
 
 ```text
 apps/
@@ -130,38 +130,31 @@ apps/
       timeline/
       preview/
   api/
-    src/routes/
-    src/services/
+    src/server.ts            # all HTTP routes registered here (no routes/ dir)
     src/adapters/renderers.ts
     remotion/
-      ViralRecipeRoot.tsx
-      components/
-        RenderLayer.tsx
-        MediaLayer.tsx
-        TextLayer.tsx
-        MotionAtomLayer.tsx
-        ParametricRibbonSurface.tsx
-        KineticTypographySweep.tsx
-        MediaCardCascade.tsx
-        CTAEndSlate.tsx
+      ViralRecipeRoot.tsx    # layer interpretation inline: LayerView / ClipView /
+                             # MediaSurface / MotionAtomFallback / ParametricRibbonSurface
+                             # (no components/ subdir)
+      ReconstructionRoot.tsx
+      index.tsx
 
 packages/
   shared/
     src/engine/
       planner.ts
-      techniqueAtoms.ts
-      assetAnalyzer.ts
-      gapAnalyzer.ts
-      transferPlanner.ts
-      renderRecipeCompiler.ts
-      fidelity.ts
-    src/schemas/
-      video-evidence.schema.json
-      technique-atom.schema.json
-      structure-template.schema.json
-      asset-profile.schema.json
-      gap-report.schema.json
-      render-recipe-v4.schema.json
+      atomExtractor.ts
+      slotInduction.ts
+      slotMapper.ts
+      fillPlanner.ts
+      gapDetector.ts
+      gapRepairRanker.ts
+      templateBuilder.ts
+      timelineBuilder.ts
+      renderRecipeV41.ts
+      variantPlanner.ts
+    src/model-router/         # router.ts, modelRegistry.ts, providerPolicy.ts, types.ts
+    src/schemas.ts            # all schema validation consts (no schemas/ dir)
     src/types.ts
 
 scripts/
@@ -172,7 +165,7 @@ scripts/
   evaluate-render-quality.mjs
   diversity_ncc.py
 
-docs/spec_v4/
+spec_v4/                     # spec docs live here (no docs/spec_v4/)
 ```
 
 ## 4. Optional Later Infrastructure
@@ -195,7 +188,7 @@ They are valuable only after artifact pipeline works.
 ### Flow A: Learn sample
 
 ```text
-POST /api/videos/:id/analyze
+POST /api/assets/:assetId/analyze
   → analysis.json
   → frame sheets
   → StructureTemplate
@@ -206,7 +199,7 @@ POST /api/videos/:id/analyze
 ### Flow B: Generate from new content
 
 ```text
-POST /api/projects/:id/transfer
+POST /api/generations   (alias: POST /api/generate)
   → analyze assets
   → match slots
   → gap report
@@ -217,16 +210,17 @@ POST /api/projects/:id/transfer
 ### Flow C: Render
 
 ```text
-POST /api/transfer-plans/:id/render?target=remotion
-POST /api/transfer-plans/:id/render?target=ffmpeg
+POST /api/generations/:generationId/render
+  body: { "rendererTarget": "remotion" | "ffmpeg" | "remotion_recipe" | "hyperframes" | "html_preview" }
+  (rendererTarget is a JSON body field, not a query param; default = generation.timeline.rendererTarget, else html_preview)
 ```
 
 ### Flow D: Edit
 
 ```text
-POST /api/edits/natural-language
-  input: instruction + recipe
-  output: recipe patch + diff + rerender option
+POST /api/generations/:generationId/revise
+  input: instruction + generation
+  output: revised variant generation (with rerender)
 ```
 
 ## 6. Artifact Layout

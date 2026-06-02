@@ -59,4 +59,26 @@ describe("Gap repair options and provider policy", () => {
       expect(["procedural", "aigc_generated_material"]).toContain(record.provenance);
     }
   });
+
+  it("does not select ElevenLabs in the legacy provider router unless a live flag is enabled", () => {
+    const env = { ELEVENLABS_API_KEY: "test-key" };
+    const disabled = resolveProviderRoute("music_generation", { env }, "elevenlabs_music");
+    const enabled = resolveProviderRoute("music_generation", { env: { ...env, ENABLE_ELEVENLABS_LIVE_TESTS: "1" } }, "elevenlabs_music");
+
+    expect(disabled.selectedProviderId).toBe("local_ffmpeg_procedural");
+    expect(disabled.fallbackUsed).toBe(true);
+    expect(enabled.selectedProviderId).toBe("elevenlabs_music");
+    expect(enabled.fallbackUsed).toBe(false);
+    expect(buildProviderCallRecord(enabled).sampleAudioSentExternally).toBe(false);
+  });
+
+  it("selects Seedance in the legacy provider router when the shared Ark key is present", () => {
+    const route = resolveProviderRoute("video_generation", { env: { SEEDREAM_ARK_API_KEY: "test-key" } }, "seedance_2_0");
+    expect(route.selectedProviderId).toBe("seedance_2_0");
+    expect(route.fallbackUsed).toBe(false);
+    const record = buildProviderCallRecord(route);
+    expect(record.provenance).toBe("aigc_generated_material");
+    expect(record.sampleFramesSentExternally).toBe(false);
+    expect(record.sampleAudioSentExternally).toBe(false);
+  });
 });

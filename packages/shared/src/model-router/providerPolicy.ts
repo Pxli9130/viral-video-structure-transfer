@@ -20,6 +20,11 @@ export const LOCAL_ANALYSIS_POLICY: MediaAccessPolicy = {
   sampleAudioAllowed: true
 };
 
+export const LOCAL_PIXEL_ANALYSIS_POLICY: MediaAccessPolicy = {
+  ...BLOCK_SAMPLE_MEDIA_POLICY,
+  samplePixelsAllowed: true
+};
+
 export const EXTERNAL_VLM_DEFAULT_POLICY: MediaAccessPolicy = {
   ...BLOCK_SAMPLE_MEDIA_POLICY,
   generatedAssetProvenanceRequired: false
@@ -64,4 +69,3 @@ export function isAigcProviderClass(providerClass: ProviderClass): boolean {
 export function policyAllowsSampleExternalUpload(policy: MediaAccessPolicy): boolean {
   return policy.sampleVideoUploadAllowed || policy.samplePixelsAllowed || policy.sampleAudioAllowed;
 }
-

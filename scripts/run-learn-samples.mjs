@@ -111,6 +111,7 @@ const FAN_TARGETS = [
   { id: "fan_feature", kind: "copy", role: "ui_showcase", text: (copy.features ?? []).join("\n") },
   { id: "fan_kinetic", kind: "copy", role: "kinetic_typography", text: copy.productName ?? copy.brandName ?? "AeroSpin" }
 ];
+const isRenderableFanMediaId = (id) => /^fan_(hero|card|mc|logo)/.test(id);
 const CARD_IDS = ["fan_card_01", "fan_card_02", "fan_card_03", "fan_card_04"];
 function polish(timeline) {
   const features = (copy.features ?? []).filter(Boolean);
@@ -143,7 +144,16 @@ function polish(timeline) {
     const tc = timeline.clips.find((c) => c.id === rc.clipId);
     if (!tc) continue;
     rc.text = { ...(rc.text ?? {}), copy: tc.subtitleText ?? rc.text?.copy ?? "" };
-    if (typeof tc.sourceAssetId === "string" && tc.sourceAssetId.startsWith("fan_")) rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+    if (typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+  }
+  if (recipe?.layers) for (const layer of recipe.layers) {
+    if (!layer.clipId) continue;
+    const tc = timeline.clips.find((c) => c.id === layer.clipId);
+    if (!tc) continue;
+    if (layer.type === "text" && layer.text && tc.subtitleText) layer.text.content = tc.subtitleText;
+    if (layer.type === "media" && layer.material && typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) {
+      layer.material.assetIds = [tc.sourceAssetId];
+    }
   }
   return timeline;
 }

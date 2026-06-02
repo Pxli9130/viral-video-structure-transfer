@@ -3,7 +3,8 @@
  * Minimal Seedance (Volcengine Ark doubao-seedance) text-to-video try-out.
  *
  * Submits a generation task to Ark, polls until the task finishes, prints the video URL.
- * Uses the ARK key whose value ends in c6c07 -> SEEDREAM_ARK_API_KEY (loaded from repo .env).
+ * Uses an Ark bearer key from SEEDANCE_ARK_API_KEY, SEEDREAM_ARK_API_KEY, or ARK_API_KEY
+ * (loaded from repo .env).
  *
  *   export PATH="/home/pxli/.nvm/versions/node/v22.20.0/bin:$PATH"
  *   node scripts/try-seedance.mjs                       # 16:9, 31s, 720p, audio on, no watermark
@@ -34,8 +35,8 @@ const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 
 const BASE = (process.env.SEEDREAM_ARK_BASE_URL || process.env.ARK_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
-const KEY = process.env.SEEDANCE_ARK_API_KEY || process.env.SEEDREAM_ARK_API_KEY; // the c6c07 key
-const MODEL = arg("--model", process.env.SEEDANCE_MODEL || "doubao-seedance-2-0-260128");
+const KEY = process.env.SEEDANCE_ARK_API_KEY || process.env.SEEDANCE_API_KEY || process.env.SEEDREAM_ARK_API_KEY || process.env.ARK_API_KEY;
+const MODEL = arg("--model", process.env.SEEDANCE_MODEL || process.env.AIGC_VIDEO_MODEL || "doubao-seedance-2-0-fast-260128");
 const DURATION = Number(arg("--duration", "31"));
 const RATIO = arg("--ratio", "16:9");
 const RESOLUTION = arg("--resolution", "720p");
@@ -45,7 +46,7 @@ const WATERMARK = argv.includes("--watermark");
 const POLL_MS = 6000;
 const TIMEOUT_MS = 30 * 60 * 1000;
 
-if (!KEY) { console.error("✗ Missing SEEDREAM_ARK_API_KEY (the key ending c6c07) in env/.env"); process.exit(1); }
+if (!KEY) { console.error("✗ Missing SEEDANCE_ARK_API_KEY, SEEDANCE_API_KEY, SEEDREAM_ARK_API_KEY, or ARK_API_KEY in env/.env"); process.exit(1); }
 if (!existsSync(PROMPT_FILE)) { console.error(`✗ prompt file not found: ${PROMPT_FILE}`); process.exit(1); }
 const redact = (s) => String(s ?? "").split(KEY).join("[ARK_KEY]");
 const headers = { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` };
@@ -62,7 +63,7 @@ const body = {
 };
 
 console.log(`▶ Seedance try: model=${MODEL}`);
-console.log(`  base=${BASE} key=…${KEY.slice(-5)}`);
+console.log(`  base=${BASE} key=[ARK_KEY]`);
 console.log(`  ratio=${RATIO} duration=${DURATION}s resolution=${RESOLUTION} audio=${GENERATE_AUDIO} watermark=${WATERMARK}`);
 console.log(`  prompt: ${prompt.length} chars from ${path.relative(ROOT, PROMPT_FILE)}`);
 

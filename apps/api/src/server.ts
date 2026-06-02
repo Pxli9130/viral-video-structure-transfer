@@ -58,6 +58,7 @@ import {
 } from "@vvst/shared";
 import { buildAdapterSet, type AdapterSet } from "./adapters/index.js";
 import { selectRenderer, type AssetPathResolver } from "./adapters/renderers.js";
+import { ElevenLabsAdapter } from "./adapters/elevenlabs.js";
 import { analyzeEvidenceTimeline, bindAnalysisTextToEvidence } from "./adapters/evidenceTimeline.js";
 import { buildDatabaseStore, type Database, emptyDatabase as makeEmptyDatabase } from "./storage/index.js";
 
@@ -85,12 +86,27 @@ const AIGC_PROVIDER_IDS = new Set<AigcMaterialProviderId>([
   "google_gemini_image",
   "local_folder_provider",
   "volcengine_seedream",
+  "seedance_2_0",
   "ark_seedance_provider_stub",
   "image_provider",
   "copy_provider",
   "none"
 ]);
-const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["google_gemini_image", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider"]);
+const IMAGE_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>([
+  "deterministic_local_image_fill",
+  "mock_provider",
+  "google_gemini_image",
+  "local_folder_provider",
+  "volcengine_seedream",
+  "image_provider",
+  "none"
+]);
+const VIDEO_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["seedance_2_0", "ark_seedance_provider_stub"]);
+const EXTERNAL_AIGC_PROVIDERS = new Set<AigcMaterialProviderId>(["google_gemini_image", "volcengine_seedream", "seedance_2_0", "ark_seedance_provider_stub", "image_provider"]);
+
+function envFlag(key: string): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env[key]?.trim() ?? "");
+}
 
 const repoRoot =
   path.basename(process.cwd()) === "api" && path.basename(path.dirname(process.cwd())) === "apps"
@@ -753,13 +769,19 @@ async function runAnalysisJob(asset: Asset, project: Project, purpose: AnalysisP
     throw new HttpError(500, "VALIDATION_ERROR", "VideoAnalysisResult failed schema validation", analysisValidation.errors);
   }
   const analysisRouteSummary = buildModelRouteSummaryForTasks([
+    "text_planning_llm",
     "video_structure_vlm",
     "asr",
     "ocr",
     "visual_grounding",
     "audio_analysis",
     "quality_judge"
-  ]);
+  ], {
+    env: process.env,
+    allowCloud: envFlag("ALLOW_CLOUD_PROVIDERS"),
+    allowSampleMediaExternal: envFlag("ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS"),
+    allowQualityJudgeSampleFrames: envFlag("ALLOW_QUALITY_JUDGE_SAMPLE_FRAMES")
+  });
   analysis = attachModelRouteSummaryToAnalysis(analysis, analysisRouteSummary);
 
   let templateRecord: TemplateRecord | undefined;
@@ -1492,8 +1514,26 @@ interface RunGenerationOutcome {
 function aigcProviderForRequest(request: GenerationRequest): AigcMaterialProviderId {
   if (request.controls?.allowExternalAigcProvider !== true) return "deterministic_local_image_fill";
   const requested = process.env.AIGC_IMAGE_PROVIDER as AigcMaterialProviderId | undefined;
-  if (requested && AIGC_PROVIDER_IDS.has(requested)) return normalizeAigcMaterialProviderId(requested).id;
+  if (requested && IMAGE_AIGC_PROVIDERS.has(requested)) return normalizeAigcMaterialProviderId(requested).id;
   return "deterministic_local_image_fill";
+}
+
+function envHasAny(...keys: string[]): boolean {
+  return keys.some((key) => Boolean(process.env[key]?.trim()));
+}
+
+function aigcVideoProviderForRequest(request: GenerationRequest): AigcMaterialProviderId | undefined {
+  if (request.controls?.allowExternalAigcProvider !== true) return undefined;
+  const requested = process.env.AIGC_VIDEO_PROVIDER as AigcMaterialProviderId | undefined;
+  if (requested === "none") return undefined;
+  if (requested && VIDEO_AIGC_PROVIDERS.has(requested)) return normalizeAigcMaterialProviderId(requested).id;
+  if (envHasAny("SEEDANCE_ARK_API_KEY", "SEEDANCE_API_KEY", "SEEDREAM_ARK_API_KEY", "ARK_API_KEY")) return "seedance_2_0";
+  return undefined;
+}
+
+function positiveIntEnv(key: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[key] ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function sanitizeAigcProviderError(error: unknown): string {
@@ -1505,6 +1545,7 @@ function sanitizeAigcProviderError(error: unknown): string {
     .replace(/Request id:\s*[0-9A-Za-z_-]+/gi, "Request id: redacted")
     .replace(/GEMINI_API_KEY=[^\s]+/g, "GEMINI_API_KEY=***")
     .replace(/SEEDREAM_ARK_API_KEY=[^\s]+/g, "SEEDREAM_ARK_API_KEY=***")
+    .replace(/SEEDANCE_ARK_API_KEY=[^\s]+/g, "SEEDANCE_ARK_API_KEY=***")
     .slice(0, 500);
 }
 
@@ -1541,6 +1582,26 @@ function targetAssetFromGeneratedCandidate(input: {
       provenance: input.candidate.provenance
     }
   };
+}
+
+function mergeUniqueWarnings(...groups: Array<string[] | undefined>): string[] {
+  const out: string[] = [];
+  for (const group of groups) {
+    for (const item of group ?? []) {
+      if (!out.includes(item)) out.push(item);
+    }
+  }
+  return out;
+}
+
+function mergeProviderIds(...groups: Array<Array<AigcMaterialProviderId | undefined> | undefined>): AigcMaterialProviderId[] {
+  const out: AigcMaterialProviderId[] = [];
+  for (const group of groups) {
+    for (const item of group ?? []) {
+      if (item && !out.includes(item)) out.push(item);
+    }
+  }
+  return out;
 }
 
 async function reviewGeneratedMaterialWithVlm(input: {
@@ -1626,22 +1687,36 @@ async function applyAigcMaterialFill(input: {
     } catch (error) {
       const reason = sanitizeAigcProviderError(error);
       providerErrors.push(`${providerId}: ${reason}`);
-      // No mock fallback: surface the failure unless a real backup provider is configured.
-      if (!backupProvider || !backupProviderId) throw error;
-      try {
-        const generated = await backupProvider.generate(brief, {
+      let recovered = false;
+      if (backupProvider && backupProviderId) {
+        try {
+          const generated = await backupProvider.generate(brief, {
+            outputDir,
+            publicPathPrefix,
+            env: process.env,
+            allowExternalProviderCall: true
+          });
+          usedProviderId = backupProviderId;
+          providerFallbackReason = `Primary AIGC provider ${providerId} failed (${reason}); used backup ${backupProviderId}.`;
+          candidates.push(...generated);
+          recovered = true;
+        } catch (backupError) {
+          providerErrors.push(`${backupProviderId}: ${sanitizeAigcProviderError(backupError)}`);
+        }
+      }
+      if (!recovered) {
+        // Local deterministic fallback: cloud image providers failed, so generate provenance-labeled
+        // LOCAL material instead of aborting — the video still renders with real (local) material.
+        const localProvider = getAigcMaterialProvider("deterministic_local_image_fill");
+        const localGenerated = await localProvider.generate(brief, {
           outputDir,
           publicPathPrefix,
           env: process.env,
-          allowExternalProviderCall: true
+          allowExternalProviderCall: false
         });
-        usedProviderId = backupProviderId;
-        providerFallbackReason = `Primary AIGC provider ${providerId} failed (${reason}); used backup ${backupProviderId}.`;
-        candidates.push(...generated);
-      } catch (backupError) {
-        const backupReason = sanitizeAigcProviderError(backupError);
-        providerErrors.push(`${backupProviderId}: ${backupReason}`);
-        throw new Error(`AIGC image generation failed on primary ${providerId} (${reason}) and backup ${backupProviderId} (${backupReason}).`);
+        usedProviderId = "deterministic_local_image_fill";
+        providerFallbackReason = `Cloud AIGC image providers failed (${providerErrors.join("; ")}); fell back to local deterministic_local_image_fill.`;
+        candidates.push(...localGenerated);
       }
     }
   }
@@ -1714,6 +1789,141 @@ async function applyAigcMaterialFill(input: {
       candidates: reviewedCandidates,
       quality,
       generatedTargetAssets
+    }
+  };
+}
+
+async function applyAigcVideoFill(input: {
+  template: StructureTemplate;
+  request: GenerationRequest;
+  sourceAsset?: Asset;
+  sourceAnalysis?: VideoAnalysisResult;
+  sourceVlm?: VLMVideoAnalysis;
+  selectedTemplateReason?: string;
+  baseGeneration: GenerationResult;
+  gapSourceGeneration?: GenerationResult;
+  generationIdSalt?: string;
+}): Promise<GenerationResult> {
+  if (input.request.controls?.allowAigcMaterialGeneration !== true) return input.baseGeneration;
+
+  const providerId = aigcVideoProviderForRequest(input.request);
+  if (!providerId) return input.baseGeneration;
+  const externalProvider = EXTERNAL_AIGC_PROVIDERS.has(providerId);
+  const provider = getAigcMaterialProvider(providerId);
+  const currentRequest = input.baseGeneration.request ?? input.request;
+  const gapSource = input.gapSourceGeneration ?? input.baseGeneration;
+  const briefs = createMaterialGenerationBriefs({
+    gapReport: gapSource.gapReport,
+    fillPlan: gapSource.fillPlan,
+    request: currentRequest,
+    targetAssets: currentRequest.targetAssets,
+    config: {
+      enabled: true,
+      provider: providerId,
+      maxAssetsPerRun: positiveIntEnv("AIGC_VIDEO_MAX_ASSETS_PER_RUN", 1),
+      allowExternalUpload: externalProvider && currentRequest.controls?.allowExternalAigcProvider === true,
+      allowSampleFramesToProvider: false,
+      requireUserApprovalBeforeRender: false,
+      cacheEnabled: true
+    }
+  });
+
+  const previousFill = input.baseGeneration.aigcMaterialFill;
+  if (!briefs.length) {
+    return {
+      ...input.baseGeneration,
+      warnings: mergeUniqueWarnings(input.baseGeneration.warnings, [
+        "AIGC video fill was enabled, but no eligible missing motion/video slots produced Seedance generation briefs."
+      ])
+    };
+  }
+
+  const candidates: GeneratedAssetCandidate[] = [];
+  const providerErrors: string[] = [];
+  const outputDir = path.join(generatedDir, "aigc-videos", input.baseGeneration.id);
+  const publicPathPrefix = path.relative(repoRoot, outputDir).replace(/\\/g, "/");
+  await fs.mkdir(outputDir, { recursive: true });
+  for (const brief of briefs) {
+    try {
+      const generated = await provider.generate(brief, {
+        outputDir,
+        publicPathPrefix,
+        env: process.env,
+        allowExternalProviderCall: externalProvider && currentRequest.controls?.allowExternalAigcProvider === true
+      });
+      candidates.push(...generated);
+    } catch (error) {
+      const reason = sanitizeAigcProviderError(error);
+      providerErrors.push(`${providerId}: ${reason}`);
+      // Local fallback: do NOT abort. Seedance failed for this brief, so it yields no cloud video;
+      // the base generation's procedural Remotion/FFmpeg moving proxy remains the (local) material.
+    }
+  }
+
+  const quality = await checkGeneratedMaterials({
+    briefs,
+    candidates,
+    rootDir: repoRoot,
+    vlmAvailable: false
+  });
+  const briefById = new Map(briefs.map((brief) => [brief.id, brief]));
+  const qualityById = new Map(quality.map((item) => [item.candidateId, item]));
+  const reviewedCandidates = candidates.map((candidate) => {
+    const result = qualityById.get(candidate.id);
+    return {
+      ...candidate,
+      quality: {
+        ...candidate.quality,
+        usable: result?.usable ?? false,
+        slotFitScore: result?.slotFitScore,
+        noSampleCopyScore: result?.noSampleCopyScore,
+        issues: result?.issues ?? []
+      }
+    };
+  });
+  const generatedTargetAssets = reviewedCandidates
+    .filter((candidate) => qualityById.get(candidate.id)?.usable)
+    .map((candidate) => targetAssetFromGeneratedCandidate({
+      candidate,
+      brief: briefById.get(candidate.briefId),
+      quality: qualityById.get(candidate.id)
+    }));
+
+  const augmentedRequest: GenerationRequest = {
+    ...currentRequest,
+    targetAssets: [...(currentRequest.targetAssets ?? []), ...generatedTargetAssets]
+  };
+  const generation = generatedTargetAssets.length
+    ? generateMigrationResult({
+        template: input.template,
+        request: augmentedRequest,
+        sourceAsset: input.sourceAsset,
+        sourceAnalysis: input.sourceAnalysis,
+        sourceVlm: input.sourceVlm,
+        generationIdSalt: input.generationIdSalt ? `${input.generationIdSalt}_aigc_video` : "aigc_video_fill",
+        selectedTemplateReason: input.selectedTemplateReason
+      })
+    : input.baseGeneration;
+
+  return {
+    ...generation,
+    request: augmentedRequest,
+    warnings: mergeUniqueWarnings(input.baseGeneration.warnings, generation.warnings, [
+      `AIGC video fill used ${providerId}; generated ${generatedTargetAssets.length}/${candidates.length} usable Seedance video assets.`
+    ]),
+    aigcMaterialFill: {
+      enabled: true,
+      provider: providerId,
+      providers: mergeProviderIds(previousFill?.providers, [previousFill?.provider], [providerId]),
+      requestedProvider: providerId,
+      providerFallbackReason: previousFill?.providerFallbackReason,
+      providerErrors: [...(previousFill?.providerErrors ?? []), ...providerErrors],
+      externalProviderUsed: Boolean(previousFill?.externalProviderUsed) || reviewedCandidates.some((candidate) => candidate.provenance.externalProviderUsed),
+      sampleFramesSentExternally: Boolean(previousFill?.sampleFramesSentExternally) || reviewedCandidates.some((candidate) => candidate.provenance.sampleFramesSentExternally),
+      briefs: [...(previousFill?.briefs ?? []), ...briefs],
+      candidates: [...(previousFill?.candidates ?? []), ...reviewedCandidates],
+      quality: [...(previousFill?.quality ?? []), ...quality],
+      generatedTargetAssets: [...(previousFill?.generatedTargetAssets ?? []), ...generatedTargetAssets]
     }
   };
 }
@@ -1824,6 +2034,185 @@ async function applySubtitleGeneration(generation: GenerationResult): Promise<Ge
   };
 }
 
+function elevenLabsMusicEnabled(): boolean {
+  return Boolean(
+    process.env.ELEVENLABS_API_KEY?.trim() &&
+      (envFlag("ENABLE_ELEVENLABS_LIVE_TESTS") ||
+        envFlag("ELEVENLABS_ENABLE_CLOUD") ||
+        envFlag("ELEVENLABS_ENABLE_MUSIC"))
+  );
+}
+
+function musicPromptForGeneration(generation: GenerationResult): string {
+  const recipe = generation.timeline.renderPlan?.renderRecipe;
+  const productName = recipe?.productTheme?.name ?? parsePromptToBrief(generation.request).productName;
+  const bpm = generation.timeline.renderPlan?.audioPlan?.bpm ?? recipe?.global.bpm ?? 120;
+  const palette = recipe?.global.palette?.slice(0, 4).join(", ") ?? "cool tech colors";
+  const primitive = recipe?.clips?.map((clip) => clip.selectedPrimitive).filter(Boolean).slice(0, 5).join(", ") ?? "motion graphics";
+  return [
+    `Original ${Math.round(generation.request.target.targetDurationSec)} second instrumental music bed for a vertical product ad.`,
+    `Product: ${productName}.`,
+    `Style: modern commercial electronic, clean cooling-tech mood, visual palette ${palette}.`,
+    `Tempo around ${Math.round(bpm)} BPM, synchronized to ${primitive}.`,
+    // NOTE: keep this line free of the words "watermark"/"prompt"/"sample audio" — the ElevenLabs
+    // adapter's rejectPromptPollution guard would otherwise reject the whole music request.
+    "Fully original instrumental, no vocals, no copyrighted melody, no spoken words."
+  ].join(" ");
+}
+
+async function applyElevenLabsMusic(generation: GenerationResult): Promise<GenerationResult> {
+  if (!elevenLabsMusicEnabled()) return generation;
+  const renderPlan = generation.timeline.renderPlan;
+  if (!renderPlan || renderPlan.audioPolicy === "silent") return generation;
+  try {
+    const adapter = new ElevenLabsAdapter({
+      apiKey: process.env.ELEVENLABS_API_KEY,
+      enabled: true,
+      outputDir: path.join(generatedDir, "elevenlabs-music", generation.id)
+    });
+    const audio = await adapter.generateMusic({
+      prompt: musicPromptForGeneration(generation),
+      durationSec: generation.request.target.targetDurationSec
+    });
+    return {
+      ...generation,
+      warnings: [...generation.warnings, `ElevenLabs music generated and attached: ${path.basename(audio.path)}`],
+      timeline: {
+        ...generation.timeline,
+        renderPlan: {
+          ...renderPlan,
+          audioRef: audio.path,
+          audioPolicy: renderPlan.audioPolicy ?? "synth_beat",
+          audioPlan: {
+            ...(renderPlan.audioPlan ?? { policy: "user_bgm" as const }),
+            policy: "user_bgm"
+          },
+          adapterOptions: {
+            ...(renderPlan.adapterOptions ?? {}),
+            elevenLabsMusic: {
+              provider: audio.provider,
+              materialRole: audio.materialRole,
+              path: audio.path,
+              provenance: audio.provenance
+            }
+          }
+        }
+      }
+    };
+  } catch (error) {
+    return {
+      ...generation,
+      warnings: [
+        ...generation.warnings,
+        `ElevenLabs music generation failed: ${sanitizeAigcProviderError(error)}; using procedural audio fallback.`
+      ]
+    };
+  }
+}
+
+function elevenLabsTaskEnabled(task: "TTS" | "SFX"): boolean {
+  return Boolean(
+    process.env.ELEVENLABS_API_KEY?.trim() &&
+      (envFlag("ENABLE_ELEVENLABS_LIVE_TESTS") ||
+        envFlag("ELEVENLABS_ENABLE_CLOUD") ||
+        envFlag(`ELEVENLABS_ENABLE_${task}`))
+  );
+}
+
+// Strip any guard-trigger tokens so the synthesized ad line is accepted by the ElevenLabs
+// prompt-pollution guard (it rejects text containing "prompt"/"watermark"/sample-copy phrases).
+function sanitizeVoiceText(text: string): string {
+  return text
+    .replace(/prompt|watermark|水印|学习样例|不要复制|不复制|sample\s+(audio|video|frame)|copy\s+the\s+sample/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Build a short spoken ad line from the recipe's product theme (name + one selling point + CTA).
+// Returns undefined when there is no usable product name so TTS is simply skipped.
+function voiceoverScriptForGeneration(generation: GenerationResult): string | undefined {
+  const theme = generation.timeline.renderPlan?.renderRecipe?.productTheme;
+  const name = (theme?.name ?? theme?.productName ?? "").trim();
+  if (!name) return undefined;
+  const point = (theme?.sellingPoints ?? []).map((value) => value?.trim()).find((value) => value && value.length > 0);
+  const cta = (theme?.ctaText ?? theme?.cta ?? "").trim();
+  const parts = [`Meet ${name}.`];
+  if (point) parts.push(`${point}.`);
+  if (cta) parts.push(`${cta}.`);
+  const script = sanitizeVoiceText(parts.join(" ")).slice(0, 220).trim();
+  return script.length >= 8 ? script : undefined;
+}
+
+const ELEVENLABS_SFX_PROMPT =
+  "Short clean whoosh transition swooshing into a soft UI confirmation click, modern product ad sound design, no music, no speech.";
+
+// Best-effort: exercise the ElevenLabs TTS voiceover + Sound Effects endpoints and attach the
+// generated (provenance-tagged) assets to renderPlan.adapterOptions so the renderer can layer them
+// into the music bed. Never fatal — any failure degrades to a warning and the render proceeds.
+async function applyElevenLabsVoiceAndSfx(generation: GenerationResult): Promise<GenerationResult> {
+  const wantTts = elevenLabsTaskEnabled("TTS");
+  const wantSfx = elevenLabsTaskEnabled("SFX");
+  if (!wantTts && !wantSfx) return generation;
+  const renderPlan = generation.timeline.renderPlan;
+  if (!renderPlan || renderPlan.audioPolicy === "silent") return generation;
+  const warnings = [...generation.warnings];
+  const adapterOptions: Record<string, unknown> = { ...(renderPlan.adapterOptions ?? {}) };
+  const adapter = new ElevenLabsAdapter({
+    apiKey: process.env.ELEVENLABS_API_KEY,
+    enabled: true,
+    outputDir: path.join(generatedDir, "elevenlabs-voice", generation.id)
+  });
+  const durationSec = generation.request.target.targetDurationSec;
+  if (wantTts) {
+    const script = voiceoverScriptForGeneration(generation);
+    if (script) {
+      try {
+        const vo = await adapter.generateVoiceover({
+          text: script,
+          style: "calm",
+          durationTargetSec: durationSec,
+          productTheme: generation.timeline.renderPlan?.renderRecipe?.productTheme
+        });
+        adapterOptions.elevenLabsVoiceover = {
+          provider: vo.provider,
+          materialRole: vo.materialRole,
+          path: vo.path,
+          provenance: vo.provenance,
+          script
+        };
+        warnings.push(`ElevenLabs voiceover generated and attached: ${path.basename(vo.path)}`);
+      } catch (error) {
+        warnings.push(`ElevenLabs voiceover generation failed: ${sanitizeAigcProviderError(error)}; continuing without voiceover.`);
+      }
+    }
+  }
+  if (wantSfx) {
+    try {
+      const sfx = await adapter.generateSoundEffect({
+        prompt: ELEVENLABS_SFX_PROMPT,
+        durationSec: Math.min(8, Math.max(2, Math.round(durationSec * 0.15)))
+      });
+      adapterOptions.elevenLabsSfx = {
+        provider: sfx.provider,
+        materialRole: sfx.materialRole,
+        path: sfx.path,
+        provenance: sfx.provenance
+      };
+      warnings.push(`ElevenLabs sound effect generated and attached: ${path.basename(sfx.path)}`);
+    } catch (error) {
+      warnings.push(`ElevenLabs sound effect generation failed: ${sanitizeAigcProviderError(error)}; continuing without SFX.`);
+    }
+  }
+  return {
+    ...generation,
+    warnings,
+    timeline: {
+      ...generation.timeline,
+      renderPlan: { ...renderPlan, adapterOptions }
+    }
+  };
+}
+
 async function runGeneration(
   db: Database,
   request: GenerationRequest,
@@ -1888,6 +2277,7 @@ async function runGeneration(
       generationIdSalt: options.variantLabel,
       selectedTemplateReason: templateSelection.reason
     });
+    const initialGeneration = generation;
     generation = await applyAigcMaterialFill({
       template: templateRecord.template,
       request,
@@ -1898,6 +2288,19 @@ async function runGeneration(
       baseGeneration: generation,
       generationIdSalt: options.variantLabel
     });
+    generation = await applyAigcVideoFill({
+      template: templateRecord.template,
+      request,
+      sourceAsset,
+      sourceAnalysis,
+      sourceVlm,
+      selectedTemplateReason: templateSelection.reason,
+      baseGeneration: generation,
+      gapSourceGeneration: initialGeneration,
+      generationIdSalt: options.variantLabel
+    });
+    generation = await applyElevenLabsMusic(generation);
+    generation = await applyElevenLabsVoiceAndSfx(generation);
     generation = await applySubtitleGeneration(generation);
     if (templateSelection.warning) {
       generation = { ...generation, warnings: [`template_selection: ${templateSelection.warning}`, ...generation.warnings] };
@@ -2501,9 +2904,13 @@ app.post(
       const remotionEntryPoint = process.env.REMOTION_ENTRY?.trim()
         ? process.env.REMOTION_ENTRY.trim()
         : path.resolve(repoRoot, "apps", "api", "remotion", "index.tsx");
-      const remotionCompositionId = process.env.REMOTION_COMPOSITION_ID?.trim()
-        ? process.env.REMOTION_COMPOSITION_ID.trim()
-        : "ViralReconstruction";
+      // Target-aware composition: the recipe-driven target must render the material-drawing
+      // ViralRecipe composition, NOT the ViralReconstruction title-card composition that the
+      // REMOTION_COMPOSITION_ID env pin selects for the reconstruction backend.
+      const remotionCompositionId =
+        target === "remotion_recipe"
+          ? (process.env.REMOTION_RECIPE_COMPOSITION_ID?.trim() || "ViralRecipe")
+          : (process.env.REMOTION_COMPOSITION_ID?.trim() || "ViralReconstruction");
       // User-facing output filename: theme_sampleName_timestamp (no random hash).
       const renderBrief = parsePromptToBrief(generation.request);
       const sampleAsset = generation.request.sampleReferenceAssetId

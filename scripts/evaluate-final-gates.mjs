@@ -126,6 +126,19 @@ function hasPromptPollution(recipe) {
   return /15\s*秒|高转化|学习样例|不复制样例|水印|prompt|素材|镜头|结构（|结构\(/i.test(blob);
 }
 
+function displayTextForWatermarkScan(recipe) {
+  const fields = [
+    recipe?.productTheme?.name,
+    recipe?.productTheme?.productName,
+    recipe?.productTheme?.brandName,
+    recipe?.productTheme?.cta,
+    recipe?.productTheme?.ctaText,
+    ...(recipe?.layers ?? []).flatMap((layer) => layer.type === "text" ? [layer.text?.content] : []),
+    ...(recipe?.clips ?? []).flatMap((clip) => [clip.text?.copy])
+  ];
+  return fields.filter(Boolean).join("\n");
+}
+
 function generatedAssetsHaveProvenance(generation, recipe) {
   const targetAssets = generation?.request?.targetAssets ?? [];
   const generatedTargets = targetAssets.filter((asset) =>
@@ -187,7 +200,7 @@ export function evaluateCaseGates(caseRoot, options = {}) {
   gates.push(gate("G6_clip_or_layer_evidence", Boolean((recipe?.clips ?? []).every((clip) => clip.primitiveReason) && (recipe?.layers ?? []).every((layer) => (layer.evidenceRefs?.length ?? 0) > 0 || layer.fallbackReason)), `${recipe?.clips?.length ?? 0} clips, ${recipe?.layers?.length ?? 0} layers`));
   gates.push(gate("G7_no_sample_frame_copy", recipe?.sourcePolicy?.sampleFrameCopyAllowed === false && !/sample_reference/.test(textBlob(recipe?.layers)), "sampleFrameCopyAllowed=false and no sample_reference material"));
   gates.push(gate("G8_no_sample_audio_copy", recipe?.sourcePolicy?.sampleAudioCopyAllowed === false, `sampleAudioCopyAllowed=${recipe?.sourcePolicy?.sampleAudioCopyAllowed}`));
-  gates.push(gate("G9_no_watermark_reproduced", !/watermark|水印/i.test(textBlob(recipe?.productTheme) + textBlob(recipe?.layers)), "no watermark token in display recipe"));
+  gates.push(gate("G9_no_watermark_reproduced", !/watermark|水印/i.test(displayTextForWatermarkScan(recipe)), "display text only; generationPrompt is archival metadata"));
   gates.push(gate("G10_marketing_template_evidence_not_empty", counts.template.visual > 0 && counts.template.typography > 0 && counts.template.audio > 0, JSON.stringify(counts.template)));
   gates.push(gate("G11_typography_bbox_fontsize_preserved", counts.recipe.textLayers === 0 ? false : (recipe.layers ?? []).filter((layer) => layer.type === "text").every((layer) => layer.layout?.bboxNorm && layer.typography?.fontSizeRatio), `${counts.recipe.textLayers} text layers`));
   gates.push(gate("G12_motionAtoms_consumed_by_renderer", counts.recipe.motionAtomLayers > 0 || (timeline?.renderPlan?.motionAtoms?.length ?? 0) > 0, `${counts.recipe.motionAtomLayers} recipe motion layers`));

@@ -1,5 +1,6 @@
 export * from "./adapters.js";
 export * from "./engine/index.js";
+export * from "./effectCodegen/index.js";
 export {
   AIGC_GENERATION_POLICY,
   AIGC_GENERATION_WITH_USER_ASSETS_POLICY,
@@ -8,6 +9,7 @@ export {
   EXTERNAL_VLM_DEFAULT_POLICY,
   EXTERNAL_VLM_SAMPLE_MEDIA_POLICY,
   LOCAL_ANALYSIS_POLICY,
+  LOCAL_PIXEL_ANALYSIS_POLICY,
   MODEL_PROVIDER_REGISTRY,
   MODEL_ROUTE_TABLE,
   MODEL_TASKS,

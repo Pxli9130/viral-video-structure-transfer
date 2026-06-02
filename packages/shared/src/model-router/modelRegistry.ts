@@ -6,6 +6,7 @@ import {
   DETERMINISTIC_LOCAL_POLICY,
   EXTERNAL_VLM_DEFAULT_POLICY,
   LOCAL_ANALYSIS_POLICY,
+  LOCAL_PIXEL_ANALYSIS_POLICY,
   QUALITY_JUDGE_DEFAULT_POLICY
 } from "./providerPolicy.js";
 
@@ -35,6 +36,9 @@ export const MODEL_TASKS: ModelTask[] = [
   "sound_effect",
   "music",
   "audio_cleanup",
+  "forced_alignment",
+  "model_discovery",
+  "voice_discovery",
   "dubbing",
   "knowledge_retrieval",
   "quality_judge"
@@ -119,7 +123,37 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
     binaries: ["python"],
     packages: ["easyocr"],
     canAffectFinalPixels: true,
-    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, samplePixelsAllowed: true }
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY
+  },
+  paddleocr_vl: {
+    id: "paddleocr_vl",
+    displayName: "PaddleOCR-VL local OCR candidate",
+    providerClass: "ocr",
+    cloud: false,
+    implemented: false,
+    heavyLocal: true,
+    enableEnvVars: ["ENABLE_PADDLEOCR_VL"],
+    weightEnvVars: ["PADDLEOCR_MODEL_DIR"],
+    binaries: ["python"],
+    packages: ["paddleocr", "paddle"],
+    canAffectFinalPixels: true,
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
+    notes: "Optional heavy OCR candidate. Route and normalizers exist; no runtime adapter/weights are bundled."
+  },
+  paddleocr: {
+    id: "paddleocr",
+    displayName: "PaddleOCR local OCR candidate",
+    providerClass: "ocr",
+    cloud: false,
+    implemented: false,
+    heavyLocal: true,
+    enableEnvVars: ["ENABLE_PADDLEOCR"],
+    weightEnvVars: ["PADDLEOCR_MODEL_DIR"],
+    binaries: ["python"],
+    packages: ["paddleocr", "paddle"],
+    canAffectFinalPixels: true,
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
+    notes: "Optional heavy OCR candidate. Route and normalizers exist; no runtime adapter/weights are bundled."
   },
   no_ocr_with_warning: {
     id: "no_ocr_with_warning",
@@ -136,7 +170,63 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
     cloud: false,
     implemented: true,
     canAffectFinalPixels: true,
-    mediaAccessPolicy: LOCAL_ANALYSIS_POLICY
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY
+  },
+  grounding_dino: {
+    id: "grounding_dino",
+    displayName: "GroundingDINO local visual grounding candidate",
+    providerClass: "visual_grounding",
+    cloud: false,
+    implemented: false,
+    heavyLocal: true,
+    enableEnvVars: ["ENABLE_GROUNDING_DINO"],
+    weightEnvVars: ["GROUNDING_DINO_CONFIG", "GROUNDING_DINO_WEIGHTS"],
+    binaries: ["python"],
+    packages: ["groundingdino"],
+    canAffectFinalPixels: true,
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
+    notes: "Optional detector candidate. Route and mocked-output normalizers exist; no runtime adapter/weights are bundled."
+  },
+  sam2: {
+    id: "sam2",
+    displayName: "SAM2 local segmentation/tracking candidate",
+    providerClass: "visual_grounding",
+    cloud: false,
+    implemented: false,
+    heavyLocal: true,
+    enableEnvVars: ["ENABLE_SAM2"],
+    weightEnvVars: ["SAM2_CONFIG", "SAM2_CHECKPOINT"],
+    binaries: ["python"],
+    packages: ["sam2"],
+    canAffectFinalPixels: true,
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
+    notes: "Optional mask/track candidate. Mask pixels must remain evidence-only; no runtime adapter/weights are bundled."
+  },
+  cotracker3: {
+    id: "cotracker3",
+    displayName: "CoTracker3 local point tracking candidate",
+    providerClass: "visual_grounding",
+    cloud: false,
+    implemented: false,
+    heavyLocal: true,
+    enableEnvVars: ["ENABLE_COTRACKER"],
+    weightEnvVars: ["COTRACKER_CHECKPOINT"],
+    binaries: ["python"],
+    packages: ["cotracker"],
+    canAffectFinalPixels: true,
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
+    notes: "Optional point-tracking candidate. Route and point-track normalizer exist; no runtime adapter/weights are bundled."
+  },
+  cotracker: {
+    id: "cotracker",
+    displayName: "CoTracker local point tracking alias",
+    providerClass: "visual_grounding",
+    cloud: false,
+    implemented: false,
+    aliasFor: "cotracker3",
+    deprecated: true,
+    deprecationWarning: "cotracker is an alias for cotracker3.",
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY
   },
   heuristic_bbox: {
     id: "heuristic_bbox",
@@ -218,13 +308,14 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
   },
   seedance_2_0: {
     id: "seedance_2_0",
-    displayName: "Seedance 2.0 video fill candidate",
+    displayName: "Seedance 2.0 Fast video generation",
     providerClass: "video_generation",
     cloud: true,
-    implemented: false,
-    envVars: ["SEEDANCE_API_KEY", "SEEDANCE_ARK_API_KEY"],
+    implemented: true,
+    envVars: ["SEEDANCE_ARK_API_KEY", "SEEDANCE_API_KEY", "SEEDREAM_ARK_API_KEY", "ARK_API_KEY"],
     canAffectFinalPixels: true,
-    mediaAccessPolicy: AIGC_GENERATION_WITH_USER_ASSETS_POLICY
+    mediaAccessPolicy: AIGC_GENERATION_WITH_USER_ASSETS_POLICY,
+    notes: "Runtime adapter invokes Ark contents generation tasks with doubao-seedance-2-0-fast-260128 by default. Sample media upload stays blocked."
   },
   remotion_procedural_motion: {
     id: "remotion_procedural_motion",
@@ -261,15 +352,97 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
     implemented: true,
     mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY
   },
-  elevenlabs_audio_stack: {
-    id: "elevenlabs_audio_stack",
-    displayName: "ElevenLabs optional audio stack",
+  elevenlabs_scribe: {
+    id: "elevenlabs_scribe",
+    displayName: "ElevenLabs Scribe",
+    providerClass: "asr",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalPixels: true,
+    canAffectFinalAudio: false,
+    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true },
+    notes: "Optional ASR upgrade for authorized user/source audio only; sample audio upload is blocked."
+  },
+  elevenlabs_tts: {
+    id: "elevenlabs_tts",
+    displayName: "ElevenLabs TTS",
     providerClass: "audio_generation",
     cloud: true,
-    implemented: false,
+    implemented: true,
     envVars: ["ELEVENLABS_API_KEY"],
     canAffectFinalAudio: true,
-    mediaAccessPolicy: AIGC_GENERATION_POLICY
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    notes: "Optional generated voiceover; output must carry AIGC audio provenance."
+  },
+  elevenlabs_sound_effects: {
+    id: "elevenlabs_sound_effects",
+    displayName: "ElevenLabs Sound Effects",
+    providerClass: "audio_generation",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalAudio: true,
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    notes: "Optional generated SFX; never receives sample audio."
+  },
+  elevenlabs_music: {
+    id: "elevenlabs_music",
+    displayName: "ElevenLabs Music",
+    providerClass: "audio_generation",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalAudio: true,
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    notes: "Optional generated music bed; never receives or imitates sample audio."
+  },
+  elevenlabs_audio_isolation: {
+    id: "elevenlabs_audio_isolation",
+    displayName: "ElevenLabs Audio Isolation",
+    providerClass: "audio_cleanup",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalAudio: true,
+    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true, generatedAssetProvenanceRequired: true },
+    notes: "Optional cleanup for authorized user/source audio; sample audio upload is blocked."
+  },
+  elevenlabs_forced_alignment: {
+    id: "elevenlabs_forced_alignment",
+    displayName: "ElevenLabs Forced Alignment",
+    providerClass: "audio_analysis",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalPixels: true,
+    canAffectFinalAudio: false,
+    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true },
+    notes: "Optional subtitle/voice timing for generated voiceover or authorized user/source audio only."
+  },
+  elevenlabs_models: {
+    id: "elevenlabs_models",
+    displayName: "ElevenLabs Models Read",
+    providerClass: "capability_discovery",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalPixels: false,
+    canAffectFinalAudio: false,
+    mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
+    notes: "Read-only model capability discovery."
+  },
+  elevenlabs_voices_read: {
+    id: "elevenlabs_voices_read",
+    displayName: "ElevenLabs Voices Read",
+    providerClass: "capability_discovery",
+    cloud: true,
+    implemented: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    canAffectFinalPixels: false,
+    canAffectFinalAudio: false,
+    mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
+    notes: "Read-only voice catalog discovery; no voice write/create permissions."
   },
   keyword_filter: {
     id: "keyword_filter",
@@ -289,12 +462,28 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
   },
   bge_m3_candidate: {
     id: "bge_m3_candidate",
-    displayName: "BGE-M3 retrieval candidate",
+    displayName: "Deprecated BGE-M3 retrieval candidate alias",
     providerClass: "embedding",
     cloud: false,
     implemented: false,
-    packages: ["FlagEmbedding"],
+    aliasFor: "bge_m3",
+    deprecated: true,
+    deprecationWarning: "bge_m3_candidate is deprecated; use bge_m3.",
     mediaAccessPolicy: DETERMINISTIC_LOCAL_POLICY
+  },
+  bge_m3: {
+    id: "bge_m3",
+    displayName: "BGE-M3 local retrieval candidate",
+    providerClass: "embedding",
+    cloud: false,
+    implemented: false,
+    heavyLocal: true,
+    enableEnvVars: ["ENABLE_BGE_M3"],
+    weightEnvVars: ["BGE_M3_MODEL_PATH"],
+    binaries: ["python"],
+    packages: ["FlagEmbedding"],
+    mediaAccessPolicy: DETERMINISTIC_LOCAL_POLICY,
+    notes: "Optional local embedding candidate. Mocked embedding-score normalizer exists; no runtime adapter/weights are bundled."
   },
   deterministic_gates: {
     id: "deterministic_gates",
@@ -428,8 +617,8 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   },
   asr: {
     task: "asr",
-    primary: "faster_whisper",
-    fallbacks: ["no_asr_with_warning"],
+    primary: "elevenlabs_scribe",
+    fallbacks: ["faster_whisper", "no_asr_with_warning"],
     requiredForCoreDemo: true,
     featureGate: "analysis",
     localFallback: "no_asr_with_warning",
@@ -441,29 +630,31 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   },
   ocr: {
     task: "ocr",
-    primary: "easyocr_current",
-    fallbacks: ["no_ocr_with_warning"],
+    primary: "paddleocr_vl",
+    fallbacks: ["paddleocr", "easyocr_current", "no_ocr_with_warning"],
     requiredForCoreDemo: true,
     featureGate: "analysis",
     localFallback: "no_ocr_with_warning",
     providerClass: "ocr",
     effectScope: "planning_affects_recipe",
-    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, samplePixelsAllowed: true },
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
     canAffectFinalPixels: true,
-    canAffectFinalAudio: false
+    canAffectFinalAudio: false,
+    candidateProviders: ["paddleocr_vl", "paddleocr"]
   },
   visual_grounding: {
     task: "visual_grounding",
-    primary: "opencv_flow_ocr_heuristic",
-    fallbacks: ["heuristic_bbox"],
+    primary: "grounding_dino",
+    fallbacks: ["sam2", "cotracker3", "opencv_flow_ocr_heuristic", "heuristic_bbox"],
     requiredForCoreDemo: true,
     featureGate: "analysis",
     localFallback: "heuristic_bbox",
     providerClass: "visual_grounding",
     effectScope: "planning_affects_recipe",
-    mediaAccessPolicy: LOCAL_ANALYSIS_POLICY,
+    mediaAccessPolicy: LOCAL_PIXEL_ANALYSIS_POLICY,
     canAffectFinalPixels: true,
-    canAffectFinalAudio: false
+    canAffectFinalAudio: false,
+    candidateProviders: ["grounding_dino", "sam2", "cotracker3"]
   },
   audio_analysis: {
     task: "audio_analysis",
@@ -479,8 +670,8 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   },
   image_fill: {
     task: "image_fill",
-    primary: "deterministic_local_image_fill",
-    fallbacks: ["remotion_shape_card"],
+    primary: "google_gemini_image",
+    fallbacks: ["volcengine_seedream", "deterministic_local_image_fill", "remotion_shape_card"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "aigc_fill",
@@ -494,22 +685,22 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   },
   video_fill: {
     task: "video_fill",
-    primary: "remotion_procedural_motion",
-    fallbacks: ["ffmpeg_proxy_motion"],
+    primary: "seedance_2_0",
+    fallbacks: ["remotion_procedural_motion", "ffmpeg_proxy_motion"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
-    featureGate: "render",
+    featureGate: "aigc_fill",
     localFallback: "ffmpeg_proxy_motion",
-    providerClass: "renderer",
-    effectScope: "rendering_affects_pixels",
-    mediaAccessPolicy: DETERMINISTIC_LOCAL_POLICY,
+    providerClass: "video_generation",
+    effectScope: "generation_affects_assets",
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: true,
     canAffectFinalAudio: false,
     candidateProviders: ["seedance_2_0"]
   },
   voiceover: {
     task: "voiceover",
-    primary: "procedural_synth",
+    primary: "elevenlabs_tts",
     fallbacks: ["skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
@@ -520,11 +711,11 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_audio_stack"]
+    candidateProviders: ["elevenlabs_tts"]
   },
   sound_effect: {
     task: "sound_effect",
-    primary: "procedural_synth",
+    primary: "elevenlabs_sound_effects",
     fallbacks: ["skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
@@ -535,11 +726,11 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_audio_stack"]
+    candidateProviders: ["elevenlabs_sound_effects"]
   },
   music: {
     task: "music",
-    primary: "procedural_synth",
+    primary: "elevenlabs_music",
     fallbacks: ["skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
@@ -550,22 +741,67 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_audio_stack"]
+    candidateProviders: ["elevenlabs_music"]
   },
   audio_cleanup: {
     task: "audio_cleanup",
-    primary: "skip_with_warning",
-    fallbacks: [],
+    primary: "elevenlabs_audio_isolation",
+    fallbacks: ["skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "aigc_fill",
     localFallback: "skip_with_warning",
-    providerClass: "audio_generation",
+    providerClass: "audio_cleanup",
     effectScope: "audio_affects_final_mix",
-    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true, generatedAssetProvenanceRequired: true },
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_audio_stack"]
+    candidateProviders: ["elevenlabs_audio_isolation"]
+  },
+  forced_alignment: {
+    task: "forced_alignment",
+    primary: "elevenlabs_forced_alignment",
+    fallbacks: ["skip_with_warning"],
+    requiredForCoreDemo: false,
+    requiredWhenFeatureEnabled: true,
+    featureGate: "aigc_fill",
+    localFallback: "skip_with_warning",
+    providerClass: "audio_analysis",
+    effectScope: "planning_affects_recipe",
+    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true },
+    canAffectFinalPixels: true,
+    canAffectFinalAudio: false,
+    candidateProviders: ["elevenlabs_forced_alignment"]
+  },
+  model_discovery: {
+    task: "model_discovery",
+    primary: "elevenlabs_models",
+    fallbacks: ["skip_with_warning"],
+    requiredForCoreDemo: false,
+    requiredWhenFeatureEnabled: false,
+    featureGate: "demo_report",
+    localFallback: "skip_with_warning",
+    providerClass: "capability_discovery",
+    effectScope: "read_only_report",
+    mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
+    canAffectFinalPixels: false,
+    canAffectFinalAudio: false,
+    candidateProviders: ["elevenlabs_models"]
+  },
+  voice_discovery: {
+    task: "voice_discovery",
+    primary: "elevenlabs_voices_read",
+    fallbacks: ["skip_with_warning"],
+    requiredForCoreDemo: false,
+    requiredWhenFeatureEnabled: false,
+    featureGate: "demo_report",
+    localFallback: "skip_with_warning",
+    providerClass: "capability_discovery",
+    effectScope: "read_only_report",
+    mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
+    canAffectFinalPixels: false,
+    canAffectFinalAudio: false,
+    candidateProviders: ["elevenlabs_voices_read"]
   },
   dubbing: {
     task: "dubbing",
@@ -579,23 +815,22 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     effectScope: "audio_affects_final_mix",
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
-    canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_audio_stack"]
+    canAffectFinalAudio: true
   },
   knowledge_retrieval: {
     task: "knowledge_retrieval",
-    primary: "keyword_filter",
-    fallbacks: ["no_retrieval"],
+    primary: "bge_m3",
+    fallbacks: ["keyword_filter", "no_retrieval"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "knowledge_retrieval",
     localFallback: "keyword_filter",
-    providerClass: "deterministic_local",
+    providerClass: "embedding",
     effectScope: "planning_affects_recipe",
     mediaAccessPolicy: DETERMINISTIC_LOCAL_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: false,
-    candidateProviders: ["bge_m3_candidate"]
+    candidateProviders: ["bge_m3"]
   },
   quality_judge: {
     task: "quality_judge",

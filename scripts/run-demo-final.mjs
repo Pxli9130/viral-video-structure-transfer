@@ -90,6 +90,7 @@ function fanTargetAssets(copy) {
 }
 
 const CARD_IDS = ["fan_card_01", "fan_card_02", "fan_card_03", "fan_card_04"];
+const isRenderableFanMediaId = (id) => /^fan_(hero|card|mc|logo)/.test(id);
 
 /** Post-process the timeline: spread distinct fan cards across montage clips, cycle selling points
  *  across text cards, and inject AeroSpin brand/cta into the brand_cta clip style. */
@@ -126,8 +127,19 @@ function polishTimeline(timeline, copy) {
       const tc = timeline.clips.find((c) => c.id === rc.clipId);
       if (!tc) continue;
       rc.text = { ...(rc.text ?? {}), copy: tc.subtitleText ?? rc.text?.copy ?? "" };
-      if (typeof tc.sourceAssetId === "string" && tc.sourceAssetId.startsWith("fan_")) {
+      if (typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) {
         rc.material = { ...(rc.material ?? {}), assetIds: [tc.sourceAssetId] };
+      }
+    }
+  }
+  if (recipe?.layers) {
+    for (const layer of recipe.layers) {
+      if (!layer.clipId) continue;
+      const tc = timeline.clips.find((c) => c.id === layer.clipId);
+      if (!tc) continue;
+      if (layer.type === "text" && layer.text && tc.subtitleText) layer.text.content = tc.subtitleText;
+      if (layer.type === "media" && layer.material && typeof tc.sourceAssetId === "string" && isRenderableFanMediaId(tc.sourceAssetId)) {
+        layer.material.assetIds = [tc.sourceAssetId];
       }
     }
   }

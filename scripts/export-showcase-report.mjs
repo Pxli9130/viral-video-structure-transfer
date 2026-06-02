@@ -115,6 +115,105 @@ function providerMatrix() {
   ];
 }
 
+function readVisualQa(item) {
+  return readJson(path.join(item.caseRoot, "visual-qa-report.json"));
+}
+
+function renderChineseMarkdown(cases) {
+  const caseRows = cases.map((item) => {
+    const visualQa = readVisualQa(item);
+    return `| ${item.name} | ${item.template?.videoType ?? "n/a"} | ${item.evidenceCounts.visual}/${item.evidenceCounts.typography}/${item.evidenceCounts.audio}/${item.evidenceCounts.motion} | ${item.layerCounts.media}/${item.layerCounts.text}/${item.layerCounts.motion}/${item.layerCounts.audio} | \`${JSON.stringify(item.primitiveHistogram)}\` | ${item.gates.status} | ${visualQa?.risk ?? "not-run"} | [final.mp4](${path.relative(path.join(ROOT, "docs/artifacts"), item.finalMp4 ?? item.caseRoot).split(path.sep).join("/")}) |`;
+  }).join("\n");
+  const comparisons = cases.map((item) => {
+    const expected =
+      item.name === "marketing"
+        ? "海报式产品包装、ribbon/sweep 动势、干净 CTA"
+        : item.name === "editing"
+          ? "卡点、快切、字幕强调、CTA 收束"
+          : "运动图形节奏、kinetic typography、程序化动势";
+    return `### ${item.name}
+
+- 样例结构摘要：${expected}
+- 生成结果摘要：${item.layerCounts.media} 个 media layer、${item.layerCounts.text} 个 text layer、${item.layerCounts.motion} 个 motion atom layer、${item.layerCounts.audio} 个 audio layer。
+- 迁移了什么：节奏结构、primitive 序列、文字层级、运动/音频计划和 CTA 位置。
+- 没有复制什么：不复制样例帧、不复制样例音频、不复刻水印；样例只作为结构证据。
+- Gap/Fill：${Array.isArray(item.gapReport) ? item.gapReport.length : 0} 个 gap 条目，缺口通过本地程序化/目标素材策略补齐。
+`;
+  }).join("\n");
+  return `# Spec v4.2 Showcase Report
+
+## 1. 项目一句话
+
+学结构，不抄内容。样例视频只作为结构证据，目标素材、用户授权素材、程序化素材或带 provenance 的生成素材才进入最终画面。
+
+## 2. Pipeline
+
+\`\`\`text
+analysis -> template -> technique atoms -> slot matching -> gap report -> fill plan -> render recipe -> renderer -> gates
+\`\`\`
+
+这条链路的核心契约是 \`RenderRecipe v4.1\`：renderer 消费显式的 media/text/motion/audio layers，而不是从 prompt 里重新猜画面。
+
+## 3. Four Sample Cases
+
+| Case | Sample type | evidence v/t/a/m | layers media/text/motion/audio | primitive histogram | final gates | visual QA risk | video |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+${caseRows}
+
+## 4. Side-by-side Comparison
+
+${comparisons}
+
+## 5. Safety / Provider Policy
+
+- 本地严格路由评估：cloud disabled，sample media external upload = 0。
+- 不把样例帧/样例音频作为 AIGC 生成参考上传。
+- \`rawPromptRenderable=false\`，prompt 只做规划元数据，不进入展示文案。
+- 生成素材必须标记 provenance；缺素材时写 gap/fill，不用 mock 占位假装完成。
+
+## 6. Known Limitations
+
+- FFmpeg \`final.mp4\` 是当前 canonical 输出。
+- Remotion fresh host render 在 sandbox 中仍可能被 \`uv_interface_addresses returned Unknown system error 1\` 阻断；见 \`docs/remotion-host-verification.md\`。
+- 当前 visual QA 是本地启发式，不是外部 VLM 观感评审；提交前仍需人工打开四个 \`final.mp4\`。
+- 本地 demo 未调用 Seedance/Seedream/ElevenLabs/Gemini/OpenAI/Qwen/Deepgram/Runway/Veo/Kling。
+
+## 7. How to Reproduce
+
+\`\`\`bash
+npm install
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" npm run build --workspace @vvst/shared
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" npm test
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/evaluate-model-routes.mjs --offline --json --strict-policy
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/run-learn-samples-max.mjs --offline --no-remotion --no-gate
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/evaluate-final-gates.mjs
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/visual-qa-report.mjs --all-cases
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-showcase-report.mjs
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-submission-artifacts.mjs
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/verify-remotion-host.mjs --case marketing
+\`\`\`
+`;
+}
+
+function renderChineseHtml(cases) {
+  const rows = cases.map((item) => {
+    const visualQa = readVisualQa(item);
+    const video = item.finalMp4 ? path.relative(path.join(ROOT, "docs/artifacts"), item.finalMp4).split(path.sep).join("/") : "";
+    const contact = path.relative(path.join(ROOT, "docs/artifacts"), path.join(item.caseRoot, "render-contact-sheet.png")).split(path.sep).join("/");
+    return `<section>
+      <h2>${h(item.name)}</h2>
+      ${video ? `<video controls src="${h(video)}"></video>` : `<p class="fail">final.mp4 missing</p>`}
+      <img src="${h(contact)}" alt="${h(item.name)} contact sheet" />
+      <p>证据 visual/typography/audio/motion：${item.evidenceCounts.visual}/${item.evidenceCounts.typography}/${item.evidenceCounts.audio}/${item.evidenceCounts.motion}</p>
+      <p>层 media/text/motion/audio：${item.layerCounts.media}/${item.layerCounts.text}/${item.layerCounts.motion}/${item.layerCounts.audio}</p>
+      <p>Primitive：<code>${h(JSON.stringify(item.primitiveHistogram))}</code></p>
+      <p>Final gates：${h(item.gates.status)}；Visual QA risk：${h(visualQa?.risk ?? "not-run")}</p>
+      <p><a href="${h(path.relative(path.join(ROOT, "docs/artifacts"), path.join(item.caseRoot, "visual-qa-report.md")).split(path.sep).join("/"))}">visual QA</a></p>
+    </section>`;
+  }).join("\n");
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spec v4.2 Showcase Report</title><style>body{font-family:Inter,system-ui,sans-serif;background:#f6f7f9;color:#172033;margin:0}main{max-width:1280px;margin:auto;padding:24px}section{background:white;border:1px solid #d8dee8;border-radius:8px;padding:16px;margin:16px 0}video,img{display:block;max-width:420px;width:100%;margin:10px 0;background:#05060a}code{white-space:pre-wrap}.fail{color:#be123c}</style></head><body><main><h1>Spec v4.2 Showcase Report</h1><p>学结构，不抄内容。样例只作为结构证据，目标/用户/生成素材进入最终画面。</p>${rows}<h2>Safety / Provider Policy</h2><p>本地 strict route 关闭 cloud，禁止外部样例媒体上传；FFmpeg final.mp4 是当前 canonical 输出；Remotion host 验证见 docs/remotion-host-verification.md。</p></main></body></html>`;
+}
+
 function renderAtomCards(item) {
   const atoms = item.template?.techniqueAtoms ?? [];
   if (!atoms.length) return `<p class="muted">No TechniqueAtom array persisted in this artifact. Re-run learn/generate after PR2 to populate it.</p>`;
@@ -277,5 +376,8 @@ const reportJson = {
 };
 writeFileSync(path.join(outDir, "showcase-report.json"), JSON.stringify(reportJson, null, 2));
 writeFileSync(path.join(outDir, "index.html"), buildHtml(cases, outDir));
-console.log(JSON.stringify({ outDir, html: path.join(outDir, "index.html"), json: path.join(outDir, "showcase-report.json") }, null, 2));
-
+const topMd = path.join(ROOT, "docs/artifacts/showcase-report.md");
+const topHtml = path.join(ROOT, "docs/artifacts/showcase-report.html");
+writeFileSync(topMd, renderChineseMarkdown(cases));
+writeFileSync(topHtml, renderChineseHtml(cases));
+console.log(JSON.stringify({ outDir, html: path.join(outDir, "index.html"), json: path.join(outDir, "showcase-report.json"), markdown: topMd, chineseHtml: topHtml }, null, 2));

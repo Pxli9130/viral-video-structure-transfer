@@ -4,12 +4,12 @@
 
 Both Remotion and FFmpeg consume RenderRecipe. Renderer must not re-infer structure from `clip.role` except as explicit fallback.
 
-Every renderer output should write a `render-log.json`:
+Target: renderers should emit a `render-log.json` (NOT YET IMPLEMENTED — current renderers expose diagnostics via `RenderOutput.renderQualityWarnings`, see `renderers.ts:849-893`). The implemented mechanism is a `renderQualityWarnings: string[]` field on the render output whose values are drawn from a fixed vocabulary: `no_audio`, `placeholder_detected`, `no_source_clips`, `weak_style_transfer`, `moving_material_missing`, `beat_alignment_unverified` (plus `static_action_montage_avoided_via_dynamic_proxy`). The illustrative target log below is the intended (not yet shipped) shape:
 
 ```json
 {
   "renderer": "remotion",
-  "recipeVersion": "render-recipe-v4",
+  "recipeVersion": "render-recipe-v4.1",
   "consumed": {
     "mediaLayers": 8,
     "textLayers": 9,
@@ -26,12 +26,15 @@ Every renderer output should write a `render-log.json`:
 ### 2.1 Root Design
 
 ```tsx
-export function ViralRecipeRoot({ recipe }: { recipe: RenderRecipe }) {
+// As implemented in apps/api/remotion/ViralRecipeRoot.tsx:448-451 — props are
+// { timeline, assetMap }; the recipe is derived from the timeline render plan.
+export const ViralRecipeRoot: React.FC<{ timeline: Timeline; assetMap: AssetMap }> = ({ timeline, assetMap }) => {
+  const recipe = timeline?.renderPlan?.renderRecipe ?? { clips: [] };
   if (recipe.layers?.length) {
-    return <LayerRecipeRoot recipe={recipe} />;
+    return <LayerRecipeRoot recipe={recipe} assetMap={assetMap} />;
   }
-  return <LegacyClipRecipeRoot recipe={recipe} />;
-}
+  return <LegacyClipRecipeRoot recipe={recipe} assetMap={assetMap} />;
+};
 
 function LayerRecipeRoot({ recipe }: { recipe: RenderRecipe }) {
   return (
