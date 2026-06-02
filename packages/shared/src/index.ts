@@ -1,5 +1,6 @@
 export * from "./adapters.js";
 export * from "./engine/index.js";
+export * from "./effectCodegen/index.js";
 export {
   AIGC_GENERATION_POLICY,
   AIGC_GENERATION_WITH_USER_ASSETS_POLICY,
