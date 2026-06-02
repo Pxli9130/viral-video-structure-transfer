@@ -62,6 +62,89 @@ describe("Spec v4.2 ModelTask router", () => {
     }
   });
 
+  it("keeps ElevenLabs disabled when the key exists but live flags are off", () => {
+    const decision = resolveModelRoute("music", {
+      env: { ELEVENLABS_API_KEY: "test-key" },
+      allowCloud: true
+    });
+
+    expect(decision.selectedProvider).toBe("skip_with_warning");
+    expect(decision.fallbackUsed).toBe(true);
+    expect(decision.rejectedProviders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "elevenlabs_music",
+          reason: expect.stringContaining("ElevenLabs live calls are disabled")
+        })
+      ])
+    );
+    expect(decision.consumesSampleAudioExternally).toBe(false);
+  });
+
+  it("selects ElevenLabs for allowed audio tasks without enabling sample audio upload", () => {
+    const env = { ELEVENLABS_API_KEY: "test-key", ENABLE_ELEVENLABS_LIVE_TESTS: "1" };
+    const scribe = resolveModelRoute("asr", { env, allowCloud: true });
+    const tts = resolveModelRoute("voiceover", { env, allowCloud: true });
+    const sfx = resolveModelRoute("sound_effect", { env, allowCloud: true });
+    const music = resolveModelRoute("music", { env, allowCloud: true });
+    const cleanup = resolveModelRoute("audio_cleanup", { env, allowCloud: true });
+    const alignment = resolveModelRoute("forced_alignment", { env, allowCloud: true });
+
+    expect(scribe.selectedProvider).toBe("elevenlabs_scribe");
+    expect(tts.selectedProvider).toBe("elevenlabs_tts");
+    expect(sfx.selectedProvider).toBe("elevenlabs_sound_effects");
+    expect(music.selectedProvider).toBe("elevenlabs_music");
+    expect(cleanup.selectedProvider).toBe("elevenlabs_audio_isolation");
+    expect(alignment.selectedProvider).toBe("elevenlabs_forced_alignment");
+
+    for (const decision of [scribe, tts, sfx, music, cleanup, alignment]) {
+      expect(decision.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
+      expect(decision.consumesSampleAudioExternally).toBe(false);
+      expect(decision.mediaAccessPolicy.samplePixelsAllowed).toBe(false);
+      expect(decision.mediaAccessPolicy.sampleVideoUploadAllowed).toBe(false);
+      expect(decision.mediaAccessPolicy.rawPromptRenderable).toBe(false);
+      expect(validateProviderDecisionSafety(decision)).toEqual([]);
+    }
+    expect(tts.generatedAssetProvenanceRequired).toBe(true);
+    expect(sfx.generatedAssetProvenanceRequired).toBe(true);
+    expect(music.generatedAssetProvenanceRequired).toBe(true);
+    expect(cleanup.mediaAccessPolicy.userAssetsAllowed).toBe(true);
+  });
+
+  it("records ElevenLabs sample-audio analysis only when external sample media is enabled", () => {
+    const env = { ELEVENLABS_API_KEY: "test-key", ENABLE_ELEVENLABS_LIVE_TESTS: "1" };
+    const blocked = resolveModelRoute("asr", { env, allowCloud: true });
+    expect(blocked.selectedProvider).toBe("elevenlabs_scribe");
+    expect(blocked.consumesSampleAudioExternally).toBe(false);
+    expect(blocked.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
+
+    const allowed = resolveModelRoute("asr", { env, allowCloud: true, allowSampleMediaExternal: true });
+    expect(allowed.selectedProvider).toBe("elevenlabs_scribe");
+    expect(allowed.consumesSampleAudioExternally).toBe(true);
+    expect(allowed.mediaAccessPolicy.sampleAudioAllowed).toBe(true);
+    expect(validateProviderDecisionSafety(allowed)).toEqual([]);
+  });
+
+  it("routes ElevenLabs model and voice discovery as read-only report tasks", () => {
+    const env = { ELEVENLABS_API_KEY: "test-key", ELEVENLABS_ENABLE_DISCOVERY: "1" };
+    const models = resolveModelRoute("model_discovery", { env, allowCloud: true });
+    const voices = resolveModelRoute("voice_discovery", { env, allowCloud: true });
+
+    expect(models.selectedProvider).toBe("elevenlabs_models");
+    expect(voices.selectedProvider).toBe("elevenlabs_voices_read");
+    for (const decision of [models, voices]) {
+      expect(decision.effectScope).toBe("read_only_report");
+      expect(decision.canAffectFinalPixels).toBe(false);
+      expect(decision.canAffectFinalAudio).toBe(false);
+      expect(decision.mediaAccessPolicy).toMatchObject({
+        samplePixelsAllowed: false,
+        sampleAudioAllowed: false,
+        sampleVideoUploadAllowed: false,
+        rawPromptRenderable: false
+      });
+    }
+  });
+
   it("keeps explicit user-asset policy for cloud AIGC while blocking sample media", () => {
     const decision = resolveModelRoute("image_fill", {
       requestedProvider: "google_gemini_image",
@@ -75,6 +158,24 @@ describe("Spec v4.2 ModelTask router", () => {
     expect(decision.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
     expect(decision.mediaAccessPolicy.sampleVideoUploadAllowed).toBe(false);
     expect(decision.generatedAssetProvenanceRequired).toBe(true);
+    expect(validateProviderDecisionSafety(decision)).toEqual([]);
+  });
+
+  it("selects Seedance fast video fill from the shared Ark key without sample media upload", () => {
+    const decision = resolveModelRoute("video_fill", {
+      env: { SEEDREAM_ARK_API_KEY: "test-key" },
+      allowCloud: true
+    });
+
+    expect(decision.selectedProvider).toBe("seedance_2_0");
+    expect(decision.providerClass).toBe("video_generation");
+    expect(decision.generatedAssetProvenanceRequired).toBe(true);
+    expect(decision.mediaAccessPolicy.samplePixelsAllowed).toBe(false);
+    expect(decision.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
+    expect(decision.mediaAccessPolicy.sampleVideoUploadAllowed).toBe(false);
+    expect(decision.consumesSamplePixelsExternally).toBe(false);
+    expect(decision.consumesSampleAudioExternally).toBe(false);
+    expect(decision.consumesSampleVideoExternally).toBe(false);
     expect(validateProviderDecisionSafety(decision)).toEqual([]);
   });
 

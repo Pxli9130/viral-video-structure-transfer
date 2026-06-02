@@ -42,3 +42,11 @@ artifacts/
 codegen/
 expected_codegen_eval_bundle/
 docs1/
+1.md
+apps/api/remotion/effects/generated/RibbonPosterSweep_local_poster_ribbon_marketing/validation-report.md
+spec_v4/prompts/implementation-v4-1.prompt.txt
+# Grading bundle = curated copies of generated demo videos / run artifacts — keep local, do not commit.
+marking/
+marking.zip
+# Generated effect outputs from `generate-effect-from-sample --apply` (the empty manifest stub IS committed).
+apps/api/remotion/effects/generated/*/

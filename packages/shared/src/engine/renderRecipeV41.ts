@@ -217,13 +217,19 @@ function audioKindFromKey(key: string): RenderRecipeAudioLayer["audio"]["kind"] 
 
 function motionAtomLayer(atom: MotionAtomSpec, index: number, durationSec: number): RenderRecipeMotionAtomLayer {
   const direction = atom.axis === "screen_y" ? "right_to_left" : "left_to_right";
-  const path = atom.pathFamily === "horizontal_wave" ? "horizontal_wave" : atom.pathFamily === "vertical_helix" ? "s_curve_orbit" : "diagonal_sweep";
+  const path = atom.pathFamily === "horizontal_wave"
+    ? "horizontal_wave"
+    : atom.pathFamily === "vertical_helix" || atom.axis === "screen_y" || atom.pathFamily === "planar_orbit"
+      ? "s_curve_orbit"
+      : "diagonal_sweep";
+  const startSec = Math.max(0, Math.min(durationSec, atom.startSec ?? 0));
+  const endSec = Math.max(startSec + 0.1, Math.min(durationSec, atom.endSec ?? durationSec));
   return {
     id: `layer_motion_atom_${index + 1}`,
     type: "motion_atom",
     zIndex: 30,
-    startSec: atom.startSec ?? 0,
-    durationSec: Math.max(0.1, (atom.endSec ?? durationSec) - (atom.startSec ?? 0)),
+    startSec,
+    durationSec: Math.max(0.1, endSec - startSec),
     atom: {
       kind: "parametric_ribbon_surface",
       direction,

@@ -1,4 +1,7 @@
 import type { VLMVideoAnalysis } from "../adapters.js";
+import { buildDeterministicCreativeEffectSpecFromEvidence } from "./creativeEffectSpec.js";
+import { selectEffect } from "./effectRegistry.js";
+import { attachCreativeEffectToRenderRecipe } from "./creativeEffectAttach.js";
 import type {
   Asset,
   AssetKeyframe,
@@ -909,19 +912,46 @@ function motionAtomsFromVisualEvidence(analysis: VideoAnalysisResult): MotionAto
   const ev = analysis.evidenceTimeline;
   const graph = ev?.visualElementGraph;
   const elements = graph?.elements ?? [];
-  const source = elements.find((element) => {
-    const haystack = [
-      element.family,
-      element.motionPattern,
-      element.positionClass,
-      element.sizeClass,
-      element.appearance?.objectDescriptor
-    ].join(" ").toLowerCase();
-    return /ribbon|orbit|helix|sweep|light_sweep|hero_object/.test(haystack);
-  });
+  const candidates = elements
+    .filter((element) => {
+      const haystack = [
+        element.family,
+        element.motionPattern,
+        element.positionClass,
+        element.sizeClass,
+        element.appearance?.objectDescriptor
+      ].join(" ").toLowerCase();
+      return /ribbon|orbit|helix|sweep|light_sweep|hero_object/.test(haystack);
+    })
+    .sort((a, b) => {
+      const score = (element: typeof elements[number]) => {
+        const haystack = [
+          element.family,
+          element.motionPattern,
+          element.positionClass,
+          element.sizeClass,
+          element.appearance?.objectDescriptor
+        ].join(" ").toLowerCase();
+        const range = Array.isArray(element.timeRangeSec) ? element.timeRangeSec : [];
+        const span = typeof range[0] === "number" && typeof range[1] === "number" ? Math.max(0, range[1] - range[0]) : 0;
+        return (
+          (/ribbon|helix/.test(haystack) ? 20 : 0) +
+          (/hero_object/.test(haystack) ? 8 : 0) +
+          (/orbit/.test(haystack) ? 6 : 0) +
+          (/light_sweep|sweep/.test(haystack) ? 4 : 0) +
+          Math.min(10, span)
+        );
+      };
+      return score(b) - score(a);
+    });
+  const source = candidates[0];
   if (!source) return [];
   const pattern = String(source.motionPattern ?? source.appearance?.objectDescriptor ?? "").toLowerCase();
   const timeRange = Array.isArray(source.timeRangeSec) ? source.timeRangeSec : undefined;
+  const span = typeof timeRange?.[0] === "number" && typeof timeRange?.[1] === "number" ? Math.max(0, timeRange[1] - timeRange[0]) : 0;
+  const duration = analysis.metadata.durationSec || ev?.durationSec || span || 1;
+  const longRunningHero = source.family === "hero_object" && span / Math.max(1, duration) >= 0.55;
+  const verticalRibbonLike = pattern.includes("vertical") || pattern.includes("helix") || (longRunningHero && /orbit|light_sweep|sweep/.test(pattern));
   const track = Array.isArray(source.bboxTrackNorm) ? source.bboxTrackNorm : [];
   const evidenceFrames = track
     .map((item) => (typeof item === "object" && item && typeof (item as { t?: unknown }).t === "number" ? (item as { t: number }).t : undefined))
@@ -953,8 +983,8 @@ function motionAtomsFromVisualEvidence(analysis: VideoAnalysisResult): MotionAto
     shadowOpacity: 0.34,
     climaxBuild: true,
     surfaceType: "wide_band",
-    pathFamily: pattern.includes("helix") ? "vertical_helix" : pattern.includes("diagonal") ? "diagonal_sweep" : "horizontal_wave",
-    axis: pattern.includes("vertical") || pattern.includes("helix") ? "screen_y" : "screen_x",
+    pathFamily: verticalRibbonLike ? "vertical_helix" : pattern.includes("diagonal") ? "diagonal_sweep" : "horizontal_wave",
+    axis: verticalRibbonLike ? "screen_y" : "screen_x",
     depthBehavior: /orbit|helix/.test(pattern) ? "front_back_crossing" : "perspective_only",
     layoutRelation: "around_title",
     textRelation: /text|title|caption/.test(pattern) ? "text_on_ribbon" : "none",
@@ -1176,6 +1206,9 @@ export function buildBeatCutTemplate(
     projectId,
     name: `Learned Beat-Cut Editing Tutorial Structure · ${sampleLabel} · ${ts}`,
     sourceAssetFilename: sampleLabel,
+    ...(Array.isArray(ev?.stats?.dominantPalette) && ev.stats.dominantPalette.length
+      ? { dominantHexPalette: ev.stats.dominantPalette }
+      : {}),
     heroDescriptor: ev?.heroDescriptor,
     typographyEvidence: ev?.typographyEvidence,
     visualElementGraph: ev?.visualElementGraph,
@@ -3073,6 +3106,42 @@ function buildMotionAtoms(fillPlan: FillAction[], request: GenerationRequest, du
   ];
 }
 
+function applyMotionAtomControls(templateAtoms: MotionAtomSpec[], controlAtoms: MotionAtomSpec[]): MotionAtomSpec[] {
+  if (!templateAtoms.length) return controlAtoms;
+  if (!controlAtoms.length) return templateAtoms;
+  return templateAtoms.map((atom, index) => {
+    const control = controlAtoms[index] ?? controlAtoms.find((item) => item.type === atom.type);
+    if (!control || atom.type !== "parametric_ribbon_surface" || control.type !== "parametric_ribbon_surface") return atom;
+    return {
+      ...control,
+      ...atom,
+      style: control.style,
+      density: control.density,
+      speed: control.speed,
+      opacity: control.opacity,
+      bandWidth: control.bandWidth,
+      edgeWidth: control.edgeWidth,
+      gradientStops: control.gradientStops,
+      frontLayerCount: control.frontLayerCount,
+      backLayerCount: control.backLayerCount,
+      twistIntensity: control.twistIntensity,
+      perspectiveStrength: control.perspectiveStrength,
+      shadowOpacity: control.shadowOpacity,
+      keywords: atom.keywords.length ? atom.keywords : control.keywords,
+      colorProgression: atom.colorProgression.length ? atom.colorProgression : control.colorProgression,
+      pathFamily: atom.pathFamily ?? control.pathFamily,
+      axis: atom.axis ?? control.axis,
+      surfaceType: atom.surfaceType ?? control.surfaceType,
+      depthBehavior: atom.depthBehavior ?? control.depthBehavior,
+      layoutRelation: atom.layoutRelation ?? control.layoutRelation,
+      textRelation: atom.textRelation ?? control.textRelation,
+      evidenceFrames: (atom.evidenceFrames?.length ?? 0) > 0 ? atom.evidenceFrames : control.evidenceFrames,
+      startSec: atom.startSec ?? control.startSec,
+      endSec: atom.endSec ?? control.endSec
+    };
+  });
+}
+
 function replacementSlotsFromGapReport(gapReport: GapReportItem[], fillPlan: FillAction[]): ReplacementSlot[] {
   const fromGaps = gapReport
     .filter((gap) => gap.clickToReplace || gap.placeholderSpec || gap.replacementSlotId)
@@ -3291,8 +3360,22 @@ function techniqueAtomsForClip(clip: TimelineClip, template: StructureTemplate):
 function componentFromTechniqueAtoms(
   clip: TimelineClip,
   template: StructureTemplate,
-  opts: { fallback: RenderRecipePrimitive; hasSourcePixels: boolean; hasTargetMaterial: boolean }
+  opts: { fallback: RenderRecipePrimitive; hasSourcePixels: boolean; hasTargetMaterial: boolean; preserveLearnedPrimitive?: boolean }
 ): { component: RenderRecipePrimitive; atomIds: string[]; reason?: string } {
+  const primitiveOwnedFallbacks = new Set<RenderRecipePrimitive>([
+    "FanHeroSpin",
+    "ProductHeroOrbit",
+    "SourceClipBeatMontage",
+    "DynamicProxyMontage",
+    "ImpactFlash"
+  ]);
+  if (opts.preserveLearnedPrimitive && primitiveOwnedFallbacks.has(opts.fallback)) {
+    return {
+      component: opts.fallback,
+      atomIds: [],
+      reason: `Preserved learned motionPrimitive=${clip.motionPrimitive} → ${opts.fallback}; TechniqueAtoms decorate without collapsing this clip into the generic poster/text mold.`
+    };
+  }
   const candidates = techniqueAtomsForClip(clip, template);
   for (const atom of candidates) {
     const component = atom.renderer.component;
@@ -3385,7 +3468,7 @@ function colorsFromUnknown(value: unknown): string[] {
     .filter((color): color is string => Boolean(color));
 }
 
-function recipePalette(background: string, isBeatCut: boolean, template: StructureTemplate): string[] {
+function recipePalette(background: string, isBeatCut: boolean, template: StructureTemplate, leadColors: string[] = []): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const add = (value: unknown) => {
@@ -3397,6 +3480,9 @@ function recipePalette(background: string, isBeatCut: boolean, template: Structu
     }
   };
   add(background);
+  // Sample-derived accent colors lead the palette (before the generic template/fallback colors) so
+  // the renderer's accent/bar/streak/text colors carry each sample's real color identity.
+  add(leadColors);
   add(template.visualElementGraph?.globalStyle?.palette);
   add(template.visualStyle?.colorProgression);
   add(template.heroDescriptor?.palette);
@@ -3411,25 +3497,37 @@ function recipePalette(background: string, isBeatCut: boolean, template: Structu
 
 function recipeAudioLayers(
   estimated: Record<string, unknown> | undefined,
-  audioStructure: Record<string, unknown> | undefined = undefined
+  audioStructure: Record<string, unknown> | undefined = undefined,
+  context: { isBeatCut?: boolean; videoType?: string; bpm?: number } = {}
 ): RenderRecipe["global"]["audioPlan"]["layers"] {
   const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : undefined);
   const e = estimated ?? {};
   const layers: RenderRecipe["global"]["audioPlan"]["layers"] = {};
+  const bpm = context.bpm ?? (typeof audioStructure?.bpm === "number" ? audioStructure.bpm : undefined);
+  const beatDrivenDrums = Boolean(context.isBeatCut && typeof bpm === "number" && bpm >= 140);
   const kick = num(e.kick) ?? num(e.bass_kick);
-  if (kick !== undefined) {
+  if (beatDrivenDrums && kick !== undefined) {
     layers.kick = kick;
   }
   const bass = num(e.bass) ?? num(e.bass_kick);
-  if (bass !== undefined) layers.bass = bass;
+  if (beatDrivenDrums && bass !== undefined) layers.bass = bass;
   const drone = num(e.drone) ?? num(e.music_harmonic);
-  if (drone !== undefined) layers.drone = drone;
   const hats = num(e.hats) ?? num(e.hats_air);
-  if (hats !== undefined) layers.hats = hats;
   const riser = num(e.riser);
-  if (riser !== undefined) layers.riser = riser;
   const impact = num(e.impact);
-  if (impact !== undefined) layers.impact = impact;
+  const bassEnergy = num(e.bass_kick) ?? num(e.kick) ?? num(e.bass) ?? 0.35;
+  if (beatDrivenDrums) {
+    if (drone !== undefined) layers.drone = drone;
+    if (hats !== undefined) layers.hats = hats;
+    if (riser !== undefined) layers.riser = riser;
+    if (impact !== undefined) layers.impact = impact;
+  } else {
+    const marketingLike = !context.isBeatCut || /marketing|product|b2b/i.test(String(context.videoType ?? ""));
+    layers.drone = Math.max(drone ?? 0, marketingLike ? 0.42 : 0.24);
+    layers.riser = Math.max(riser ?? 0, Math.min(marketingLike ? 0.7 : 0.52, 0.2 + bassEnergy * (marketingLike ? 0.38 : 0.26)));
+    layers.hats = Math.max(hats ?? 0, marketingLike ? 0.06 : 0.16);
+    layers.impact = Math.max(impact ?? 0, marketingLike ? 0.12 : 0.18);
+  }
   const strongBeats = Array.isArray(audioStructure?.strongBeats) ? audioStructure.strongBeats.length : 0;
   const onsets = Array.isArray(audioStructure?.onsets) ? audioStructure.onsets.length : 0;
   const centroid = typeof audioStructure?.spectralCentroidMean === "number" ? audioStructure.spectralCentroidMean : undefined;
@@ -3574,7 +3672,8 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
     const selected = componentFromTechniqueAtoms(clip, template, {
       fallback: fallbackComponent,
       hasSourcePixels,
-      hasTargetMaterial: assetIds.length > 0
+      hasTargetMaterial: assetIds.length > 0,
+      preserveLearnedPrimitive: KNOWN_BEAT_PRIMITIVES.has(clip.motionPrimitive ?? "")
     });
     const component = selected.component;
     const policy: RenderRecipeClip["material"]["policy"] =
@@ -3632,6 +3731,16 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
     };
   });
 
+  // v1.4 faithful-replication: when evidence-driven rendering is enabled, lead the palette with the
+  // sample's real dominant colors (hex) so each sample renders with its own color identity (warm vs
+  // cool, etc.) instead of the shared generic mold. Gated so goldens (flag off) are unchanged.
+  const useSampleColors = request.controls?.recipeEvidencePrimitives === true;
+  const sampleHex = useSampleColors
+    ? (template.dominantHexPalette ?? []).filter((c): c is string => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c))
+    : [];
+  const recipeBackground = sampleHex.length ? sampleHex[0] : background;
+  const leadAccents = sampleHex.slice(1);
+
   const legacyRecipe: RenderRecipe = {
     schemaVersion: "render-recipe-v1",
     videoType,
@@ -3669,7 +3778,7 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
       height,
       fps: 30,
       durationSec,
-      palette: recipePalette(background, isBeatCut, template),
+      palette: recipePalette(recipeBackground, isBeatCut, template, leadAccents),
       ...(learnedBpm ? { bpm: learnedBpm } : {}),
       ...((isBeatCut || learnedBeatGrid.length) ? { beatGridSec: learnedBeatGrid.length ? learnedBeatGrid : synthBeat.beats } : {}),
       cutPattern: {
@@ -3680,17 +3789,53 @@ export function buildRenderRecipe(args: BuildRenderRecipeArgs): RenderRecipe {
       audioPlan: {
         policy:
           audioPolicy === "sample_bgm" ? "authorized_sample_bgm" : audioPolicy === "synth_beat" ? "procedural_bgm" : "silent",
-        layers: recipeAudioLayers(template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined, audioStructure)
+        layers: recipeAudioLayers(template.audioStructure?.estimatedLayers as Record<string, unknown> | undefined, audioStructure, {
+          isBeatCut,
+          videoType: template.videoType,
+          bpm: learnedBpm
+        })
       }
     },
     clips,
     warnings
   };
-  return migrateRenderRecipeToV4_1(legacyRecipe, {
+  const finalRecipe = migrateRenderRecipeToV4_1(legacyRecipe, {
     motionAtoms: args.motionAtoms ?? template.motionAtoms ?? [],
     evidenceSummary: legacyRecipe.evidenceSummary,
     rawPrompt: brief.rawPrompt
   });
+
+  // v1.4 creative-effect selection — flag-gated (controls.enableCreativeEffects or ENABLE_CREATIVE_EFFECTS=1).
+  // Default OFF keeps recipes byte-identical for goldens. Attaches motif→effect selection + props.
+  const controls = request.controls;
+  const effectsOn = controls?.enableCreativeEffects === true || process.env.ENABLE_CREATIVE_EFFECTS === "1";
+  if (effectsOn) {
+    const spec = buildDeterministicCreativeEffectSpecFromEvidence({
+      caseId: template.sourceSampleIds?.[0] ?? template.id,
+      ocrText: (template.typographyEvidence ?? []).map((t) => t.text).filter((t): t is string => typeof t === "string"),
+      palette: [template.dominantHexPalette, template.visualElementGraph?.globalStyle?.palette, template.heroDescriptor?.palette].find(
+        (p): p is string[] => Array.isArray(p) && p.every((x) => typeof x === "string")
+      ),
+      techniqueKeywords: [
+        ...(template.techniqueAtoms ?? []).map((a) => (a as { type?: string }).type).filter((t): t is string => typeof t === "string"),
+        ...((template.visualElementGraph?.elements ?? []).map((e) => (e as { family?: string }).family).filter((f): f is string => typeof f === "string"))
+      ],
+      videoType: template.videoType,
+      bpm: typeof legacyRecipe.global.bpm === "number" ? legacyRecipe.global.bpm : undefined
+    });
+    const selection = selectEffect({
+      motifFamily: spec.motifFamily,
+      preferGenerated: controls?.preferGeneratedEffects === true || process.env.PREFER_GENERATED_EFFECTS === "1",
+      strictEffectCoverage: controls?.strictEffectCoverage === true || process.env.STRICT_EFFECT_COVERAGE === "1"
+    });
+    return attachCreativeEffectToRenderRecipe(finalRecipe, spec, selection, {
+      width: finalRecipe.global?.width,
+      height: finalRecipe.global?.height,
+      fps: finalRecipe.global?.fps,
+      durationSec: finalRecipe.global?.durationSec
+    });
+  }
+  return finalRecipe;
 }
 
 /** The beat-cut primitive for a slot = its first renderer candidate that is a known primitive. */
@@ -4297,6 +4442,11 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       ? audioStructure.spectralFlatnessMean
       : undefined;
   const learnedAudioLayers = (audioStructure.estimatedLayers as Record<string, number> | undefined) ?? undefined;
+  const plannedAudioLayers = recipeAudioLayers(learnedAudioLayers, audioStructure, {
+    isBeatCut,
+    videoType: template.videoType,
+    bpm: template.rhythm.bpm
+  });
   // Style tokens are the learned visual grammar; they also surface in explainability views.
   const baseStyleTokens = ["dark_tech", "black_bg", "red_yellow_white_text", "hard_cut", "beat_pulse", "impact_flash", "beat_sync"];
   // Clean Chinese copy pool from the brief so beat-cut cards never fall back to English
@@ -4409,7 +4559,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
       })
     : clips;
   const timelineMotionAtoms = buildMotionAtoms(fillPlan, request, durationSec);
-  const recipeMotionAtoms = timelineMotionAtoms.length ? timelineMotionAtoms : (template.motionAtoms ?? []);
+  const recipeMotionAtoms = applyMotionAtomControls(template.motionAtoms ?? [], timelineMotionAtoms);
 
   const timeline: Timeline = {
     id: stableId("timeline", generationId, request.prompt),
@@ -4440,7 +4590,7 @@ export function buildTimeline(input: BuildTimelineInput): { timeline: Timeline; 
             beatGridSec: synthBeat.beats,
             sfx: isBeatCut ? ["kick_on_segment_start", "flash_on_strong_beat", "ticker_clicks"] : ["soft_downbeat", "ambient_riser"],
             // v3: learned layer balance from the sample's audio structure drives the procedural mix.
-            layers: learnedAudioLayers,
+            layers: plannedAudioLayers,
             strongBeatsSec,
             spectralCentroidMean,
             spectralFlatnessMean
@@ -4506,6 +4656,11 @@ export interface GenerateMigrationInput {
   selectedTemplateReason?: string;
 }
 
+function envFlag(key: string): boolean {
+  if (typeof process === "undefined") return false;
+  return /^(1|true|yes|on)$/i.test(process.env[key]?.trim() ?? "");
+}
+
 export function generateMigrationResult(input: GenerateMigrationInput): GenerationResult {
   const { template, request, sourceAsset, sourceAnalysis, sourceVlm } = input;
   const requestValidation = validateGenerationRequest(request);
@@ -4535,7 +4690,13 @@ export function generateMigrationResult(input: GenerateMigrationInput): Generati
   const selectedAtoms = selectedAtomIds.size > 0
     ? template.structureAtoms.filter((atom) => selectedAtomIds.has(atom.id))
     : template.structureAtoms;
-  const providerDecisions = buildDefaultProviderDecisions();
+  const providerRouteOptions = {
+    env: typeof process !== "undefined" ? process.env : {},
+    allowCloud: envFlag("ALLOW_CLOUD_PROVIDERS"),
+    allowSampleMediaExternal: envFlag("ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS") || envFlag("ALLOW_EXTERNAL_SAMPLE_MEDIA"),
+    allowQualityJudgeSampleFrames: envFlag("ALLOW_QUALITY_JUDGE_SAMPLE_FRAMES")
+  };
+  const providerDecisions = buildDefaultProviderDecisions(providerRouteOptions);
   const modelRouteSummary = buildModelRouteSummary(providerDecisions);
   const routeForGap = (gap: GapReportItem) => {
     const haystack = [gap.gapType, gap.visualFormFamily, gap.visualForm, gap.slotId].join(" ").toLowerCase();

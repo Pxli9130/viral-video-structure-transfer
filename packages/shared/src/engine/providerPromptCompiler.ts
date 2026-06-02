@@ -119,18 +119,23 @@ export function compileProviderPromptPlan(input: ProviderPromptCompilerInput): P
       fallbackConfig: { backend: "image_card", mode: "local_packaging_fill", gapId: input.gap.slotId }
     };
   }
-  if (provider === "elevenlabs_audio_stack") {
-    const task: ModelTask = /music|bgm/i.test(input.gap.gapType ?? input.gap.slotId) ? "music" : "sound_effect";
+  if (provider === "elevenlabs_tts" || provider === "elevenlabs_sound_effects" || provider === "elevenlabs_music") {
+    const task: ModelTask =
+      provider === "elevenlabs_tts"
+        ? "voiceover"
+        : provider === "elevenlabs_music" || /music|bgm/i.test(input.gap.gapType ?? input.gap.slotId)
+          ? "music"
+          : "sound_effect";
     return {
       provider,
       task,
-      prompt: `${base} Generate original ${task === "music" ? "music bed" : "short sound effect"} matching the target rhythm without copying sample audio.`,
+      prompt: `${base} Generate original ${task === "voiceover" ? "voiceover" : task === "music" ? "music bed" : "short sound effect"} matching the target rhythm without copying sample audio.`,
       negativePrompt: "do not copy or remix sample audio; no recognizable copyrighted melody",
       durationSec,
       referenceAssetIds: references,
       safetyNotes,
       provenanceRequired: true,
-      fallbackConfig: { backend: "procedural_audio", mode: task === "music" ? "synth_bgm" : "impact_riser", gapId: input.gap.slotId }
+      fallbackConfig: { backend: "procedural_audio", mode: task === "music" ? "synth_bgm" : task === "voiceover" ? "subtitle_only" : "impact_riser", gapId: input.gap.slotId }
     };
   }
   if (provider === "remotion_procedural_motion" || provider === "remotion_shape_card" || provider === "ffmpeg_proxy_motion") {

@@ -169,6 +169,8 @@ describe("RenderRecipe v4.1 migration and evidence fidelity", () => {
     delete analysis.motionGeometry;
     const template = buildFallbackTemplate(analysis, "b2b_marketing_mg", "project_v41");
     expect(template.motionAtoms?.[0]?.type).toBe("parametric_ribbon_surface");
+    expect(template.motionAtoms?.[0]?.pathFamily).toBe("vertical_helix");
+    expect(template.motionAtoms?.[0]?.axis).toBe("screen_y");
     expect(template.motionAtoms?.[0]?.evidenceFrames?.length).toBeGreaterThan(0);
   });
 
@@ -206,6 +208,11 @@ describe("RenderRecipe v4.1 migration and evidence fidelity", () => {
     expect(recipe!.layers?.filter((layer) => layer.type === "text").some((layer) => Boolean(layer.layout.bboxNorm) && layer.typography.fontSizeRatio > 0)).toBe(true);
     expect(recipe!.layers?.some((layer) => layer.type === "motion_atom")).toBe(true);
     expect(recipe!.layers?.some((layer) => layer.type === "audio")).toBe(true);
+    const audioKinds = recipe!.layers?.filter((layer) => layer.type === "audio").map((layer) => layer.audio.kind) ?? [];
+    expect(audioKinds).toContain("drone");
+    expect(audioKinds).toContain("riser");
+    expect(audioKinds).not.toContain("kick");
+    expect(audioKinds).not.toContain("bass");
     expect(findRenderRecipeSafetyIssues(recipe!)).toEqual([]);
   });
 

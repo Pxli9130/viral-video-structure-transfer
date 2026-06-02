@@ -13,7 +13,7 @@ export const DEFAULT_PROVIDER_POLICIES: ProviderPolicy[] = [
     displayName: "Seedance 2.0",
     tasks: ["video_generation"],
     optional: true,
-    envVars: ["SEEDANCE_API_KEY", "SEEDANCE_ARK_API_KEY"],
+    envVars: ["SEEDANCE_ARK_API_KEY", "SEEDANCE_API_KEY", "SEEDREAM_ARK_API_KEY", "ARK_API_KEY"],
     mayReceiveSampleFrames: false,
     mayReceiveSampleAudio: false,
     mayReceiveUserAssets: false,
@@ -95,9 +95,48 @@ export const DEFAULT_PROVIDER_POLICIES: ProviderPolicy[] = [
     mayReceiveSampleFrames: false,
     mayReceiveSampleAudio: false,
     mayReceiveUserAssets: true,
-    generatedProvenance: "aigc_generated_material",
+    generatedProvenance: "processed_user_audio",
     fallbackProviderId: "local_ffmpeg_procedural",
     fallbackReason: "Audio isolation is optional; missing env skips isolation and keeps local audio planning."
+  },
+  {
+    id: "elevenlabs_forced_alignment",
+    displayName: "ElevenLabs Forced Alignment",
+    tasks: ["forced_alignment"],
+    optional: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    mayReceiveSampleFrames: false,
+    mayReceiveSampleAudio: false,
+    mayReceiveUserAssets: true,
+    generatedProvenance: "read_only_report",
+    fallbackProviderId: "local_read_only_report",
+    fallbackReason: "Forced alignment is optional; missing env keeps local timing heuristics."
+  },
+  {
+    id: "elevenlabs_models",
+    displayName: "ElevenLabs Models Read",
+    tasks: ["model_discovery"],
+    optional: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    mayReceiveSampleFrames: false,
+    mayReceiveSampleAudio: false,
+    mayReceiveUserAssets: false,
+    generatedProvenance: "read_only_report",
+    fallbackProviderId: "local_read_only_report",
+    fallbackReason: "Models discovery is optional and read-only."
+  },
+  {
+    id: "elevenlabs_voices_read",
+    displayName: "ElevenLabs Voices Read",
+    tasks: ["voice_discovery"],
+    optional: true,
+    envVars: ["ELEVENLABS_API_KEY"],
+    mayReceiveSampleFrames: false,
+    mayReceiveSampleAudio: false,
+    mayReceiveUserAssets: false,
+    generatedProvenance: "read_only_report",
+    fallbackProviderId: "local_read_only_report",
+    fallbackReason: "Voices discovery is optional and read-only; voice writes are not supported."
   },
   {
     id: "local_remotion_procedural",
@@ -137,11 +176,44 @@ export const DEFAULT_PROVIDER_POLICIES: ProviderPolicy[] = [
     generatedProvenance: "procedural",
     fallbackProviderId: "local_faster_whisper",
     fallbackReason: "Local ASR is the core speech-to-text fallback."
+  },
+  {
+    id: "local_read_only_report",
+    displayName: "Local Read-only Report",
+    tasks: ["forced_alignment", "model_discovery", "voice_discovery"],
+    optional: true,
+    envVars: [],
+    mayReceiveSampleFrames: false,
+    mayReceiveSampleAudio: false,
+    mayReceiveUserAssets: false,
+    generatedProvenance: "read_only_report",
+    fallbackProviderId: "local_read_only_report",
+    fallbackReason: "Read-only cloud capability is disabled; keep a local report entry instead."
   }
 ];
 
 function envHasAny(env: Record<string, string | undefined>, keys: string[]): boolean {
   return keys.length === 0 || keys.some((key) => Boolean(env[key]?.trim()));
+}
+
+function envFlag(env: Record<string, string | undefined>, key: string): boolean {
+  return /^(1|true|yes|on)$/i.test(env[key]?.trim() ?? "");
+}
+
+function providerEnabled(policy: ProviderPolicy, task: ProviderTask, env: Record<string, string | undefined>): boolean {
+  if (!policy.id.startsWith("elevenlabs_")) return true;
+  if (envFlag(env, "ENABLE_ELEVENLABS_LIVE_TESTS") || envFlag(env, "ELEVENLABS_ENABLE_CLOUD")) return true;
+  const taskFlags: Partial<Record<ProviderTask, string[]>> = {
+    speech_to_text: ["ELEVENLABS_ENABLE_SCRIBE", "ELEVENLABS_ENABLE_ASR"],
+    text_to_speech: ["ELEVENLABS_ENABLE_TTS", "ELEVENLABS_ENABLE_VOICEOVER"],
+    sound_effects: ["ELEVENLABS_ENABLE_SOUND_EFFECTS", "ELEVENLABS_ENABLE_SFX"],
+    music_generation: ["ELEVENLABS_ENABLE_MUSIC"],
+    audio_isolation: ["ELEVENLABS_ENABLE_AUDIO_ISOLATION", "ELEVENLABS_ENABLE_AUDIO_CLEANUP"],
+    forced_alignment: ["ELEVENLABS_ENABLE_FORCED_ALIGNMENT", "ELEVENLABS_ENABLE_ALIGNMENT"],
+    model_discovery: ["ELEVENLABS_ENABLE_DISCOVERY", "ELEVENLABS_ENABLE_MODELS_READ"],
+    voice_discovery: ["ELEVENLABS_ENABLE_DISCOVERY", "ELEVENLABS_ENABLE_VOICES_READ"]
+  };
+  return (taskFlags[task] ?? []).some((flag) => envFlag(env, flag));
 }
 
 function policyFor(id: OptionalProviderId, policies: ProviderPolicy[]): ProviderPolicy {
@@ -167,7 +239,7 @@ export function resolveProviderRoute(
   const preferred = requested && requested.tasks.includes(task) ? requested : candidates[0];
   if (!preferred) throw new Error(`No provider policy registered for task ${task}.`);
 
-  if (envHasAny(env, preferred.envVars)) {
+  if (envHasAny(env, preferred.envVars) && providerEnabled(preferred, task, env)) {
     return {
       task,
       requestedProviderId,
@@ -204,4 +276,3 @@ export function buildProviderCallRecord(route: ProviderRoute, userAssetsSentExte
     provenance: route.policy.generatedProvenance
   };
 }
-

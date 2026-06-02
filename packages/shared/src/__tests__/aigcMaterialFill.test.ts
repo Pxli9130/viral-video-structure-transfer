@@ -13,6 +13,7 @@ import {
   getAigcMaterialProvider,
   matchSlots,
   requiredSlotFromInducedSlot,
+  resolveSeedanceProviderConfig,
   resolveSeedreamProviderConfig,
   validateAigcMaterialFillConfig,
   validateGeneratedAssetCandidate,
@@ -300,6 +301,99 @@ describe("optional AIGC material fill", () => {
       expect(generationCalls).toBe(candidates.length + 1);
       expect(candidate.provider).toBe("volcengine_seedream");
       expect(candidate.provenance.externalProviderUsed).toBe(true);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("seedance_2_0 creates a real Ark video task only with explicit external opt-in", async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), "vvst-seedance-test-"));
+    try {
+      const [brief] = createMaterialGenerationBriefs({
+        gapReport: [{ slotId: "slot_media_cards", status: "missing", severity: "high", reason: "missing", impact: "missing", visualFormFamily: "media_cards", visualForm: "stacked_media_cards", missingCount: 1, rendererCandidates: ["card_stack_motion"], sourceEvidence: mediaCardsSlot.sourceEvidence }],
+        inducedSlots: [mediaCardsSlot],
+        request: request(true),
+        config: { enabled: true, provider: "seedance_2_0", maxAssetsPerRun: 1, allowExternalUpload: true, allowSampleFramesToProvider: false, requireUserApprovalBeforeRender: false, cacheEnabled: true }
+      });
+      expect(brief.assetType).toBe("short_video");
+      expect(brief.count).toBe(1);
+
+      const env = {
+        SEEDREAM_ARK_API_KEY: "ark-test-secret",
+        SEEDANCE_POLL_INTERVAL_MS: "0"
+      };
+      const config = resolveSeedanceProviderConfig(env, brief);
+      expect(config.model).toBe("doubao-seedance-2-0-fast-260128");
+      expect(config.apiKey).toBe("ark-test-secret");
+
+      await expect(getAigcMaterialProvider("seedance_2_0").generate(brief, {
+        outputDir: temp,
+        publicPathPrefix: temp,
+        env,
+        fetchImpl: async () => ({ ok: true } as Response)
+      })).rejects.toThrow(/explicit external-provider opt-in/);
+
+      const calls: Array<{ url: string; init?: RequestInit; body?: Record<string, unknown>; auth?: string }> = [];
+      const tinyMp4 = Buffer.from("seedance-video-bytes");
+      const fetchImpl = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const urlString = String(url);
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+        calls.push({ url: urlString, init, body, auth: init?.headers && typeof init.headers === "object" && !Array.isArray(init.headers) ? String((init.headers as Record<string, string>).Authorization ?? "") : undefined });
+        if (init?.method === "POST" && urlString.endsWith("/contents/generations/tasks")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ id: "task_1", status: "queued" })
+          } as Response;
+        }
+        if (init?.method === "GET" && urlString.endsWith("/contents/generations/tasks/task_1")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: "task_1",
+              status: "completed",
+              output: { video_url: { url: "https://seedance.local/generated.mp4" } }
+            })
+          } as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "video/mp4" },
+          arrayBuffer: async () => tinyMp4.buffer.slice(tinyMp4.byteOffset, tinyMp4.byteOffset + tinyMp4.byteLength)
+        } as unknown as Response;
+      };
+
+      const candidates = await getAigcMaterialProvider("seedance_2_0").generate(brief, {
+        outputDir: temp,
+        publicPathPrefix: temp,
+        now: "2026-01-01T00:00:00.000Z",
+        env,
+        fetchImpl,
+        allowExternalProviderCall: true
+      });
+      expect(calls[0].url).toBe("https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks");
+      expect(calls[0].auth).toBe("Bearer ark-test-secret");
+      expect(calls[0].body).toMatchObject({
+        model: "doubao-seedance-2-0-fast-260128",
+        generate_audio: true,
+        ratio: "9:16",
+        duration: 6,
+        watermark: false
+      });
+      expect(calls[0].body?.resolution).toBeUndefined();
+      expect(Array.isArray(calls[0].body?.content)).toBe(true);
+      expect(calls[1].url).toBe("https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task_1");
+      const [candidate] = candidates;
+      expect(candidate.provider).toBe("seedance_2_0");
+      expect(candidate.type).toBe("video");
+      expect(candidate.provenance.externalProviderUsed).toBe(true);
+      expect(candidate.provenance.sampleFramesSentExternally).toBe(false);
+      expect(existsSync(candidate.path)).toBe(true);
+      expect(validateGeneratedAssetCandidate(candidate).valid).toBe(true);
+      const quality = await checkGeneratedMaterials({ briefs: [brief], candidates: [candidate], rootDir: process.cwd(), vlmAvailable: false });
+      expect(quality[0].usable).toBe(true);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
