@@ -80,7 +80,8 @@ as generation references.
 ### Seedream (Volcengine)
 
 Runtime status: implemented as image provider id `volcengine_seedream`. The actual
-primary image-fill provider in code is `google_gemini_image` (`gemini-2.5-flash-image`),
+primary image-fill provider in code is `google_gemini_image` (default `gemini-3.1-flash-image`
+= Nano Banana 2; alt `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`),
 with `volcengine_seedream` as the optional backup. There is **no** hardcoded default
 image model: `resolveSeedreamProviderConfig` throws unless `SEEDREAM_ARK_MODEL` or
 `AIGC_IMAGE_MODEL` is set (`aigcMaterialProviders.ts:238-239`).

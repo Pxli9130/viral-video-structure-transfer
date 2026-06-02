@@ -14,10 +14,16 @@
 4. 结果可解释、可调整、可展示；
 5. 最终能产出 `final.mp4` / `final.remotion.mp4`。
 
+## v4.2 相比 v4.1 的新增点
+
+1. **默认模型升级到当前 Google 线**（env 可配，见 `.env.example`）：LLM/VLM/创意特效 codegen 默认 `gemini-3.5-flash`；图像 `gemini-3.1-flash-image`（Nano Banana 2）。旧 `gemini-2.5-*` 作为可选备选；**视频仍默认 Seedance 2.0**。Nano Banana Pro / Imagen 4 / Gemini TTS / Lyria / Veo 3.1 为需接 adapter 的备选项。
+2. **创意特效 codegen 层**：证据 → MotifFamily → CreativeEffectSpec → live Gemini 生成可复用 Remotion 特效组件（`schema.ts` 用 zod、`index.tsx` props 驱动）→ 静态校验 → apply→KB→manifest→EffectRegistry→RenderRecipe→渲染。五个 motif：poster_ribbon_marketing / card_orbit_motion_graph / blue_spotlight_ui_pitch / beat_cut_chinese_editing_tutorial / **split_screen_compare（新）**。
+3. **校验加固**：file-aware zod 策略（zod 仅 `schema.ts`）+ fixture `proceduralFallback`/`assets` + **具名 import 存在性校验**（对照已安装 remotion/react，渲染前拦住被移除的 API，如 `Extrapolate`）；promotion 闸门（generated 特效需显式提升才覆盖 built-in）。
+
 ## v4.1 相比 v4.0 的新增点
 
 1. **Seedance 2.0** 加入 AIGC moving visual fill，但仍是 optional provider，不是核心依赖。
-2. **Seedream（Volcengine）** 加入静态海报、背景、封面、商品卡片生成（模型 id 通过 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 配置，无内置默认）；代码中图片首选 provider 为 `google_gemini_image`（gemini-2.5-flash-image），Seedream 作为 backup。
+2. **Seedream（Volcengine）** 加入静态海报、背景、封面、商品卡片生成（模型 id 通过 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 配置，无内置默认）；代码中图片首选 provider 为 `google_gemini_image`（默认 `gemini-3.1-flash-image`，见 v4.2），Seedream 作为 backup。
 3. **ElevenLabs** 加入音频智能栈：Scribe ASR、TTS、SFX、Music、Audio Isolation、Forced Alignment（Dubbing/Lip Sync 仅作为预留 ModelTask，尚未接入 adapter）。
 4. 新增 provider policy、routing/fallback schema、generated asset provenance schema。
 5. 明确所有 AIGC provider 都必须有 fallback，核心 demo 仍靠 Remotion + FFmpeg 跑通。

@@ -10,11 +10,11 @@ The router should choose models by task, quality, cost, and availability. It mus
 
 | Task | Primary route | Fallback route | Local deterministic fallback |
 |---|---|---|---|
-| Structure VLM | Gemini 3.1 Pro | Qwen3-VL / Doubao multimodal | frame-sheet heuristics + OCR/CV evidence |
-| JSON planning | Gemini 3.1 Pro / GPT-5 | Qwen3 / Doubao-Seed-2.0-lite | rule-based template compiler |
+| Structure VLM | Gemini (default `gemini-3.5-flash`; alt `gemini-2.5-pro`) | Qwen3-VL / Doubao multimodal | frame-sheet heuristics + OCR/CV evidence |
+| JSON planning / creative-effect codegen | Gemini (default `gemini-3.5-flash`) / GPT-5 | Qwen3 / Doubao-Seed-2.0-lite | rule-based template compiler / local_fallback effect |
 | ASR | ElevenLabs Scribe (elevenlabs_scribe) | faster-whisper | no transcript + OCR-only mode (no_asr_with_warning) |
 | OCR | PaddleOCR / EasyOCR | Qwen3-VL OCR | manual/empty typography with warning |
-| Static image fill | google_gemini_image (gemini-2.5-flash-image) | volcengine_seedream (model from SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL, no default) | deterministic_local_image_fill / Remotion shape card |
+| Static image fill | google_gemini_image (default gemini-3.1-flash-image = Nano Banana 2; alt gemini-3-pro-image / imagen-4.0-generate-001 / gemini-2.5-flash-image) | volcengine_seedream (model from SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL, no default) | deterministic_local_image_fill / Remotion shape card |
 | Video fill | Seedance 2.0 (doubao-seedance-2-0-fast-260128) | remotion_procedural_motion (Veo/Kling/Runway are unimplemented candidates) | ffmpeg_proxy_motion |
 | Voiceover | ElevenLabs TTS | provider-specific TTS | no voiceover + subtitle emphasis |
 | Sound effects | ElevenLabs SFX | procedural SFX | FFmpeg generated hits/whooshes |

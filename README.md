@@ -385,11 +385,11 @@ SEEDANCE_GENERATE_AUDIO=true
 SEEDANCE_WATERMARK=false
 ```
 
-Gemini VLM 既驱动视频理解，也作为生成素材质量 gate（adapter 代码默认 `gemini-2.5-flash`；下面的 `VLM_MODEL=gemini-2.5-pro` 是 `.env` 覆盖值，fallback 回 `gemini-2.5-flash`）：
+Gemini VLM 既驱动视频理解，也作为生成素材质量 gate（默认 `gemini-3.5-flash`；`gemini-2.5-pro`/`gemini-2.5-flash` 为可选备选，经 `VLM_MODEL` 切换）：
 
 ```bash
 VLM_PROVIDER=gemini
-VLM_MODEL=gemini-2.5-pro
+VLM_MODEL=gemini-3.5-flash          # alt: gemini-2.5-pro | gemini-2.5-flash
 GEMINI_VLM_FALLBACK_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=<your_gemini_key>
 ```
@@ -427,11 +427,12 @@ AIGC 安全策略：
 |---|---|---|---|
 | 视频分析 | FFmpeg（mock 已删除） | FFmpeg / ffprobe / keyframes（失败直接报错） | `VIDEO_TOOL=ffmpeg` |
 | 证据分析器 | 自动（有 conda 时） | PySceneDetect 切点 + librosa 鼓点 + 关键帧/视觉族（`scripts/analyze-evidence-timeline.py`） | 随分析自动运行，失败非致命 |
-| LLM（文本增强/改写/评分） | `gemini`（gemini-2.5-flash；mock 已删除） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`（未知值直接报错，不再回退 mock） |
-| VLM | disabled | Gemini（adapter 默认 `gemini-2.5-flash`；`.env` `VLM_MODEL=gemini-2.5-pro` 覆盖，fallback `gemini-2.5-flash`） | `VLM_PROVIDER=gemini` |
+| LLM（文本增强/改写/评分） | `gemini`（默认 `gemini-3.5-flash`；alt 2.5-pro/2.5-flash） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`；`AI_GEMINI_MODEL` 选模型 |
+| VLM | disabled | Gemini（默认 `VLM_MODEL=gemini-3.5-flash`；alt `gemini-2.5-pro`/`gemini-2.5-flash`） | `VLM_PROVIDER=gemini` |
+| 创意特效 codegen | disabled | Gemini 生成 Remotion 特效组件（默认 `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`；zod schema + 静态校验 + named-import 存在性检查），失败回 local_fallback | `CREATIVE_EFFECT_GEMINI=1` + `ALLOW_CLOUD_PROVIDERS=1` |
 | ASR | `elevenlabs_scribe`（首选，cloud-first） | ElevenLabs Scribe（`scribe_v2`，云端，需 ElevenLabs key + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`/`_SCRIBE`/`_ASR`）→ faster-whisper（本地 fallback）→ `no_asr_with_warning` | `ASR_PROVIDER=elevenlabs_scribe\|faster_whisper` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
-| AIGC image material | disabled | Google Gemini Image gemini-2.5-flash-image（首选）→ Volcengine Seedream（可选 backup，模型由 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 指定，无默认）→ `deterministic_local_image_fill`（本地确定性兜底，不中断） | `AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
+| AIGC image material | disabled | Google Gemini Image 默认 `gemini-3.1-flash-image`（Nano Banana 2；alt Nano Banana Pro `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`，首选）→ Volcengine Seedream（可选 backup，模型由 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 指定，无默认）→ `deterministic_local_image_fill`（本地确定性兜底，不中断） | `GEMINI_IMAGE_MODEL` 选模型；`AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
 | AIGC video material | disabled | Volcengine Seedance 2.0 Fast via Ark task API；失败不中断（保留程序化代理） | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`/`SEEDREAM_ARK_API_KEY` + explicit flag |
 | ElevenLabs 音频生成 | disabled（opt-in，永不致命） | Music（`/music`）+ TTS 旁白（`eleven_multilingual_v2`）+ SFX（`eleven_text_to_sound_v2`），经 FFmpeg 分层混音到 BGM 床上（bed 0.42 / voiceover 1.25+adelay400 / SFX 0.7，amix + highpass + alimiter）；失败降级为警告 + 程序化音频 | `ELEVENLABS_API_KEY` + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD` + 分任务 `ELEVENLABS_ENABLE_MUSIC\|TTS\|SFX` |
 | Renderer | FFmpeg（mock 已删除） | FFmpeg / Remotion / HyperFrames stub（程序化卡片，无 debug 文字） | request `rendererTarget` |
