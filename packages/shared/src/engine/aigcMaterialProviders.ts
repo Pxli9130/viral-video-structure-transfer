@@ -218,6 +218,20 @@ export interface SeedreamProviderConfig {
   retryDelayMs: number;
 }
 
+export interface SeedanceProviderConfig {
+  baseUrl: string;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  ratio: string;
+  resolution?: string;
+  durationSec: number;
+  generateAudio: boolean;
+  watermark: boolean;
+  maxPolls: number;
+  pollIntervalMs: number;
+}
+
 export function resolveSeedreamProviderConfig(env?: Record<string, string | undefined>): SeedreamProviderConfig {
   const apiKey = envValue(env, "SEEDREAM_ARK_API_KEY");
   if (!apiKey) throw new Error("SEEDREAM_ARK_API_KEY is required for volcengine_seedream.");
@@ -235,6 +249,31 @@ export function resolveSeedreamProviderConfig(env?: Record<string, string | unde
     watermark: parseBoolean(envValue(env, "SEEDREAM_WATERMARK", "AIGC_IMAGE_WATERMARK"), false),
     maxRetries: parseInteger(envValue(env, "SEEDREAM_MAX_RETRIES", "AIGC_IMAGE_MAX_RETRIES"), 2),
     retryDelayMs: parseInteger(envValue(env, "SEEDREAM_RETRY_DELAY_MS", "AIGC_IMAGE_RETRY_DELAY_MS"), 1500)
+  };
+}
+
+export function resolveSeedanceProviderConfig(
+  env?: Record<string, string | undefined>,
+  brief?: MaterialGenerationBrief
+): SeedanceProviderConfig {
+  const apiKey = envValue(env, "SEEDANCE_ARK_API_KEY", "SEEDANCE_API_KEY", "SEEDREAM_ARK_API_KEY", "ARK_API_KEY");
+  if (!apiKey) throw new Error("SEEDANCE_ARK_API_KEY, SEEDANCE_API_KEY, SEEDREAM_ARK_API_KEY, or ARK_API_KEY is required for seedance_2_0.");
+  const requestedDuration = parseInteger(
+    envValue(env, "SEEDANCE_DURATION_SEC", "AIGC_VIDEO_DURATION_SEC"),
+    Math.round(brief?.structureConstraints.durationSec ?? 6)
+  );
+  return {
+    baseUrl: envValue(env, "SEEDANCE_ARK_BASE_URL", "SEEDREAM_ARK_BASE_URL", "ARK_BASE_URL") ?? "https://ark.cn-beijing.volces.com/api/v3",
+    endpoint: envValue(env, "SEEDANCE_TASK_ENDPOINT", "AIGC_VIDEO_TASK_ENDPOINT") ?? "/contents/generations/tasks",
+    apiKey,
+    model: envValue(env, "SEEDANCE_MODEL", "AIGC_VIDEO_MODEL") ?? "doubao-seedance-2-0-fast-260128",
+    ratio: envValue(env, "SEEDANCE_RATIO", "AIGC_VIDEO_RATIO") ?? String(brief?.styleConstraints.aspectRatio ?? "9:16"),
+    resolution: envValue(env, "SEEDANCE_RESOLUTION", "AIGC_VIDEO_RESOLUTION"),
+    durationSec: Math.max(1, Math.min(parseInteger(envValue(env, "SEEDANCE_MAX_DURATION_SEC"), requestedDuration), requestedDuration)),
+    generateAudio: parseBoolean(envValue(env, "SEEDANCE_GENERATE_AUDIO", "AIGC_VIDEO_GENERATE_AUDIO"), true),
+    watermark: parseBoolean(envValue(env, "SEEDANCE_WATERMARK", "AIGC_VIDEO_WATERMARK"), false),
+    maxPolls: Math.max(1, parseInteger(envValue(env, "SEEDANCE_MAX_POLLS", "AIGC_VIDEO_MAX_POLLS"), 120)),
+    pollIntervalMs: parseInteger(envValue(env, "SEEDANCE_POLL_INTERVAL_MS", "AIGC_VIDEO_POLL_INTERVAL_MS"), 5000)
   };
 }
 
@@ -267,9 +306,27 @@ function seedreamErrorMessage(status: number | string, text: string): string {
   }
 }
 
+function providerErrorMessage(provider: string, operation: string, status: number | string, text: string): string {
+  const sanitized = sanitizeSeedreamErrorText(text);
+  try {
+    const payload = JSON.parse(sanitized) as { error?: { code?: string; message?: string; type?: string } };
+    const code = payload.error?.code ? `${payload.error.code}: ` : "";
+    const message = payload.error?.message ?? sanitized;
+    return `${provider} ${operation} failed with HTTP ${status} (${code}${message}).`;
+  } catch {
+    return `${provider} ${operation} failed with HTTP ${status}${sanitized ? ` (${sanitized})` : ""}.`;
+  }
+}
+
 function imageGenerationUrl(config: SeedreamProviderConfig): string {
   const base = config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`;
   return new URL(config.endpoint.replace(/^\//, ""), base).toString();
+}
+
+function seedanceTaskUrl(config: SeedanceProviderConfig, taskId?: string): string {
+  const base = config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`;
+  const endpoint = config.endpoint.replace(/^\//, "");
+  return new URL(taskId ? `${endpoint.replace(/\/$/, "")}/${encodeURIComponent(taskId)}` : endpoint, base).toString();
 }
 
 function extensionForContentType(contentType: string | null, fallback = "png"): string {
@@ -306,6 +363,96 @@ function seedreamRequestBody(config: SeedreamProviderConfig, prompt: string): Re
     stream: config.stream,
     watermark: config.watermark
   };
+}
+
+function seedancePrompt(brief: MaterialGenerationBrief, prompt: string): string {
+  return [
+    prompt,
+    `Target theme: ${brief.targetTheme}.`,
+    `Motion structure: ${brief.structureConstraints.motionPattern}; renderer intent: ${brief.structureConstraints.intendedRendererCapability}.`,
+    `Role: ${brief.structureConstraints.slotRole}; visual form: ${brief.visualForm}.`,
+    "Create original target-product video material only. Do not copy any sample frame, sample audio, watermark, platform UI, or person likeness.",
+    brief.negativePrompts.length ? `Avoid: ${brief.negativePrompts.join("; ")}.` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function seedanceRequestBody(config: SeedanceProviderConfig, prompt: string): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: config.model,
+    content: [{ type: "text", text: prompt }],
+    generate_audio: config.generateAudio,
+    ratio: config.ratio,
+    duration: config.durationSec,
+    watermark: config.watermark
+  };
+  if (config.resolution) body.resolution = config.resolution;
+  return body;
+}
+
+function seedanceTaskId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as Record<string, unknown>;
+  const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : undefined;
+  const output = record.output && typeof record.output === "object" ? record.output as Record<string, unknown> : undefined;
+  const candidates = [record.id, record.task_id, record.taskId, data?.id, data?.task_id, data?.taskId, output?.id, output?.task_id, output?.taskId];
+  return candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function seedanceStatus(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as Record<string, unknown>;
+  const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : undefined;
+  const output = record.output && typeof record.output === "object" ? record.output as Record<string, unknown> : undefined;
+  const raw = [record.status, record.task_status, record.taskStatus, data?.status, data?.task_status, data?.taskStatus, output?.status, output?.task_status, output?.taskStatus]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const normalized = raw?.trim().toLowerCase().replace(/\s+/g, "_");
+  if (!normalized) return undefined;
+  if (["succeeded", "success", "completed", "complete", "done"].includes(normalized)) return "succeeded";
+  if (["failed", "fail", "error", "expired"].includes(normalized)) return "failed";
+  if (["cancelled", "canceled", "cancel"].includes(normalized)) return "cancelled";
+  return normalized;
+}
+
+function httpUrl(value: unknown): string | undefined {
+  return typeof value === "string" && /^https?:\/\//i.test(value) ? value : undefined;
+}
+
+function videoUrlFromField(value: unknown): string | undefined {
+  const direct = httpUrl(value);
+  if (direct) return direct;
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  return httpUrl(record.url) ?? httpUrl(record.uri);
+}
+
+function scanVideoUrl(value: unknown, depth = 0): string | undefined {
+  if (!value || depth > 8) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = scanVideoUrl(item, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const [key, item] of Object.entries(record)) {
+    if (/^(video_url|videoUrl|video|url)$/i.test(key)) {
+      const direct = videoUrlFromField(item);
+      if (direct) return direct;
+      const nested = scanVideoUrl(item, depth + 1);
+      if (nested) return nested;
+    }
+  }
+  for (const key of ["output", "result", "data", "content"]) {
+    const nested = scanVideoUrl(record[key], depth + 1);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function seedanceVideoUrl(payload: unknown): string | undefined {
+  return scanVideoUrl(payload);
 }
 
 export const mockProvider: AigcMaterialProvider = {
@@ -440,6 +587,103 @@ export const volcengineSeedreamProvider: AigcMaterialProvider = {
   }
 };
 
+export const seedanceVideoProvider: AigcMaterialProvider = {
+  id: "seedance_2_0",
+  kind: "video",
+  async generate(brief, context) {
+    if (brief.assetType !== "short_video") {
+      throw new Error(`seedance_2_0 only supports short_video generation; got ${brief.assetType}.`);
+    }
+    if (brief.privacyPolicy.sampleFramesAllowedToProvider) {
+      throw new Error("seedance_2_0 refuses briefs that allow sample frames to be sent externally.");
+    }
+    if (context.allowExternalProviderCall !== true) {
+      throw new Error("seedance_2_0 requires explicit external-provider opt-in.");
+    }
+    await mkdir(context.outputDir, { recursive: true });
+    const config = resolveSeedanceProviderConfig(context.env, brief);
+    const fetchImpl = context.fetchImpl ?? fetch;
+    const generatedAt = context.now ?? new Date().toISOString();
+    const count = maxCandidateCount(brief);
+    const candidates: GeneratedAssetCandidate[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const prompt = seedancePrompt(brief, brief.promptPack?.[index] ?? brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated video material`);
+      const createResponse = await fetchImpl(seedanceTaskUrl(config), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify(seedanceRequestBody(config, prompt))
+      });
+      if (!createResponse.ok) {
+        const responseText = await createResponse.text().catch(() => "");
+        throw new Error(providerErrorMessage("seedance_2_0", "video task creation", createResponse.status, responseText));
+      }
+      const created = await createResponse.json();
+      const taskId = seedanceTaskId(created);
+      if (!taskId) throw new Error("seedance_2_0 create task response did not include id.");
+
+      let task: unknown = created;
+      for (let poll = 0; poll < config.maxPolls; poll += 1) {
+        const status = seedanceStatus(task);
+        if (status === "succeeded") break;
+        if (status === "failed" || status === "cancelled" || status === "canceled") {
+          throw new Error(`seedance_2_0 task ${taskId} failed: ${sanitizeSeedreamErrorText(JSON.stringify(task)).slice(0, 500)}`);
+        }
+        await sleep(config.pollIntervalMs);
+        const getResponse = await fetchImpl(seedanceTaskUrl(config, taskId), {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`
+          }
+        });
+        if (!getResponse.ok) {
+          const responseText = await getResponse.text().catch(() => "");
+          throw new Error(providerErrorMessage("seedance_2_0", "task polling", getResponse.status, responseText));
+        }
+        task = await getResponse.json();
+      }
+      if (seedanceStatus(task) !== "succeeded") {
+        throw new Error(`seedance_2_0 task ${taskId} did not succeed after ${config.maxPolls} polls.`);
+      }
+      const remoteUrl = seedanceVideoUrl(task);
+      if (!remoteUrl) throw new Error(`seedance_2_0 task ${taskId} succeeded but did not include an output video_url.`);
+      const videoResponse = await fetchImpl(remoteUrl);
+      if (!videoResponse.ok) throw new Error(`seedance_2_0 video download failed with HTTP ${videoResponse.status}.`);
+      const fileBuffer = Buffer.from(await videoResponse.arrayBuffer());
+      const filename = `${brief.slotId}_${brief.assetType}_${String(index + 1).padStart(2, "0")}_seedance.mp4`.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      const filePath = path.join(context.outputDir, filename);
+      await writeFile(filePath, fileBuffer);
+      candidates.push({
+        id: `generated_${brief.slotId}_${String(index + 1).padStart(2, "0")}`.replace(/[^a-zA-Z0-9_.-]/g, "_"),
+        briefId: brief.id,
+        slotId: brief.slotId,
+        provider: "seedance_2_0",
+        model: config.model,
+        type: "video",
+        materialRole: "aigc_generated_material",
+        path: candidatePath(context.publicPathPrefix, filename),
+        prompt,
+        negativePrompt: brief.negativePrompts.join("; "),
+        provenance: {
+          generatedAt,
+          userApproved: false,
+          externalProviderUsed: true,
+          sampleFramesSentExternally: false,
+          targetAssetsSentExternally: false
+        },
+        quality: {
+          usable: undefined,
+          issues: []
+        }
+      });
+    }
+    return candidates;
+  }
+};
+
 interface GeminiImageConfig {
   apiKey: string;
   model: string;
@@ -457,7 +701,7 @@ export function resolveGeminiImageConfig(env?: Record<string, string | undefined
   const e = env ?? process.env;
   const apiKey = e.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is required for google_gemini_image.");
-  const model = e.GEMINI_IMAGE_MODEL ?? e.AIGC_IMAGE_MODEL ?? "gemini-2.5-flash-image";
+  const model = e.GEMINI_IMAGE_MODEL ?? e.AIGC_IMAGE_MODEL ?? "gemini-3.1-flash-image";
   const baseUrl = (e.GEMINI_API_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
   return { apiKey, model, baseUrl, maxRetries: 2, retryDelayMs: 1200 };
 }
@@ -559,7 +803,8 @@ export const AIGC_MATERIAL_PROVIDER_REGISTRY: Record<AigcMaterialProviderId, Aig
   google_gemini_image: googleGeminiImageProvider,
   local_folder_provider: disabledProvider("local_folder_provider"),
   volcengine_seedream: volcengineSeedreamProvider,
-  ark_seedance_provider_stub: disabledProvider("ark_seedance_provider_stub"),
+  seedance_2_0: seedanceVideoProvider,
+  ark_seedance_provider_stub: seedanceVideoProvider,
   image_provider: disabledProvider("image_provider"),
   copy_provider: disabledProvider("copy_provider"),
   none: disabledProvider("none")
@@ -573,6 +818,12 @@ export function normalizeAigcMaterialProviderId(id: AigcMaterialProviderId = "de
     return {
       id: "deterministic_local_image_fill",
       warning: "mock_provider is deprecated; use deterministic_local_image_fill. It is deterministic local generation, not fake output."
+    };
+  }
+  if (id === "ark_seedance_provider_stub") {
+    return {
+      id: "seedance_2_0",
+      warning: "ark_seedance_provider_stub is deprecated; use seedance_2_0 for the real Ark Seedance task API."
     };
   }
   return { id };

@@ -13,7 +13,7 @@ import type {
 
 const INLINE_MAX_BYTES = 18 * 1024 * 1024; // Gemini inline budget ~20MB combined; leave headroom
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.5-flash";
 
 const STRUCTURE_PROMPT = `You are a short-video structure analyst.
 
@@ -185,6 +185,22 @@ function normalise(raw: string): VLMVideoAnalysis {
   };
 }
 
+function normaliseFrameReview(raw: string): { tags: string[]; description: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripCodeFence(raw));
+  } catch (error) {
+    throw new Error(`Gemini frame review returned non-JSON content: ${(error as Error).message}; body=${raw.slice(0, 200)}`);
+  }
+  const value = parsed as { tags?: unknown; description?: unknown };
+  const tags = Array.isArray(value.tags)
+    ? value.tags.map((item) => String(item).trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const description = String(value.description ?? "").trim();
+  if (!description) throw new Error("Gemini frame review returned an empty description");
+  return { tags, description };
+}
+
 export class GeminiVLMAdapter implements VLMAdapter {
   readonly name = "GeminiVLMAdapter";
   readonly available: boolean;
@@ -203,12 +219,29 @@ export class GeminiVLMAdapter implements VLMAdapter {
 
   async describeFrames(frames: Array<{ path: string; timeSec: number }>) {
     if (!this.available || frames.length === 0) return [];
-    // Gemini's strength is full-video understanding; for individual frames we keep a heuristic stub.
-    return frames.map((frame, index) => ({
-      timeSec: frame.timeSec,
-      tags: index === 0 ? ["hook_candidate"] : index % 2 === 0 ? ["product_like"] : ["background"],
-      description: `Gemini frame placeholder for ${frame.path}`
-    }));
+    if (!this.client) throw new Error("Gemini VLM is not configured");
+    const results: Array<{ timeSec: number; tags: string[]; description: string }> = [];
+    for (const frame of frames) {
+      const data = await fs.readFile(frame.path);
+      const mimeType = guessImageMimeType(frame.path);
+      const response = await this.client.models.generateContent({
+        model: this.model,
+        contents: createUserContent([
+          { inlineData: { data: data.toString("base64"), mimeType } },
+          [
+            "Analyze this single rendered/generated frame.",
+            "Return STRICT JSON only: {\"description\":\"one concrete visual description\",\"tags\":[\"tag1\",\"tag2\"]}.",
+            "Do not invent hidden context. Mention visible watermark/text-artifact risk if present."
+          ].join("\n")
+        ]),
+        config: { responseMimeType: "application/json" }
+      });
+      const text = response.text ?? "";
+      if (!text) throw new Error("Gemini frame review returned empty text");
+      const reviewed = normaliseFrameReview(text);
+      results.push({ timeSec: frame.timeSec, ...reviewed });
+    }
+    return results;
   }
 
   async describeVideo(asset: Asset, opts: { mimeType?: string; purpose?: "sample" | "source"; evidenceContext?: string } = {}): Promise<VLMVideoAnalysis> {
@@ -266,6 +299,24 @@ export class GeminiVLMAdapter implements VLMAdapter {
     const text = response.text ?? "";
     if (!text) throw new Error("Gemini returned empty text");
     return normalise(text);
+  }
+}
+
+function guessImageMimeType(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop();
+  switch (ext) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "bmp":
+      return "image/bmp";
+    case "png":
+    default:
+      return "image/png";
   }
 }
 
