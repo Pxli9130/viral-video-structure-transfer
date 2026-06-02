@@ -4,9 +4,13 @@
 
 `VideoEvidenceBundle` is the single source of low-level evidence.
 
+> Note: `VideoEvidenceBundle` is the spec-level name. The runtime artifact is the
+> `visual-evidence-timeline-v1` / `visual-evidence-timeline-v2` JSON emitted by
+> `scripts/analyze-evidence-timeline.py` (types.ts:740). No `evidence-v4` literal exists in code.
+
 ```ts
 export type VideoEvidenceBundle = {
-  version: "evidence-v4";
+  version: "evidence-v4"; // spec-normative only; runtime uses schemaVersion "visual-evidence-timeline-v1" | "-v2"
   sampleId: string;
 
   meta: {
@@ -186,7 +190,7 @@ export type TechniqueAtom = {
 
 ```ts
 export type StructureTemplate = {
-  version: "structure-template-v4";
+  version: "structure-template-v4"; // spec-normative only; absent from runtime types (implemented StructureTemplate has optional videoType?: string, no version field)
   id: string;
   sourceSampleIds: string[];
   videoType: "editing_tutorial" | "marketing_poster" | "motion_graph_ad" | "product_ad" | "mixed";
@@ -286,7 +290,7 @@ export type AssetProfile = {
 
 ```ts
 export type GapReport = {
-  version: "gap-report-v4";
+  version: "gap-report-v4"; // spec-normative only; no "gap-report-v4" literal exists in runtime types
   gaps: Array<{
     id: string;
     slotId: string;
@@ -310,7 +314,11 @@ export type GapReport = {
 
 ```ts
 export type RenderRecipe = {
-  version: "render-recipe-v4";
+  // Runtime literal: code emits schemaVersion "render-recipe-v1" (legacy clips stay on v1);
+  // the optional version "render-recipe-v4.1" marks the layer-based view. No "render-recipe-v4"
+  // literal exists anywhere in code (types.ts:1635-1637).
+  schemaVersion: "render-recipe-v1";
+  version?: "render-recipe-v4.1";
 
   composition: {
     width: number;
@@ -320,13 +328,21 @@ export type RenderRecipe = {
     aspectRatio: "9:16" | "16:9" | "1:1";
   };
 
+  videoType: "product_mg" | "beat_cut_product" | "motion_graph" | "fallback_cards";
+
+  // Implemented productTheme carries BOTH the required name/category/sellingPoints/cta
+  // and the optional productName/brandName/brief/ctaText/generationPrompt/rawPrompt (types.ts:1647-1659).
   productTheme: {
-    productName: string;
+    name: string;
+    category: string;
+    sellingPoints: string[];
+    cta: string;
+    productName?: string;
     brandName?: string;
     brief?: string;
-    sellingPoints: string[];
-    ctaText: string;
+    ctaText?: string;
     generationPrompt?: string;
+    rawPrompt?: string;
   };
 
   sourcePolicy: {

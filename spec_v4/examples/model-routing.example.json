@@ -1,34 +1,26 @@
 {
   "routes": [
     {
-      "task": "aigc_video_fill",
+      "task": "video_fill",
       "candidates": [
         {
           "provider": "seedance_2_0",
-          "model": "seedance-2.0",
+          "model": "doubao-seedance-2-0-fast-260128",
           "priority": 1,
           "enabled": false,
           "maxCostUsd": 2.0,
           "timeoutMs": 240000,
           "fallbackOn": ["timeout", "rate_limit", "policy_block", "api_error"]
-        },
-        {
-          "provider": "veo_3_1",
-          "model": "veo-3.1",
-          "priority": 2,
-          "enabled": false,
-          "maxCostUsd": 2.5,
-          "timeoutMs": 240000,
-          "fallbackOn": ["timeout", "rate_limit", "policy_block", "api_error"]
         }
       ],
       "deterministicFallback": {
-        "strategy": "render_motion_atom_with_remotion",
+        "strategy": "remotion_procedural_motion",
+        "fallbackChain": ["remotion_procedural_motion", "ffmpeg_proxy_motion"],
         "severity": "warn"
       }
     },
     {
-      "task": "audio_music",
+      "task": "music",
       "candidates": [
         {
           "provider": "elevenlabs_music",

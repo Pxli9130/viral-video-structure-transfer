@@ -4,25 +4,32 @@ These gates extend Spec v4.0 gates.
 
 ## Provider gates
 
+These are the executable provider/route gates emitted by `scripts/evaluate-final-gates.mjs`
+(the G-number namespace is shared with the rest of that script's G1-G28). Use these exact ids
+when cross-referencing the code:
+
 ```text
-G19 provider_policy_schema_valid
-G20 optional_providers_have_deterministic_fallback
-G21 generated_assets_have_provenance
-G22 seedance_not_required_for_core_demo
-G23 elevenlabs_not_required_for_core_demo
-G24 aigc_input_does_not_include_sample_frames
-G25 aigc_input_does_not_include_sample_audio
-G26 provider_usage_report_present
-G27 provider_cost_estimate_present_if_api_used
-G28 fallback_reason_present_when_provider_skipped
+G19 provider_fallbacks_are_explicit
+G20 generated_assets_have_provenance
+G21 model_route_summary_present
+G22 no_external_sample_media_uploads
+G23 provider_fallback_count_recorded
+G24 unsafe_policy_issues_zero
+G25 raw_prompt_not_renderable
+G26 generation_provenance_policy_recorded
+G27 recipe_lint_status_recorded
+G28 offline_video_critic_recorded
 ```
+
+Note: there is no `provider_cost_estimate_present_if_api_used` gate — no cost-estimate gate
+exists in code.
 
 ## AIGC visual gates
 
 ```text
 A1 Seedance request, if used, has purpose/duration/aspectRatio/provenance.
 A2 Seedance output is inserted as generated video material, not as sample material.
-A3 Seedance failure falls back to Remotion MotionAtomLayer.
+A3 Seedance failure does not abort the render; the base procedural Remotion/FFmpeg moving proxy remains as the local material, with a recorded fallback reason.
 A4 Seedream output is inserted as generated image material with prompt hash.
 A5 Image/video generated assets are never mislabeled as user uploaded.
 ```
@@ -55,7 +62,20 @@ Optional providers can improve output but cannot be required.
 
 ## Safety gate details
 
-`inspect-learning-fidelity` should add:
+The provider-safety counts below are a conceptual target. They are NOT currently emitted by
+`inspect-learning-fidelity.mjs` — its real output is a `droppedEvidence[]` array (each item has
+`kind`/`firstLossLayer`/`severity`/`message`) plus a top-level `status` of `pass`/`fail`
+(`fail` when any `severity === "fatal"`); there is no `providerSafety` field.
+
+The equivalent safety posture is actually enforced today by `scripts/evaluate-final-gates.mjs`
+against the `buildModelRouteSummary` model-route summary:
+
+- sample frames/audio sent to AIGC → G22 `no_external_sample_media_uploads`
+- generated assets missing provenance → G20 `generated_assets_have_provenance` / G26 `generation_provenance_policy_recorded`
+- raw prompt visible in render → G25 `raw_prompt_not_renderable`
+- unsafe policy issues → G24 `unsafe_policy_issues_zero`
+
+Conceptual target shape (not yet emitted):
 
 ```json
 {

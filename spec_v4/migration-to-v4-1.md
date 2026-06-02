@@ -1,4 +1,4 @@
-# 08. Migration Plan: v3/v1.3 to v4
+# 08. Migration Plan: v3/v1.3 to v4.1
 
 This plan is based on the confirmed root causes F1-F8.
 

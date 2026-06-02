@@ -2,6 +2,30 @@
 
 **Viral Video Structure Transfer Engine / 爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
 
+## Spec v4.2 Submission Entry
+
+当前提交目标是：**学结构，不抄内容**。样例视频只进入 analysis/template/TechniqueAtom/GapReport 作为结构证据；最终画面只允许使用目标素材、用户授权素材、本地程序化素材，或带 provenance 的生成素材。
+
+评审入口：
+
+- 中文 showcase：`docs/artifacts/showcase-report.md`、`docs/artifacts/showcase-report.html`
+- Submission pack：`docs/artifacts/submission_pack/index.md`、`docs/artifacts/submission_pack/index.html`
+- 四个 canonical FFmpeg 输出：`docs/artifacts/learned_samples_max/{marketing,editing,motion_graph_1,motion_graph_2}/final.mp4`
+- Visual QA：每个 case 的 `visual-qa-report.md/json`
+- Remotion host 验证：`docs/remotion-host-verification.md`
+
+本地验证命令：
+
+```bash
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" npm test
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/evaluate-model-routes.mjs --offline --json --strict-policy
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/visual-qa-report.mjs --all-cases
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-showcase-report.mjs
+CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-submission-artifacts.mjs
+```
+
+默认 submission path 不调用 Seedance / Seedream / ElevenLabs / Gemini / OpenAI / Qwen / Deepgram / Runway / Veo / Kling，不上传样例媒体，不下载大模型权重。可选 provider 只在显式 opt-in 和配置密钥后使用。
+
 这个项目不是“输入一句话直接生成一条视频”的通用视频生成器。它的核心目标是：
 
 ```text
@@ -181,7 +205,8 @@ video
 实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
 
 ```bash
-# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini(gemini-2.5-pro), AI_PROVIDER=gemini(gemini-2.5-flash, Ark Doubao 为 backup), ASR_PROVIDER=faster_whisper, OCR_PROVIDER=easyocr）
+# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini(.env VLM_MODEL=gemini-2.5-pro 覆盖 adapter 默认 gemini-2.5-flash), AI_PROVIDER=gemini(gemini-2.5-flash, Ark Doubao 为 backup), ASR_PROVIDER=elevenlabs_scribe(cloud-first, faster-whisper 为本地 fallback), OCR_PROVIDER=easyocr）
+export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"   # 系统 node 是过期 v12
 npm run build && node apps/api/dist/server.js
 
 # 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
@@ -313,10 +338,10 @@ AIGC Material Fill 是可选路径，默认关闭。它用于“用户没有足�
 - API 请求会设置 `controls.allowAigcMaterialGeneration=true`；外部 provider 还需要 `controls.allowExternalAigcProvider=true`。
 - 结果面板会展示 brief、candidate、quality/VLM 状态、external calls、sample frames sent 等字段。
 
-允许外部 provider 后，live API 按顺序尝试真实 provider：`google_gemini_image`（首选，Gemini 2.5 Flash Image / “Nano Banana”）→ `volcengine_seedream`（backup）→ **真实报错**。它**不会**在 live 链路里回退到 mock；`mock_provider` 只保留给 CI/脚本的确定性产物：
+允许外部 provider 后，live API 按顺序尝试：`google_gemini_image`（首选，Gemini 2.5 Flash Image / “Nano Banana”）→ `volcengine_seedream`（可选 backup，需 `AIGC_IMAGE_BACKUP_PROVIDER`）→ `deterministic_local_image_fill`（本地确定性兜底）。live 图片链路不会中断：所有外部 provider 失败时退回本地程序化 PNG 并记录 `providerFallbackReason` 警告（server.ts:1687-1721）。`deterministic_local_image_fill`（旧名 `mock_provider`，现仅作弃用别名）也用于 CI/脚本的确定性产物：
 
 ```bash
-# 确定性 mock provider（仅脚本/CI，不外呼）
+# 确定性本地 provider deterministic_local_image_fill（旧名 mock_provider，现仅作弃用别名；仅脚本/CI，不外呼）
 node scripts/run-motion-graph-case.mjs --with-aigc-materials
 
 # .env 指定 provider，显式允许外部调用
@@ -342,15 +367,25 @@ GEMINI_API_KEY=<your_gemini_key>
 AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream
 SEEDREAM_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 SEEDREAM_ARK_API_KEY=<your_seedream_key>
-SEEDREAM_ARK_MODEL=doubao-seedream-5-0-260128
+SEEDREAM_ARK_MODEL=<your_seedream_model_id>   # 必填，无内置默认；未设置 SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL 时 Seedream 配置直接抛错
 SEEDREAM_IMAGE_ENDPOINT=/images/generations
 SEEDREAM_RESPONSE_FORMAT=url
 SEEDREAM_IMAGE_SIZE=2K
 SEEDREAM_STREAM=false
 SEEDREAM_WATERMARK=false
+
+# video material：Volcengine Seedance 2.0 Fast（Ark task API）
+AIGC_VIDEO_PROVIDER=seedance_2_0
+AIGC_VIDEO_MODEL=doubao-seedance-2-0-fast-260128
+AIGC_VIDEO_MAX_ASSETS_PER_RUN=1
+# 可复用同一个 Ark bearer key；若已设置 SEEDREAM_ARK_API_KEY，可不单独设置这一项
+SEEDANCE_ARK_API_KEY=<your_seedance_or_seedream_ark_key>
+SEEDANCE_TASK_ENDPOINT=/contents/generations/tasks
+SEEDANCE_GENERATE_AUDIO=true
+SEEDANCE_WATERMARK=false
 ```
 
-Gemini VLM 既驱动视频理解，也作为生成素材质量 gate：
+Gemini VLM 既驱动视频理解，也作为生成素材质量 gate（adapter 代码默认 `gemini-2.5-flash`；下面的 `VLM_MODEL=gemini-2.5-pro` 是 `.env` 覆盖值，fallback 回 `gemini-2.5-flash`）：
 
 ```bash
 VLM_PROVIDER=gemini
@@ -378,8 +413,10 @@ AIGC 安全策略：
 
 - 默认不生成、不外呼。
 - 外部 provider 必须显式勾选 UI 开关，或在脚本模式下传 `--allow-external-aigc`。
-- 允许后 live 链路按 `google_gemini_image → volcengine_seedream → 真实报错` 顺序调用真实 provider，绝不在 live 链路回退 mock。
+- 允许后 live 链路按 `google_gemini_image → volcengine_seedream → deterministic_local_image_fill` 顺序调用，所有外部 provider 失败时退回本地确定性程序化 PNG（不中断渲染，记录 `providerFallbackReason`）。
+- Seedance 视频素材生成走真实 Ark task API；失败时记录错误警告但不中断渲染——不产出云端视频，base 生成的程序化 Remotion/FFmpeg 动态代理仍作为本地素材保留（server.ts:1855-1860）。
 - 样例帧不会发给外部 provider（`sampleFramesSentExternally=false`）。
+- 样例视频/音频不会作为 Seedance `reference_video`/`reference_audio` 上传；当前只发送目标素材文本 prompt。
 - Seedream 图片请求默认 `watermark=false`。
 - 不伪造真实品牌 logo；`brand_cta` 缺 logo 时生成程序化卡片/copy 或要求用户上传。
 - 生成素材必须带 provenance，标记为 `aigc_generated_material`，不能冒充用户上传素材。
@@ -391,25 +428,30 @@ AIGC 安全策略：
 | 视频分析 | FFmpeg（mock 已删除） | FFmpeg / ffprobe / keyframes（失败直接报错） | `VIDEO_TOOL=ffmpeg` |
 | 证据分析器 | 自动（有 conda 时） | PySceneDetect 切点 + librosa 鼓点 + 关键帧/视觉族（`scripts/analyze-evidence-timeline.py`） | 随分析自动运行，失败非致命 |
 | LLM（文本增强/改写/评分） | `gemini`（gemini-2.5-flash；mock 已删除） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`（未知值直接报错，不再回退 mock） |
-| VLM | disabled | Gemini gemini-2.5-pro（视频理解 + 素材质量 gate） | `VLM_PROVIDER=gemini` |
-| ASR | disabled | faster-whisper | `ASR_PROVIDER=faster_whisper` |
+| VLM | disabled | Gemini（adapter 默认 `gemini-2.5-flash`；`.env` `VLM_MODEL=gemini-2.5-pro` 覆盖，fallback `gemini-2.5-flash`） | `VLM_PROVIDER=gemini` |
+| ASR | `elevenlabs_scribe`（首选，cloud-first） | ElevenLabs Scribe（`scribe_v2`，云端，需 ElevenLabs key + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`/`_SCRIBE`/`_ASR`）→ faster-whisper（本地 fallback）→ `no_asr_with_warning` | `ASR_PROVIDER=elevenlabs_scribe\|faster_whisper` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
-| AIGC image material | disabled | Google Gemini Image gemini-2.5-flash-image（首选）→ Volcengine Seedream（backup）→ 真实报错 | `AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
+| AIGC image material | disabled | Google Gemini Image gemini-2.5-flash-image（首选）→ Volcengine Seedream（可选 backup，模型由 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 指定，无默认）→ `deterministic_local_image_fill`（本地确定性兜底，不中断） | `AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
+| AIGC video material | disabled | Volcengine Seedance 2.0 Fast via Ark task API；失败不中断（保留程序化代理） | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`/`SEEDREAM_ARK_API_KEY` + explicit flag |
+| ElevenLabs 音频生成 | disabled（opt-in，永不致命） | Music（`/music`）+ TTS 旁白（`eleven_multilingual_v2`）+ SFX（`eleven_text_to_sound_v2`），经 FFmpeg 分层混音到 BGM 床上（bed 0.42 / voiceover 1.25+adelay400 / SFX 0.7，amix + highpass + alimiter）；失败降级为警告 + 程序化音频 | `ELEVENLABS_API_KEY` + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD` + 分任务 `ELEVENLABS_ENABLE_MUSIC\|TTS\|SFX` |
 | Renderer | FFmpeg（mock 已删除） | FFmpeg / Remotion / HyperFrames stub（程序化卡片，无 debug 文字） | request `rendererTarget` |
 | Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
+
+> ElevenLabs 音频栈（Scribe ASR、TTS 旁白、SFX、Music、Audio Isolation、Forced Alignment）已完整接入 `apps/api/src/adapters/elevenlabs.ts` 并由 server 在渲染前注入（`applyElevenLabsMusic` / `applyElevenLabsVoiceAndSfx`，server.ts:2061-2109、2150-2212）、由 FFmpeg 分层混音落到最终音轨（renderers.ts:915-973）。全部为显式 opt-in，失败仅降级为警告 + 程序化音频，永不致命。Dubbing / Lip Sync **尚未实现**（`dubbing` ModelTask 首选 `skip_with_warning`，无 adapter 方法；不存在 `lip_sync` 任务），不作为当前能力。
 
 ## 仍需人工配置的内容
 
 - Ark Doubao / OpenAI-compatible LLM key：用于结构抽取、自然语言修改、LLM scorecard。
 - Gemini key：用于真实 VLM 视频理解和 AIGC 素材质量 gate。
-- Seedream key：用于可选外部图片素材生成。
-- faster-whisper / easyocr：按需安装到 conda env `viral`。
+- Seedream key + model id：用于可选外部图片素材生成；`SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 无内置默认，未设置时配置直接抛错。
+- Seedance/Ark key：用于可选外部视频素材生成；可复用 `SEEDREAM_ARK_API_KEY`。
+- ElevenLabs key：用于可选 ElevenLabs 音频栈（Scribe ASR / TTS / SFX / Music）；默认 ASR 首选 cloud Scribe（`ASR_PROVIDER=elevenlabs_scribe`）。
+- faster-whisper / easyocr：按需安装到 conda env `viral`（faster-whisper 是 cloud Scribe 不可用时的本地 ASR fallback）。
 - Remotion Chromium：第一次真实 Remotion render 会下载浏览器缓存。
 
 ## 当前限制
 
-- 外部 AIGC 目前只用于图片素材生成；不默认生成整段视频。
-- Seedance/视频生成 provider 仍是后续 P1 能力，不是当前默认路径。
+- 外部 AIGC 图片和 Seedance 短视频素材都已接入；默认仍需显式开关和真实 key，且不会上传样例媒体给生成 provider。
 - Gemini 只作为质量 gate，不是唯一事实来源。
 - evidence-first beat_cut pipeline 已接入实时 API 并升级到 **v2 moving-material 版**（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa + 光流 motionEnergy 产出 8 槽位 beat_cut、分层时间线、动态渲染，通过 `--gates v2` 27/27）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
 - v2 本轮聚焦 感知→模板→渲染→gate 闭环；KB 的 moving/背景/BGM/分镜 证据面板、SAM2 物体追踪、AIGC 视频（Seedance）补 moving 素材属于下一轮（当前缺 moving 素材用高运动程序化代理 + 上报 `moving_material_missing`）。

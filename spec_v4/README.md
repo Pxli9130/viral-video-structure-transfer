@@ -17,8 +17,8 @@
 ## v4.1 相比 v4.0 的新增点
 
 1. **Seedance 2.0** 加入 AIGC moving visual fill，但仍是 optional provider，不是核心依赖。
-2. **Seedream 4.0** 加入静态海报、背景、封面、商品卡片生成。
-3. **ElevenLabs** 加入音频智能栈：Scribe ASR、TTS、SFX、Music、Audio Isolation、Dubbing/Lip Sync。
+2. **Seedream（Volcengine）** 加入静态海报、背景、封面、商品卡片生成（模型 id 通过 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 配置，无内置默认）；代码中图片首选 provider 为 `google_gemini_image`（gemini-2.5-flash-image），Seedream 作为 backup。
+3. **ElevenLabs** 加入音频智能栈：Scribe ASR、TTS、SFX、Music、Audio Isolation、Forced Alignment（Dubbing/Lip Sync 仅作为预留 ModelTask，尚未接入 adapter）。
 4. 新增 provider policy、routing/fallback schema、generated asset provenance schema。
 5. 明确所有 AIGC provider 都必须有 fallback，核心 demo 仍靠 Remotion + FFmpeg 跑通。
 6. 强化安全边界：样例帧/音频默认不得进入最终画面，也不得默认作为 AIGC reference。
@@ -52,7 +52,7 @@ reference/    model/provider reference notes
 
 ```text
 Seedance 2.0 = optional AIGC video-fill provider
-Seedream 4.0 = optional image/poster fill provider
+Seedream (Volcengine) = optional image/poster fill provider (model id via SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL; no built-in default)
 ElevenLabs = optional audio intelligence provider
 Remotion + FFmpeg = deterministic rendering backbone
 TechniqueAtom + layer-based RenderRecipe = structure-transfer core

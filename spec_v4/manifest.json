@@ -27,7 +27,7 @@
     ],
     "optional_aigc_visual": [
       "Seedance 2.0",
-      "Seedream 4.0",
+      "Seedream (Volcengine, env-driven model)",
       "Veo/Kling/Runway/GPT Image/Nano Banana adapters"
     ],
     "optional_aigc_audio": [
@@ -36,7 +36,7 @@
       "ElevenLabs Sound Effects",
       "ElevenLabs Music",
       "ElevenLabs Audio Isolation",
-      "ElevenLabs Dubbing/Lip Sync"
+      "ElevenLabs Forced Alignment"
     ]
   },
   "files": [
@@ -80,7 +80,6 @@
     "schemas/model-routing-policy.schema.json",
     "schemas/provider-policy.schema.json",
     "schemas/render-recipe-v4-1.schema.json",
-    "schemas/render-recipe-v4.schema.json",
     "schemas/structure-template.schema.json",
     "schemas/technique-atom.schema.json",
     "schemas/transfer-plan.schema.json",

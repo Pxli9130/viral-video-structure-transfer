@@ -1,4 +1,4 @@
-# Provider Policy v4.1
+# Provider Policy v4.1 (router updated to v4.2)
 
 ## v4.2 router status
 
@@ -7,7 +7,8 @@ Provider selection is now formalized by the typed ModelTask router in `packages/
 Default safety stance:
 
 - AIGC generation providers cannot receive sample frames/audio/video.
-- External VLM sample-media analysis is blocked by default and must be explicitly enabled and recorded as analysis-only, not generation/reference material.
+- Max-ability runs are API-first by default: configured Gemini/Ark/Seedream/ElevenLabs routes are attempted before local fallbacks.
+- External VLM/ASR sample-media analysis is allowed in max-ability runs and must be recorded as analysis-only, not generation/reference material. Use `--no-cloud` / `--offline-providers` or `--no-external-vlm-sample-analysis` to force local-only analysis.
 - Quality judge sample-frame comparison is separately policy-gated.
 - Generated assets must carry provenance.
 - `mock_provider` is retained as a deprecated alias for `deterministic_local_image_fill`.
@@ -18,7 +19,9 @@ Phase 3 status:
 - `ProviderDecision.effectScope` defines whether a route is read-only, planning-affecting, generation-affecting, rendering-affecting, audio-affecting, or quality-gate-only.
 - Feature-gated tasks are no longer marked core-required unless their feature is enabled.
 - Deterministic/offline tasks exist for recipe lint, prompt compilation, gap repair ranking, structure explanation, version strategy planning, natural edit patching, video critic, and TechniqueAtom retrieval.
-- Real paid providers remain disabled unless explicitly configured; Phase 3 still performs no Seedance/Seedream/ElevenLabs/Gemini/OpenAI/Runway/Kling calls.
+- Real paid providers are attempted by max-ability scripts when the matching API keys/config are present; missing/failed providers must produce explicit fallback records.
+- ElevenLabs live calls are enabled by max-ability scripts when `ELEVENLABS_API_KEY` is present. Outside that path, set `ENABLE_ELEVENLABS_LIVE_TESTS=1`, `ELEVENLABS_ENABLE_CLOUD=1`, or a task-specific `ELEVENLABS_ENABLE_*` flag.
+- Fake placeholders are not valid provider output. If a real provider is unavailable, the artifact must say fallback/procedural/local, not pretend an external provider succeeded.
 
 ## 1. Provider safety principles
 
@@ -52,6 +55,11 @@ type ProviderPolicy = {
 
 ### Seedance 2.0
 
+Runtime status: implemented for Ark task-based video material generation through
+`seedance_2_0`; default model is `doubao-seedance-2-0-fast-260128`. The adapter
+uses text prompts for target material only and does not upload sample video/audio
+as generation references.
+
 ```json
 {
   "provider": "seedance_2_0",
@@ -69,11 +77,17 @@ type ProviderPolicy = {
 }
 ```
 
-### Seedream 4.0
+### Seedream (Volcengine)
+
+Runtime status: implemented as image provider id `volcengine_seedream`. The actual
+primary image-fill provider in code is `google_gemini_image` (`gemini-2.5-flash-image`),
+with `volcengine_seedream` as the optional backup. There is **no** hardcoded default
+image model: `resolveSeedreamProviderConfig` throws unless `SEEDREAM_ARK_MODEL` or
+`AIGC_IMAGE_MODEL` is set (`aigcMaterialProviders.ts:238-239`).
 
 ```json
 {
-  "provider": "seedream_4_0",
+  "provider": "volcengine_seedream",
   "category": "image",
   "requiredForCoreDemo": false,
   "enabledByDefault": false,
@@ -88,6 +102,23 @@ type ProviderPolicy = {
 ```
 
 ### ElevenLabs audio providers
+
+Implementation mapping:
+
+- `elevenlabs_scribe` -> ModelTask `asr`, fallback `faster_whisper`, then `no_asr_with_warning`.
+- `elevenlabs_tts` -> ModelTask `voiceover`, fallback `skip_with_warning` / procedural audio.
+- `elevenlabs_sound_effects` -> ModelTask `sound_effect`, fallback procedural SFX.
+- `elevenlabs_music` -> ModelTask `music`, fallback procedural BGM from `audioPlan.layers`.
+- `elevenlabs_audio_isolation` -> ModelTask `audio_cleanup`, allowed only for authorized user/source audio, never sample evidence.
+- `elevenlabs_forced_alignment` -> ModelTask `forced_alignment`, allowed only for generated voiceover or authorized user/source audio.
+- `elevenlabs_models` and `elevenlabs_voices_read` are read-only discovery providers.
+
+ElevenLabs generation routes keep `sampleFramesAllowedAsInput=false` and `sampleAudioAllowedAsInput=false`; generated voice/music/SFX assets require provenance. ElevenLabs Scribe may receive sample audio only when external sample analysis is explicitly enabled and recorded.
+
+The library default keeps `enabledByDefault=false`, but the shipped `.env.example`
+opts these routes in via `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`
+plus per-task `ELEVENLABS_ENABLE_MUSIC`/`ELEVENLABS_ENABLE_SFX`/`ELEVENLABS_ENABLE_TTS`
+(`.env.example:80-84`).
 
 ```json
 {

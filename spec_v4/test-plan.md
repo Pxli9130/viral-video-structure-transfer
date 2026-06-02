@@ -88,15 +88,17 @@ provenance preserved
 
 `inspect-learning-fidelity` fatal conditions:
 
-| Gate | Fatal Condition |
+Each fatal condition is emitted as a `droppedEvidence[]` entry with `severity: "fatal"`, which sets the report `status` to `fail` (the gates are keyed by `kind`, not G-numbers):
+
+| Gate (kind) | Fatal Condition |
 |---|---|
-| G1 visual carry | analysis visual > 0 and template visual = 0 |
-| G2 typography carry | analysis typography > 0 and recipe text bbox/fontSize = 0 |
-| G3 motion carry | analysis motionAtoms > 0 and recipe motionAtomLayers = 0 |
-| G4 audio carry | analysis audio > 0 and recipe audioLayers = 0 |
-| G5 media render | image-bearing TypographyLayoutSequence has no media render path |
-| G6 CTA safety | display field contains raw prompt tokens |
-| G7 sample copy | sample path/id in renderable material |
+| visualElements | analysis visual > 0 and template visual = 0 |
+| typography | analysis typography > 0 and recipe text bbox/fontSize = 0 |
+| motionAtoms | analysis motionAtoms > 0 and recipe motionAtomLayers = 0 |
+| audio | analysis audio > 0 and recipe audioLayers = 0 |
+| mediaRender | image-bearing TypographyLayoutSequence has no media render path |
+| displayText | display field contains raw prompt tokens |
+| sampleCopy | sample path/id in renderable material |
 
 ## 4. Render Quality Gates
 
@@ -129,15 +131,15 @@ Scripts should be discovered first. Suggested commands:
 ```bash
 cat package.json
 find apps packages scripts -maxdepth 3 -name package.json -print
-pnpm typecheck
-pnpm test
-pnpm lint
+npm run typecheck
+npm test
+npm run lint
 node scripts/inspect-learning-fidelity.mjs --case marketing
 node scripts/inspect-learning-fidelity.mjs --case editing
 node scripts/inspect-learning-fidelity.mjs --case motion_graph_1
 node scripts/inspect-learning-fidelity.mjs --case motion_graph_2
-node scripts/render-case.mjs --case marketing --target both
-node scripts/evaluate-render-quality.mjs --case marketing --strict v4
+node scripts/render-case.mjs --case marketing
+node scripts/evaluate-render-quality.mjs --case marketing --gates v3 --strict
 ```
 
 If command does not exist, report actual alternatives; do not invent passing results.

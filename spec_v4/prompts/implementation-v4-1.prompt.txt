@@ -1,3 +1,5 @@
+> NOTE (audit): paths below are historical. The aggregate is spec_v4/SPEC_V4_1_ALL.md and the split docs live under spec_v4/ (there is no spec_v4_1/ directory).
+
 You are the senior engineer for this repo. Implement Spec v4.1 as an addendum to Spec v4.0.
 
 Goal:

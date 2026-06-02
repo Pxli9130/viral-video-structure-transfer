@@ -86,16 +86,15 @@ marketing recipe has layers[]
 
 Files:
 
-- `apps/api/remotion/ViralRecipeRoot.tsx`
-- new components under `apps/api/remotion/components/`
+- `apps/api/remotion/ViralRecipeRoot.tsx` (interpreter is inline here; there is no `apps/api/remotion/components/` subdir)
 
 Tasks:
 
-- `RenderLayer` dispatcher.
-- `RenderMediaLayer`.
-- `RenderTextLayer`.
-- `RenderMotionAtomLayer`.
-- legacy fallback.
+- `LayerView` dispatcher (inline in `ViralRecipeRoot.tsx`).
+- `MediaSurface` (media layers).
+- text layer rendering (inline in `LayerView`).
+- `MotionAtomFallback` / `ParametricRibbonSurface` (motion atom layers).
+- `ClipView` legacy fallback.
 
 Acceptance:
 
@@ -148,7 +147,7 @@ node scripts/inspect-learning-fidelity.mjs --case marketing
 
 Tasks:
 
-- Add `techniqueAtoms.ts`.
+- Add atom extraction in `packages/shared/src/engine/atomExtractor.ts` (retrieval in `techniqueAtomRetrieval.ts`).
 - Extract atoms from visual/typography/motion/audio evidence.
 - Add renderer component mapping.
 
