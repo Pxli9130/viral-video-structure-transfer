@@ -246,9 +246,13 @@ function zodContractViolations(schemaTs: string, componentName?: string): string
 function scanProposalContractViolations(files: GeneratedEffectProposalFiles, componentName?: string): string[] {
   const violations: string[] = [];
   const code = `${files["index.tsx"]}\n${files["schema.ts"]}`;
+  // W3C XML/SVG namespace URIs (http://www.w3.org/...) are inert declarative identifiers (SVG xmlns),
+  // never fetched — strip them before the remote-URL literal scan so they don't false-positive.
+  const urlScan = code.replace(/https?:\/\/www\.w3\.org\/[^\s"')]*/g, "");
   if (FORBIDDEN_MODULE_RE.test(code)) violations.push("forbidden_module_import");
   for (const lit of FORBIDDEN_LITERALS) {
-    if (code.includes(lit)) violations.push(`forbidden_literal:${lit}`);
+    const hay = lit === "http://" || lit === "https://" || lit === "file://" ? urlScan : code;
+    if (hay.includes(lit)) violations.push(`forbidden_literal:${lit}`);
   }
   const indexImports = collectImports(files["index.tsx"]);
   const schemaImports = collectImports(files["schema.ts"]);
@@ -291,7 +295,13 @@ async function defaultGeminiCall(prompt: string, model: string, env: NodeJS.Proc
       headers: { "Content-Type": "application/json", "x-goog-api-key": String(env.GEMINI_API_KEY) },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.4 }
+        // Large output budget: full multi-section components are big; a low limit truncates the JSON
+        // and yields parse_failed. Overridable via GEMINI_CODEGEN_MAX_TOKENS.
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.4,
+          maxOutputTokens: Number(env.GEMINI_CODEGEN_MAX_TOKENS) > 0 ? Number(env.GEMINI_CODEGEN_MAX_TOKENS) : 65536
+        }
       }),
       signal: controller.signal
     });
@@ -305,6 +315,12 @@ async function defaultGeminiCall(prompt: string, model: string, env: NodeJS.Proc
     const text = candidate?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
     if (!text) {
       throw new Error(`Gemini codegen returned empty content${candidate?.finishReason ? ` (finishReason=${candidate.finishReason})` : ""}`);
+    }
+    // A truncated response (hit the output-token cap) yields incomplete JSON → surface it loudly as a
+    // truncation error rather than a mysterious parse_failed. 65536 is the model's hard output ceiling;
+    // for larger future videos, simplify the component or split generation (raising the cap won't help).
+    if (candidate?.finishReason === "MAX_TOKENS") {
+      throw new Error("Gemini codegen truncated at the output-token limit (finishReason=MAX_TOKENS); component too large for the 64k output cap — simplify/split, or raise GEMINI_CODEGEN_MAX_TOKENS up to the model max");
     }
     return text;
   } catch (error) {

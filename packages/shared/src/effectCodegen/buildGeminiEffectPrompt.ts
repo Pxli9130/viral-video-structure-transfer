@@ -226,6 +226,7 @@ export function buildGeminiEffectPrompt(input: BuildEffectPromptInput): BuiltEff
     "Requirements:",
     "- TypeScript",
     "- React + Remotion in index.tsx; zod is allowed only in schema.ts under the contract below",
+    "- only import remotion exports that exist in current Remotion (v4). For interpolate extrapolation use the STRING value (e.g. extrapolateLeft: \"clamp\", extrapolateRight: \"clamp\"); do NOT import or use `Extrapolate` (removed — `Extrapolate.clamp` will be undefined at runtime and crash the render)",
     "- props-driven",
     ...SAFETY_DENYLIST.map((d) => `- ${d}`),
     "- accept assets/texts/colors/beats via props",

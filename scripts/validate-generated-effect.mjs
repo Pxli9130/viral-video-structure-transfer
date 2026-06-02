@@ -5,9 +5,39 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import ts from "typescript";
 
+const require = createRequire(import.meta.url);
+
 const REQUIRED_FILES = ["index.tsx", "schema.ts", "fixture.json", "README.md", "proposal-metadata.json"];
+
+/** Actual exports of the installed react/remotion (used to catch removed/hallucinated named imports
+ * like `Extrapolate`, which parses + passes the allowlist but is undefined at runtime → render crash). */
+function installedExports(moduleName) {
+  try {
+    return new Set(Object.keys(require(moduleName) ?? {}));
+  } catch {
+    return null;
+  }
+}
+
+/** Named (non-default, non-namespace) bindings imported from a given module specifier. */
+function namedImportsFrom(source, moduleName) {
+  const names = [];
+  const re = new RegExp(`import\\s*(?:[\\w$]+\\s*,\\s*)?\\{([^}]*)\\}\\s*from\\s*['"]${moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`, "g");
+  let m;
+  while ((m = re.exec(source)) !== null) {
+    for (const part of m[1].split(",")) {
+      const raw = part.trim();
+      if (!raw) continue;
+      const name = raw.replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim();
+      const isTypeOnly = /^type\s+/.test(raw);
+      if (name && !isTypeOnly) names.push(name);
+    }
+  }
+  return names;
+}
 
 // Quoted module specifiers that must never be imported by a sandbox-safe effect.
 const FORBIDDEN_MODULE_RE = /['"](?:node:)?(?:fs|child_process|net|http|https|dns|tls|os|vm)['"]/;
@@ -110,6 +140,9 @@ export function validateGeneratedEffect(proposalDir, opts = {}) {
   const indexTsx = read("index.tsx");
   const schemaTs = read("schema.ts");
   const code = `${indexTsx}\n${schemaTs}`;
+  // W3C XML/SVG namespace URIs (http://www.w3.org/...) are inert declarative identifiers (e.g. SVG
+  // xmlns), never fetched — strip them before the remote-URL literal scan so they don't false-positive.
+  const urlScan = code.replace(/https?:\/\/www\.w3\.org\/[^\s"')]*/g, "");
 
   // 2. Static denylist
   if (FORBIDDEN_MODULE_RE.test(code)) {
@@ -117,7 +150,8 @@ export function validateGeneratedEffect(proposalDir, opts = {}) {
     exactErrors.push(`forbidden module import matched ${FORBIDDEN_MODULE_RE}`);
   }
   for (const lit of FORBIDDEN_LITERALS) {
-    if (code.includes(lit)) {
+    const hay = lit === "http://" || lit === "https://" || lit === "file://" ? urlScan : code;
+    if (hay.includes(lit)) {
       failedChecks.push(`forbidden_literal:${lit}`);
       exactErrors.push(`forbidden literal present: ${lit}`);
     }
@@ -137,6 +171,17 @@ export function validateGeneratedEffect(proposalDir, opts = {}) {
   if (badImports.size) {
     failedChecks.push("forbidden_external_import");
     exactErrors.push(`only react/remotion/relative imports in index.tsx and zod/relative imports in schema.ts are allowed; found: ${[...badImports].join(", ")}`);
+  }
+  // 2c. Named imports must actually EXIST in the installed react/remotion (catches removed/hallucinated
+  // APIs like `Extrapolate`, which parse + pass the allowlist but are undefined at runtime → render crash).
+  for (const moduleName of ["remotion", "react"]) {
+    const real = installedExports(moduleName);
+    if (!real) continue; // package not requireable here — skip rather than false-fail
+    const missing = namedImportsFrom(indexTsx, moduleName).filter((n) => !real.has(n));
+    if (missing.length) {
+      failedChecks.push(`nonexistent_import:${moduleName}`);
+      exactErrors.push(`index.tsx imports non-existent ${moduleName} export(s): ${[...new Set(missing)].join(", ")} (removed/renamed in the installed version — e.g. use the string "clamp" instead of Extrapolate.clamp)`);
+    }
   }
 
   // metadata + export
@@ -242,6 +287,7 @@ export function validateGeneratedEffect(proposalDir, opts = {}) {
     !failedChecks.some((c) => c.startsWith("schema_zod")) &&
     !failedChecks.some((c) => c.startsWith("schema_forbidden_zod")) &&
     !failedChecks.some((c) => c.startsWith("zod_import")) &&
+    !failedChecks.some((c) => c.startsWith("nonexistent_import")) &&
     !failedChecks.includes("ts_parse_index") &&
     !failedChecks.includes("ts_parse_schema") &&
     !failedChecks.includes("not_props_driven");

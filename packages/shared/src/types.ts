@@ -1,4 +1,7 @@
 import type { ModelRouteSummary, ProviderDecision } from "./model-router/types.js";
+// Type-only imports (erased at compile time) — no runtime dependency / cycle / fs pull.
+import type { MotifFamily } from "./engine/creativeEffectSpec.js";
+import type { EffectSelectionResult } from "./engine/effectRegistry.js";
 
 export type Vertical = "b2b_marketing_mg" | "vlog" | "talking_head" | "beat_cut" | "short_drama" | "ecommerce";
 export type AspectRatio = "9:16" | "16:9" | "1:1";
@@ -147,6 +150,7 @@ export type AigcMaterialProviderId =
   | "google_gemini_image"
   | "local_folder_provider"
   | "volcengine_seedream"
+  | "seedance_2_0"
   | "ark_seedance_provider_stub"
   | "image_provider"
   | "copy_provider"
@@ -396,9 +400,13 @@ export type OptionalProviderId =
   | "elevenlabs_sound_effects"
   | "elevenlabs_music"
   | "elevenlabs_audio_isolation"
+  | "elevenlabs_forced_alignment"
+  | "elevenlabs_models"
+  | "elevenlabs_voices_read"
   | "local_remotion_procedural"
   | "local_ffmpeg_procedural"
-  | "local_faster_whisper";
+  | "local_faster_whisper"
+  | "local_read_only_report";
 
 export type ProviderTask =
   | "video_generation"
@@ -408,6 +416,9 @@ export type ProviderTask =
   | "sound_effects"
   | "music_generation"
   | "audio_isolation"
+  | "forced_alignment"
+  | "model_discovery"
+  | "voice_discovery"
   | "procedural_motion"
   | "procedural_audio";
 
@@ -420,7 +431,7 @@ export interface ProviderPolicy {
   mayReceiveSampleFrames: false;
   mayReceiveSampleAudio: false;
   mayReceiveUserAssets: boolean;
-  generatedProvenance: "aigc_generated_material" | "procedural";
+  generatedProvenance: "aigc_generated_material" | "processed_user_audio" | "read_only_report" | "procedural";
   fallbackProviderId: OptionalProviderId;
   fallbackReason: string;
 }
@@ -445,7 +456,7 @@ export interface ProviderCallRecord {
   sampleFramesSentExternally: false;
   sampleAudioSentExternally: false;
   userAssetsSentExternally: boolean;
-  provenance: "aigc_generated_material" | "procedural";
+  provenance: "aigc_generated_material" | "processed_user_audio" | "read_only_report" | "procedural";
 }
 
 export interface ReplacementSlot {
@@ -654,6 +665,7 @@ export interface VisualElementNode {
   family: string;
   timeRangeSec: [number, number];
   bboxTrackNorm?: Array<{ t: number; bbox: [number, number, number, number] }>;
+  pointTracks?: Array<{ t: number; points: Array<[number, number]> }>;
   centerTrajectory?: Array<[number, number]>;
   areaRatioCurve?: number[];
   orientationCurve?: number[] | null;
@@ -663,6 +675,7 @@ export interface VisualElementNode {
   appearance?: Record<string, unknown>;
   text?: Record<string, unknown>;
   evidence?: { frameIds?: Array<string | undefined>; detector?: string; confidence?: number };
+  providerSource?: string;
 }
 
 export interface VisualElementShotNode {
@@ -703,6 +716,7 @@ export interface TypographyEvidenceItem {
   animationHint: string;
   beatAligned?: boolean;
   confidence?: number;
+  providerSource?: string;
 }
 
 export interface VisualEvidenceStats {
@@ -911,6 +925,9 @@ export interface StructureTemplate {
   sourceAssetFilename?: string;
   videoType?: string;
   visualStyle?: VisualStyleSpec;
+  /** v1.4: real per-sample dominant colors (hex) from evidenceTimeline.stats.dominantPalette, used
+   * to lead the render palette so different samples render with their own color identity. */
+  dominantHexPalette?: string[];
   /** v3: learned opening hero-object (head/mask) descriptor for the style-locked renderer. */
   heroDescriptor?: HeroObjectDescriptor;
   /** v3: learned typography layout/colour/animation evidence. */
@@ -1019,6 +1036,13 @@ export interface GenerationControls {
    *  sample's real shot signature (visualElementGraph shots + BPM) instead of a fixed segment mold.
    *  Default OFF keeps the fixed beat-cut structure (goldens byte-identical). */
   recipeAdaptiveStructure?: boolean;
+  /** v1.4: opt in to creative-effect selection on the RenderRecipe (motif → effect program). Default
+   *  OFF keeps old recipes unchanged. May also be enabled via ENABLE_CREATIVE_EFFECTS=1. */
+  enableCreativeEffects?: boolean;
+  /** v1.4: prefer a validated generated effect over the built-in (else PREFER_GENERATED_EFFECTS=1). */
+  preferGeneratedEffects?: boolean;
+  /** v1.4: fail (no legacy fallback) when no motif-specific effect exists (else STRICT_EFFECT_COVERAGE=1). */
+  strictEffectCoverage?: boolean;
   ribbon?: Partial<RibbonMotionGeometry> & {
     speedMultiplier?: number;
     densityMultiplier?: number;
@@ -1698,6 +1722,13 @@ export interface RenderRecipe {
   };
   clips: RenderRecipeClip[];
   warnings: string[];
+  /** v1.4 optional creative-effect selection (backward-compatible; old recipes omit these). */
+  creativeEffectSpecId?: string;
+  motifFamily?: MotifFamily;
+  effectProgramIds?: string[];
+  effectPropsById?: Record<string, unknown>;
+  effectFallbackReason?: string;
+  effectSelection?: EffectSelectionResult;
 }
 
 export type EditOperationType =
@@ -1767,6 +1798,7 @@ export interface GenerationResult {
   aigcMaterialFill?: {
     enabled: boolean;
     provider: AigcMaterialProviderId;
+    providers?: AigcMaterialProviderId[];
     requestedProvider?: AigcMaterialProviderId;
     providerFallbackReason?: string;
     providerErrors?: string[];
@@ -1797,6 +1829,13 @@ export interface RenderOutput {
   clipPreviewFrames?: RenderClipPreviewFrame[];
   /** Quality signals: no_audio, placeholder_detected, fallback_template, no_source_clips, weak_style_transfer. */
   renderQualityWarnings?: string[];
+  /** v1.4 creative-effect recording (present only when the recipe carries an effect selection). */
+  effectProgramIds?: string[];
+  effectFallbackReason?: string;
+  effectSelectionSource?: string;
+  /** FFmpeg motif-fallback recording (set by the FFmpeg renderer when Remotion is unavailable). */
+  ffmpegEffectFallbackUsed?: boolean;
+  fallbackVisualLayersAdded?: string[];
   error?: string;
   createdAt: string;
 }

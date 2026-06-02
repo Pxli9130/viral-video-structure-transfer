@@ -1,5 +1,7 @@
 import React from "react";
-import { AbsoluteFill, Img, Sequence, Video, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Img, OffthreadVideo, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
+import { getBuiltInFallbackForMotif, getRuntimeEffectComponent } from "./effects/effectRuntimeRegistry";
+import type { CreativeEffectRuntimeProps } from "./effects/types";
 
 type AssetMap = Record<string, { src: string; ext?: string; type?: string }>;
 
@@ -45,6 +47,12 @@ type Recipe = {
   productTheme?: { name?: string; productName?: string; brandName?: string; cta?: string; ctaText?: string; generationPrompt?: string; rawPrompt?: string };
   clips?: RecipeClip[];
   layers?: RecipeLayer[];
+  // v1.4 optional creative-effect selection (backward-compatible; old recipes omit these).
+  creativeEffectSpecId?: string;
+  motifFamily?: string;
+  effectProgramIds?: string[];
+  effectPropsById?: Record<string, CreativeEffectRuntimeProps>;
+  effectFallbackReason?: string;
 };
 export type ViralRecipeProps = {
   timeline?: { durationSec?: number; aspectRatio?: string; renderPlan?: { renderRecipe?: Recipe; fps?: number } };
@@ -96,6 +104,23 @@ function boxWithMinArea(box: BBox | undefined, minAreaRatio?: number): BBox | un
   return { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h };
 }
 
+function textUnits(text: string): number {
+  return Array.from(text).reduce((sum, ch) => {
+    if (/[\u4e00-\u9fff]/.test(ch)) return sum + 1;
+    if (/\s/.test(ch)) return sum + 0.32;
+    if (/[A-Z0-9]/.test(ch)) return sum + 0.68;
+    return sum + 0.55;
+  }, 0);
+}
+
+function fitFontToBox(copy: string, desired: number, box: BBox, width: number, height: number): number {
+  const boxW = Math.max(24, box.w * width);
+  const boxH = Math.max(24, box.h * height);
+  const fitW = boxW / Math.max(1, textUnits(copy) * 0.72);
+  const fitH = boxH * 0.68;
+  return Math.max(14, Math.min(desired, fitW, fitH));
+}
+
 function layerBoxStyle(box: BBox | undefined): React.CSSProperties {
   if (!box) return { position: "absolute", inset: 0 };
   return {
@@ -119,7 +144,9 @@ const MediaSurface: React.FC<{ src?: string; ext?: string; fit?: string; style?:
   const objectFit = fit === "contain" || fit === "cardInset" ? "contain" : "cover";
   if (!src) return <MissingMedia />;
   if (/\.(mp4|mov|webm|m4v)$/i.test(ext ?? src)) {
-    return <Video src={src} muted style={{ width: "100%", height: "100%", objectFit, ...style }} />;
+    // OffthreadVideo (not <Video>) so headless-Chrome rendering extracts frames via ffmpeg instead
+    // of hanging on <Video> duration loading for local file:// sources (delayRender timeout).
+    return <OffthreadVideo src={src} muted style={{ width: "100%", height: "100%", objectFit, ...style }} />;
   }
   return <Img src={src} style={{ width: "100%", height: "100%", objectFit, ...style }} />;
 };
@@ -174,7 +201,9 @@ const Typography: React.FC<{
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
   const box = bbox ?? { x: 0.1, y: 0.4, w: 0.8, h: 0.16 };
-  const baseFont = Math.max(20, Math.min(96, height * (fontSizeRatio ?? Math.min(0.11, box.h * 0.7))));
+  const rawCopy = copy ?? "";
+  const desiredFont = Math.max(14, Math.min(96, height * (fontSizeRatio ?? Math.min(0.11, box.h * 0.7))));
+  const baseFont = fitFontToBox(rawCopy, desiredFont, box, width, height);
   const s = animation === "none" || animation === "typewriter" ? 1 : interpolate(frame, [0, 10], [0.82, 1], { extrapolateRight: "clamp" });
   const xOffset = animation === "slide_left"
     ? interpolate(frame, [0, 12], [-width * box.w, 0], { extrapolateRight: "clamp" })
@@ -185,8 +214,8 @@ const Typography: React.FC<{
         : 0;
   const opacity = animation === "fade" ? interpolate(frame, [0, 14], [0, 1], { extrapolateRight: "clamp" }) : animation === "flash" ? 0.72 + Math.sin(frame * 0.8) * 0.28 : 1;
   const visibleCopy = animation === "typewriter"
-    ? Array.from(copy ?? "").slice(0, Math.max(1, Math.ceil((frame / 18) * Array.from(copy ?? "").length))).join("")
-    : copy ?? "";
+    ? Array.from(rawCopy).slice(0, Math.max(1, Math.ceil((frame / 18) * Array.from(rawCopy).length))).join("")
+    : rawCopy;
   const shadow = typography?.shadow;
   const stroke = typography?.stroke;
   const bg = typography?.background;
@@ -213,7 +242,9 @@ const Typography: React.FC<{
           : "0 4px 24px rgba(0,0,0,0.82)",
         WebkitTextStroke: stroke ? `${Math.max(1, Math.round((stroke.widthRatio ?? 0.002) * height))}px ${stroke.color ?? "rgba(0,0,0,0.65)"}` : undefined,
         fontFamily: "sans-serif",
-        overflow: "hidden"
+        overflow: "hidden",
+        whiteSpace: "normal",
+        wordBreak: "break-word"
       }}
     >
       {bg ? <span style={{ background: bg.color ?? "rgba(0,0,0,0.45)", borderRadius: Math.round((bg.radiusRatio ?? 0.012) * height), padding: `${Math.round((bg.paddingRatio ?? 0.01) * height)}px` }}>{visibleCopy}</span> : visibleCopy}
@@ -249,6 +280,17 @@ const ParametricRibbonSurface: React.FC<{ layer: RecipeLayer }> = ({ layer }) =>
   const dir = layer.atom?.direction === "left_to_right" ? 1 : -1;
   const x = width * 0.5 + dir * Math.sin(t * 0.8) * width * 0.36;
   const y = height * 0.44 + Math.cos(t * 1.1) * height * 0.12;
+  const path = layer.atom?.path ?? "diagonal_sweep";
+  const primaryPath = path === "s_curve_orbit"
+    ? `M ${x - width * 0.08} ${-height * 0.12} C ${x + width * 0.28} ${height * 0.18}, ${x - width * 0.28} ${height * 0.48}, ${x + width * 0.08} ${height * 1.12}`
+    : path === "horizontal_wave"
+      ? `M ${x - width * 0.7} ${y + height * 0.08} C ${x - width * 0.2} ${y - height * 0.28}, ${x + width * 0.2} ${y + height * 0.28}, ${x + width * 0.72} ${y - height * 0.08}`
+      : `M ${x - width * 0.62} ${height * 0.2} C ${x - width * 0.08} ${height * 0.42}, ${x + width * 0.12} ${height * 0.58}, ${x + width * 0.62} ${height * 0.82}`;
+  const highlightPath = path === "s_curve_orbit"
+    ? `M ${x + width * 0.02} ${-height * 0.08} C ${x + width * 0.18} ${height * 0.22}, ${x - width * 0.2} ${height * 0.52}, ${x + width * 0.16} ${height * 1.05}`
+    : path === "horizontal_wave"
+      ? `M ${x - width * 0.6} ${y - height * 0.02} C ${x - width * 0.18} ${y + height * 0.2}, ${x + width * 0.18} ${y - height * 0.2}, ${x + width * 0.62} ${y + height * 0.02}`
+      : `M ${x - width * 0.5} ${height * 0.25} C ${x - width * 0.05} ${height * 0.45}, ${x + width * 0.14} ${height * 0.58}, ${x + width * 0.5} ${height * 0.76}`;
   return (
     <AbsoluteFill style={{ pointerEvents: "none", opacity: layer.atom?.opacity ?? 0.62 }}>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ position: "absolute", inset: 0 }}>
@@ -258,7 +300,7 @@ const ParametricRibbonSurface: React.FC<{ layer: RecipeLayer }> = ({ layer }) =>
           </linearGradient>
         </defs>
         <path
-          d={`M ${x - width * 0.7} ${y + height * 0.08} C ${x - width * 0.2} ${y - height * 0.28}, ${x + width * 0.2} ${y + height * 0.28}, ${x + width * 0.72} ${y - height * 0.08}`}
+          d={primaryPath}
           fill="none"
           stroke={`url(#grad_${layer.id})`}
           strokeWidth={thickness}
@@ -266,7 +308,7 @@ const ParametricRibbonSurface: React.FC<{ layer: RecipeLayer }> = ({ layer }) =>
           style={{ filter: "drop-shadow(0 24px 28px rgba(0,0,0,0.28))" }}
         />
         <path
-          d={`M ${x - width * 0.6} ${y - height * 0.02} C ${x - width * 0.18} ${y + height * 0.2}, ${x + width * 0.18} ${y - height * 0.2}, ${x + width * 0.62} ${y + height * 0.02}`}
+          d={highlightPath}
           fill="none"
           stroke="rgba(255,255,255,0.55)"
           strokeWidth={Math.max(4, thickness * 0.16)}
@@ -408,6 +450,69 @@ const ClipView: React.FC<{ clip: RecipeClip; assetMap: AssetMap; recipe: Recipe 
   );
 };
 
+const DEBUG_EFFECT_LABEL =
+  typeof process !== "undefined" && Boolean(process.env) && process.env.DEBUG_EFFECT_LABEL === "1";
+
+function effectPropsForId(recipe: Recipe, id: string): CreativeEffectRuntimeProps {
+  const existing = recipe.effectPropsById?.[id];
+  if (existing && typeof existing === "object") return existing;
+  // Defensive default if props were not attached (keeps the component renderable).
+  const g = recipe.global ?? {};
+  const c = recipe.composition ?? {};
+  return {
+    width: c.width ?? 720,
+    height: c.height ?? 1280,
+    fps: g.fps ?? c.fps ?? 30,
+    durationSec: g.durationSec ?? c.durationSec ?? 15,
+    colors: g.palette ?? [],
+    texts: [],
+    beats: []
+  };
+}
+
+/**
+ * Render the selected creative-effect program(s). Resolves each effectProgramId to a built-in
+ * component; if an id is not found (e.g. a generated effect not yet in the runtime registry), falls
+ * back to the built-in component for the recipe's motif family. The effects carry product text/CTA
+ * via their props, so product messaging is not hidden.
+ */
+const EffectLayer: React.FC<{ recipe: Recipe }> = ({ recipe }) => {
+  const ids = recipe.effectProgramIds ?? [];
+  if (!ids.length) return null;
+  return (
+    <>
+      {ids.map((id, i) => {
+        const Component = getRuntimeEffectComponent(id) ?? getBuiltInFallbackForMotif(recipe.motifFamily);
+        if (!Component) return null;
+        return (
+          <AbsoluteFill key={`effect_${id}_${i}`}>
+            <Component {...effectPropsForId(recipe, id)} />
+          </AbsoluteFill>
+        );
+      })}
+    </>
+  );
+};
+
+const EffectDebugLabel: React.FC<{ name: string }> = ({ name }) => (
+  <div
+    style={{
+      position: "absolute",
+      top: 8,
+      left: 8,
+      zIndex: 9999,
+      background: "rgba(0,0,0,0.7)",
+      color: "#fff",
+      fontFamily: "monospace",
+      fontSize: 18,
+      padding: "4px 10px",
+      borderRadius: 6
+    }}
+  >
+    effect: {name}
+  </div>
+);
+
 export const defaultRecipeProps: ViralRecipeProps = {
   timeline: { durationSec: 2, aspectRatio: "9:16", renderPlan: { fps: 30, renderRecipe: { clips: [] } } },
   assetMap: {}
@@ -416,6 +521,20 @@ export const defaultRecipeProps: ViralRecipeProps = {
 export const ViralRecipeRoot: React.FC<ViralRecipeProps> = ({ timeline, assetMap }) => {
   const { fps } = useVideoConfig();
   const recipe = timeline?.renderPlan?.renderRecipe ?? { clips: [] };
+
+  // v1.4: when a creative effect is selected, render its program(s). The effect components carry
+  // product text/CTA via their props, so messaging is preserved. Old recipes (no effectProgramIds)
+  // fall through to the existing layer/clip render path below — fully backward-compatible.
+  const effectIds = recipe.effectProgramIds ?? [];
+  if (effectIds.length) {
+    return (
+      <AbsoluteFill style={{ background: BG }}>
+        <EffectLayer recipe={recipe} />
+        {DEBUG_EFFECT_LABEL ? <EffectDebugLabel name={effectIds[0]} /> : null}
+      </AbsoluteFill>
+    );
+  }
+
   const layers = recipe.layers ?? [];
   if (layers.length) {
     return (

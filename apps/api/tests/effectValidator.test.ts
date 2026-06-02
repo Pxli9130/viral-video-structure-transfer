@@ -139,6 +139,16 @@ describe("validate-generated-effect (P4)", () => {
     expect(r.safeToApply).toBe(false);
   });
 
+  it("rejects a non-existent remotion export (Extrapolate, removed in v4) — catches the render-crash class", () => {
+    writeProposal({
+      "index.tsx": `import React from "react";\nimport { AbsoluteFill, interpolate, Extrapolate } from "remotion";\nimport type { SafeFxProps } from "./schema";\nexport const SafeFx: React.FC<SafeFxProps> = (props) => {\n  const v = interpolate(1, [0, 1], [0, 1], { extrapolateLeft: Extrapolate.clamp });\n  return <AbsoluteFill>{v}{props.colors?.[0]}</AbsoluteFill>;\n};\nexport default SafeFx;\n`
+    });
+    const r = validateGeneratedEffect(dir);
+    expect(r.failedChecks).toContain("nonexistent_import:remotion");
+    expect(r.validationStatus).toBe("fail");
+    expect(r.safeToApply).toBe(false);
+  });
+
   it("missing required file fails", () => {
     writeProposal();
     rmSync(path.join(dir, "README.md"));

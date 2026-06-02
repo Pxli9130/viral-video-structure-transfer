@@ -450,7 +450,7 @@ export const generationRequestSchema = {
         allowAigcMaterialGeneration: { type: "boolean" },
         allowExternalAigcProvider: { type: "boolean" },
         creativeMode: { enum: ["explainable_demo", "final_creative", "high_fidelity_style"] },
-        subtitleGenerationMode: { enum: ["off", "prompt_only", "ark_doubao"] },
+        subtitleGenerationMode: { enum: ["off", "prompt_only", "ark_doubao", "auto", "llm"] },
         subtitleDensity: { enum: ["minimal", "medium", "dense"] },
         stylePreset: { enum: ["sample_like", "clean_premium", "white_poster", "bold_mg"] },
         ctaTiming: { enum: ["early", "default", "late"] },
@@ -493,7 +493,7 @@ export const aigcMaterialFillConfigSchema = {
   additionalProperties: false,
   properties: {
     enabled: { type: "boolean" },
-    provider: { enum: ["deterministic_local_image_fill", "mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    provider: { enum: ["deterministic_local_image_fill", "mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "seedance_2_0", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
     maxAssetsPerRun: { type: "number", minimum: 0 },
     maxCostUsd: { type: "number", minimum: 0 },
     allowExternalUpload: { type: "boolean" },
@@ -558,7 +558,7 @@ export const generatedAssetCandidateSchema = {
     id: { type: "string" },
     briefId: { type: "string" },
     slotId: { type: "string" },
-    provider: { enum: ["deterministic_local_image_fill", "mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
+    provider: { enum: ["deterministic_local_image_fill", "mock_provider", "google_gemini_image", "local_folder_provider", "volcengine_seedream", "seedance_2_0", "ark_seedance_provider_stub", "image_provider", "copy_provider", "none"] },
     model: { type: "string" },
     type: { enum: ["image", "video", "copy"] },
     materialRole: { const: "aigc_generated_material" },
@@ -662,7 +662,23 @@ export const renderRecipeSchema = {
       minItems: 1,
       items: { $ref: "#/$defs/renderRecipeClip" }
     },
-    warnings: { type: "array", items: { type: "string" } }
+    warnings: { type: "array", items: { type: "string" } },
+    // v1.4 optional creative-effect fields (backward-compatible; old recipes omit them).
+    creativeEffectSpecId: { type: "string" },
+    motifFamily: {
+      enum: [
+        "poster_ribbon_marketing",
+        "card_orbit_motion_graph",
+        "blue_spotlight_ui_pitch",
+        "beat_cut_chinese_editing_tutorial",
+        "split_screen_compare",
+        "generic_motion_graph"
+      ]
+    },
+    effectProgramIds: { type: "array", items: { type: "string" } },
+    effectPropsById: { type: "object" },
+    effectFallbackReason: { type: "string" },
+    effectSelection: { type: "object" }
   },
   $defs: {
     renderRecipeClip: {
