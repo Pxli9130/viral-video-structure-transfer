@@ -42,6 +42,34 @@ function readJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
+/** Map the live layer-plan JSON (actual-codegen-layers) into the proposal's codegenLayerPlan input. */
+function toCodegenLayerPlan(caseId, layerJson, expected) {
+  const layers = Array.isArray(layerJson?.codegenLayers) ? layerJson.codegenLayers : [];
+  const maxEnd = layers.reduce((m, l) => Math.max(m, (Number(l?.startSec) || 0) + (Number(l?.durationSec) || 0)), 0);
+  const durationSec =
+    Number(layerJson?.durationSec) > 0
+      ? Number(layerJson.durationSec)
+      : maxEnd > 0
+        ? maxEnd
+        : Number(expected?.expectedCodegenLayers?.compositionTarget?.durationSec) || undefined;
+  return {
+    caseId,
+    motifFamily: layerJson?.creativeEffectSpec?.motifFamily ?? layerJson?.observedVisualGrammar?.motifFamily,
+    durationSec,
+    layers: layers.slice(0, 60).map((l) => ({
+      id: l?.id,
+      type: l?.type,
+      startSec: l?.startSec,
+      durationSec: l?.durationSec,
+      role: l?.role,
+      semanticTags: l?.semanticTags,
+      params: l?.params
+    })),
+    audio: layerJson?.audioFallback ?? layerJson?.audio,
+    safety: layerJson?.safety
+  };
+}
+
 function loadDotEnv(file = path.join(ROOT, ".env")) {
   if (!existsSync(file)) return;
   const text = readFileSync(file, "utf8");
@@ -173,7 +201,7 @@ async function geminiJsonWithImage({ prompt, imagePath, model, apiKey, baseUrl }
           ]
         }
       ],
-      generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
+      generationConfig: { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: Number(process.env.GEMINI_CODEGEN_MAX_TOKENS) > 0 ? Number(process.env.GEMINI_CODEGEN_MAX_TOKENS) : 65536 }
     })
   });
   const elapsedMs = Date.now() - startedAt;
@@ -498,7 +526,8 @@ async function main() {
           evidenceSummary: live.json.observedVisualGrammar?.summary,
           contactSheetPathMeta: { fileName: path.basename(imagePath), note: "contact sheet used for style evidence only" },
           recipeContext: expected.expectedCodegenLayers?.compositionTarget,
-          productTheme: { name: "Eval target product", category: "structure-transfer-eval", cta: "Learn more" }
+          productTheme: { name: "Eval target product", category: "structure-transfer-eval", cta: "Learn more" },
+          codegenLayerPlan: toCodegenLayerPlan(caseId, live.json, expected)
         },
         { env: { ...process.env, GEMINI_CODEGEN_MODEL: model } }
       );
