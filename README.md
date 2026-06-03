@@ -430,15 +430,15 @@ AIGC 安全策略：
 | LLM（文本增强/改写/评分） | `gemini`（默认 `gemini-3.5-flash`；alt 2.5-pro/2.5-flash） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`；`AI_GEMINI_MODEL` 选模型 |
 | VLM | disabled | Gemini（默认 `VLM_MODEL=gemini-3.5-flash`；alt `gemini-2.5-pro`/`gemini-2.5-flash`） | `VLM_PROVIDER=gemini` |
 | 创意特效 codegen | disabled | Gemini 生成 Remotion 特效组件（默认 `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`；zod schema + 静态校验 + named-import 存在性检查），失败回 local_fallback | `CREATIVE_EFFECT_GEMINI=1` + `ALLOW_CLOUD_PROVIDERS=1` |
-| ASR | `elevenlabs_scribe`（首选，cloud-first） | ElevenLabs Scribe（`scribe_v2`，云端，需 ElevenLabs key + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`/`_SCRIBE`/`_ASR`）→ faster-whisper（本地 fallback）→ `no_asr_with_warning` | `ASR_PROVIDER=elevenlabs_scribe\|faster_whisper` |
+| ASR | `elevenlabs_scribe`（首选，cloud-first） | ElevenLabs Scribe（`scribe_v2`，云端，需 ElevenLabs key + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`/`_SCRIBE`/`_ASR`）→ faster-whisper（本地 fallback）→ `no_asr_with_warning`。Google TTS/Lyria 不替代带 word timestamp 的 ASR。 | `ASR_PROVIDER=elevenlabs_scribe\|faster_whisper` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
 | AIGC image material | disabled | Google Gemini Image 默认 `gemini-3.1-flash-image`（Nano Banana 2；alt Nano Banana Pro `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`，首选）→ Volcengine Seedream（可选 backup，模型由 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 指定，无默认）→ `deterministic_local_image_fill`（本地确定性兜底，不中断） | `GEMINI_IMAGE_MODEL` 选模型；`AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
 | AIGC video material | disabled | Volcengine Seedance 2.0 Fast via Ark task API；失败不中断（保留程序化代理） | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`/`SEEDREAM_ARK_API_KEY` + explicit flag |
-| ElevenLabs 音频生成 | disabled（opt-in，永不致命） | Music（`/music`）+ TTS 旁白（`eleven_multilingual_v2`）+ SFX（`eleven_text_to_sound_v2`），经 FFmpeg 分层混音到 BGM 床上（bed 0.42 / voiceover 1.25+adelay400 / SFX 0.7，amix + highpass + alimiter）；失败降级为警告 + 程序化音频 | `ELEVENLABS_API_KEY` + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD` + 分任务 `ELEVENLABS_ENABLE_MUSIC\|TTS\|SFX` |
+| 音频生成 | Google 优先（opt-in，永不致命） | Voiceover：Gemini TTS（默认 `gemini-3.1-flash-tts-preview`）→ ElevenLabs TTS → 字幕/无旁白；Music：Lyria（默认 `lyria-3-clip-preview`）→ ElevenLabs Music → FFmpeg 程序化 BGM；SFX：ElevenLabs SFX → FFmpeg 程序化 SFX。最终经 FFmpeg 分层混音到 BGM 床上（bed 0.42 / voiceover 1.25+adelay400 / SFX 0.7，amix + highpass + alimiter）。 | `GEMINI_API_KEY` + `GOOGLE_AUDIO_ENABLE_CLOUD`/`ALLOW_CLOUD_PROVIDERS` + `GOOGLE_AUDIO_ENABLE_MUSIC\|TTS`；ElevenLabs 作为备选用 `ELEVENLABS_*` |
 | Renderer | FFmpeg（mock 已删除） | FFmpeg / Remotion / HyperFrames stub（程序化卡片，无 debug 文字） | request `rendererTarget` |
 | Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
 
-> ElevenLabs 音频栈（Scribe ASR、TTS 旁白、SFX、Music、Audio Isolation、Forced Alignment）已完整接入 `apps/api/src/adapters/elevenlabs.ts` 并由 server 在渲染前注入（`applyElevenLabsMusic` / `applyElevenLabsVoiceAndSfx`，server.ts:2061-2109、2150-2212）、由 FFmpeg 分层混音落到最终音轨（renderers.ts:915-973）。全部为显式 opt-in，失败仅降级为警告 + 程序化音频，永不致命。Dubbing / Lip Sync **尚未实现**（`dubbing` ModelTask 首选 `skip_with_warning`，无 adapter 方法；不存在 `lip_sync` 任务），不作为当前能力。
+> Google 音频栈（Gemini TTS voiceover + Lyria music）已接入 `apps/api/src/adapters/googleAudio.ts`，server 渲染前先注入 Google 音频，再尝试 ElevenLabs 备选，最后走本地 FFmpeg 程序化音频。ElevenLabs 仍负责 Scribe ASR、SFX、Audio Isolation、Forced Alignment，并作为 TTS/Music 备选。全部为显式 opt-in，失败仅降级为 warning + 下一层 fallback，永不致命。Dubbing / Lip Sync **尚未实现**（`dubbing` ModelTask 首选 `skip_with_warning`，无 adapter 方法；不存在 `lip_sync` 任务），不作为当前能力。
 
 ## 仍需人工配置的内容
 
@@ -446,7 +446,8 @@ AIGC 安全策略：
 - Gemini key：用于真实 VLM 视频理解和 AIGC 素材质量 gate。
 - Seedream key + model id：用于可选外部图片素材生成；`SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 无内置默认，未设置时配置直接抛错。
 - Seedance/Ark key：用于可选外部视频素材生成；可复用 `SEEDREAM_ARK_API_KEY`。
-- ElevenLabs key：用于可选 ElevenLabs 音频栈（Scribe ASR / TTS / SFX / Music）；默认 ASR 首选 cloud Scribe（`ASR_PROVIDER=elevenlabs_scribe`）。
+- Google audio：Gemini TTS / Lyria 复用 `GEMINI_API_KEY`，需要 `GOOGLE_AUDIO_ENABLE_CLOUD=1` 或 `ALLOW_CLOUD_PROVIDERS=1`，当前账号仍需要可用 billing/credits。
+- ElevenLabs key：用于备选 ElevenLabs 音频栈（Scribe ASR / TTS / SFX / Music）；默认 ASR 首选 cloud Scribe（`ASR_PROVIDER=elevenlabs_scribe`）。
 - faster-whisper / easyocr：按需安装到 conda env `viral`（faster-whisper 是 cloud Scribe 不可用时的本地 ASR fallback）。
 - Remotion Chromium：第一次真实 Remotion render 会下载浏览器缓存。
 

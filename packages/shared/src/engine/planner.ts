@@ -802,7 +802,14 @@ function detectVideoType(vlm: VLMVideoAnalysis | undefined, vertical: Vertical, 
     const dark = (ev.stats?.blackBgRatio ?? 0) > 0.4;
     const montage = ev.shots?.some((shot) => shot.family === "live_action_montage") ?? false;
     const score = (fast ? 1 : 0) + (dark ? 1 : 0) + (montage ? 1 : 0) + (hasBeatAudio ? 1 : 0);
-    if (score >= 3) return "beat_cut";
+    // fast cuts + dark bg + a beat grid are shared by motion-graph PROMOS too, so score>=3 alone
+    // mislabels MGs as beat_cut (the discriminating `montage`/live-action family is rarely populated by
+    // perception). Require a TRUE editing-tempo discriminator that MG promos don't reach: a montage
+    // family, a very short median shot, OR a dense beat grid. Thresholds are justified by the measured
+    // distribution across the corpus (editing.mov medianShot≈1.8s / beats≈297 vs MG promos ≈2.2–2.9s /
+    // ≈55–65 beats — wide margins, validated on all four canonical samples), not tuned to one sample.
+    const editingTempo = montage || (ev.stats?.medianShotDurationSec ?? 99) < 2.0 || beats >= 150;
+    if (score >= 3 && editingTempo) return "beat_cut";
   }
   return videoTypeFromVlm(vlm, vertical);
 }
@@ -1015,8 +1022,20 @@ export function attachEvidenceToTemplate(
 ): StructureTemplate {
   const ev = analysis.evidenceTimeline;
   const motionAtoms = evidenceMotionAtomsFromAnalysis(analysis, vlm);
+  // Carry the sample's measured dominant palette onto EVERY template path. buildBeatCutTemplate sets
+  // it in its own literal, but the fallback / marketing / motion-graph path did not — so non-beat_cut
+  // recipes lost the real per-sample colors and fell back to a generic palette (warm marketing ≈ cool
+  // MG all rendered the same). This is a single shared enrichment point; the value is read straight
+  // from per-sample evidence (no sample-name branching). It is consumed downstream ONLY when
+  // recipeEvidencePrimitives / creative-effects flags are on, so flag-off goldens stay byte-identical;
+  // the guard preserves any palette the base template already carried.
+  const evidencePalette =
+    !baseTemplate.dominantHexPalette && Array.isArray(ev?.stats?.dominantPalette) && ev.stats.dominantPalette.length
+      ? ev.stats.dominantPalette.filter((c): c is string => typeof c === "string")
+      : undefined;
   const enriched: StructureTemplate = {
     ...baseTemplate,
+    ...(evidencePalette && evidencePalette.length ? { dominantHexPalette: evidencePalette } : {}),
     ...(ev?.heroDescriptor ? { heroDescriptor: ev.heroDescriptor } : {}),
     ...(ev?.typographyEvidence ? { typographyEvidence: ev.typographyEvidence } : {}),
     ...(ev?.visualElementGraph ? { visualElementGraph: ev.visualElementGraph } : {}),

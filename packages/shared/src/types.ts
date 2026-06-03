@@ -395,6 +395,8 @@ export interface GeneratedAssetCandidate {
 export type OptionalProviderId =
   | "seedance_2_0"
   | "seedream_4_0"
+  | "google_gemini_tts"
+  | "google_lyria_music"
   | "elevenlabs_scribe"
   | "elevenlabs_tts"
   | "elevenlabs_sound_effects"

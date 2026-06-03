@@ -19,6 +19,7 @@ import { runPython, hasCondaEnv } from "./condaPython.js";
 import { GeminiVLMAdapter } from "./gemini.js";
 import { GeminiAIAdapter } from "./geminiAi.js";
 import { ElevenLabsAdapter } from "./elevenlabs.js";
+import { GoogleAudioAdapter } from "./googleAudio.js";
 import { OpenAICompatibleAIAdapter } from "./openaiCompatible.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -316,6 +317,7 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
 export { GeminiVLMAdapter };
 export { GeminiAIAdapter };
 export { ElevenLabsAdapter };
+export { GoogleAudioAdapter };
 
 export const RENDERER_TARGETS_ENV: Record<string, RendererTarget> = {
   html_preview: "html_preview",

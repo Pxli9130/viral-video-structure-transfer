@@ -68,10 +68,14 @@ describe("Spec v4.2 ModelTask router", () => {
       allowCloud: true
     });
 
-    expect(decision.selectedProvider).toBe("skip_with_warning");
+    expect(decision.selectedProvider).toBe("procedural_synth");
     expect(decision.fallbackUsed).toBe(true);
     expect(decision.rejectedProviders).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          provider: "google_lyria_music",
+          reason: expect.stringContaining("envMissing=GEMINI_API_KEY")
+        }),
         expect.objectContaining({
           provider: "elevenlabs_music",
           reason: expect.stringContaining("ElevenLabs live calls are disabled")
@@ -79,6 +83,22 @@ describe("Spec v4.2 ModelTask router", () => {
       ])
     );
     expect(decision.consumesSampleAudioExternally).toBe(false);
+  });
+
+  it("selects Google audio by default when Gemini audio is enabled", () => {
+    const env = { GEMINI_API_KEY: "test-key", GOOGLE_AUDIO_ENABLE_CLOUD: "1" };
+    const tts = resolveModelRoute("voiceover", { env, allowCloud: true });
+    const music = resolveModelRoute("music", { env, allowCloud: true });
+
+    expect(tts.selectedProvider).toBe("google_gemini_tts");
+    expect(tts.fallbackUsed).toBe(false);
+    expect(music.selectedProvider).toBe("google_lyria_music");
+    expect(music.fallbackUsed).toBe(false);
+    for (const decision of [tts, music]) {
+      expect(decision.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
+      expect(decision.consumesSampleAudioExternally).toBe(false);
+      expect(decision.generatedAssetProvenanceRequired).toBe(true);
+    }
   });
 
   it("selects ElevenLabs for allowed audio tasks without enabling sample audio upload", () => {

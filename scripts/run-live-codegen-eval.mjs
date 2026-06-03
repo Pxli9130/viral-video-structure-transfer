@@ -481,7 +481,12 @@ async function main() {
   const cases = [];
   const pureOutputs = [];
   let liveHttpCalls = 0;
-  for (const caseId of CASE_ORDER) {
+  // --only <case>[,<case>] restricts the live run to specific cases (saves API budget when validating
+  // a single case, e.g. editing after a prompt change). Default: all four.
+  const onlyArg = arg("--only");
+  const onlyset = onlyArg ? new Set(onlyArg.split(",").map((s) => s.trim())) : null;
+  const targets = onlyset ? CASE_ORDER.filter((c) => onlyset.has(c)) : CASE_ORDER;
+  for (const caseId of targets) {
     const expected = expectedAll.cases[caseId];
     if (!expected) continue;
     const caseDir = path.join(runDir, caseId);

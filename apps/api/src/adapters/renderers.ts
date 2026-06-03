@@ -904,6 +904,80 @@ function heroElementForClip(clip: TimelineClip): { positionClass?: string; cente
   return undefined;
 }
 
+/**
+ * Build the layered PROCEDURAL beat-track lavfi source expressions for a timeline — dark ambient
+ * drone (harmonic pad) + kick + bass pulse + hi-hat + pink-noise air + optional riser/impacts at the
+ * sample's strong beats. The mix weights are derived from the sample's LEARNED audio structure
+ * (renderPlan.audioPlan.layers / recipe audio layers / BPM / spectral stats), never from a sample
+ * name — so any input flows through the same generator. 100% synthesized (no copyrighted/sample
+ * audio). Shared by FFmpegRenderer.addAudioTrack AND RemotionRenderer so BOTH render paths emit the
+ * same evidence-derived bed (previously only the FFmpeg path muxed audio; Remotion shipped silent).
+ * Returns the lavfi source list (always >=1 entry: the drone) or [] only on invalid duration.
+ */
+function buildProceduralBedSources(timeline: Timeline, durationSec: number): string[] {
+  if (!(durationSec > 0)) return [];
+  const dur = Math.max(1, durationSec).toFixed(2);
+  const bpm = timeline.renderPlan?.audioPlan?.bpm ?? timeline.renderPlan?.beatGrid?.bpm ?? 120;
+  const bi = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
+  const half = (Number(bi) / 2).toFixed(4);
+  const sr = "s=44100";
+  // v3: mix the layers by the sample's learned audio-structure balance (bass_kick / music_harmonic
+  // / hats_air) — a bass-heavy sample gets a heavier kick/bass, etc. — not just a fixed click.
+  const recipeAudioLayers = Object.fromEntries(
+    (timeline.renderPlan?.renderRecipe?.layers ?? [])
+      .filter((layer) => layer.type === "audio")
+      .map((layer) => [layer.audio.kind === "hat" ? "hats" : layer.audio.kind, layer.audio.weight])
+  ) as Record<string, number>;
+  const timelineAudioLayers = (timeline.renderPlan?.audioPlan?.layers ?? {}) as Record<string, number>;
+  const layers = Object.keys(timelineAudioLayers).length ? timelineAudioLayers : recipeAudioLayers;
+  const readLayer = (keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const value = layers[key];
+      if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.min(1, value));
+    }
+    return undefined;
+  };
+  const layer = (keys: string[], fallback: number): number => readLayer(keys) ?? fallback;
+  const motionDriven = timeline.clips.some((clip) => Boolean(clip.motionPrimitive));
+  const spectralCentroid = timeline.renderPlan?.audioPlan?.spectralCentroidMean;
+  const spectralFlatness = timeline.renderPlan?.audioPlan?.spectralFlatnessMean;
+  const airBoost =
+    (typeof spectralCentroid === "number" && spectralCentroid > 2000 ? 0.28 : 0) +
+    (typeof spectralFlatness === "number" && spectralFlatness > 0.35 ? 0.22 : 0);
+  const drumWeight = readLayer(["bass", "kick", "bass_kick"]) ?? 0;
+  const gBass = drumWeight > 0 ? 0.55 + drumWeight * (motionDriven ? 0.95 : 0.55) : 0;
+  const gMusic = 0.7 + layer(["drone", "music_harmonic"], 0.45) * 2.2;
+  const gAir = 0.45 + layer(["hats", "hats_air"], 0.12) * 2.6 + airBoost;
+  const gRiser = layer(["riser"], 0) * 1.6;
+  const gImpact = layer(["impact"], drumWeight > 0 ? 0.35 : 0.08) * 0.9;
+  const strongBeats = (timeline.renderPlan?.audioPlan?.strongBeatsSec ?? [])
+    .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= durationSec)
+    .slice(0, 36);
+  const a = (base: number, g: number) => (base * g).toFixed(3);
+  const drone = `aevalsrc='${a(0.10, gMusic)}*sin(2*PI*55*t)+${a(0.07, gMusic)}*sin(2*PI*82.5*t)+${a(0.05, gMusic)}*sin(2*PI*110*t)':${sr}:d=${dur}`;
+  const kick = `aevalsrc='${a(motionDriven ? 0.6 : 0.34, gBass)}*sin(2*PI*58*t)*exp(-26*mod(t\\,${bi}))':${sr}:d=${dur}`;
+  const bass = `aevalsrc='${a(motionDriven ? 0.28 : 0.18, gBass)}*sin(2*PI*98*t)*exp(-7*mod(t\\,${bi}))':${sr}:d=${dur}`;
+  const hat = `aevalsrc='${a(0.16, gAir)}*sin(2*PI*1400*t)*exp(-42*mod(t\\,${half}))':${sr}:d=${dur}`;
+  const air = `anoisesrc=color=pink:amplitude=${a(0.05, gAir)}:duration=${dur}:sample_rate=44100`;
+  const riser = `aevalsrc='${a(0.08, gRiser)}*sin(2*PI*(160+80*t/${dur})*t)':${sr}:d=${dur}`;
+  const impactExpr = strongBeats.length
+    ? strongBeats
+        .map((beat) => {
+          const b = beat.toFixed(3);
+          return `${a(0.18, gImpact)}*sin(2*PI*180*(t-${b}))*exp(-28*(t-${b}))*gte(t\\,${b})`;
+        })
+        .join("+")
+    : "0";
+  const impact = `aevalsrc='${impactExpr}':${sr}:d=${dur}`;
+  return [
+    drone,
+    ...(drumWeight > 0.05 ? [kick, bass] : []),
+    ...(gAir > 0.15 ? [hat, air] : []),
+    ...(gRiser > 0.05 ? [riser] : []),
+    ...(gImpact > 0.05 && strongBeats.length ? [impact] : [])
+  ];
+}
+
 export class FFmpegRenderer implements RendererAdapter {
   readonly target: RendererTarget = "ffmpeg";
   private readonly opts: FFmpegRendererOptions;
@@ -1059,8 +1133,8 @@ export class FFmpegRenderer implements RendererAdapter {
       const directAudioFile = audioRef && path.isAbsolute(audioRef) && existsSync(audioRef) ? audioRef : undefined;
       const resolvedAudioFile = audioRef ? this.opts.assetResolver.resolve(audioRef) : undefined;
       const audioFile = directAudioFile ?? (resolvedAudioFile && existsSync(resolvedAudioFile) ? resolvedAudioFile : undefined);
-      // ElevenLabs voiceover + SFX (best-effort) are layered over WHATEVER audio bed is used —
-      // an ElevenLabs music file, the procedural synth bed, or sample bgm — so a successful SFX/VO
+      // Generated voiceover + SFX (best-effort) are layered over WHATEVER audio bed is used —
+      // Google/ElevenLabs music, the procedural synth bed, or sample bgm — so successful aux audio
       // is never dropped just because the music bed fell back to procedural.
       const auxPath = (key: string): string | undefined => {
         const entry = (timeline.renderPlan?.adapterOptions as Record<string, unknown> | undefined)?.[key];
@@ -1070,7 +1144,7 @@ export class FFmpegRenderer implements RendererAdapter {
         const resolved = this.opts.assetResolver.resolve(candidate);
         return resolved && existsSync(resolved) ? resolved : undefined;
       };
-      const voiceoverFile = auxPath("elevenLabsVoiceover");
+      const voiceoverFile = auxPath("googleAudioVoiceover") ?? auxPath("elevenLabsVoiceover");
       const sfxFile = auxPath("elevenLabsSfx");
       if (audioFile) {
         if (voiceoverFile || sfxFile) {
@@ -1101,11 +1175,11 @@ export class FFmpegRenderer implements RendererAdapter {
               "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", finalPath
             ]);
             warnings.push(
-              `ElevenLabs audio layered: bed${voiceoverFile ? "+voiceover" : ""}${sfxFile ? "+sfx" : ""}.`
+              `Generated audio layered: bed${voiceoverFile ? "+voiceover" : ""}${sfxFile ? "+sfx" : ""}.`
             );
             return true;
           } catch (error) {
-            warnings.push(`ElevenLabs voice/SFX layered mux failed (${(error as Error).message}); muxing music bed only.`);
+            warnings.push(`Generated voice/SFX layered mux failed (${(error as Error).message}); muxing music bed only.`);
           }
         }
         await runFfmpeg([
@@ -1119,69 +1193,9 @@ export class FFmpegRenderer implements RendererAdapter {
       if (policy === "sample_bgm") {
         warnings.push(`Audio policy sample_bgm but audioRef ${audioRef ?? "n/a"} did not resolve; falling back to synth beat.`);
       }
-      // synth_beat (and sample_bgm fallback): a layered PROCEDURAL beat track at the timeline BPM —
-      // dark ambient drone (harmonic pad) + kick + bass pulse + hi-hat + pink-noise air. Far richer
-      // than a bare click (higher spectral centroid + chroma variety), still 100% generated (no
-      // copyrighted/sample audio). The drone+hat raise the centroid; the noise adds air/flatness.
-      const bpm = timeline.renderPlan?.audioPlan?.bpm ?? timeline.renderPlan?.beatGrid?.bpm ?? 120;
-      const bi = (60 / (bpm > 40 && bpm < 300 ? bpm : 120)).toFixed(4);
-      const half = (Number(bi) / 2).toFixed(4);
-      const sr = "s=44100";
-      // v3: mix the layers by the sample's learned audio-structure balance (bass_kick / music_harmonic
-      // / hats_air) — a bass-heavy sample gets a heavier kick/bass, etc. — not just a fixed click.
-      const recipeAudioLayers = Object.fromEntries(
-        (timeline.renderPlan?.renderRecipe?.layers ?? [])
-          .filter((layer) => layer.type === "audio")
-          .map((layer) => [layer.audio.kind === "hat" ? "hats" : layer.audio.kind, layer.audio.weight])
-      ) as Record<string, number>;
-      const timelineAudioLayers = (timeline.renderPlan?.audioPlan?.layers ?? {}) as Record<string, number>;
-      const layers = Object.keys(timelineAudioLayers).length ? timelineAudioLayers : recipeAudioLayers;
-      const readLayer = (keys: string[]): number | undefined => {
-        for (const key of keys) {
-          const value = layers[key];
-          if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.min(1, value));
-        }
-        return undefined;
-      };
-      const layer = (keys: string[], fallback: number): number => readLayer(keys) ?? fallback;
-      const motionDriven = timeline.clips.some((clip) => Boolean(clip.motionPrimitive));
-      const spectralCentroid = timeline.renderPlan?.audioPlan?.spectralCentroidMean;
-      const spectralFlatness = timeline.renderPlan?.audioPlan?.spectralFlatnessMean;
-      const airBoost =
-        (typeof spectralCentroid === "number" && spectralCentroid > 2000 ? 0.28 : 0) +
-        (typeof spectralFlatness === "number" && spectralFlatness > 0.35 ? 0.22 : 0);
-      const drumWeight = readLayer(["bass", "kick", "bass_kick"]) ?? 0;
-      const gBass = drumWeight > 0 ? 0.55 + drumWeight * (motionDriven ? 0.95 : 0.55) : 0;
-      const gMusic = 0.7 + layer(["drone", "music_harmonic"], 0.45) * 2.2;
-      const gAir = 0.45 + layer(["hats", "hats_air"], 0.12) * 2.6 + airBoost;
-      const gRiser = layer(["riser"], 0) * 1.6;
-      const gImpact = layer(["impact"], drumWeight > 0 ? 0.35 : 0.08) * 0.9;
-      const strongBeats = (timeline.renderPlan?.audioPlan?.strongBeatsSec ?? [])
-        .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= durationSec)
-        .slice(0, 36);
-      const a = (base: number, g: number) => (base * g).toFixed(3);
-      const drone = `aevalsrc='${a(0.10, gMusic)}*sin(2*PI*55*t)+${a(0.07, gMusic)}*sin(2*PI*82.5*t)+${a(0.05, gMusic)}*sin(2*PI*110*t)':${sr}:d=${dur}`;
-      const kick = `aevalsrc='${a(motionDriven ? 0.6 : 0.34, gBass)}*sin(2*PI*58*t)*exp(-26*mod(t\\,${bi}))':${sr}:d=${dur}`;
-      const bass = `aevalsrc='${a(motionDriven ? 0.28 : 0.18, gBass)}*sin(2*PI*98*t)*exp(-7*mod(t\\,${bi}))':${sr}:d=${dur}`;
-      const hat = `aevalsrc='${a(0.16, gAir)}*sin(2*PI*1400*t)*exp(-42*mod(t\\,${half}))':${sr}:d=${dur}`;
-      const air = `anoisesrc=color=pink:amplitude=${a(0.05, gAir)}:duration=${dur}:sample_rate=44100`;
-      const riser = `aevalsrc='${a(0.08, gRiser)}*sin(2*PI*(160+80*t/${dur})*t)':${sr}:d=${dur}`;
-      const impactExpr = strongBeats.length
-        ? strongBeats
-            .map((beat) => {
-              const b = beat.toFixed(3);
-              return `${a(0.18, gImpact)}*sin(2*PI*180*(t-${b}))*exp(-28*(t-${b}))*gte(t\\,${b})`;
-            })
-            .join("+")
-        : "0";
-      const impact = `aevalsrc='${impactExpr}':${sr}:d=${dur}`;
-      const sources = [
-        drone,
-        ...(drumWeight > 0.05 ? [kick, bass] : []),
-        ...(gAir > 0.15 ? [hat, air] : []),
-        ...(gRiser > 0.05 ? [riser] : []),
-        ...(gImpact > 0.05 && strongBeats.length ? [impact] : [])
-      ];
+      // synth_beat (and sample_bgm fallback): a layered PROCEDURAL beat track at the timeline BPM,
+      // built by the shared buildProceduralBedSources() so the Remotion path emits the SAME bed.
+      const sources = buildProceduralBedSources(timeline, durationSec);
       const lavfiInputs = sources.flatMap((source) => ["-f", "lavfi", "-i", source]);
       const labels = sources.map((_, index) => `[${index + 1}]`).join("");
       // Layer any ElevenLabs voiceover/SFX onto the procedural bed. Inputs: 0=silent video,
@@ -1219,7 +1233,7 @@ export class FFmpegRenderer implements RendererAdapter {
         "-movflags", "+faststart", finalPath
       ]);
       if (auxLabels.length) {
-        warnings.push(`ElevenLabs audio layered over procedural bed:${voiceoverFile ? " voiceover" : ""}${sfxFile ? " sfx" : ""}.`);
+        warnings.push(`Generated audio layered over procedural bed:${voiceoverFile ? " voiceover" : ""}${sfxFile ? " sfx" : ""}.`);
       }
       return true;
     } catch (error) {
@@ -1777,6 +1791,13 @@ export class RemotionRenderer implements RendererAdapter {
     const renderId = stableId("render_remotion", generationId, timeline.id);
     const outputPath = path.join(this.opts.generatedDir, `${this.opts.outputBasename?.trim() || renderId}.mp4`);
     const entryPoint = this.opts.entryPoint ?? path.resolve(process.cwd(), "remotion", "index.tsx");
+    // The Remotion composition (ViralRecipeRoot) carries no <Audio>, so renderMedia emits an empty
+    // stereo track (-91 dB silence). When the recipe asks for audio, render to a temp silent file
+    // and mux the SAME evidence-derived procedural bed the FFmpeg path uses (buildProceduralBedSources)
+    // so production / codegen / apply-proof renders are no longer silent.
+    const needsAudio = (timeline.renderPlan?.audioPolicy ?? "silent") !== "silent";
+    const silentPath = needsAudio ? outputPath.replace(/\.mp4$/i, ".silent.mp4") : outputPath;
+    const renderQualityWarnings: string[] = [];
 
     if (!existsSync(entryPoint)) {
       return {
@@ -1865,7 +1886,7 @@ export class RemotionRenderer implements RendererAdapter {
           composition,
           serveUrl: this.bundleLocation,
           codec: "h264",
-          outputLocation: outputPath,
+          outputLocation: silentPath,
           inputProps,
           browserExecutable,
           chromiumOptions,
@@ -1876,6 +1897,24 @@ export class RemotionRenderer implements RendererAdapter {
         });
       } finally {
         assetServer.close();
+      }
+
+      // Mux the procedural audio bed onto the (otherwise silent) Remotion render so this path matches
+      // the FFmpeg path. Failure is non-fatal: fall back to the silent render rather than no output.
+      if (needsAudio) {
+        const totalDuration = timeline.durationSec || timeline.clips.reduce((sum, c) => sum + Math.max(0.5, c.durationSec), 0);
+        let audioMuxed = false;
+        try {
+          audioMuxed = await this.muxProceduralAudio(silentPath, outputPath, timeline, totalDuration);
+        } catch (error) {
+          console.warn(`[remotion] audio mux failed: ${(error as Error).message}`);
+          renderQualityWarnings.push("audio_mux_failed");
+        }
+        if (!audioMuxed) {
+          if (silentPath !== outputPath && existsSync(silentPath)) await fs.copyFile(silentPath, outputPath);
+          renderQualityWarnings.push("no_audio");
+        }
+        if (silentPath !== outputPath) await fs.rm(silentPath, { force: true }).catch(() => {});
       }
 
       // v1.4: record creative-effect selection / fallback from the recipe into the render report.
@@ -1891,6 +1930,7 @@ export class RemotionRenderer implements RendererAdapter {
         status: "completed",
         outputPath,
         previewHtml: `<video controls width="320"><source src="${path.basename(outputPath)}" type="video/mp4" /></video>`,
+        ...(renderQualityWarnings.length ? { renderQualityWarnings } : {}),
         ...(effectProgramIds.length ? { effectProgramIds } : {}),
         ...(effectFallbackReason ? { effectFallbackReason } : {}),
         ...(recipe?.effectSelection?.source ? { effectSelectionSource: recipe.effectSelection.source } : {}),
@@ -1906,6 +1946,35 @@ export class RemotionRenderer implements RendererAdapter {
         createdAt: nowIso()
       };
     }
+  }
+
+  /**
+   * Mux the shared procedural audio bed onto a silent Remotion render. Drops Remotion's default empty
+   * stereo track (-map 0:v:0 only) and writes a mono (-ac 1) track to match the FFmpeg/pure-codegen
+   * signature. Returns true on success. The bed is evidence-derived (buildProceduralBedSources), so
+   * arbitrary inputs flow through the same generator — no sample-name branching.
+   */
+  private async muxProceduralAudio(
+    silentPath: string,
+    finalPath: string,
+    timeline: Timeline,
+    durationSec: number
+  ): Promise<boolean> {
+    const sources = buildProceduralBedSources(timeline, durationSec);
+    if (!sources.length) return false;
+    const dur = Math.max(1, durationSec).toFixed(2);
+    const lavfiInputs = sources.flatMap((source) => ["-f", "lavfi", "-i", source]);
+    const labels = sources.map((_, index) => `[${index + 1}]`).join("");
+    const filterComplex = `${labels}amix=inputs=${sources.length}:duration=longest:normalize=0,highpass=f=30,alimiter=limit=0.9[a]`;
+    await runFfmpeg([
+      "-y", "-i", silentPath,
+      ...lavfiInputs,
+      "-filter_complex", filterComplex,
+      "-map", "0:v:0", "-map", "[a]", "-t", dur,
+      "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-shortest",
+      "-movflags", "+faststart", finalPath
+    ]);
+    return true;
   }
 }
 

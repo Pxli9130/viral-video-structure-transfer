@@ -59,6 +59,7 @@ import {
 import { buildAdapterSet, type AdapterSet } from "./adapters/index.js";
 import { selectRenderer, type AssetPathResolver } from "./adapters/renderers.js";
 import { ElevenLabsAdapter } from "./adapters/elevenlabs.js";
+import { GoogleAudioAdapter } from "./adapters/googleAudio.js";
 import { analyzeEvidenceTimeline, bindAnalysisTextToEvidence } from "./adapters/evidenceTimeline.js";
 import { buildDatabaseStore, type Database, emptyDatabase as makeEmptyDatabase } from "./storage/index.js";
 
@@ -2043,6 +2044,24 @@ function elevenLabsMusicEnabled(): boolean {
   );
 }
 
+function googleAudioTaskEnabled(task: "MUSIC" | "TTS"): boolean {
+  const taskFlags = task === "TTS"
+    ? ["GOOGLE_AUDIO_ENABLE_TTS", "GOOGLE_AUDIO_ENABLE_VOICEOVER"]
+    : ["GOOGLE_AUDIO_ENABLE_MUSIC"];
+  return Boolean(
+    process.env.GEMINI_API_KEY?.trim() &&
+      (envFlag("ENABLE_GOOGLE_AUDIO_LIVE_TESTS") ||
+        envFlag("GOOGLE_AUDIO_ENABLE_CLOUD") ||
+        envFlag("ALLOW_CLOUD_PROVIDERS") ||
+        taskFlags.some((flag) => envFlag(flag)))
+  );
+}
+
+function hasGeneratedMusicBed(renderPlan: GenerationResult["timeline"]["renderPlan"]): boolean {
+  const options = renderPlan?.adapterOptions as Record<string, unknown> | undefined;
+  return Boolean(renderPlan?.audioRef && (options?.googleAudioMusic || options?.elevenLabsMusic));
+}
+
 function musicPromptForGeneration(generation: GenerationResult): string {
   const recipe = generation.timeline.renderPlan?.renderRecipe;
   const productName = recipe?.productTheme?.name ?? parsePromptToBrief(generation.request).productName;
@@ -2060,10 +2079,61 @@ function musicPromptForGeneration(generation: GenerationResult): string {
   ].join(" ");
 }
 
+async function applyGoogleAudioMusic(generation: GenerationResult): Promise<GenerationResult> {
+  if (!googleAudioTaskEnabled("MUSIC")) return generation;
+  const renderPlan = generation.timeline.renderPlan;
+  if (!renderPlan || renderPlan.audioPolicy === "silent" || hasGeneratedMusicBed(renderPlan)) return generation;
+  try {
+    const adapter = new GoogleAudioAdapter({
+      apiKey: process.env.GEMINI_API_KEY,
+      enabled: true,
+      outputDir: path.join(generatedDir, "google-audio-music", generation.id)
+    });
+    const audio = await adapter.generateMusic({
+      prompt: musicPromptForGeneration(generation),
+      durationSec: generation.request.target.targetDurationSec
+    });
+    return {
+      ...generation,
+      warnings: [...generation.warnings, `Google Lyria music generated and attached: ${path.basename(audio.path)}`],
+      timeline: {
+        ...generation.timeline,
+        renderPlan: {
+          ...renderPlan,
+          audioRef: audio.path,
+          audioPolicy: renderPlan.audioPolicy ?? "synth_beat",
+          audioPlan: {
+            ...(renderPlan.audioPlan ?? { policy: "user_bgm" as const }),
+            policy: "user_bgm"
+          },
+          adapterOptions: {
+            ...(renderPlan.adapterOptions ?? {}),
+            googleAudioMusic: {
+              provider: audio.provider,
+              materialRole: audio.materialRole,
+              path: audio.path,
+              provenance: audio.provenance,
+              metadata: audio.metadata
+            }
+          }
+        }
+      }
+    };
+  } catch (error) {
+    return {
+      ...generation,
+      warnings: [
+        ...generation.warnings,
+        `Google Lyria music generation failed: ${sanitizeAigcProviderError(error)}; trying ElevenLabs/procedural fallback.`
+      ]
+    };
+  }
+}
+
 async function applyElevenLabsMusic(generation: GenerationResult): Promise<GenerationResult> {
   if (!elevenLabsMusicEnabled()) return generation;
   const renderPlan = generation.timeline.renderPlan;
-  if (!renderPlan || renderPlan.audioPolicy === "silent") return generation;
+  if (!renderPlan || renderPlan.audioPolicy === "silent" || hasGeneratedMusicBed(renderPlan)) return generation;
   try {
     const adapter = new ElevenLabsAdapter({
       apiKey: process.env.ELEVENLABS_API_KEY,
@@ -2143,6 +2213,53 @@ function voiceoverScriptForGeneration(generation: GenerationResult): string | un
   return script.length >= 8 ? script : undefined;
 }
 
+async function applyGoogleAudioVoiceover(generation: GenerationResult): Promise<GenerationResult> {
+  if (!googleAudioTaskEnabled("TTS")) return generation;
+  const renderPlan = generation.timeline.renderPlan;
+  if (!renderPlan || renderPlan.audioPolicy === "silent") return generation;
+  const script = voiceoverScriptForGeneration(generation);
+  if (!script) return generation;
+  const adapterOptions: Record<string, unknown> = { ...(renderPlan.adapterOptions ?? {}) };
+  if (adapterOptions.googleAudioVoiceover || adapterOptions.elevenLabsVoiceover) return generation;
+  try {
+    const adapter = new GoogleAudioAdapter({
+      apiKey: process.env.GEMINI_API_KEY,
+      enabled: true,
+      outputDir: path.join(generatedDir, "google-audio-voice", generation.id)
+    });
+    const vo = await adapter.generateVoiceover({
+      text: script,
+      style: "calm",
+      durationTargetSec: generation.request.target.targetDurationSec,
+      productTheme: generation.timeline.renderPlan?.renderRecipe?.productTheme
+    });
+    adapterOptions.googleAudioVoiceover = {
+      provider: vo.provider,
+      materialRole: vo.materialRole,
+      path: vo.path,
+      provenance: vo.provenance,
+      metadata: vo.metadata,
+      script
+    };
+    return {
+      ...generation,
+      warnings: [...generation.warnings, `Google Gemini TTS voiceover generated and attached: ${path.basename(vo.path)}`],
+      timeline: {
+        ...generation.timeline,
+        renderPlan: { ...renderPlan, adapterOptions }
+      }
+    };
+  } catch (error) {
+    return {
+      ...generation,
+      warnings: [
+        ...generation.warnings,
+        `Google Gemini TTS voiceover failed: ${sanitizeAigcProviderError(error)}; trying ElevenLabs/procedural fallback.`
+      ]
+    };
+  }
+}
+
 const ELEVENLABS_SFX_PROMPT =
   "Short clean whoosh transition swooshing into a soft UI confirmation click, modern product ad sound design, no music, no speech.";
 
@@ -2150,7 +2267,8 @@ const ELEVENLABS_SFX_PROMPT =
 // generated (provenance-tagged) assets to renderPlan.adapterOptions so the renderer can layer them
 // into the music bed. Never fatal — any failure degrades to a warning and the render proceeds.
 async function applyElevenLabsVoiceAndSfx(generation: GenerationResult): Promise<GenerationResult> {
-  const wantTts = elevenLabsTaskEnabled("TTS");
+  const existingOptions = (generation.timeline.renderPlan?.adapterOptions ?? {}) as Record<string, unknown>;
+  const wantTts = elevenLabsTaskEnabled("TTS") && !existingOptions.googleAudioVoiceover && !existingOptions.elevenLabsVoiceover;
   const wantSfx = elevenLabsTaskEnabled("SFX");
   if (!wantTts && !wantSfx) return generation;
   const renderPlan = generation.timeline.renderPlan;
@@ -2299,7 +2417,9 @@ async function runGeneration(
       gapSourceGeneration: initialGeneration,
       generationIdSalt: options.variantLabel
     });
+    generation = await applyGoogleAudioMusic(generation);
     generation = await applyElevenLabsMusic(generation);
+    generation = await applyGoogleAudioVoiceover(generation);
     generation = await applyElevenLabsVoiceAndSfx(generation);
     generation = await applySubtitleGeneration(generation);
     if (templateSelection.warning) {

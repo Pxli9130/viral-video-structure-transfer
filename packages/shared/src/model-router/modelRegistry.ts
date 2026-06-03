@@ -296,6 +296,28 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
     canAffectFinalPixels: true,
     mediaAccessPolicy: AIGC_GENERATION_WITH_USER_ASSETS_POLICY
   },
+  google_gemini_tts: {
+    id: "google_gemini_tts",
+    displayName: "Google Gemini TTS",
+    providerClass: "audio_generation",
+    cloud: true,
+    implemented: true,
+    envVars: ["GEMINI_API_KEY"],
+    canAffectFinalAudio: true,
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    notes: "Default generated voiceover provider. Uses Gemini TTS models; never receives sample audio."
+  },
+  google_lyria_music: {
+    id: "google_lyria_music",
+    displayName: "Google Lyria music generation",
+    providerClass: "audio_generation",
+    cloud: true,
+    implemented: true,
+    envVars: ["GEMINI_API_KEY"],
+    canAffectFinalAudio: true,
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    notes: "Default generated music-bed provider. Uses Lyria clip generation; never receives sample audio."
+  },
   volcengine_seedream: {
     id: "volcengine_seedream",
     displayName: "Volcengine Seedream image generation",
@@ -700,8 +722,8 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   },
   voiceover: {
     task: "voiceover",
-    primary: "elevenlabs_tts",
-    fallbacks: ["skip_with_warning"],
+    primary: "google_gemini_tts",
+    fallbacks: ["elevenlabs_tts", "skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "aigc_fill",
@@ -711,37 +733,38 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_tts"]
+    candidateProviders: ["google_gemini_tts", "elevenlabs_tts"]
   },
   sound_effect: {
     task: "sound_effect",
     primary: "elevenlabs_sound_effects",
-    fallbacks: ["skip_with_warning"],
+    fallbacks: ["procedural_synth", "skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "aigc_fill",
-    localFallback: "skip_with_warning",
+    localFallback: "procedural_synth",
     providerClass: "audio_generation",
     effectScope: "generation_affects_assets",
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
+    notes: "No Google SFX runtime adapter is implemented; ElevenLabs is the real SFX provider, then local procedural audio.",
     candidateProviders: ["elevenlabs_sound_effects"]
   },
   music: {
     task: "music",
-    primary: "elevenlabs_music",
-    fallbacks: ["skip_with_warning"],
+    primary: "google_lyria_music",
+    fallbacks: ["elevenlabs_music", "procedural_synth", "skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "aigc_fill",
-    localFallback: "skip_with_warning",
+    localFallback: "procedural_synth",
     providerClass: "audio_generation",
     effectScope: "generation_affects_assets",
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_music"]
+    candidateProviders: ["google_lyria_music", "elevenlabs_music"]
   },
   audio_cleanup: {
     task: "audio_cleanup",

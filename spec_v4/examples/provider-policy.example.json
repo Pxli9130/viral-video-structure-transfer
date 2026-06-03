@@ -30,7 +30,7 @@
       "riskLevel": "medium"
     },
     {
-      "provider": "elevenlabs_music",
+      "provider": "google_lyria_music",
       "category": "audio",
       "requiredForCoreDemo": false,
       "enabledByDefault": false,

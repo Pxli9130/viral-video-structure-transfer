@@ -119,11 +119,17 @@ export function compileProviderPromptPlan(input: ProviderPromptCompilerInput): P
       fallbackConfig: { backend: "image_card", mode: "local_packaging_fill", gapId: input.gap.slotId }
     };
   }
-  if (provider === "elevenlabs_tts" || provider === "elevenlabs_sound_effects" || provider === "elevenlabs_music") {
+  if (
+    provider === "google_gemini_tts" ||
+    provider === "google_lyria_music" ||
+    provider === "elevenlabs_tts" ||
+    provider === "elevenlabs_sound_effects" ||
+    provider === "elevenlabs_music"
+  ) {
     const task: ModelTask =
-      provider === "elevenlabs_tts"
+      provider === "google_gemini_tts" || provider === "elevenlabs_tts"
         ? "voiceover"
-        : provider === "elevenlabs_music" || /music|bgm/i.test(input.gap.gapType ?? input.gap.slotId)
+        : provider === "google_lyria_music" || provider === "elevenlabs_music" || /music|bgm/i.test(input.gap.gapType ?? input.gap.slotId)
           ? "music"
           : "sound_effect";
     return {

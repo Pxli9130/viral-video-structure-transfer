@@ -20,6 +20,8 @@
         "gpt_image_2",
         "nano_banana_2",
         "local_flux",
+        "google_gemini_tts",
+        "google_lyria_music",
         "elevenlabs_scribe",
         "elevenlabs_tts",
         "elevenlabs_sound_effects",

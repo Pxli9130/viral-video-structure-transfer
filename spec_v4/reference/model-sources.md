@@ -60,7 +60,7 @@ Wired in code today:
 
 - VLM + text LLM + creative-effect codegen default to `gemini-3.5-flash` (env `VLM_MODEL` / `AI_GEMINI_MODEL` / `GEMINI_CODEGEN_MODEL`); prior `gemini-2.5-pro` / `gemini-2.5-flash` are selectable alternatives.
 - Native image generation default is `gemini-3.1-flash-image` ("Nano Banana 2"), the primary image-fill provider; alternatives `gemini-3-pro-image` (Nano Banana Pro) / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`.
-- Gemini TTS (`gemini-2.5-flash-preview-tts`) and Lyria (`lyria-3-clip-preview`) are available alternatives for voiceover/music but need a dedicated adapter (current audio path is ElevenLabs). Veo 3.1 is the video alternative (Seedance kept as default).
+- Gemini TTS (`gemini-3.1-flash-tts-preview`) and Lyria (`lyria-3-clip-preview`) are now the default generated voiceover/music path, with ElevenLabs as fallback. Veo 3.1 is the video alternative (Seedance kept as default).
 
 ## Notes
 

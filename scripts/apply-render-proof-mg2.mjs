@@ -77,7 +77,16 @@ async function main() {
     layers: [],
     clips: []
   };
-  const timeline = { durationSec: DUR, aspectRatio: W >= H ? "16:9" : "9:16", clips: [], renderPlan: { renderRecipe: recipe, fps: FPS } };
+  // Carry an evidence-derived audio policy/plan so RemotionRenderer muxes the procedural bed (the
+  // composition itself has no <Audio>). bpm comes from the fixture, not a hardcoded sample constant.
+  const BPM = Number(fixture.bpm) || Number(fixture.beatsPerMinute) || 120;
+  const audioPlan = { bpm: BPM, layers: fixture.audioLayers ?? {} };
+  const timeline = {
+    durationSec: DUR,
+    aspectRatio: W >= H ? "16:9" : "9:16",
+    clips: [],
+    renderPlan: { renderRecipe: recipe, fps: FPS, audioPolicy: "synth_beat", audioPlan }
+  };
   writeFileSync(path.join(out, "render-recipe.json"), `${JSON.stringify(recipe, null, 2)}\n`);
 
   // 4. render through ViralRecipeRoot via RemotionRenderer (real headless Chrome)
