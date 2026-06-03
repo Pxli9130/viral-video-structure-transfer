@@ -160,7 +160,7 @@ async function proveCase({ caseId, runDir, outRoot, renderOnly, RemotionRenderer
 async function main() {
   const runDir = path.resolve(ROOT, arg("--run-dir", "docs/artifacts/codegen-live-eval/zod-layerplan-r4"));
   const outRoot = path.resolve(ROOT, arg("--out", path.join(runDir, "apply-proof-all")));
-  const only = arg("--case");
+  const only = arg("--case"); // single case or comma-separated list; omitted => all four
   const renderOnly = process.argv.includes("--render-only");
   const revert = process.argv.includes("--revert");
   if (!existsSync(runDir)) throw new Error(`run dir not found: ${runDir}`);
@@ -169,7 +169,7 @@ async function main() {
   if (!existsSync(rendererPath)) throw new Error("apps/api/dist/adapters/renderers.js missing; build api first");
   const { RemotionRenderer } = await import(pathToFileURL(rendererPath).href);
 
-  const cases = only ? [only] : Object.keys(CASE_MOTIF);
+  const cases = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : Object.keys(CASE_MOTIF);
   // The only TRACKED file apply mutates is the runtime manifest (the KB lives in gitignored
   // docs/artifacts/effect-kb/). Restoring the manifest returns the runtime default to built-ins.
   const trackedMutated = [path.join(ROOT, "apps/api/remotion/effects/generated/effect-manifest.ts")];
