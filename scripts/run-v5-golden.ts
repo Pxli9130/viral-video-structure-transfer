@@ -16,7 +16,9 @@ import {
   runCreateV5,
   renderFinalVideoV5,
   runNoCopyScan,
-  runScorecardV5
+  runScorecardV5,
+  runGen1Ai,
+  createGeminiModelFn
 } from "../apps/api/src/pipeline-v5/index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,9 +57,23 @@ async function main() {
   });
   console.log(`[golden]   shots=${evidence.shots.length} dur=${evidence.video.durationSec}s bpm=${evidence.audioEvidence?.bpm ?? "n/a"} evidenceV5Valid=${v5.validateEvidenceTimelineV5(evidence).valid}`);
 
+  // Optional AI Gen1: model-driven reconstruction, validated, with deterministic fallback.
+  let aiProgram: v5.NeutralReconstructionProgram | null = null;
+  if (arg("ai", "false") === "true") {
+    const modelFn = createGeminiModelFn();
+    if (!modelFn) {
+      console.log(`[golden]   --ai requested but GEMINI_API_KEY missing; using deterministic Gen1.`);
+    } else {
+      console.log(`[golden]   AI Gen1 (Gemini)…`);
+      const g1 = await runGen1Ai(evidence, modelFn);
+      aiProgram = g1.usedAi ? g1.program : null;
+      console.log(`[golden]   AI Gen1 usedAi=${g1.usedAi} scenes=${g1.program.typedSpec.scenes.length} ${g1.warnings.slice(0, 1).join("") || ""}`);
+    }
+  }
+
   console.log(`[golden] 2/6 LEARN`);
   const kb = new KnowledgeBaseV5(outDir);
-  const learn = await runLearnSampleV5(evidence, kb, { outDir: path.join(outDir, "learn") });
+  const learn = await runLearnSampleV5(evidence, kb, { outDir: path.join(outDir, "learn"), aiProgram });
   console.log(`[golden]   candidates=${learn.candidates.length} elements=${learn.elements.length} learnGatesFail=${learn.gates.filter((g) => g.status === "fail").length}`);
 
   console.log(`[golden] 3/6 CREATE`);
@@ -86,8 +102,9 @@ async function main() {
   });
   console.log(`[golden]   sections=${create.composition.sections.length} gaps=${create.gapReport.gaps.length} createGatesFail=${create.gates.filter((g) => g.status === "fail").length}`);
 
-  let renderInfo: { finalMp4Exists: boolean; durationSec?: number; hasAudio?: boolean; audioIntended?: boolean } = { finalMp4Exists: false };
-  let noCopy: v5.NoCopyResult | undefined;
+  // Only assess render gates when a render actually ran (skip -> warn, not fail).
+  let renderInfo: { finalMp4Exists: boolean; durationSec?: number; hasAudio?: boolean; audioIntended?: boolean } | undefined;
+  let noCopy: Awaited<ReturnType<typeof runNoCopyScan>> | undefined;
   let finalMp4Path: string | undefined;
 
   if (render) {
@@ -95,8 +112,8 @@ async function main() {
     const outPath = path.join(outDir, "final.mp4");
     const res = await renderFinalVideoV5({ finalProgram: create.finalProgram, outPath, proceduralAudio: true });
     finalMp4Path = res.finalMp4;
-    renderInfo = { finalMp4Exists: Boolean(res.ok && res.finalMp4), durationSec: res.durationSec, hasAudio: res.audioMuxed, audioIntended: true };
-    console.log(`[golden]   render ok=${res.ok} final=${res.finalMp4 ?? "n/a"} audio=${res.audioMuxed} ${res.error ?? ""}`);
+    renderInfo = { finalMp4Exists: Boolean(res.ok && res.finalMp4), durationSec: res.durationSec, hasAudio: res.hasAudio, audioIntended: true };
+    console.log(`[golden]   render ok=${res.ok} final=${res.finalMp4 ?? "n/a"} hasAudio=${res.hasAudio} (muxed=${res.audioMuxed}) ${res.error ?? ""} ${res.warnings.join("; ")}`);
 
     if (finalMp4Path) {
       console.log(`[golden] 5/6 NO-COPY scan (final vs sample)`);

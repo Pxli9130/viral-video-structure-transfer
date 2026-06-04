@@ -29,19 +29,31 @@ export function buildV5RenderInputProps(
   return { recipe, assetMap: map };
 }
 
-function resolveFfmpeg(): string {
+function resolveBin(name: "ffmpeg" | "ffprobe"): string {
   const condaBase = process.env.CONDA_BASE;
   const env = process.env.VIRAL_CONDA_ENV ?? "viral";
-  const candidates = [
-    process.env.FFMPEG_PATH,
-    condaBase ? path.join(condaBase, "envs", env, "bin", "ffmpeg") : undefined,
-    "ffmpeg"
-  ].filter(Boolean) as string[];
-  for (const c of candidates) {
-    if (c === "ffmpeg") return c; // rely on PATH
-    if (existsSync(c)) return c;
+  const override = name === "ffmpeg" ? process.env.FFMPEG_PATH : process.env.FFPROBE_PATH;
+  const condaPath = condaBase ? path.join(condaBase, "envs", env, "bin", name) : undefined;
+  // 1. an absolute override that actually exists wins.
+  if (override && path.isAbsolute(override) && existsSync(override)) return override;
+  // 2. the conda env binary is the most reliable in this repo — prefer it over a bare-name override
+  //    (e.g. .env's FFMPEG_PATH=ffmpeg, which is NOT on PATH for standalone scripts/tsx).
+  if (condaPath && existsSync(condaPath)) return condaPath;
+  // 3. fall back to the override as given (may resolve via PATH), then the bare name.
+  return override || name;
+}
+function resolveFfmpeg(): string {
+  return resolveBin("ffmpeg");
+}
+
+/** Best-effort: does the file have an audio stream? */
+function probeHasAudio(p: string): boolean {
+  try {
+    const r = spawnSync(resolveBin("ffprobe"), ["-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type", "-of", "csv=p=0", p], { encoding: "utf8" });
+    return r.status === 0 && /audio/.test(r.stdout || "");
+  } catch {
+    return false;
   }
-  return "ffmpeg";
 }
 
 /** Best-effort procedural audio bed (sine + soft noise) muxed under a silent render. */
@@ -81,6 +93,8 @@ export interface RenderV5Result {
   remotionMp4?: string;
   bundleLocation?: string;
   audioMuxed: boolean;
+  /** Whether the final file actually carries an audio stream (probed; robust to mux hiccups). */
+  hasAudio: boolean;
   durationSec: number;
   warnings: string[];
   error?: string;
@@ -93,7 +107,7 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
   const durationSec = recipe.composition.durationSec;
   const entryPoint = opts.entryPoint ?? path.resolve(repoRoot, "apps/api/remotion/index.tsx");
   if (!existsSync(entryPoint)) {
-    return { ok: false, audioMuxed: false, durationSec, warnings, error: `Remotion entry not found at ${entryPoint}` };
+    return { ok: false, audioMuxed: false, hasAudio: false, durationSec, warnings, error: `Remotion entry not found at ${entryPoint}` };
   }
 
   let bundleLocation = opts.bundleLocation;
@@ -118,12 +132,15 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
         finalMp4 = opts.outPath;
         audioMuxed = true;
       } else {
+        // Mux hiccup: keep the rendered file as the final output (it still carries Remotion's
+        // audio track) so final.mp4 always exists and the audio gate stays robust.
         warnings.push(`procedural audio mux failed: ${mux.error}`);
         finalMp4 = remotionMp4;
       }
     }
-    return { ok: true, finalMp4, remotionMp4, bundleLocation, audioMuxed, durationSec, warnings };
+    const hasAudio = audioMuxed || probeHasAudio(finalMp4);
+    return { ok: true, finalMp4, remotionMp4, bundleLocation, audioMuxed, hasAudio, durationSec, warnings };
   } catch (err) {
-    return { ok: false, audioMuxed: false, durationSec, warnings, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, audioMuxed: false, hasAudio: false, durationSec, warnings, error: err instanceof Error ? err.message : String(err) };
   }
 }

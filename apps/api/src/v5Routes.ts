@@ -16,8 +16,10 @@ import { analyzeEvidenceTimeline } from "./adapters/evidenceTimeline.js";
 import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
   buildV5RenderInputProps,
+  createGeminiModelFn,
   renderFinalVideoV5,
   runCreateV5,
+  runGen1Ai,
   runLearnSampleV5,
   runNoCopyScan,
   runScorecardV5,
@@ -59,6 +61,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
   router.post("/learn-samples", async (req: Request, res: Response) => {
     const sampleAssetIds: string[] = Array.isArray(req.body?.sampleAssetIds) ? req.body.sampleAssetIds : [];
     if (!sampleAssetIds.length) return fail(res, 400, "sampleAssetIds[] required");
+    const wantAi = req.body?.options?.runGen1Ai === true;
+    const modelFn = wantAi ? createGeminiModelFn() : undefined;
     const learned: unknown[] = [];
     for (const assetId of sampleAssetIds) {
       const asset = await findAsset(assetId);
@@ -73,11 +77,19 @@ export function createV5Router(deps: V5RouterDeps): Router {
         continue;
       }
       const evidence = toEvidenceTimelineV5(v4Timeline, asset);
-      const artifacts = await runLearnSampleV5(evidence, kb, { outDir });
+      let aiProgram: v5.NeutralReconstructionProgram | null = null;
+      let usedAi = false;
+      if (modelFn) {
+        const g1 = await runGen1Ai(evidence, modelFn);
+        aiProgram = g1.usedAi ? g1.program : null;
+        usedAi = g1.usedAi;
+      }
+      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram });
       learned.push({
         sampleId: assetId,
         evidenceTimelineId: evidence.id,
         reconstructionProgramId: artifacts.neutralProgram.id,
+        gen1: usedAi ? "ai" : "deterministic",
         candidateCount: artifacts.candidates.length,
         storedElements: artifacts.elements.length,
         gates: artifacts.gates,
@@ -171,7 +183,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       renderInfo = {
         finalMp4Exists: Boolean(render.ok && render.finalMp4),
         durationSec: render.durationSec,
-        hasAudio: render.audioMuxed,
+        hasAudio: render.hasAudio,
         audioIntended: true
       };
       if (render.finalMp4) {
