@@ -62,6 +62,7 @@ import { ElevenLabsAdapter } from "./adapters/elevenlabs.js";
 import { GoogleAudioAdapter } from "./adapters/googleAudio.js";
 import { analyzeEvidenceTimeline, bindAnalysisTextToEvidence } from "./adapters/evidenceTimeline.js";
 import { buildDatabaseStore, type Database, emptyDatabase as makeEmptyDatabase } from "./storage/index.js";
+import { createV5Router } from "./v5Routes.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
@@ -959,6 +960,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 app.use("/generated", express.static(generatedDir));
+
+// spec_v5 (Program-KB Dual Codegen) routes — parallel to the V4 API surface.
+app.use("/api/v5", createV5Router({ store, storageRoot, generatedDir }));
 
 app.get("/healthz", (_req, res) => {
   ok(res, {
