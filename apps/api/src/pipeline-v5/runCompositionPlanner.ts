@@ -166,10 +166,11 @@ function planRoleSequence(
 ): v5.SectionRoleV5[] {
   const benefits = Math.min(3, Math.max(1, (brief.sellingPoints ?? []).length || 2));
   const adArc = (): v5.SectionRoleV5[] => {
-    const seq: v5.SectionRoleV5[] = ["hook", "setup"];
-    for (let i = 0; i < benefits; i++) seq.push("benefit");
-    seq.push("proof", "cta");
-    return seq.slice(0, MAX_BEATS);
+    const mids: v5.SectionRoleV5[] = ["setup"];
+    for (let i = 0; i < benefits; i++) mids.push("benefit");
+    mids.push("proof");
+    // hook first, cta ALWAYS last — cap the middles so cta is never sliced off.
+    return ["hook", ...mids.slice(0, MAX_BEATS - 2), "cta"];
   };
 
   if (!structSections || structSections.length < 3) return adArc();

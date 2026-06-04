@@ -149,6 +149,14 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
   // ---- Generation ----
   const buildGeneration = async (req: Request, res: Response, doRender: boolean) => {
+    try {
+      return await buildGenerationInner(req, res, doRender);
+    } catch (err) {
+      return fail(res, 500, `generation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const buildGenerationInner = async (req: Request, res: Response, doRender: boolean) => {
     const body = req.body ?? {};
     const brief: v5.CreativeBriefV5 = body.brief ?? {};
     const projectId: string = body.projectId ?? "proj_v5";
@@ -205,13 +213,13 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
     if (shouldRender) {
       const outPath = path.join(outDir, "final.mp4");
-      // Generated images live on disk under <outDir>/materials; the headless renderer needs absolute
-      // file:// paths (served /generated URLs don't resolve inside the Remotion bundle).
-      const materialsDir = path.join(outDir, "materials");
+      // Generated images are served at /generated/... by this server; the headless renderer (same
+      // machine) loads them over http (chrome blocks file:// "local resource" loads).
+      const port = Number(process.env.APP_PORT ?? 3000);
       const assetMap: Record<string, { src: string }> = {};
       for (const a of create.finalProgram.renderRecipe.assets) {
         if (a.provenance?.source === "aigc_generated" && a.uri) {
-          assetMap[a.id] = { src: `file://${path.join(materialsDir, path.basename(a.uri))}` };
+          assetMap[a.id] = { src: a.uri.startsWith("http") ? a.uri : `http://127.0.0.1:${port}${a.uri.startsWith("/") ? "" : "/"}${a.uri}` };
         }
       }
       const render = await renderFinalVideoV5({ finalProgram: create.finalProgram, outPath, proceduralAudio: true, bpm: beatGrid?.bpm ?? null, assetMap });

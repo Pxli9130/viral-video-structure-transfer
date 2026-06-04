@@ -99,6 +99,11 @@ describe("pipeline-v5 CREATE (deterministic, no external APIs)", () => {
     // sections cover the full duration
     const last = out.composition.sections[out.composition.sections.length - 1];
     expect(last.endSec).toBeCloseTo(16, 1);
+    // ad arc: <=6 readable beats, ends on CTA, no micro-sections, every section binds elements.
+    expect(out.composition.sections.length).toBeLessThanOrEqual(6);
+    expect(last.role).toBe("cta");
+    expect(Math.min(...out.composition.sections.map((s) => s.endSec - s.startSec))).toBeGreaterThanOrEqual(1.2);
+    expect(out.composition.sections.every((s) => s.elementRefs.length > 0)).toBe(true);
 
     // the target image is bound somewhere (hero), and no gap is left unresolved
     const recipeStr = JSON.stringify(out.finalProgram.renderRecipe);
