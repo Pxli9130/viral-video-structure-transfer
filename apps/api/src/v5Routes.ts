@@ -57,6 +57,14 @@ export function createV5Router(deps: V5RouterDeps): Router {
     }
   };
 
+  // ---- Assets (for the UI to pick sample/target assets) ----
+  router.get("/assets", async (_req, res) => {
+    const assets = await getAssets();
+    return ok(res, {
+      assets: assets.map((a) => ({ id: a.id, role: a.role, type: a.type, filename: a.filename, hasPath: Boolean(a.path), tags: a.tags ?? [] }))
+    });
+  });
+
   // ---- Learn ----
   router.post("/learn-samples", async (req: Request, res: Response) => {
     const sampleAssetIds: string[] = Array.isArray(req.body?.sampleAssetIds) ? req.body.sampleAssetIds : [];
