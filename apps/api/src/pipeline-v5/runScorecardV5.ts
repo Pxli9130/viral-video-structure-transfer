@@ -115,10 +115,40 @@ export function runScorecardV5(input: ScorecardInput): v5.ScorecardV5 {
     return { rubricItem: item, status, evidenceArtifactRefs: refs };
   });
 
-  // demo-ready: all P0 gates pass/warn AND no safety gate fails.
-  const p0 = gates.filter((g) => g.priority === "P0");
+  // Graded readiness (honest): an mp4 existing is NOT "ready". review_demo requires real visual
+  // substance + executed fills + assessed core-P0 gates passing + no P0 rubric item missing.
+  const st = (id: string) => byId.get(id)?.status;
   const safety = gates.filter((g) => v5.getGateDef(g.id)?.category === "safety");
-  const demoReady = p0.every((g) => g.status !== "fail") && safety.every((g) => g.status !== "fail");
+  const anySafetyFail = safety.some((g) => g.status === "fail");
+  const CORE_P0 = ["V5-G17", "V5-G20", "V5-G21", "V5-G41", "V5-G19"]; // schema, gen2, final schema, visual substance, executed fill
+  const corePass = (id: string) => st(id) === "pass";
+  const p0RubricMissing = rubricCoverage.some((r) => r.rubricItem.startsWith("P0") && r.status === "missing");
+
+  const reasons: string[] = [];
+  let level: v5.ReadinessLevel = "artifact_valid";
+  if (corePass("V5-G17") && corePass("V5-G21")) {
+    level = "artifact_valid";
+    if (st("V5-G23") === "pass" && !anySafetyFail) {
+      level = "technical_demo";
+      const coreOk = CORE_P0.every(corePass);
+      const visualOk = st("V5-G41") === "pass";
+      if (coreOk && visualOk && !p0RubricMissing) {
+        level = "review_demo";
+        if (st("V5-G27") === "pass" && st("V5-G42") !== "fail" && gates.filter((g) => g.priority === "P0").every((g) => g.status === "pass")) {
+          level = "shippable_demo";
+        }
+      } else {
+        if (!visualOk) reasons.push("visual substance gate (V5-G41) not passing — slots are placeholder cards.");
+        if (st("V5-G19") !== "pass") reasons.push("gap fills not executed (V5-G19).");
+        if (p0RubricMissing) reasons.push("a P0 rubric item is missing.");
+      }
+    } else {
+      reasons.push(anySafetyFail ? "a safety gate failed." : "no final video (V5-G23).");
+    }
+  } else {
+    reasons.push("core schema gates (V5-G17/G21) not passing.");
+  }
+  const demoReady = level === "review_demo" || level === "shippable_demo";
 
   const warnings = gates.filter((g) => g.status === "fail").map((g) => `${g.id} ${g.name}: ${g.message ?? "failed"}`);
 
@@ -130,6 +160,8 @@ export function runScorecardV5(input: ScorecardInput): v5.ScorecardV5 {
     renderQuality: input.render ? { ...input.render } : {},
     safety: input.noCopy ? { ...input.noCopy } : {},
     warnings,
+    readinessLevel: level,
+    readinessReasons: reasons,
     demoReady
   };
 }

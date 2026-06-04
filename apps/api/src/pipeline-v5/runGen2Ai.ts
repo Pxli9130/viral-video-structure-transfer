@@ -56,18 +56,65 @@ function extractJson(raw: string): unknown {
 }
 
 const HEX = /^#[0-9a-fA-F]{3,8}$/;
+const MAX_TEXT_BEATS = 6;
+
+function normKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, "").split(/\s+/).filter((w) => w.length > 2).join(" ");
+}
+function tokenOverlap(a: string, b: string): number {
+  const sa = new Set(a.split(" "));
+  const sb = new Set(b.split(" "));
+  if (!sa.size || !sb.size) return 0;
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter++;
+  return inter / Math.min(sa.size, sb.size);
+}
+
+/** Drop near-duplicate copy and cap to ~6 text beats; never drop the hook title or the cta. */
+function dedupeAndCapTextLayers(layers: v5.RenderLayer[], durationSec: number): v5.RenderLayer[] {
+  const cap = Math.max(4, Math.round((MAX_TEXT_BEATS * durationSec) / 16));
+  const isText = (l: v5.RenderLayer) => l.type === "text" || (l.type === "packaging" && typeof l.text === "string");
+  const isProtected = (l: v5.RenderLayer) => /title|hook/i.test(l.id) || /cta/i.test(l.id) || l.type === "packaging";
+  const kept: v5.RenderLayer[] = [];
+  const keptKeys: string[] = [];
+  const dropped = new Set<string>();
+  // first pass: drop near-dupes (keep protected + first occurrence)
+  for (const l of layers) {
+    if (!isText(l)) continue;
+    const key = normKey(String(l.text ?? ""));
+    if (!isProtected(l) && key && keptKeys.some((k) => tokenOverlap(k, key) > 0.6)) {
+      dropped.add(l.id);
+      continue;
+    }
+    kept.push(l);
+    keptKeys.push(key);
+  }
+  // second pass: enforce cap, dropping the shortest-on-screen unprotected middles first
+  const textKept = kept.filter(isText);
+  if (textKept.length > cap) {
+    const droppable = textKept
+      .filter((l) => !isProtected(l))
+      .sort((a, b) => a.endSec - a.startSec - (b.endSec - b.startSec));
+    for (const l of droppable) {
+      if (textKept.length - dropped.size <= cap) break;
+      dropped.add(l.id);
+    }
+  }
+  return layers.filter((l) => !dropped.has(l.id));
+}
 
 function applyPatch(finalProgram: v5.FinalVideoProgram, patch: Gen2Patch): v5.FinalVideoProgram {
   const recipe = finalProgram.renderRecipe;
   const textById = new Map((patch.layers ?? []).filter((l) => l && l.id && typeof l.text === "string").map((l) => [l.id, l.text as string]));
   const allowed = new Set(textLayers(recipe).map((l) => l.id));
-  const layers = recipe.layers.map((l) => {
+  const mapped = recipe.layers.map((l) => {
     if (allowed.has(l.id) && textById.has(l.id)) {
       const next = textById.get(l.id) as string;
       return { ...l, text: next.slice(0, 120) };
     }
     return l;
   });
+  const layers = dedupeAndCapTextLayers(mapped, recipe.composition.durationSec);
   const palette = Array.isArray(patch.palette) ? patch.palette.filter((c) => typeof c === "string" && HEX.test(c)).slice(0, 5) : [];
   const composition = palette.length >= 2 ? { ...recipe.composition, background: palette[0] } : recipe.composition;
   const newRecipe: v5.RenderRecipeV5 = {

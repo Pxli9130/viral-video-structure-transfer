@@ -7,6 +7,7 @@ export type AssetMap = Record<string, { src: string; type?: "image" | "video" | 
 
 export type RenderLayerType =
   | "media"
+  | "generated_visual"
   | "text"
   | "shape"
   | "motion"

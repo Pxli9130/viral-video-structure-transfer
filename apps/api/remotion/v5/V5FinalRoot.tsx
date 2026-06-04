@@ -7,7 +7,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
 import { num, str, type AssetMap, type RenderRecipeV5 } from "./recipeTypes";
-import { CTAButton, GradientBackground, MediaLayer, MotionWrapper, ShapeLayer, TextLayer } from "./components";
+import { CTAButton, DesignedVisualLayer, GradientMotionBg, MediaLayer, MotionWrapper, ShapeLayer, TextLayer } from "./components";
 
 export interface V5FinalProps {
   recipe: RenderRecipeV5;
@@ -26,25 +26,35 @@ export const V5FinalRoot: React.FC<V5FinalProps> = ({ recipe, assetMap }) => {
     if (accent && !palette.includes(accent)) palette.push(accent);
   }
 
+  const palAccent = palette[3] ?? palette[2] ?? bg;
   return (
     <AbsoluteFill style={{ backgroundColor: bg }}>
-      <GradientBackground from={bg} />
+      <GradientMotionBg from={bg} to={palAccent} accent={palette[2]} />
       {recipe.layers.map((layer) => {
         const from = Math.max(0, Math.round(layer.startSec * fps));
         const durationInFrames = Math.max(1, Math.round((layer.endSec - layer.startSec) * fps));
+        const hasAsset = Boolean(layer.assetId && assetMap[layer.assetId]);
         let node: React.ReactNode = null;
         switch (layer.type) {
           case "media":
-            node = <MediaLayer layer={layer} assetMap={assetMap} palette={palette} />;
+            // Bound to a real/generated asset -> show it; otherwise a designed visual, never a flat card.
+            node = hasAsset ? <MediaLayer layer={layer} assetMap={assetMap} palette={palette} /> : <DesignedVisualLayer layer={layer} palette={palette} />;
+            break;
+          case "generated_visual":
+            node = <DesignedVisualLayer layer={layer} palette={palette} />;
             break;
           case "text":
             node = <TextLayer layer={layer} palette={palette} />;
             break;
           case "packaging":
-            node = layer.text ? <CTAButton layer={layer} palette={palette} /> : <ShapeLayer fill={str(layer.style?.fill, palette[2])} shape="card" />;
+            node = layer.text ? <CTAButton layer={layer} palette={palette} /> : <DesignedVisualLayer layer={layer} palette={palette} />;
             break;
           case "shape":
-            node = <ShapeLayer fill={str(layer.style?.fill, palette[2])} shape={str(layer.style?.shape, "card")} />;
+            // fullscreen / gradient_bg sections render an animated gradient, not a flat fill.
+            node =
+              str(layer.style?.variant) === "gradient_bg" || str(layer.style?.shape) === "fullscreen"
+                ? <GradientMotionBg from={str(layer.style?.fill, bg)} to={str(layer.style?.gradientTo, palAccent)} accent={palette[2]} />
+                : <ShapeLayer fill={str(layer.style?.fill, palette[2])} shape={str(layer.style?.shape, "card")} />;
             break;
           case "transition":
           case "motion":

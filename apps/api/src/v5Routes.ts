@@ -170,6 +170,17 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
     const outDir = genDir(generationId);
     const gen2Model = options.runGen2Ai === true ? createGeminiModelFn() ?? undefined : undefined;
+
+    // Beat grid (for audio-cue alignment) from the first selected element's learned evidence.
+    const sampleId = selectedElements[0]?.source.sourceSampleId;
+    let beatGrid: { bpm?: number | null; beats?: number[]; strongBeats?: number[] } | undefined;
+    if (sampleId) {
+      const ev = await readJsonIf(path.join(learnDir(sampleId), "evidence-timeline-v5.json"));
+      const ae = (ev as { audioEvidence?: { bpm?: number; beatGridSec?: number[]; onsetsSec?: number[] } } | undefined)?.audioEvidence;
+      if (ae) beatGrid = { bpm: ae.bpm ?? null, beats: ae.beatGridSec ?? [], strongBeats: ae.onsetsSec ?? [] };
+    }
+    const materialsPublicPrefix = `/generated/${path.relative(deps.generatedDir, path.join(outDir, "materials")).split(path.sep).join("/")}/`;
+
     const create = await runCreateV5({
       projectId,
       generationId,
@@ -177,7 +188,12 @@ export function createV5Router(deps: V5RouterDeps): Router {
       targetAssets,
       selectedElements,
       outDir,
-      gen2Model
+      gen2Model,
+      beatGrid,
+      allowExternalProvider: options.materialFill === "aigc",
+      publicPathPrefix: materialsPublicPrefix,
+      materialFillMaxGenerated: typeof options.materialFillMax === "number" ? options.materialFillMax : 4,
+      env: process.env
     });
 
     // Only assess render gates when a render was actually attempted (plan -> undefined -> warn,
@@ -189,7 +205,16 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
     if (shouldRender) {
       const outPath = path.join(outDir, "final.mp4");
-      const render = await renderFinalVideoV5({ finalProgram: create.finalProgram, outPath, proceduralAudio: true });
+      // Generated images live on disk under <outDir>/materials; the headless renderer needs absolute
+      // file:// paths (served /generated URLs don't resolve inside the Remotion bundle).
+      const materialsDir = path.join(outDir, "materials");
+      const assetMap: Record<string, { src: string }> = {};
+      for (const a of create.finalProgram.renderRecipe.assets) {
+        if (a.provenance?.source === "aigc_generated" && a.uri) {
+          assetMap[a.id] = { src: `file://${path.join(materialsDir, path.basename(a.uri))}` };
+        }
+      }
+      const render = await renderFinalVideoV5({ finalProgram: create.finalProgram, outPath, proceduralAudio: true, bpm: beatGrid?.bpm ?? null, assetMap });
       renderInfo = {
         finalMp4Exists: Boolean(render.ok && render.finalMp4),
         durationSec: render.durationSec,

@@ -56,22 +56,48 @@ function probeHasAudio(p: string): boolean {
   }
 }
 
-/** Best-effort procedural audio bed (sine + soft noise) muxed under a silent render. */
-export function muxProceduralAudio(videoPath: string, outPath: string, durationSec: number): { ok: boolean; error?: string } {
-  const ffmpeg = resolveFfmpeg();
-  const args = [
+export interface ProceduralAudioOpts {
+  bpm?: number | null;
+  /** Cue times (s) for beat-synced hits/impacts. */
+  hitTimes?: number[];
+  /** Riser end time (s) — a swell into the CTA. */
+  riserTime?: number;
+}
+
+/** Build the ffmpeg args for a cue-aware procedural mix (harmonic bed + bpm kick + cue hits + riser). */
+export function buildProceduralAudioArgs(videoPath: string, outPath: string, durationSec: number, opts: ProceduralAudioOpts = {}): string[] {
+  const dur = Math.max(1, durationSec);
+  const sr = 44100;
+  const bi = opts.bpm && opts.bpm > 30 ? 60 / opts.bpm : 0.5;
+  const ev = (expr: string) => `aevalsrc=exprs=${expr}:d=${dur}:s=${sr}`;
+  // commas inside fn args must be escaped (\,) for the lavfi filtergraph parser.
+  const bed = ev("0.16*sin(2*PI*110*t)+0.09*sin(2*PI*55*t)+0.05*sin(2*PI*220*t)");
+  const kick = ev(`0.8*sin(2*PI*85*t)*exp(-15*mod(t\\,${bi.toFixed(4)}))`);
+  const hits = (opts.hitTimes ?? []).slice(0, 8).map((ti) => `0.8*sin(2*PI*1250*t)*exp(-650*pow(t-${Math.max(0, ti).toFixed(2)}\\,2))`);
+  if (typeof opts.riserTime === "number") {
+    const rt = Math.max(0, opts.riserTime);
+    // rising noise-ish swell ~1s before the cue
+    hits.push(`0.5*sin(2*PI*(300+260*(t-${(rt - 1).toFixed(2)}))*t)*exp(-9*pow(t-${rt.toFixed(2)}\\,2))`);
+  }
+  const hitSrc = ev(hits.length ? hits.join("+") : "0");
+
+  return [
     "-y",
     "-i", videoPath,
-    "-f", "lavfi", "-t", String(Math.max(1, durationSec)),
-    "-i", "sine=frequency=110:sample_rate=44100",
-    "-f", "lavfi", "-t", String(Math.max(1, durationSec)),
-    "-i", "anoisesrc=color=brown:amplitude=0.04:sample_rate=44100",
-    "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=shortest,volume=0.18[a]",
+    "-f", "lavfi", "-i", bed,
+    "-f", "lavfi", "-i", kick,
+    "-f", "lavfi", "-i", hitSrc,
+    "-filter_complex", "[1:a][2:a][3:a]amix=inputs=3:duration=longest:normalize=0,volume=1.5,alimiter=limit=0.95[a]",
     "-map", "0:v", "-map", "[a]",
-    "-c:v", "copy", "-c:a", "aac", "-shortest",
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest",
     outPath
   ];
-  const res = spawnSync(ffmpeg, args, { stdio: "pipe", encoding: "utf8" });
+}
+
+/** Best-effort cue-aware procedural audio muxed under a silent render. */
+export function muxProceduralAudio(videoPath: string, outPath: string, durationSec: number, opts: ProceduralAudioOpts = {}): { ok: boolean; error?: string } {
+  const ffmpeg = resolveFfmpeg();
+  const res = spawnSync(ffmpeg, buildProceduralAudioArgs(videoPath, outPath, durationSec, opts), { stdio: "pipe", encoding: "utf8" });
   if (res.status === 0) return { ok: true };
   return { ok: false, error: (res.stderr || res.error?.message || "ffmpeg failed").slice(-400) };
 }
@@ -80,6 +106,8 @@ export interface RenderV5Options {
   finalProgram: v5.FinalVideoProgram;
   assetMap?: AssetMap;
   outPath: string;
+  /** Source BPM for the procedural kick (beat-synced bed). */
+  bpm?: number | null;
   entryPoint?: string;
   /** Reuse a prior bundle to avoid re-bundling per render. */
   bundleLocation?: string;
@@ -127,7 +155,14 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
     let audioMuxed = false;
     const wantsAudio = opts.proceduralAudio && recipe.audioLayers.length > 0 && recipe.audioLayers.every((a) => !a.uri);
     if (wantsAudio) {
-      const mux = muxProceduralAudio(remotionMp4, opts.outPath, durationSec);
+      // Derive beat-synced hit/riser cues from the recipe's audio layers.
+      const hitTimes = recipe.audioLayers.flatMap((a) => (a.kind === "sfx" && a.id !== "sfx_riser" ? a.cueAlignSec ?? [] : []));
+      const riserLayer = recipe.audioLayers.find((a) => a.id === "sfx_riser");
+      const mux = muxProceduralAudio(remotionMp4, opts.outPath, durationSec, {
+        bpm: opts.bpm ?? null,
+        hitTimes,
+        riserTime: riserLayer?.cueAlignSec?.[0]
+      });
       if (mux.ok) {
         finalMp4 = opts.outPath;
         audioMuxed = true;

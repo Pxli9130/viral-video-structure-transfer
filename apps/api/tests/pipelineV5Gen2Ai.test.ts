@@ -54,9 +54,10 @@ describe("pipeline-v5 AI Gen2 (injected model fn, offline)", () => {
   it("ignores layer ids that are not text layers (no injection of new layers)", async () => {
     const { comp, finalProgram } = buildDeterministic();
     const before = finalProgram.renderRecipe.layers.length;
+    // Gen2 may drop near-duplicate text beats (copy-density cap); it must never INJECT new layers.
     const model: Gen1ModelFn = async () => JSON.stringify({ layers: [{ id: "not_a_real_layer", text: "x" }] });
     const out = await runGen2Ai(comp, finalProgram, model);
-    expect(out.finalProgram.renderRecipe.layers.length).toBe(before);
+    expect(out.finalProgram.renderRecipe.layers.length).toBeLessThanOrEqual(before);
   });
 
   it("falls back to deterministic on garbage / thrown error", async () => {

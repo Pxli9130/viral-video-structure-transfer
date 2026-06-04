@@ -23,6 +23,7 @@ export interface AudioLayer {
 
 export type RenderLayerType =
   | "media"
+  | "generated_visual"
   | "text"
   | "shape"
   | "motion"

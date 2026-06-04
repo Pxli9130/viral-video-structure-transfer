@@ -5,6 +5,7 @@
 // This is the guaranteed final-output path; the AI Gen2 layers on top later.
 
 import { v5 } from "@vvst/shared";
+import type { SlotFill } from "./runMaterialFillV5.js";
 
 interface Gen2Input {
   composition: v5.CompositionProgram;
@@ -12,6 +13,8 @@ interface Gen2Input {
   selectedElements: v5.KnowledgeElement[];
   /** Resolve a matched target assetId to a renderable uri (target/generated only). */
   resolveAssetUri?: (assetId: string) => string;
+  /** Executed material fills per slot (from runMaterialFillV5): media asset or designed visual. */
+  slotFills?: Map<string, SlotFill>;
 }
 
 function gapForSlot(gap: v5.GapReportV5, slotId: string): v5.GapV5 | undefined {
@@ -28,25 +31,27 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
   const assetSeen = new Set<string>();
   const gapFillDecisions: string[] = [];
 
-  const addAsset = (assetId: string) => {
+  const addAsset = (assetId: string, uri: string, source: v5.ProvenanceV5["source"], promptRef?: string) => {
     if (assetSeen.has(assetId)) return;
     assetSeen.add(assetId);
     assets.push({
       id: assetId,
-      uri: resolveUri(assetId),
-      provenance: { assetId, source: "target_user", createdByStage: "gen2_compose_fallback", samplePixelsUsed: false }
+      uri,
+      provenance: { assetId, source, createdByStage: source === "aigc_generated" ? "material_fill_v5" : "gen2_compose_fallback", promptRef, samplePixelsUsed: false }
     });
   };
 
-  for (const section of comp.sections) {
-    // background per section
+  const slotFills = input.slotFills ?? new Map<string, SlotFill>();
+
+  comp.sections.forEach((section, sectionIdx) => {
+    // Animated gradient background per section (not a flat fill) — alternate accent stop for variety.
     layers.push({
       id: `${section.id}_bg`,
       type: "shape",
       sectionId: section.id,
       startSec: section.startSec,
       endSec: section.endSec,
-      style: { fill: palette[0], shape: "fullscreen" }
+      style: { fill: palette[0], shape: "fullscreen", variant: "gradient_bg", gradientTo: palette[3] ?? palette[sectionIdx % palette.length] ?? palette[0] }
     });
 
     const slots = comp.slotPlan.filter((s) => s.sectionId === section.id);
@@ -63,50 +68,62 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
           startSec: section.startSec,
           endSec: section.endSec,
           text: section.plannedText ?? "",
-          style: { color: palette[1] ?? "#FFFFFF", fontWeight: kind === "main_title" ? 800 : 600, accent: palette[2] }
+          // Titles ride the top, subtitles the bottom — so stacked beats don't collide center-frame.
+          style: { color: palette[1] ?? "#FFFFFF", fontWeight: kind === "main_title" ? 800 : 600, accent: palette[2], safeArea: kind === "main_title" ? "top" : "bottom" }
         });
         continue;
       }
 
       const matched = g && g.matchedAssetIds.length ? g.matchedAssetIds[0] : undefined;
+      const fill = slotFills.get(slot.id);
+
       if (matched) {
-        addAsset(matched);
-        layers.push({
-          id: `${slot.id}_layer`,
-          type: kind === "cta_card" ? "packaging" : "media",
-          sectionId: section.id,
-          startSec: section.startSec,
-          endSec: section.endSec,
-          assetId: matched,
-          style: { fit: "cover" }
-        });
-        gapFillDecisions.push(`${slot.id}: ${g?.selectedRepair ?? "asset_reuse"} -> ${matched}`);
+        addAsset(matched, resolveUri(matched), "target_user");
+        layers.push({ id: `${slot.id}_layer`, type: kind === "cta_card" ? "packaging" : "media", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, assetId: matched, style: { fit: "cover" } });
+        gapFillDecisions.push(`${slot.id}: ${g?.selectedRepair ?? "asset_reuse"} -> target ${matched}`);
+      } else if (kind === "cta_card") {
+        layers.push({ id: `${slot.id}_layer`, type: "packaging", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, text: section.plannedText ?? "Shop now", style: { accent: palette[2] ?? "#F7C948" } });
+        gapFillDecisions.push(`${slot.id}: packaging CTA card`);
+      } else if (fill?.mode === "media" && fill.asset) {
+        addAsset(fill.asset.id, fill.asset.uri, "aigc_generated", fill.asset.provenance.promptRef);
+        layers.push({ id: `${slot.id}_layer`, type: "media", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, assetId: fill.asset.id, style: { fit: "cover" } });
+        gapFillDecisions.push(`${slot.id}: aigc_fill -> generated image (${fill.provider})`);
       } else {
-        // missing / procedural — packaging or shape card, never a sample path
+        // Offline designed visual (gradient + geometry + hero silhouette) — NOT a flat colour card.
         layers.push({
           id: `${slot.id}_layer`,
-          type: kind === "cta_card" ? "packaging" : "shape",
+          type: "generated_visual",
           sectionId: section.id,
           startSec: section.startSec,
           endSec: section.endSec,
-          text: kind === "cta_card" ? section.plannedText ?? "Shop now" : undefined,
-          style: { fill: palette[2] ?? "#F7C948", shape: "card" },
-          fallbackReason: g?.reason ?? "no target asset; procedural fill"
+          style: { design: fill?.design ?? { family: "media_cards", palette, seed: 1 } },
+          fallbackReason: g?.reason ?? "no target asset; designed visual fill"
         });
-        gapFillDecisions.push(`${slot.id}: ${g?.selectedRepair ?? "procedural_fill"} (procedural)`);
+        gapFillDecisions.push(`${slot.id}: ${g?.selectedRepair ?? "procedural_fill"} -> designed visual`);
       }
     }
-  }
+  });
 
+  const dur = comp.composition.durationSec;
   const audioLayers: v5.AudioLayer[] = comp.audioPlan.layers.map((l) => ({
     id: l.id,
     kind: l.kind === "music" ? "music" : l.kind === "voiceover" ? "voiceover" : l.kind === "sfx" ? "sfx" : "procedural_mix",
     startSec: l.startSec ?? 0,
-    endSec: l.endSec ?? comp.composition.durationSec,
+    endSec: l.endSec ?? dur,
     gainDb: l.gainDb ?? -8,
     duckUnderVoiceover: l.duckUnderVoiceover,
     provenance: { source: "procedural", createdByStage: "gen2_compose_fallback", sampleAudioUsed: false }
   }));
+  // Cue-aligned SFX layers (hits/impacts/risers) from the planner's audio cue plan -> beat-synced punch.
+  const cues = comp.audioPlan.cues ?? [];
+  const hitTimes = cues.filter((c) => c.type === "hit" || c.type === "impact").map((c) => Number(c.t.toFixed(2)));
+  const riser = cues.find((c) => c.type === "riser");
+  if (hitTimes.length) {
+    audioLayers.push({ id: "sfx_hits", kind: "sfx", startSec: 0, endSec: dur, gainDb: -9, cueAlignSec: hitTimes, provenance: { source: "procedural", createdByStage: "gen2_compose_fallback", sampleAudioUsed: false } });
+  }
+  if (riser) {
+    audioLayers.push({ id: "sfx_riser", kind: "sfx", startSec: Math.max(0, riser.t - 1.0), endSec: Math.min(dur, riser.t + 0.2), gainDb: -10, cueAlignSec: [Number(riser.t.toFixed(2))], provenance: { source: "procedural", createdByStage: "gen2_compose_fallback", sampleAudioUsed: false } });
+  }
 
   const renderRecipe: v5.RenderRecipeV5 = {
     version: "render-recipe-v5",

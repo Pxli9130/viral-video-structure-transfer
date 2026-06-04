@@ -5,6 +5,7 @@
 
 import type {
   AspectRatioV5,
+  AudioCuePoint,
   CreativeBriefV5,
   PlaceholderKindV5,
   PlacementHintV5,
@@ -73,6 +74,10 @@ export interface AudioPlan {
   bedRecipeId?: string;
   mood?: string[];
   bpm?: number;
+  /** Section-aligned cue plan (impact@hook, hits on transitions, riser before cta…). */
+  cues?: AudioCuePoint[];
+  /** Strong beat times (seconds) from the source evidence beat grid, for hit alignment. */
+  strongBeatsSec?: number[];
 }
 
 export interface CompositionSelectedElement {

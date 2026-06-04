@@ -128,7 +128,7 @@ describe("v5 HTTP routes (/api/v5)", () => {
     const body = await r.json();
     expect(body.compositionProgramId).toBeTruthy();
     expect(body.finalProgram).toBeTruthy();
-    expect(body.scorecard.gates.length).toBe(40);
+    expect(body.scorecard.gates.length).toBe(42);
     expect(body.finalVideoUrl).toBeUndefined(); // plan does not render
     expect(body.scorecard.gates.filter((g: { status: string }) => g.status === "fail")).toEqual([]);
   });

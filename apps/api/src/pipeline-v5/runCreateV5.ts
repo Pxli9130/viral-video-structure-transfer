@@ -13,6 +13,9 @@ import { runGapReportV5 } from "./runGapReportV5.js";
 import { runGen2ComposeFallback } from "./runGen2ComposeFallback.js";
 import { runGen2Ai } from "./runGen2Ai.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
+import { runMaterialFillV5 } from "./runMaterialFillV5.js";
+
+const VISUAL_SLOT_KINDS = new Set<v5.PlaceholderKindV5>(["hero", "hero_head", "hero_product", "product_closeup", "background", "logo"]);
 
 function gate(id: string, status: v5.GateStatus, message?: string): v5.ScorecardGate {
   const def = v5.getGateDef(id);
@@ -30,6 +33,14 @@ export interface CreateInput {
   resolveAssetUri?: (assetId: string) => string;
   /** Optional AI Gen2: refine on-screen copy/palette over the deterministic compose recipe. */
   gen2Model?: Gen1ModelFn;
+  /** Source evidence beat grid for audio-cue alignment (threaded from learn). */
+  beatGrid?: { bpm?: number | null; beats?: number[]; strongBeats?: number[] };
+  /** Allow real external image generation (Gemini/Seedream) for visual slots. Default false. */
+  allowExternalProvider?: boolean;
+  materialFillMaxGenerated?: number;
+  /** Public URL prefix under which generated material is served (e.g. /generated/v5/generations/<id>/materials/). */
+  publicPathPrefix?: string;
+  env?: Record<string, string | undefined>;
 }
 
 export interface CreateArtifacts {
@@ -64,7 +75,8 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
     targetProfiles,
     projectId: input.projectId,
     generationId: input.generationId,
-    composition: input.composition
+    composition: input.composition,
+    beatGrid: input.beatGrid
   });
   const compCheck = v5.validateCompositionProgram(composition);
   gates.push(gate("V5-G17", compCheck.valid ? "pass" : "fail", compCheck.valid ? undefined : compCheck.errors.join("; ")));
@@ -72,14 +84,28 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
   const gapReport = runGapReportV5(composition, targetProfiles);
   const gapCheck = v5.validateGapReportV5(gapReport);
   gates.push(gate("V5-G18", gapCheck.valid && gapReport.gaps.length ? "pass" : "warn", `${gapReport.gaps.length} gaps`));
-  const unresolved = gapReport.gaps.filter((g) => g.status === "missing" && !g.selectedRepair);
-  gates.push(gate("V5-G19", unresolved.length === 0 ? "pass" : "warn", `${unresolved.length} slots with no fill strategy`));
+
+  // Stage 12 — EXECUTE the fills (audit GAP-1): real image (provider) or offline designed visual.
+  const materialOut = await runMaterialFillV5({
+    composition,
+    gapReport,
+    projectId: input.projectId,
+    generationId: input.generationId ?? input.projectId,
+    outDir: path.join(input.outDir ?? ".", "materials"),
+    publicPathPrefix: input.publicPathPrefix ?? "",
+    allowExternalProvider: input.allowExternalProvider,
+    maxGenerated: input.materialFillMaxGenerated,
+    env: input.env
+  });
+  warnings.push(...materialOut.warnings);
+  composition.materialPlan = { fills: materialOut.materialFills };
 
   let finalProgram = runGen2ComposeFallback({
     composition,
     gapReport,
     selectedElements: input.selectedElements,
-    resolveAssetUri: input.resolveAssetUri
+    resolveAssetUri: input.resolveAssetUri,
+    slotFills: materialOut.fills
   });
   if (input.gen2Model) {
     const g2 = await runGen2Ai(composition, finalProgram, input.gen2Model);
@@ -90,6 +116,26 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
   const finalCheck = v5.validateFinalVideoProgram(finalProgram);
   gates.push(gate("V5-G21", finalCheck.valid ? "pass" : "fail", finalCheck.valid ? undefined : finalCheck.errors.join("; ")));
   gates.push(gate("V5-G22", finalProgram.validation.tsCompilePassed ? "pass" : "warn", "compose fallback recipe"));
+
+  // V5-G19 (executed fill) + V5-G41 (visual substance) + V5-G42 (text density): computed from the FINAL recipe.
+  const recipe = finalProgram.renderRecipe;
+  const layerForSlot = (slotId: string) => recipe.layers.find((l) => l.id === `${slotId}_layer`);
+  const isSubstantive = (l?: v5.RenderLayer) =>
+    Boolean(l && (l.type === "generated_visual" || (l.type === "media" && l.assetId) || (l.type === "packaging" && l.text)));
+  const requiredVisualSlots = composition.slotPlan.filter((s) => VISUAL_SLOT_KINDS.has(s.kind as v5.PlaceholderKindV5) || s.kind === "cta_card");
+  const substantiated = requiredVisualSlots.filter((s) => isSubstantive(layerForSlot(s.id)));
+  const visualOk = requiredVisualSlots.length > 0 && substantiated.length === requiredVisualSlots.length;
+  gates.push(gate("V5-G41", visualOk ? "pass" : requiredVisualSlots.length === 0 ? "warn" : "fail", `${substantiated.length}/${requiredVisualSlots.length} visual slots substantiated`));
+
+  const aigcGaps = gapReport.gaps.filter((g) => g.selectedRepair === "aigc_fill" || (g.status === "missing" && VISUAL_SLOT_KINDS.has((composition.slotPlan.find((s) => s.id === g.slotId)?.kind ?? "") as v5.PlaceholderKindV5)));
+  const aigcExecuted = aigcGaps.every((g) => isSubstantive(layerForSlot(g.slotId)));
+  gates.push(gate("V5-G19", aigcGaps.length === 0 ? "pass" : aigcExecuted ? "pass" : "fail", `${aigcGaps.filter((g) => isSubstantive(layerForSlot(g.slotId))).length}/${aigcGaps.length} fills executed`));
+
+  const textLayers = recipe.layers.filter((l) => l.type === "text" || (l.type === "packaging" && l.text));
+  const textCap = Math.max(4, Math.round((6 * composition.composition.durationSec) / 16));
+  const shortText = textLayers.filter((l) => l.endSec - l.startSec < 1.2).length;
+  const textDensityOk = textLayers.length <= textCap && shortText === 0;
+  gates.push(gate("V5-G42", textDensityOk ? "pass" : "warn", `${textLayers.length} text beats (cap ${textCap}), ${shortText} too-short`));
 
   // Safety gates: no sample media paths / sample audio in the final recipe.
   const recipeStr = JSON.stringify(finalProgram.renderRecipe);
