@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GenerationRequestV5",
+  "type": "object",
+  "required": [
+    "projectId",
+    "brief",
+    "targetAssetIds",
+    "options"
+  ],
+  "properties": {
+    "projectId": {
+      "type": "string"
+    },
+    "brief": {
+      "type": "object"
+    },
+    "targetAssetIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "selectedElementIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "autoRecommend": {
+      "type": "boolean"
+    },
+    "variant": {
+      "type": "string"
+    },
+    "options": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

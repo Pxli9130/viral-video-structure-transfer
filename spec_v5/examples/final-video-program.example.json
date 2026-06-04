@@ -1,0 +1,50 @@
+{
+  "id": "fvp_001",
+  "compositionProgramId": "comp_001",
+  "remotionProject": {
+    "entryFile": "index.tsx",
+    "componentName": "FinalAd",
+    "files": [
+      {
+        "path": "index.tsx",
+        "content": "export const FinalAd = () => null;"
+      }
+    ],
+    "propsSchema": {},
+    "fixture": {}
+  },
+  "renderRecipe": {
+    "version": "render-recipe-v5",
+    "composition": {
+      "width": 720,
+      "height": 1280,
+      "fps": 30,
+      "durationSec": 16,
+      "aspectRatio": "9:16"
+    },
+    "layers": [],
+    "audioLayers": [],
+    "assets": [],
+    "provenance": []
+  },
+  "explanation": {
+    "usedElements": [
+      {
+        "elementId": "kb_hook_001",
+        "sourceSampleId": "sample_001",
+        "appliedAtSec": 0,
+        "reason": "Strong opening hook."
+      }
+    ],
+    "gapFillDecisions": [],
+    "audioDecisions": [
+      "Used procedural beat based on kb_audio_001."
+    ]
+  },
+  "validation": {
+    "schemaPassed": true,
+    "tsCompilePassed": true,
+    "noCopyPassed": true,
+    "warnings": []
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FinalVideoProgram",
+  "type": "object",
+  "required": [
+    "id",
+    "compositionProgramId",
+    "remotionProject",
+    "renderRecipe",
+    "explanation",
+    "validation"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "compositionProgramId": {
+      "type": "string"
+    },
+    "remotionProject": {
+      "type": "object"
+    },
+    "renderRecipe": {
+      "type": "object"
+    },
+    "explanation": {
+      "type": "object"
+    },
+    "validation": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

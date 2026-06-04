@@ -1,0 +1,56 @@
+graph TD
+  subgraph LEARN[Learn Pipeline per sample video]
+    SV[Sample video] --> ING[1 Ingest]
+    ING --> DET[2 Deterministic Evidence]
+    DET --> EV[EvidenceTimelineV5]
+    SV --> VPOL[3 Video Input Policy]
+    EV --> VPOL
+    VPOL --> G1[4 Gen1 Neutral Reconstruction]
+    EV --> G1
+    G1 --> NRP[NeutralReconstructionProgram]
+    G1 -.-> G1F[Fallback Neutral Template]
+    G1F --> NRP
+    NRP --> EX[5 Element Extractor]
+    EV --> EX
+    EX --> CAND[CandidateElements]
+    CAND --> CUR[6 KB Curator]
+    CUR --> KB[(Knowledge Base)]
+  end
+
+  subgraph CREATE[Create Pipeline per generation]
+    KB --> UISEL[7 User Selected or Recommended Elements]
+    TARGET[Target assets] --> TA[Target Asset Analyzer]
+    BRIEF[User brief] --> CP[8 Composition Planner]
+    UISEL --> CP
+    TA --> CP
+    CP --> COMP[CompositionProgram]
+    COMP --> GAP[9 Slot Matching and Gap Report]
+    GAP -.-> MAT[10A Optional Material Generator]
+    COMP -.-> AUD[10B Optional Audio Generator]
+    COMP --> G2[11 Gen2 Final Remotion Codegen]
+    MAT -.-> G2
+    AUD -.-> G2
+    G2 --> FVP[FinalVideoProgram]
+    G2 -.-> G2F[Deterministic Compose Fallback]
+    G2F --> FVP
+    FVP --> VAL[12 Compile Lint Validate]
+    VAL --> RENDER[13 Remotion and FFmpeg Render]
+    RENDER --> FINAL[final.mp4]
+    FINAL --> EVAL[14 Eval Gates and Scorecard]
+    EVAL --> OUT[GenerationResult]
+  end
+
+  POLICY[Model Router and Provider Policy] -.-> G1
+  POLICY -.-> EX
+  POLICY -.-> CUR
+  POLICY -.-> CP
+  POLICY -.-> MAT
+  POLICY -.-> AUD
+  POLICY -.-> G2
+  STORE[Artifact Store] -.-> EV
+  STORE -.-> NRP
+  STORE -.-> KB
+  STORE -.-> COMP
+  STORE -.-> FVP
+  STORE -.-> FINAL
+  STORE -.-> OUT

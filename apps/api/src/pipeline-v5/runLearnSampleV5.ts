@@ -1,0 +1,100 @@
+// pipeline-v5/runLearnSampleV5.ts
+// LEARN pipeline orchestrator (deterministic core). Given an EvidenceTimelineV5, runs:
+//   Gen1 (deterministic neutral template) -> Element Extractor -> KB Curator
+// and returns all artifacts + the learn-side gate results. The AI Gen1 path layers on top later by
+// replacing runGen1NeutralTemplate's output when it validates; this orchestrator stays the safety net.
+
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { v5 } from "@vvst/shared";
+import type { KnowledgeBaseV5 } from "../services/knowledgeBaseV5.js";
+import { runGen1NeutralTemplate } from "./runGen1NeutralTemplate.js";
+import { runExtractElements } from "./runExtractElements.js";
+
+export interface LearnArtifacts {
+  evidence: v5.EvidenceTimelineV5;
+  neutralProgram: v5.NeutralReconstructionProgram;
+  candidates: v5.CandidateElement[];
+  decisions: v5.KbCurationDecision[];
+  elements: v5.KnowledgeElement[];
+  gates: v5.ScorecardGate[];
+  warnings: string[];
+}
+
+function gate(id: string, status: v5.GateStatus, message?: string): v5.ScorecardGate {
+  const def = v5.getGateDef(id);
+  return { id, name: def?.name ?? id, status, priority: def?.priority, message };
+}
+
+export interface LearnOptions {
+  /** When set, write each artifact as JSON under this directory. */
+  outDir?: string;
+  /** Override the AI Gen1 program (when an AI path produced a valid one). */
+  aiProgram?: v5.NeutralReconstructionProgram | null;
+}
+
+/** Run the deterministic LEARN loop for one already-wrapped EvidenceTimelineV5. */
+export async function runLearnSampleV5(
+  evidence: v5.EvidenceTimelineV5,
+  kb: KnowledgeBaseV5,
+  opts: LearnOptions = {}
+): Promise<LearnArtifacts> {
+  const warnings: string[] = [];
+  const gates: v5.ScorecardGate[] = [];
+
+  // Stage 1 gate: evidence exists + schema valid.
+  const evResult = v5.validateEvidenceTimelineV5(evidence);
+  gates.push(gate("V5-G1", evResult.valid ? "pass" : "fail", evResult.valid ? undefined : evResult.errors.join("; ")));
+
+  // Stage 4 Gen1: prefer a valid AI program, else deterministic template.
+  let neutralProgram = opts.aiProgram ?? null;
+  let usedFallback = false;
+  if (neutralProgram) {
+    const aiCheck = v5.validateNeutralReconstructionProgram(neutralProgram);
+    if (!aiCheck.valid) {
+      warnings.push(`Gen1 AI output invalid (${aiCheck.errors.slice(0, 2).join("; ")}); using deterministic template.`);
+      neutralProgram = null;
+    }
+  }
+  if (!neutralProgram) {
+    const t = runGen1NeutralTemplate(evidence);
+    neutralProgram = t.program;
+    usedFallback = true;
+    if (!t.validation.valid) warnings.push(`Neutral template invalid: ${t.validation.errors.join("; ")}`);
+  }
+
+  const g1Check = v5.validateNeutralReconstructionProgram(neutralProgram);
+  gates.push(gate("V5-G4", neutralProgram ? "pass" : "fail", usedFallback ? "deterministic fallback" : "ai gen1"));
+  gates.push(gate("V5-G5", g1Check.valid ? "pass" : "fail", g1Check.valid ? undefined : g1Check.errors.join("; ")));
+
+  // Placeholder coverage gate.
+  const hasPlaceholders = neutralProgram.placeholders.length > 0;
+  gates.push(gate("V5-G6", hasPlaceholders ? "pass" : "warn", `${neutralProgram.placeholders.length} placeholders`));
+
+  // Stage 5 Element extraction.
+  const candidates = runExtractElements(neutralProgram);
+  gates.push(gate("V5-G9", candidates.length ? "pass" : "fail", `${candidates.length} candidates`));
+
+  // Stage 6/7 Curation + KB write.
+  const { decisions, elements } = kb.curateMany(candidates);
+  const allDecided = decisions.length === candidates.length;
+  gates.push(gate("V5-G10", allDecided ? "pass" : "warn", `${decisions.length}/${candidates.length} decided`));
+  gates.push(gate("V5-G13", elements.length ? "pass" : "warn", `${elements.length} stored/merged`));
+
+  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, gates, warnings };
+
+  if (opts.outDir) {
+    await fs.mkdir(opts.outDir, { recursive: true });
+    const write = (name: string, data: unknown) => fs.writeFile(path.join(opts.outDir as string, name), JSON.stringify(data, null, 2));
+    await Promise.all([
+      write("evidence-timeline-v5.json", evidence),
+      write("neutral-reconstruction-program.json", neutralProgram),
+      write("candidate-elements.json", candidates),
+      write("kb-decisions.json", decisions),
+      write("knowledge-elements.json", elements),
+      write("learn-gates.json", gates)
+    ]);
+  }
+
+  return artifacts;
+}

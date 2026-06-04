@@ -1,0 +1,20 @@
+// pipeline-v5/index.ts — V5 pipeline module surface (parallel to the V4 pipeline).
+export { toEvidenceTimelineV5 } from "./runEvidenceV5.js";
+export type { EvidenceV5WrapOptions } from "./runEvidenceV5.js";
+export { runGen1NeutralTemplate } from "./runGen1NeutralTemplate.js";
+export type { Gen1TemplateResult } from "./runGen1NeutralTemplate.js";
+export { runExtractElements } from "./runExtractElements.js";
+export { runLearnSampleV5 } from "./runLearnSampleV5.js";
+export type { LearnArtifacts, LearnOptions } from "./runLearnSampleV5.js";
+export { runTargetAssetAnalysis, runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
+export { runCompositionPlanner } from "./runCompositionPlanner.js";
+export { runGapReportV5 } from "./runGapReportV5.js";
+export { runGen2ComposeFallback } from "./runGen2ComposeFallback.js";
+export { runCreateV5 } from "./runCreateV5.js";
+export type { CreateInput, CreateArtifacts } from "./runCreateV5.js";
+export { renderFinalVideoV5, buildV5RenderInputProps, muxProceduralAudio } from "./renderV5.js";
+export type { RenderV5Options, RenderV5Result, AssetMap } from "./renderV5.js";
+export { runScorecardV5 } from "./runScorecardV5.js";
+export type { ScorecardInput, NoCopyResult, RenderInfo } from "./runScorecardV5.js";
+export { runNoCopyScan } from "./runNoCopyScan.js";
+export type { NoCopyScanOptions } from "./runNoCopyScan.js";

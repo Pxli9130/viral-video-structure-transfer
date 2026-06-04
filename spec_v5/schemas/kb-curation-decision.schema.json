@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KbCurationDecision",
+  "type": "object",
+  "required": [
+    "id",
+    "candidateId",
+    "action"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "candidateId": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "store_new",
+        "merge_existing",
+        "store_variant",
+        "reject",
+        "evidence_only",
+        "pending_review"
+      ]
+    },
+    "targetElementId": {
+      "type": "string"
+    },
+    "parentElementId": {
+      "type": "string"
+    },
+    "assignedName": {
+      "type": "string"
+    },
+    "assignedKind": {
+      "type": "string"
+    },
+    "hardRuleResult": {
+      "type": "string"
+    },
+    "embeddingMatches": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "mlJudgeReason": {
+      "type": "string"
+    },
+    "createdElementId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

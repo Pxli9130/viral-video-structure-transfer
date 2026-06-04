@@ -1,0 +1,32 @@
+{
+  "id": "comp_gen_001",
+  "projectId": "project_demo",
+  "generationId": "gen_001",
+  "creativeBrief": {
+    "prompt": "Create a high-click short video for a portable fan.",
+    "vertical": "marketing",
+    "variant": "high_click",
+    "targetDurationSec": 16,
+    "aspectRatio": "9:16"
+  },
+  "selectedElements": [
+    { "elementId": "ke_hook_impact_zoom_001", "appliedRole": "hook", "priority": 1, "locked": true, "reason": "Strong opening pattern" }
+  ],
+  "composition": { "width": 720, "height": 1280, "fps": 30, "durationSec": 16, "aspectRatio": "9:16" },
+  "sections": [
+    { "id": "sec_hook", "role": "hook", "startSec": 0, "endSec": 2, "purpose": "Grab attention with hero fan image", "elementRefs": ["ke_hook_impact_zoom_001"], "requiredSlots": ["slot_hero", "slot_hook_text"], "plannedText": "Cool down in 3 seconds" },
+    { "id": "sec_benefit", "role": "benefit", "startSec": 2, "endSec": 10, "purpose": "Show selling points", "elementRefs": [], "requiredSlots": ["slot_product_closeup", "slot_benefit_text"], "plannedText": "Portable, quiet, USB-C" },
+    { "id": "sec_cta", "role": "cta", "startSec": 10, "endSec": 16, "purpose": "Drive conversion", "elementRefs": [], "requiredSlots": ["slot_cta_card"], "plannedText": "Shop now" }
+  ],
+  "stylePlan": { "palette": ["#050505", "#FFFFFF", "#5DDCFF"], "typographySystem": "bold condensed headline plus clean subtitle", "motionIntensity": "high", "textDensity": "medium", "pacing": "fast", "coherenceNotes": ["Use one accent blue across all cards"] },
+  "slotPlan": [
+    { "id": "slot_hero", "sectionId": "sec_hook", "kind": "hero_product", "required": true, "sourceElementId": "ke_hook_impact_zoom_001", "preferredFill": "target_asset" },
+    { "id": "slot_hook_text", "sectionId": "sec_hook", "kind": "subtitle_text", "required": true, "preferredFill": "text" },
+    { "id": "slot_product_closeup", "sectionId": "sec_benefit", "kind": "product_closeup", "required": false, "preferredFill": "target_asset" },
+    { "id": "slot_benefit_text", "sectionId": "sec_benefit", "kind": "subtitle_text", "required": false, "preferredFill": "text" },
+    { "id": "slot_cta_card", "sectionId": "sec_cta", "kind": "cta_card", "required": true, "preferredFill": "procedural" }
+  ],
+  "materialPlan": { "fills": [] },
+  "audioPlan": { "layers": [] },
+  "explanation": { "howElementsCombine": ["Hook pattern drives first two seconds"], "whyThisStructureFitsBrief": "High-click version needs fast opening and clear CTA", "possibleRisks": [] }
+}

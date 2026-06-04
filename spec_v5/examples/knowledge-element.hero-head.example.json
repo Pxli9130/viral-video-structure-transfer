@@ -1,0 +1,56 @@
+{
+  "id": "kb_hero_head_001",
+  "kind": "visual_asset_pattern",
+  "name": "premium centered hero object",
+  "description": "Large centered glossy hero object with rim light for hook scene.",
+  "tags": [
+    "hook",
+    "premium",
+    "hero",
+    "rim-light"
+  ],
+  "source": {
+    "sourceSampleId": "sample_001",
+    "reconstructionProgramId": "nrp_sample_001",
+    "evidenceRefs": [
+      "frame_032"
+    ]
+  },
+  "payload": {
+    "observedDescription": {
+      "subject": "large centered hero object",
+      "lighting": "strong rim light",
+      "composition": "centered, fills 55 percent of vertical frame",
+      "mood": "premium dramatic"
+    },
+    "generationPromptTemplate": "Create a new premium hero object for {targetProduct}, centered, glossy, strong rim light, dramatic dark background. Do not copy the source sample.",
+    "negativePrompt": "no watermark, no sample logo, no exact original face, no original text"
+  },
+  "reusablePolicy": "regenerate_only",
+  "slots": [],
+  "compatibility": {
+    "aspectRatios": [
+      "9:16"
+    ],
+    "verticals": [
+      "marketing",
+      "motion_graph"
+    ],
+    "canCombineWith": [],
+    "conflictsWith": []
+  },
+  "safety": {
+    "noCopyChecked": true,
+    "samplePixelsRemoved": true,
+    "sampleAudioRemoved": true,
+    "sampleTextRemoved": true,
+    "renderable": false
+  },
+  "quality": {
+    "confidence": 0.85,
+    "usefulness": 0.9,
+    "distinctiveness": 0.8,
+    "coherenceRisk": 0.3
+  },
+  "preview": {}
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScorecardV5",
+  "type": "object",
+  "required": [
+    "id",
+    "generationId",
+    "gates",
+    "rubricCoverage",
+    "warnings"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "generationId": {
+      "type": "string"
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "rubricCoverage": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "renderQuality": {
+      "type": "object"
+    },
+    "safety": {
+      "type": "object"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

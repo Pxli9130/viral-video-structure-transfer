@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KnowledgeElement",
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "name",
+    "description",
+    "source",
+    "payload",
+    "safety",
+    "quality"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "structure_pattern",
+        "hook_pattern",
+        "segment_template",
+        "rhythm_pattern",
+        "motion_pattern",
+        "transition_pattern",
+        "typography_pattern",
+        "layout_pattern",
+        "palette_pattern",
+        "visual_asset_pattern",
+        "image_prompt_recipe",
+        "audio_pattern",
+        "sfx_pattern",
+        "voiceover_pattern",
+        "cta_pattern",
+        "remotion_snippet"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source": {
+      "type": "object"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "slots": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "compatibility": {
+      "type": "object"
+    },
+    "remotion": {
+      "type": "object"
+    },
+    "safety": {
+      "type": "object"
+    },
+    "quality": {
+      "type": "object"
+    },
+    "preview": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}
