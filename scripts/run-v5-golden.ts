@@ -92,13 +92,15 @@ async function main() {
       createdAt: new Date(0).toISOString()
     });
   }
+  const gen2Model = arg("ai", "false") === "true" ? createGeminiModelFn() ?? undefined : undefined;
   const create = await runCreateV5({
     projectId: "proj_golden",
     generationId: "gen_golden",
     brief: { theme: "golden demo ad", variant: "high_click", targetDurationSec: Math.min(16, Math.round(evidence.video.durationSec || 12)), aspectRatio: "9:16", sellingPoints: ["fast", "clean", "reliable"] },
     targetAssets,
     selectedElements: kb.list(),
-    outDir: path.join(outDir, "create")
+    outDir: path.join(outDir, "create"),
+    gen2Model
   });
   console.log(`[golden]   sections=${create.composition.sections.length} gaps=${create.gapReport.gaps.length} createGatesFail=${create.gates.filter((g) => g.status === "fail").length}`);
 

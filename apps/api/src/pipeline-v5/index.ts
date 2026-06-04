@@ -7,6 +7,8 @@ export { runGen1Ai, buildGen1Prompt } from "./runGen1Ai.js";
 export type { Gen1ModelFn, Gen1AiResult } from "./runGen1Ai.js";
 export { createGeminiModelFn } from "./gen1ModelFactory.js";
 export type { GeminiModelFnOptions } from "./gen1ModelFactory.js";
+export { runGen2Ai, buildGen2Prompt } from "./runGen2Ai.js";
+export type { Gen2AiResult } from "./runGen2Ai.js";
 export { runExtractElements } from "./runExtractElements.js";
 export { runLearnSampleV5 } from "./runLearnSampleV5.js";
 export type { LearnArtifacts, LearnOptions } from "./runLearnSampleV5.js";

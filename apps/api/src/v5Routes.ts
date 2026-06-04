@@ -161,13 +161,15 @@ export function createV5Router(deps: V5RouterDeps): Router {
     if (!selectedElements.length) return fail(res, 400, "no KB elements selected/available; run /learn-samples first");
 
     const outDir = genDir(generationId);
+    const gen2Model = options.runGen2Ai === true ? createGeminiModelFn() ?? undefined : undefined;
     const create = await runCreateV5({
       projectId,
       generationId,
       brief,
       targetAssets,
       selectedElements,
-      outDir
+      outDir,
+      gen2Model
     });
 
     // Only assess render gates when a render was actually attempted (plan -> undefined -> warn,

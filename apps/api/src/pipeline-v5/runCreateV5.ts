@@ -11,6 +11,8 @@ import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
 import { runCompositionPlanner } from "./runCompositionPlanner.js";
 import { runGapReportV5 } from "./runGapReportV5.js";
 import { runGen2ComposeFallback } from "./runGen2ComposeFallback.js";
+import { runGen2Ai } from "./runGen2Ai.js";
+import type { Gen1ModelFn } from "./runGen1Ai.js";
 
 function gate(id: string, status: v5.GateStatus, message?: string): v5.ScorecardGate {
   const def = v5.getGateDef(id);
@@ -26,6 +28,8 @@ export interface CreateInput {
   composition?: { width?: number; height?: number; fps?: number; aspectRatio?: v5.AspectRatioV5 };
   outDir?: string;
   resolveAssetUri?: (assetId: string) => string;
+  /** Optional AI Gen2: refine on-screen copy/palette over the deterministic compose recipe. */
+  gen2Model?: Gen1ModelFn;
 }
 
 export interface CreateArtifacts {
@@ -71,12 +75,17 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
   const unresolved = gapReport.gaps.filter((g) => g.status === "missing" && !g.selectedRepair);
   gates.push(gate("V5-G19", unresolved.length === 0 ? "pass" : "warn", `${unresolved.length} slots with no fill strategy`));
 
-  const finalProgram = runGen2ComposeFallback({
+  let finalProgram = runGen2ComposeFallback({
     composition,
     gapReport,
     selectedElements: input.selectedElements,
     resolveAssetUri: input.resolveAssetUri
   });
+  if (input.gen2Model) {
+    const g2 = await runGen2Ai(composition, finalProgram, input.gen2Model);
+    if (g2.usedAi) finalProgram = g2.finalProgram;
+    else warnings.push(...g2.warnings);
+  }
   gates.push(gate("V5-G20", "pass", finalProgram.fallbackUsed ? "deterministic compose fallback" : "ai gen2"));
   const finalCheck = v5.validateFinalVideoProgram(finalProgram);
   gates.push(gate("V5-G21", finalCheck.valid ? "pass" : "fail", finalCheck.valid ? undefined : finalCheck.errors.join("; ")));
