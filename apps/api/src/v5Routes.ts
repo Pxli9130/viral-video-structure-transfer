@@ -98,7 +98,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         aiProgram = g1.usedAi ? g1.program : null;
         usedAi = g1.usedAi;
       }
-      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, validateRender });
+      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, validateRender, projectId: asset.projectId });
       learned.push({
         sampleId: assetId,
         evidenceTimelineId: evidence.id,
@@ -164,10 +164,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
   // ---- Template capsules (V5.1 — the default generation object) ----
   router.get("/templates", (req, res) => {
-    const list = kb.listTemplateCapsules({ sourceSampleId: req.query.sourceSampleId as string | undefined, tag: req.query.tag as string | undefined, q: req.query.q as string | undefined });
+    const list = kb.listTemplateCapsules({ sourceSampleId: req.query.sourceSampleId as string | undefined, projectId: req.query.projectId as string | undefined, tag: req.query.tag as string | undefined, q: req.query.q as string | undefined });
     // metadata only (omit code bundle for the list)
     return ok(res, {
-      templates: list.map((c) => ({ id: c.id, sourceSampleId: c.sourceSampleId, name: c.name, description: c.description, tags: c.tags, slotSchema: c.slotSchema, timingSignature: c.timingSignature, motionSignature: c.motionSignature, quality: c.quality }))
+      templates: list.map((c) => ({ id: c.id, sourceSampleId: c.sourceSampleId, projectId: c.projectId, name: c.name, description: c.description, tags: c.tags, slotSchema: c.slotSchema, timingSignature: c.timingSignature, motionSignature: c.motionSignature, quality: c.quality }))
     });
   });
 

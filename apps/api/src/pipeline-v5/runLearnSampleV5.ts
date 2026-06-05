@@ -46,6 +46,8 @@ export interface LearnOptions {
   /** When true, run a real frame-0 render of the final capsule at learn time so T8/renderPreviewPassed
    *  is earned (not deferred). Needs headless chrome; a failed render is recorded, never fatal. */
   validateRender?: boolean;
+  /** Project that owns this learn run — stamped on the capsule for per-project KB scoping. */
+  projectId?: string;
 }
 
 /** Run the deterministic LEARN loop for one already-wrapped EvidenceTimelineV5. */
@@ -127,6 +129,7 @@ export async function runLearnSampleV5(
   templateCapsule.quality.compilePassed = templateValidation.gates.find((t) => t.id === "T2")?.status === "pass";
   templateCapsule.quality.noCopyTemplatePassed = templateValidation.gates.find((t) => t.id === "T10")?.status === "pass";
   templateCapsule.quality.warnings = [...templateCapsule.quality.warnings, ...templateValidation.warnings];
+  if (opts.projectId) templateCapsule.projectId = opts.projectId;
   kb.saveTemplateCapsule(templateCapsule);
   for (const t of templateValidation.gates.slice(0, 6)) gates.push(gate(t.id, t.status === "pass" ? "pass" : t.status === "warn" ? "warn" : "fail", t.message));
 

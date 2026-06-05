@@ -20,6 +20,7 @@ export interface KnowledgeBaseFile {
 
 export interface CapsuleQuery {
   sourceSampleId?: string;
+  projectId?: string;
   tag?: string;
   q?: string;
 }
@@ -174,6 +175,7 @@ export class KnowledgeBaseV5 {
   listTemplateCapsules(query: CapsuleQuery = {}): v5.RemotionTemplateCapsule[] {
     let items = this.data.capsules ?? [];
     if (query.sourceSampleId) items = items.filter((c) => c.sourceSampleId === query.sourceSampleId);
+    if (query.projectId) items = items.filter((c) => c.projectId === query.projectId);
     if (query.tag) items = items.filter((c) => c.tags.includes(query.tag as string));
     if (query.q) {
       const q = query.q.toLowerCase();

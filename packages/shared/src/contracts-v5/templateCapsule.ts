@@ -47,6 +47,8 @@ export interface TemplateSlot {
 export interface RemotionTemplateCapsule {
   id: string;
   sourceSampleId: string;
+  /** Project that learned this capsule — enables per-project KB scoping (optional/global if absent). */
+  projectId?: string;
   name: string;
   description?: string;
   tags: string[];
