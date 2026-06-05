@@ -177,6 +177,59 @@ export function createV5Router(deps: V5RouterDeps): Router {
   });
 
   // ---- Generation ----
+  // Shared assembly for same_template + modify_template (revise): score, reconcile readiness, persist.
+  const finishSameTemplate = async (
+    res: Response,
+    generationId: string,
+    capsule: v5.RemotionTemplateCapsule,
+    st: Awaited<ReturnType<typeof runSameTemplateGeneration>>,
+    stOptions: v5.GenerationOptionsV5,
+    outDirST: string,
+    extra: Record<string, unknown> = {}
+  ) => {
+    // Feed REAL render facts + the real no-copy scan into the scorecard (so V5-G23/G27/G29/G30 are
+    // earned, and the readiness ladder runs on same_template evidence — not stuck at artifact_valid).
+    const sc = runScorecardV5({
+      generationId,
+      stageGates: [st.gates],
+      render: st.finalMp4Exists
+        ? { finalMp4Exists: true, durationSec: st.renderDurationSec, expectedDurationSec: capsule.timingSignature.durationSec, width: 1080, height: 1920, expectedWidth: 1080, expectedHeight: 1920, hasAudio: st.renderHasAudio, audioIntended: stOptions.aigcGapFill.audioFill !== "off" }
+        : st.instance.slotBindings.length ? { finalMp4Exists: false } : undefined,
+      noCopy: st.noCopy
+    });
+    sc.gates = [...sc.gates, ...st.gates.filter((g) => g.id.startsWith("T"))];
+    // Reconcile: the scorecard is the single source of truth; align the instance readiness to it.
+    const toInstanceReadiness = (lvl?: v5.ReadinessLevel): v5.TemplateInstance["readinessImpact"]["readinessLevel"] =>
+      lvl === "shippable_demo" ? "shippable_candidate" : lvl === "review_demo" ? "review_demo" : "technical_demo";
+    st.instance.readinessImpact.readinessLevel = toInstanceReadiness(sc.readinessLevel);
+    if (st.instance.readinessImpact.warnings.length) sc.readinessReasons = [...(sc.readinessReasons ?? []), ...st.instance.readinessImpact.warnings];
+    await fs.mkdir(outDirST, { recursive: true });
+    const result = {
+      generationId,
+      generationMode: stOptions.generationMode,
+      templateCapsuleId: capsule.id,
+      usedTemplateCode: st.finalProgram.renderMode === "bespoke_codegen",
+      usedFallbackRenderer: st.finalProgram.fallbackUsed === true,
+      finalVideoUrl: st.finalVideoUrl,
+      templateInstance: st.instance,
+      finalProgram: st.finalProgram,
+      generatedAssets: st.generatedAssets,
+      gapReport: st.gapReport,
+      noCopy: st.noCopy,
+      scorecard: sc,
+      warnings: st.warnings,
+      ...extra
+    };
+    await Promise.all([
+      fs.writeFile(path.join(outDirST, "template-instance.json"), JSON.stringify(st.instance, null, 2)),
+      fs.writeFile(path.join(outDirST, "final-video-program.json"), JSON.stringify(st.finalProgram, null, 2)),
+      fs.writeFile(path.join(outDirST, "gap-report.json"), JSON.stringify(st.gapReport, null, 2)),
+      fs.writeFile(path.join(outDirST, "scorecard.json"), JSON.stringify(sc, null, 2)),
+      fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
+    ]);
+    return ok(res, result);
+  };
+
   const buildGeneration = async (req: Request, res: Response, doRender: boolean) => {
     try {
       return await buildGenerationInner(req, res, doRender);
@@ -230,48 +283,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         env: process.env,
         doRender: doRender && (reqOpts.autoRender ?? true) !== false
       });
-      // Feed REAL render facts + the real no-copy scan into the scorecard (so V5-G23/G27/G29/G30 are
-      // earned, and the readiness ladder runs on same_template evidence — not stuck at artifact_valid).
-      const sc = runScorecardV5({
-        generationId,
-        stageGates: [st.gates],
-        render: st.finalMp4Exists
-          ? { finalMp4Exists: true, durationSec: st.renderDurationSec, expectedDurationSec: capsule.timingSignature.durationSec, width: 1080, height: 1920, expectedWidth: 1080, expectedHeight: 1920, hasAudio: st.renderHasAudio, audioIntended: stOptions.aigcGapFill.audioFill !== "off" }
-          : st.instance.slotBindings.length ? { finalMp4Exists: false } : undefined,
-        noCopy: st.noCopy
-      });
-      // Part 10: surface the same-template T-gates alongside the canonical V5 gates.
-      sc.gates = [...sc.gates, ...st.gates.filter((g) => g.id.startsWith("T"))];
-      // Reconcile: the scorecard is the single source of truth; align the instance readiness to it so
-      // the two artifacts can never contradict (the old code let them disagree).
-      const toInstanceReadiness = (lvl?: v5.ReadinessLevel): v5.TemplateInstance["readinessImpact"]["readinessLevel"] =>
-        lvl === "shippable_demo" ? "shippable_candidate" : lvl === "review_demo" ? "review_demo" : "technical_demo";
-      st.instance.readinessImpact.readinessLevel = toInstanceReadiness(sc.readinessLevel);
-      if (st.instance.readinessImpact.warnings.length) sc.readinessReasons = [...(sc.readinessReasons ?? []), ...st.instance.readinessImpact.warnings];
-      await fs.mkdir(outDirST, { recursive: true });
-      const result = {
-        generationId,
-        generationMode: "same_template",
-        templateCapsuleId: capsule.id,
-        usedTemplateCode: st.finalProgram.renderMode === "bespoke_codegen",
-        usedFallbackRenderer: st.finalProgram.fallbackUsed === true,
-        finalVideoUrl: st.finalVideoUrl,
-        templateInstance: st.instance,
-        finalProgram: st.finalProgram,
-        generatedAssets: st.generatedAssets,
-        gapReport: st.gapReport,
-        noCopy: st.noCopy,
-        scorecard: sc,
-        warnings: st.warnings
-      };
-      await Promise.all([
-        fs.writeFile(path.join(outDirST, "template-instance.json"), JSON.stringify(st.instance, null, 2)),
-        fs.writeFile(path.join(outDirST, "final-video-program.json"), JSON.stringify(st.finalProgram, null, 2)),
-        fs.writeFile(path.join(outDirST, "gap-report.json"), JSON.stringify(st.gapReport, null, 2)),
-        fs.writeFile(path.join(outDirST, "scorecard.json"), JSON.stringify(sc, null, 2)),
-        fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
-      ]);
-      return ok(res, result);
+      return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST);
     }
 
     const allElements = kb.list();
@@ -371,6 +383,43 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
   router.post("/generations/plan", (req, res) => buildGeneration(req, res, false));
   router.post("/generations", (req, res) => buildGeneration(req, res, true));
+
+  // ---- Revise (modify_template): patch-first re-theme/re-copy of a prior same_template generation ----
+  router.post("/generations/:id/revise", async (req, res) => {
+    try {
+      const prior = (await readJsonIf(path.join(genDir(req.params.id), "generation-result.json"))) as { generationMode?: string; projectId?: string; templateInstance?: v5.TemplateInstance } | undefined;
+      if (!prior?.templateInstance) return fail(res, 400, "no same_template instance for this generation id");
+      const instance = prior.templateInstance;
+      const capsule = kb.getTemplateCapsule(instance.templateCapsuleId);
+      if (!capsule) return fail(res, 404, "the template capsule for this generation no longer exists");
+      const patch: v5.TemplatePatchSet = req.body?.patch ?? {};
+      if (patch.regenerateImages) return fail(res, 400, "regenerateImages: start a fresh POST /generations with the new brief — revise is patch-first (theme/copy/palette, reuses prior visuals).");
+      const generationId = `${req.params.id}_rev_${Date.now().toString(36)}`;
+      const outDirST = genDir(generationId);
+      const brief: v5.CreativeBriefV5 = { ...instance.creativeBrief, ...(patch.theme ? { theme: patch.theme } : {}) };
+      const stOptions: v5.GenerationOptionsV5 = { ...v5.DEFAULT_GENERATION_OPTIONS_V5, generationMode: "modify_template" };
+      const sampleVideoPath = (await getAssets()).find((a) => a.id === capsule.sourceSampleId)?.path;
+      const port = Number(process.env.APP_PORT ?? 3000);
+      const st = await runSameTemplateGeneration({
+        projectId: req.body?.projectId ?? "proj_v5_ui",
+        generationId,
+        capsule,
+        brief,
+        targetAssets: [],
+        options: stOptions,
+        outDir: outDirST,
+        publicPathPrefix: `/generated/${path.relative(deps.generatedDir, path.join(outDirST, "materials")).split(path.sep).join("/")}/`,
+        serveBase: `http://127.0.0.1:${port}`,
+        sampleVideoPath,
+        env: process.env,
+        doRender: true,
+        reviseFrom: { instance, patch }
+      });
+      return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, { revisedFrom: req.params.id, patch });
+    } catch (err) {
+      return fail(res, 500, `revise failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
 
   router.get("/generations/:id", async (req, res) => {
     const data = await readJsonIf(path.join(genDir(req.params.id), "generation-result.json"));

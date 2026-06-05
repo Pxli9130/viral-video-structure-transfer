@@ -54,6 +54,8 @@ export interface SameTemplateInput {
   env?: Record<string, string | undefined>;
   /** When false (plan), skip rendering. */
   doRender?: boolean;
+  /** modify_template: patch-first revise from a prior instance (reuse bindings, override theme/copy). */
+  reviseFrom?: { instance: v5.TemplateInstance; patch?: v5.TemplatePatchSet };
 }
 
 export interface SameTemplateResult {
@@ -97,6 +99,20 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   const maxGenerated = 6;
   const usedTargetAssetIds = new Set<string>();
 
+  if (input.reviseFrom) {
+    // ---- Patch-first revise (modify_template): reuse the prior instance's bound props + slot
+    // bindings; override only theme / palette / copy. Visual regeneration is a fresh generation. ----
+    const prior = input.reviseFrom.instance;
+    const pb = prior.boundProps as { theme?: string; palette?: string[]; assets?: Record<string, { src: string }>; copy?: Record<string, string>; audio?: Record<string, unknown> };
+    const patch = input.reviseFrom.patch ?? {};
+    boundProps.theme = patch.theme ?? pb.theme ?? boundProps.theme;
+    boundProps.palette = patch.palette ?? pb.palette ?? boundProps.palette;
+    boundProps.assets = { ...(pb.assets ?? {}) };
+    boundProps.copy = { ...(pb.copy ?? {}) };
+    boundProps.audio = { ...(pb.audio ?? {}) };
+    for (const [k, v] of Object.entries(patch.copyOverrides ?? {})) boundProps.copy[k] = v;
+    for (const b of prior.slotBindings) slotBindings.push({ ...b });
+  } else
   for (let i = 0; i < capsule.slotSchema.length; i++) {
     const slot = capsule.slotSchema[i];
     const propKey = slot.propPath?.split(".")[1] ?? slot.id;

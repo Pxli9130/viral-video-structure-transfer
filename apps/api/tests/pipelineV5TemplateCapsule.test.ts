@@ -145,4 +145,41 @@ describe("V5.1 RemotionTemplateCapsule (Gen1 reconstruction + validation + KB + 
     expect(out.instance.readinessImpact.readinessLevel).toBe("technical_demo");
     expect(out.gates.find((g) => g.id === "T6")?.status).toBe("fail"); // not all required slots bound
   });
+
+  it("revise (modify_template): patch-first reuses prior bindings, overrides theme + copy", async () => {
+    const evidence = ev();
+    const program = runGen1NeutralTemplate(evidence).program;
+    const capsule = runGen1TemplateReconstruction(program, evidence);
+    const base = await runSameTemplateGeneration({
+      projectId: "p",
+      generationId: "g_base",
+      capsule,
+      brief: { theme: "cool fan", targetDurationSec: 8, aspectRatio: "9:16", sellingPoints: ["quiet"] },
+      targetAssets: [],
+      options: v5.DEFAULT_GENERATION_OPTIONS_V5,
+      outDir: path.join(storageDir, "g_base"),
+      publicPathPrefix: "/x/",
+      serveBase: "http://127.0.0.1:3000",
+      doRender: false
+    });
+    const copyKey = Object.keys((base.instance.boundProps as { copy: Record<string, string> }).copy)[0];
+    const revised = await runSameTemplateGeneration({
+      projectId: "p",
+      generationId: "g_rev",
+      capsule,
+      brief: { ...base.instance.creativeBrief, theme: "warm heater" },
+      targetAssets: [],
+      options: { ...v5.DEFAULT_GENERATION_OPTIONS_V5, generationMode: "modify_template" },
+      outDir: path.join(storageDir, "g_rev"),
+      publicPathPrefix: "/x/",
+      serveBase: "http://127.0.0.1:3000",
+      doRender: false,
+      reviseFrom: { instance: base.instance, patch: { theme: "warm heater", copyOverrides: { [copyKey]: "NEW COPY" } } }
+    });
+    const rb = revised.instance.boundProps as { theme?: string; copy: Record<string, string> };
+    expect(rb.theme).toBe("warm heater");
+    expect(rb.copy[copyKey]).toBe("NEW COPY");
+    // reused prior slot bindings (same count, not re-bound from scratch)
+    expect(revised.instance.slotBindings.length).toBe(base.instance.slotBindings.length);
+  });
 });

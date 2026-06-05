@@ -178,6 +178,18 @@ export interface TemplateSlotBinding {
   warnings: string[];
 }
 
+/** A patch-first revision of a same_template generation (the modify_template mode). */
+export interface TemplatePatchSet {
+  /** New theme string (re-themes the template). */
+  theme?: string;
+  /** Override the runtime palette. */
+  palette?: string[];
+  /** propKey (e.g. "headline") -> new copy text. */
+  copyOverrides?: Record<string, string>;
+  /** When true, the route runs a FRESH generation (new visuals) instead of a copy/theme-only revise. */
+  regenerateImages?: boolean;
+}
+
 export interface TemplateInstance {
   id: string;
   templateCapsuleId: string;

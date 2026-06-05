@@ -370,7 +370,7 @@ export const generationRequestV5Schema = {
   $id: `${ID}/generation-request-v5.schema.json`,
   title: "GenerationRequestV5",
   type: "object",
-  required: ["projectId", "brief", "targetAssetIds", "options"],
+  required: ["projectId", "brief"],
   properties: {
     projectId: { type: "string" },
     brief: { type: "object" },
@@ -380,12 +380,29 @@ export const generationRequestV5Schema = {
     variant: { enum: ["high_click", "high_conversion", "high_quality"] },
     options: {
       type: "object",
-      required: ["materialFill", "audioFill", "finalCodegen"],
+      // No required keys: the DEFAULT is same_template + DEFAULT_GENERATION_OPTIONS_V5 (all optional).
       properties: {
+        // V5.1 same_template (default) options
+        generationMode: { enum: ["same_template", "modify_template", "mix_elements"] },
+        templateCapsuleId: { type: "string" },
+        aigcGapFill: {
+          type: "object",
+          properties: {
+            mode: { enum: ["auto_on", "off"] },
+            imageFill: { enum: ["aigc", "procedural", "off"] },
+            audioFill: { enum: ["procedural", "off"] },
+            textFill: { enum: ["llm", "brief", "off"] }
+          }
+        },
+        fallbackPolicy: { type: "object" },
+        autoRender: { type: "boolean" },
+        // advanced mix_elements (legacy) options
         materialFill: { enum: ["off", "local", "aigc"] },
         audioFill: { enum: ["off", "procedural", "aigc"] },
         finalCodegen: { enum: ["on", "off"] },
-        fallbackRender: { type: "boolean" }
+        fallbackRender: { type: "boolean" },
+        runGen1Ai: { type: "boolean" },
+        runGen2Ai: { type: "boolean" }
       }
     }
   },
