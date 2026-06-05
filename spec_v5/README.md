@@ -4,6 +4,12 @@
 > `packages/shared/src/contracts-v5/` (exported from `@vvst/shared` as `v5`). Where any doc below
 > disagrees with the code or with [`CONTRACTS-CANONICAL.md`](./CONTRACTS-CANONICAL.md), the code
 > wins. Validate examples: `npm run validate:schemas:v5`.
+>
+> **V5.1 — Same Template Reconstruction Mode (NEW DEFAULT):** Gen1 now also builds a reusable,
+> props-driven Remotion template (`RemotionTemplateCapsule`) per sample, and generation defaults to
+> "use the same template code with a new theme + auto AIGC gap fill". See
+> [`same-template-mode.md`](./same-template-mode.md). The original element-mixing path is kept as the
+> advanced `mix_elements` mode.
 
 V5 is a complete target architecture for the viral video structure transfer engine.
 It replaces the V4 “evidence -> template/atoms -> recipe” mindset with a stronger two-stage system:

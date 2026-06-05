@@ -2,6 +2,16 @@
 
 **Viral Video Structure Transfer Engine / 爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
 
+## Spec v5.1 — Same Template Reconstruction Mode（最新默认行为）
+
+> 上传你喜欢的视频 → 系统把它变成一套**可复用、props 驱动的 Remotion 模板**（`RemotionTemplateCapsule`）→ 输入新主题 → **自动补全缺失的画面/文案/音频，并用同一套动效模板渲染新内容**。
+>
+> 安全边界：可复用「模板代码 / 时间线 / 布局 / 动画曲线 / 排版行为 / 转场编排 / 音频 cue 位置 / props & slot schema」；**不可复用**样例的「原图像素 / 视频帧 / 音频 / 字幕文本 / logo / 人物 / 商品素材」。
+>
+> 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
+>
+> API：`POST /api/v5/learn-samples`（返回 `templateCapsuleId`）· `GET /api/v5/templates[/:id]` · `POST /api/v5/generations`（默认 same_template）。
+
 ## Spec v4.2 Submission Entry
 
 当前提交目标是：**学结构，不抄内容**。样例视频只进入 analysis/template/TechniqueAtom/GapReport 作为结构证据；最终画面只允许使用目标素材、用户授权素材、本地程序化素材，或带 provenance 的生成素材。

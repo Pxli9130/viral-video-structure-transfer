@@ -47,6 +47,16 @@ The single-file mirror's 20-gate list (§4.16) is **superseded**. The scorecard 
 ("Final video exists") now resolves. "Demo-ready = all P0 gates pass/warn and no safety gate fails"
 reads real priorities via `V5_P0_GATE_IDS`.
 
+## V5.1 — Same Template Reconstruction Mode (added)
+
+New canonical contracts in `contracts-v5/templateCapsule.ts` (exported via the `v5` namespace):
+`RemotionTemplateCapsule`, `TemplateSlot`, `LearningOutput`, `GenerationMode`, `GenerationOptionsV5`
++ `DEFAULT_GENERATION_OPTIONS_V5` (generationMode=`same_template`, aigcGapFill=`auto_on`),
+`TemplateInstance`, `TemplateValidationResult`. `AssetRecipeV5`/`AudioRecipeV5`/`AudioCueType` were
+extended (added `ui_mockup`/`other`/`whoosh`/`style`). See [`same-template-mode.md`](./same-template-mode.md).
+The default generation object is now the **template capsule** (Level-1); atomic `KnowledgeElement`s
+(Level-2) are still extracted for the advanced `mix_elements` mode.
+
 ## Stage model (resolves 17-vs-14 — audit XD-01/XD-02)
 
 Canonical = the **17-stage** `pipeline.md` enumeration (most granular). The 14-stage diagram in
