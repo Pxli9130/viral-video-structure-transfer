@@ -65,7 +65,8 @@ export const V5_GATES: readonly GateDef[] = [
   { id: "V5-G40", category: "ui", priority: "P0", name: "Scorecard visible", pass: "UI shows rubric coverage + warnings." },
   // Quality gates added after the GPT gap analysis (honest substance/readability checks).
   { id: "V5-G41", category: "render", priority: "P0", name: "Visual substance", pass: "Each required visual slot is bound to a real/generated image/video or a designed visual — not a blank placeholder card." },
-  { id: "V5-G42", category: "render", priority: "P1", name: "Text density", pass: "<= ~6 text beats per 16s and no text beat on-screen < 1.2s (readable, not slogan-stacked)." }
+  { id: "V5-G42", category: "render", priority: "P1", name: "Text density", pass: "<= ~6 text beats per 16s and no text beat on-screen < 1.2s (readable, not slogan-stacked)." },
+  { id: "V5-G43", category: "render", priority: "P1", name: "Motion coverage", pass: "Most visible layers carry real motion (Ken Burns / kinetic text / beat-synced hits / loops) — not a static slideshow." }
 ];
 
 export const V5_GATE_IDS: readonly string[] = V5_GATES.map((g) => g.id);

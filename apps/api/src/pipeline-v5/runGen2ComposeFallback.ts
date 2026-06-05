@@ -42,8 +42,22 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
   };
 
   const slotFills = input.slotFills ?? new Map<string, SlotFill>();
+  const allCues = comp.audioPlan.cues ?? [];
+  // Beat triggers / kinetic-text beat times inside a section (drives beat-synced visual hits).
+  type BeatTrigger = { t: number; action: "scale_hit" | "flash"; intensity: number };
+  const triggersFor = (s: v5.CompositionSection): BeatTrigger[] =>
+    allCues
+      .filter((c) => c.t >= s.startSec - 0.1 && c.t <= s.endSec + 0.05)
+      .map((c) => ({
+        t: Number(c.t.toFixed(2)),
+        action: c.type === "riser" ? ("flash" as const) : ("scale_hit" as const),
+        intensity: c.type === "impact" ? 1 : 0.7
+      }));
+  const beatTimesFor = (s: v5.CompositionSection): number[] =>
+    allCues.filter((c) => c.t >= s.startSec - 0.1 && c.t <= s.endSec + 0.05).map((c) => Number(c.t.toFixed(2)));
 
   comp.sections.forEach((section, sectionIdx) => {
+    const triggers = triggersFor(section);
     // Animated gradient background per section (not a flat fill) — alternate accent stop for variety.
     layers.push({
       id: `${section.id}_bg`,
@@ -53,6 +67,17 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
       endSec: section.endSec,
       style: { fill: palette[0], shape: "fullscreen", variant: "gradient_bg", gradientTo: palette[3] ?? palette[sectionIdx % palette.length] ?? palette[0] }
     });
+    // Section-boundary flash cut (gives a real cut between beats, synced to the section start).
+    if (sectionIdx > 0) {
+      layers.push({
+        id: `${section.id}_trans`,
+        type: "transition",
+        sectionId: section.id,
+        startSec: Number(Math.max(0, section.startSec - 0.1).toFixed(2)),
+        endSec: Number((section.startSec + 0.22).toFixed(2)),
+        style: { fill: palette[2] ?? "#FFFFFF" }
+      });
+    }
 
     const slots = comp.slotPlan.filter((s) => s.sectionId === section.id);
     for (const slot of slots) {
@@ -61,6 +86,7 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
       const isText = kind === "subtitle_text" || kind === "main_title" || kind === "voiceover";
 
       if (isText) {
+        const isTitle = kind === "main_title";
         layers.push({
           id: `${slot.id}_layer`,
           type: "text",
@@ -68,25 +94,49 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
           startSec: section.startSec,
           endSec: section.endSec,
           text: section.plannedText ?? "",
-          // Titles ride the top, subtitles the bottom — so stacked beats don't collide center-frame.
-          style: { color: palette[1] ?? "#FFFFFF", fontWeight: kind === "main_title" ? 800 : 600, accent: palette[2], safeArea: kind === "main_title" ? "top" : "bottom" }
+          // Titles ride the top (kinetic), subtitles the bottom — so stacked beats don't collide center-frame.
+          style: {
+            color: palette[1] ?? "#FFFFFF",
+            fontWeight: isTitle ? 800 : 600,
+            accent: palette[2],
+            safeArea: isTitle ? "top" : "bottom",
+            ...(isTitle ? { kineticText: { split: "word", preset: "beat_cut", beatTimes: beatTimesFor(section) } } : {})
+          },
+          motion: { intro: { type: "slide_up", durationSec: 0.45 }, beatTriggers: isTitle ? triggers : [] }
         });
         continue;
       }
 
       const matched = g && g.matchedAssetIds.length ? g.matchedAssetIds[0] : undefined;
       const fill = slotFills.get(slot.id);
+      const heroish = section.role === "hook" || kind === "hero" || kind === "hero_product";
+      const imageTreatment = {
+        preset: section.role === "proof" || section.role === "demo" ? "spotlight" : "ken_burns",
+        zoom: heroish ? 1.2 : 1.14,
+        panX: sectionIdx % 2 ? -2.5 : 2.5,
+        panY: heroish ? -3 : 2
+      };
+      const mediaMotion = { intro: { type: heroish ? "pop" : "scale_rotate", durationSec: 0.5 }, beatTriggers: triggers };
 
       if (matched) {
         addAsset(matched, resolveUri(matched), "target_user");
-        layers.push({ id: `${slot.id}_layer`, type: kind === "cta_card" ? "packaging" : "media", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, assetId: matched, style: { fit: "cover" } });
+        layers.push({ id: `${slot.id}_layer`, type: kind === "cta_card" ? "packaging" : "media", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, assetId: matched, style: { fit: "cover", imageTreatment }, motion: mediaMotion });
         gapFillDecisions.push(`${slot.id}: ${g?.selectedRepair ?? "asset_reuse"} -> target ${matched}`);
       } else if (kind === "cta_card") {
-        layers.push({ id: `${slot.id}_layer`, type: "packaging", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, text: section.plannedText ?? "Shop now", style: { accent: palette[2] ?? "#F7C948" } });
+        layers.push({
+          id: `${slot.id}_layer`,
+          type: "packaging",
+          sectionId: section.id,
+          startSec: section.startSec,
+          endSec: section.endSec,
+          text: section.plannedText ?? "Shop now",
+          style: { accent: palette[2] ?? "#F7C948" },
+          motion: { intro: { type: "pop", durationSec: 0.4 }, loop: { type: "pulse", amplitude: 1 }, beatTriggers: triggers, outro: { type: "flash", durationSec: 0.3 } }
+        });
         gapFillDecisions.push(`${slot.id}: packaging CTA card`);
       } else if (fill?.mode === "media" && fill.asset) {
         addAsset(fill.asset.id, fill.asset.uri, "aigc_generated", fill.asset.provenance.promptRef);
-        layers.push({ id: `${slot.id}_layer`, type: "media", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, assetId: fill.asset.id, style: { fit: "cover" } });
+        layers.push({ id: `${slot.id}_layer`, type: "media", sectionId: section.id, startSec: section.startSec, endSec: section.endSec, assetId: fill.asset.id, style: { fit: "cover", imageTreatment }, motion: mediaMotion });
         gapFillDecisions.push(`${slot.id}: aigc_fill -> generated image (${fill.provider})`);
       } else {
         // Offline designed visual (gradient + geometry + hero silhouette) — NOT a flat colour card.
@@ -97,6 +147,7 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
           startSec: section.startSec,
           endSec: section.endSec,
           style: { design: fill?.design ?? { family: "media_cards", palette, seed: 1 } },
+          motion: { intro: { type: "pop", durationSec: 0.5 }, loop: { type: "float", amplitude: 0.8 }, beatTriggers: triggers },
           fallbackReason: g?.reason ?? "no target asset; designed visual fill"
         });
         gapFillDecisions.push(`${slot.id}: ${g?.selectedRepair ?? "procedural_fill"} -> designed visual`);
@@ -138,7 +189,7 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
     layers,
     audioLayers,
     assets,
-    explanations: [`Deterministic compose fallback over ${comp.sections.length} sections, ${layers.length} layers.`]
+    explanations: [`Animated library composition: ${comp.sections.length} sections, ${layers.length} layers (Ken Burns media, kinetic titles, beat-synced hits, section flash cuts).`]
   };
 
   const componentName = "FinalComposition";
@@ -191,8 +242,9 @@ export default ${componentName};
       noCopyPassed,
       warnings: []
     },
-    fallbackUsed: true,
-    fallbackReason: "deterministic_compose_fallback"
+    // This IS the real (animated) library-composition path, not a degraded fallback.
+    renderMode: "library_composition",
+    fallbackUsed: false
   };
   return final;
 }

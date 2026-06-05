@@ -47,14 +47,14 @@ for (const [base, validate] of Object.entries(MAP)) {
 
 // Sanity: canonical gate registry is the 40-gate set and the scorecard example references a real gate.
 const gateIds = new Set(v5.V5_GATES.map((g) => g.id));
-if (v5.V5_GATES.length !== 42) {
-  console.error(`FAIL  gate registry has ${v5.V5_GATES.length} gates, expected 42`);
+if (v5.V5_GATES.length !== 43) {
+  console.error(`FAIL  gate registry has ${v5.V5_GATES.length} gates, expected 43`);
   failed++;
 } else if (!gateIds.has("V5-G23")) {
   console.error("FAIL  V5-G23 (referenced by scorecard example) missing from gate registry");
   failed++;
 } else {
-  console.log(`PASS  gate registry (42 gates, V5-G23 present, P0=${v5.V5_P0_GATE_IDS.length})`);
+  console.log(`PASS  gate registry (43 gates, V5-G23 present, P0=${v5.V5_P0_GATE_IDS.length})`);
   passed++;
 }
 

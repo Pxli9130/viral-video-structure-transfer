@@ -103,6 +103,14 @@ export interface FinalVideoProgram {
     noCopyPassed: boolean;
     warnings: string[];
   };
+  /**
+   * Honest description of HOW the renderable program was produced:
+   *  - "library_composition": a real RenderRecipeV5 of animated built-in components (the normal path).
+   *  - "bespoke_codegen": AI generated bespoke per-section Remotion components.
+   *  - "fallback": a minimal degraded recipe (e.g. compose threw).
+   * (Distinct from copy/palette AI refinement, which does not change this.)
+   */
+  renderMode?: "library_composition" | "bespoke_codegen" | "fallback";
   /** True when the deterministic compose fallback produced this instead of AI codegen. */
   fallbackUsed?: boolean;
   fallbackReason?: string;

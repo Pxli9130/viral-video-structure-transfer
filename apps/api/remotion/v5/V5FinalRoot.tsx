@@ -5,9 +5,16 @@
 // AI code per generation. The AI Gen2 multi-file project is an optional enhancement layered later.
 
 import React from "react";
-import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import { num, str, type AssetMap, type RenderRecipeV5 } from "./recipeTypes";
-import { CTAButton, DesignedVisualLayer, GradientMotionBg, MediaLayer, MotionWrapper, ShapeLayer, TextLayer } from "./components";
+import { CTAButton, DesignedVisualLayer, GradientMotionBg, KineticTextLayer, MediaLayer, MotionWrapper, ShapeLayer, TextLayer } from "./components";
+
+/** Short section-boundary flash/sweep — gives a real cut between beats instead of a hard jump. */
+const TransitionFlash: React.FC<{ color: string; durationInFrames: number }> = ({ color, durationInFrames }) => {
+  const frame = useCurrentFrame();
+  const o = Math.max(0, 0.55 * (1 - frame / Math.max(1, durationInFrames)));
+  return <AbsoluteFill style={{ background: color, opacity: o, mixBlendMode: "screen" }} />;
+};
 
 export interface V5FinalProps {
   recipe: RenderRecipeV5;
@@ -44,7 +51,8 @@ export const V5FinalRoot: React.FC<V5FinalProps> = ({ recipe, assetMap }) => {
             node = <DesignedVisualLayer layer={layer} palette={palette} />;
             break;
           case "text":
-            node = <TextLayer layer={layer} palette={palette} />;
+            // Kinetic typography (word-level beat pops) when requested, else a clean static line.
+            node = layer.style?.kineticText ? <KineticTextLayer layer={layer} palette={palette} /> : <TextLayer layer={layer} palette={palette} />;
             break;
           case "packaging":
             node = layer.text ? <CTAButton layer={layer} palette={palette} /> : <DesignedVisualLayer layer={layer} palette={palette} />;
@@ -57,6 +65,8 @@ export const V5FinalRoot: React.FC<V5FinalProps> = ({ recipe, assetMap }) => {
                 : <ShapeLayer fill={str(layer.style?.fill, palette[2])} shape={str(layer.style?.shape, "card")} />;
             break;
           case "transition":
+            node = <TransitionFlash color={str(layer.style?.fill, palette[2] ?? "#FFFFFF")} durationInFrames={durationInFrames} />;
+            break;
           case "motion":
           case "audio":
           case "debug":
@@ -64,10 +74,17 @@ export const V5FinalRoot: React.FC<V5FinalProps> = ({ recipe, assetMap }) => {
             node = null;
         }
         if (!node) return null;
-        const motionKind = str(layer.motion?.kind);
+        // Transitions own their own timing; everything else flows through the motion engine.
+        if (layer.type === "transition") {
+          return (
+            <Sequence key={layer.id} from={from} durationInFrames={durationInFrames} layout="none">
+              {node}
+            </Sequence>
+          );
+        }
         return (
           <Sequence key={layer.id} from={from} durationInFrames={durationInFrames} layout="none">
-            <MotionWrapper kind={motionKind} durationInFrames={durationInFrames}>
+            <MotionWrapper motion={layer.motion} layerStartSec={layer.startSec} durationInFrames={durationInFrames}>
               {node}
             </MotionWrapper>
           </Sequence>

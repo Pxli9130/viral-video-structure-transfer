@@ -5,7 +5,7 @@
 
 import React from "react";
 import { AbsoluteFill, Img, OffthreadVideo, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
-import { num, str, type AssetMap, type RenderLayerV5 } from "./recipeTypes";
+import { num, str, type AssetMap, type ImageTreatment, type KineticText, type LayerMotion, type RenderLayerV5 } from "./recipeTypes";
 
 export const GradientBackground: React.FC<{ from: string; to?: string }> = ({ from, to }) => (
   <AbsoluteFill style={{ background: to ? `linear-gradient(160deg, ${from}, ${to})` : from }} />
@@ -28,33 +28,160 @@ export const ShapeLayer: React.FC<{ fill: string; shape?: string; radiusRatio?: 
   );
 };
 
-/** Fade+rise entrance wrapper. */
-export const MotionWrapper: React.FC<{ children: React.ReactNode; kind?: string; durationInFrames: number }> = ({ children, kind, durationInFrames }) => {
+/**
+ * Motion engine: applies a layer's intro + CONTINUOUS loop + beat-synced hits + outro (not just a
+ * 0.4s intro then static). beatTriggers carry ABSOLUTE recipe times; layerStartSec maps them to the
+ * sequence-local frame. This is what turns the recipe from a slideshow into motion graphics.
+ */
+export const MotionWrapper: React.FC<{ children: React.ReactNode; kind?: string; motion?: LayerMotion; layerStartSec?: number; durationInFrames: number }> = ({ children, kind, motion, layerStartSec = 0, durationInFrames }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const intro = Math.min(durationInFrames, Math.round(fps * 0.4));
-  const p = spring({ frame, fps, config: { damping: 200 }, durationInFrames: intro });
-  const opacity = interpolate(frame, [0, intro], [0, 1], { extrapolateRight: "clamp" });
-  const scale = kind === "impact_zoom" ? interpolate(p, [0, 1], [1.12, 1]) : interpolate(p, [0, 1], [0.96, 1]);
-  const translateY = kind === "slide_up_pop" ? interpolate(p, [0, 1], [40, 0]) : 0;
-  return <AbsoluteFill style={{ opacity, transform: `scale(${scale}) translateY(${translateY}px)` }}>{children}</AbsoluteFill>;
+  const tAbs = layerStartSec + frame / fps;
+  const m: LayerMotion = motion ?? {};
+
+  // intro
+  const introType = m.intro?.type ?? (kind === "slide_up_pop" ? "slide_up" : kind === "impact_zoom" ? "pop" : "pop");
+  const introF = Math.max(1, Math.round((m.intro?.durationSec ?? 0.42) * fps));
+  const ip = spring({ frame, fps, config: { damping: 200 }, durationInFrames: introF });
+  let opacity = interpolate(frame, [0, introF * 0.8], [0, 1], { extrapolateRight: "clamp" });
+  let scale = introType === "pop" || introType === "scale_rotate" ? interpolate(ip, [0, 1], [kind === "impact_zoom" ? 1.12 : 0.9, 1]) : 1;
+  let tx = 0;
+  let ty = introType === "slide_up" ? interpolate(ip, [0, 1], [60, 0]) : 0;
+  let rot = introType === "scale_rotate" ? interpolate(ip, [0, 1], [-6, 0]) : 0;
+  let blur = introType === "blur_in" ? interpolate(frame, [0, introF], [14, 0], { extrapolateRight: "clamp" }) : 0;
+  if (introType === "slide_left") tx = interpolate(ip, [0, 1], [90, 0]);
+
+  // continuous loop
+  const loop = m.loop;
+  if (loop) {
+    const amp = loop.amplitude ?? 1;
+    const ph = (frame / fps) * (loop.speed ?? 1);
+    if (loop.type === "float") ty += Math.sin(ph * 2) * 7 * amp;
+    else if (loop.type === "sway") rot += Math.sin(ph * 1.5) * 1.3 * amp;
+    else if (loop.type === "pulse") scale *= 1 + 0.02 * amp * Math.sin(ph * 3);
+    else if (loop.type === "drift") tx += Math.sin(ph) * 9 * amp;
+    else if (loop.type === "parallax") ty += Math.sin(ph) * 5 * amp;
+  }
+
+  // beat-synced hits
+  let flash = 0;
+  for (const bt of m.beatTriggers ?? []) {
+    const dist = Math.abs(tAbs - bt.t);
+    if (dist >= 0.25) continue;
+    const inten = bt.intensity ?? 1;
+    const k = interpolate(dist, [0, 0.25], [1, 0], { extrapolateRight: "clamp" });
+    const act = bt.action ?? "scale_hit";
+    if (act === "scale_hit") scale *= 1 + 0.16 * inten * k;
+    else if (act === "whip") tx += interpolate(Math.min(dist, 0.12), [0, 0.12], [34 * inten, 0], { extrapolateRight: "clamp" });
+    else if (act === "shake") tx += Math.sin(frame * 1.4) * 7 * inten * k;
+    else if (act === "flash" || act === "color_pulse") flash = Math.max(flash, 0.32 * inten * k);
+  }
+
+  // outro
+  const outroF = Math.round((m.outro?.durationSec ?? 0) * fps);
+  if (outroF > 0 && frame > durationInFrames - outroF) {
+    const op = interpolate(frame, [durationInFrames - outroF, durationInFrames], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+    const ot = m.outro?.type;
+    if (ot === "zoom_out") scale *= interpolate(op, [0, 1], [1, 1.16]);
+    else if (ot === "fade") opacity *= 1 - op;
+    else if (ot === "whip") tx += interpolate(op, [0, 1], [0, -44]);
+    else if (ot === "flash") flash = Math.max(flash, 0.4 * op);
+  }
+
+  return (
+    <AbsoluteFill style={{ opacity, transform: `translate(${tx}px, ${ty}px) scale(${scale}) rotate(${rot}deg)`, filter: blur ? `blur(${blur}px)` : undefined }}>
+      {children}
+      {flash > 0 && <AbsoluteFill style={{ background: "#FFFFFF", opacity: flash, mixBlendMode: "screen" }} />}
+    </AbsoluteFill>
+  );
 };
 
 export const MediaLayer: React.FC<{ layer: RenderLayerV5; assetMap: AssetMap; palette: string[] }> = ({ layer, assetMap, palette }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const asset = layer.assetId ? assetMap[layer.assetId] : undefined;
-  const fit = (str(layer.style?.fit, "cover") as React.CSSProperties["objectFit"]) ?? "cover";
-  if (!asset) {
-    // No bound asset → neutral shape card (never a sample path).
-    return <ShapeLayer fill={palette[2] ?? "#F7C948"} shape="card" />;
-  }
+  if (!asset) return <DesignedVisualLayer layer={layer} palette={palette} />;
+
+  const treat: ImageTreatment = layer.style?.imageTreatment ?? { preset: "ken_burns" };
+  const durFrames = Math.max(1, Math.round((layer.endSec - layer.startSec) * fps));
+  const prog = interpolate(frame, [0, durFrames], [0, 1], { extrapolateRight: "clamp" });
+  const kb = treat.preset === "ken_burns" || treat.preset === undefined || treat.preset === "spotlight";
+  const scale = kb ? interpolate(prog, [0, 1], [1.04, treat.zoom ?? 1.16]) : 1;
+  const panX = kb ? interpolate(prog, [0, 1], [0, treat.panX ?? 2.5]) : 0;
+  const panY = kb ? interpolate(prog, [0, 1], [0, treat.panY ?? -2.5]) : 0;
+  const clip =
+    treat.mask === "circle" ? "circle(62% at 50% 45%)" : treat.mask === "diagonal" ? "polygon(0 0, 100% 0, 100% 82%, 0 100%)" : treat.mask === "rounded" ? "inset(6% round 6%)" : undefined;
   const isVideo = asset.type === "video" || /\.(mp4|mov|webm)$/i.test(asset.src);
+
   return (
     <AbsoluteFill>
-      {isVideo ? (
-        <OffthreadVideo src={asset.src} style={{ width: "100%", height: "100%", objectFit: fit }} />
-      ) : (
-        <Img src={asset.src} style={{ width: "100%", height: "100%", objectFit: fit }} />
+      <div style={{ position: "absolute", inset: 0, transform: `scale(${scale}) translate(${panX}%, ${panY}%)`, clipPath: clip }}>
+        {isVideo ? (
+          <OffthreadVideo src={asset.src} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : (
+          <Img src={asset.src} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        )}
+      </div>
+      {treat.preset === "spotlight" && (
+        <AbsoluteFill style={{ background: `radial-gradient(45% 35% at ${30 + prog * 40}% 42%, transparent 0%, rgba(0,0,0,0.55) 75%)` }} />
       )}
+      {treat.tint && <AbsoluteFill style={{ background: treat.tint, opacity: 0.2, mixBlendMode: "multiply" }} />}
+      <AbsoluteFill style={{ boxShadow: "inset 0 0 200px rgba(0,0,0,0.5)" }} />
+    </AbsoluteFill>
+  );
+};
+
+/**
+ * Kinetic typography — word-level stagger + beat-synced pop (ported from BeatCutKineticText). Replaces
+ * a static centered <div> for hooks/titles so the copy moves with the beat instead of holding still.
+ */
+export const KineticTextLayer: React.FC<{ layer: RenderLayerV5; palette: string[] }> = ({ layer, palette }) => {
+  const frame = useCurrentFrame();
+  const { fps, width } = useVideoConfig();
+  const kt: KineticText = layer.style?.kineticText ?? {};
+  const words = str(layer.text, "").split(/\s+/).filter(Boolean);
+  const beatTimes = kt.beatTimes ?? [];
+  const tAbs = layer.startSec + frame / fps;
+  const nearest = beatTimes.length ? Math.min(...beatTimes.map((b) => Math.abs(b - tAbs))) : 1;
+  const onBeat = nearest < 0.08;
+  const pop = interpolate(Math.min(nearest, 0.2), [0, 0.2], [1.1, 1.0], { extrapolateRight: "clamp" });
+  const weight = num(layer.style?.fontWeight, 800);
+  const color = str(layer.style?.color, palette[1] ?? "#FFFFFF");
+  const accent = str(layer.style?.accent, palette[2] ?? "#F7C948");
+  const safeArea = str(layer.style?.safeArea, "center");
+  const justify = safeArea === "top" ? "flex-start" : safeArea === "bottom" ? "flex-end" : "center";
+  const fontSize = Math.round(width * (weight >= 800 ? 0.08 : 0.056));
+  const emphasis = new Set((kt.emphasisWords ?? []).map((w) => w.toLowerCase()));
+
+  return (
+    <AbsoluteFill style={{ alignItems: "center", justifyContent: justify, padding: width * 0.07 }}>
+      {onBeat && <AbsoluteFill style={{ background: "#FFFFFF", opacity: 0.1 }} />}
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: `${width * 0.006}px ${width * 0.02}px`, transform: `scale(${pop})` }}>
+        {words.map((w, i) => {
+          const wd = spring({ frame: frame - i * 3, fps, config: { damping: 200 }, durationInFrames: Math.round(fps * 0.32) });
+          const wy = interpolate(wd, [0, 1], [28, 0]);
+          const wo = interpolate(wd, [0, 1], [0, 1]);
+          const em = emphasis.has(w.toLowerCase().replace(/[^a-z0-9]/g, ""));
+          return (
+            <span
+              key={i}
+              style={{
+                opacity: wo,
+                transform: `translateY(${wy}px)`,
+                color: em ? accent : color,
+                fontWeight: weight,
+                fontSize,
+                lineHeight: 1.04,
+                fontFamily: "Inter, Arial, sans-serif",
+                textShadow: "0 2px 16px rgba(0,0,0,0.55)",
+                WebkitTextStroke: em ? `2px ${color}` : undefined
+              }}
+            >
+              {w}
+            </span>
+          );
+        })}
+      </div>
     </AbsoluteFill>
   );
 };

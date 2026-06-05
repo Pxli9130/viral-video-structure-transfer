@@ -21,7 +21,7 @@ describe("pipeline-v5 scorecard aggregation", () => {
     });
 
     expect(v5.validateScorecardV5(card).errors).toEqual([]);
-    expect(card.gates).toHaveLength(42);
+    expect(card.gates).toHaveLength(43);
     expect(card.gates.find((x) => x.id === "V5-G23")?.status).toBe("pass"); // render derived
     expect(card.gates.find((x) => x.id === "V5-G27")?.status).toBe("pass"); // audio
     expect(card.gates.find((x) => x.id === "V5-G29")?.status).toBe("pass"); // no-copy

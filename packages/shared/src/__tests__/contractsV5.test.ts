@@ -31,9 +31,9 @@ describe("contracts-v5: canonical example artifacts validate", () => {
 });
 
 describe("contracts-v5: gate registry is canonical 40-gate set", () => {
-  it("has 42 gates with unique ids", () => {
-    expect(v5.V5_GATES).toHaveLength(42);
-    expect(new Set(v5.V5_GATE_IDS).size).toBe(42);
+  it("has 43 gates with unique ids", () => {
+    expect(v5.V5_GATES).toHaveLength(43);
+    expect(new Set(v5.V5_GATE_IDS).size).toBe(43);
   });
   it("includes V5-G23 referenced by the scorecard example (resolves AG-1/XD-03)", () => {
     expect(v5.V5_GATE_IDS).toContain("V5-G23");

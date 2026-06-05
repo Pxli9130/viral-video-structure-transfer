@@ -16,6 +16,29 @@ export type RenderLayerType =
   | "audio"
   | "debug";
 
+// ---- Motion system (so the recipe expresses real animation, not just a static layer) ----
+export interface LayerMotion {
+  intro?: { type?: "pop" | "slide_up" | "slide_left" | "wipe" | "blur_in" | "scale_rotate"; durationSec?: number };
+  loop?: { type?: "float" | "drift" | "pulse" | "ken_burns" | "parallax" | "sway"; amplitude?: number; speed?: number };
+  /** Beat-synced visual hits at absolute times (seconds) — drives scale pops / flashes / whips. */
+  beatTriggers?: Array<{ t: number; action?: "scale_hit" | "flash" | "shake" | "whip" | "color_pulse"; intensity?: number }>;
+  outro?: { type?: "whip" | "flash" | "zoom_out" | "fade"; durationSec?: number };
+}
+export interface ImageTreatment {
+  preset?: "ken_burns" | "duotone" | "spotlight" | "masked_reveal" | "static";
+  tint?: string;
+  mask?: "none" | "circle" | "diagonal" | "rounded";
+  zoom?: number;
+  panX?: number;
+  panY?: number;
+}
+export interface KineticText {
+  split?: "word" | "char" | "line";
+  preset?: "beat_cut" | "slam" | "type_pulse" | "tracking_expand" | "rise";
+  beatTimes?: number[];
+  emphasisWords?: string[];
+}
+
 export interface RenderLayerV5 {
   id: string;
   type: RenderLayerType;
@@ -24,8 +47,8 @@ export interface RenderLayerV5 {
   endSec: number;
   assetId?: string;
   text?: string;
-  style?: Record<string, unknown>;
-  motion?: Record<string, unknown>;
+  style?: Record<string, unknown> & { imageTreatment?: ImageTreatment; kineticText?: KineticText };
+  motion?: LayerMotion;
   fallbackReason?: string;
 }
 

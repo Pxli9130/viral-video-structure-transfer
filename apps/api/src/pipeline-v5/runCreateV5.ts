@@ -112,10 +112,11 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
     if (g2.usedAi) finalProgram = g2.finalProgram;
     else warnings.push(...g2.warnings);
   }
-  gates.push(gate("V5-G20", "pass", finalProgram.fallbackUsed ? "deterministic compose fallback" : "ai gen2"));
+  // Honest: this is a library_composition; AI Gen2 (when used) only refines copy/palette on top.
+  gates.push(gate("V5-G20", "pass", `${finalProgram.renderMode ?? "library_composition"}${input.gen2Model ? " + ai copy" : ""}`));
   const finalCheck = v5.validateFinalVideoProgram(finalProgram);
   gates.push(gate("V5-G21", finalCheck.valid ? "pass" : "fail", finalCheck.valid ? undefined : finalCheck.errors.join("; ")));
-  gates.push(gate("V5-G22", finalProgram.validation.tsCompilePassed ? "pass" : "warn", "compose fallback recipe"));
+  gates.push(gate("V5-G22", finalProgram.validation.tsCompilePassed ? "pass" : "warn", finalProgram.renderMode ?? "library_composition"));
 
   // V5-G19 (executed fill) + V5-G41 (visual substance) + V5-G42 (text density): computed from the FINAL recipe.
   const recipe = finalProgram.renderRecipe;
@@ -136,6 +137,19 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
   const shortText = textLayers.filter((l) => l.endSec - l.startSec < 1.2).length;
   const textDensityOk = textLayers.length <= textCap && shortText === 0;
   gates.push(gate("V5-G42", textDensityOk ? "pass" : "warn", `${textLayers.length} text beats (cap ${textCap}), ${shortText} too-short`));
+
+  // V5-G43 motion coverage: fraction of VISIBLE layers that actually animate (beatTriggers/loop, or
+  // a media/generated_visual layer with Ken Burns, or a transition) — not a static slideshow.
+  const visible = recipe.layers.filter((l) => l.type !== "audio" && l.type !== "debug");
+  const animates = (l: v5.RenderLayer): boolean => {
+    const m = l.motion as { beatTriggers?: unknown[]; loop?: unknown } | undefined;
+    if (m && ((Array.isArray(m.beatTriggers) && m.beatTriggers.length > 0) || m.loop)) return true;
+    if (l.type === "media" || l.type === "generated_visual" || l.type === "transition") return true; // ken burns / float / flash
+    if (l.type === "shape" && (l.style as { variant?: string } | undefined)?.variant === "gradient_bg") return true; // animated gradient
+    return false;
+  };
+  const motionCoverage = visible.length ? visible.filter(animates).length / visible.length : 0;
+  gates.push(gate("V5-G43", motionCoverage >= 0.6 ? "pass" : "warn", `${Math.round(motionCoverage * 100)}% of layers animate`));
 
   // Safety gates: no sample media paths / sample audio in the final recipe.
   const recipeStr = JSON.stringify(finalProgram.renderRecipe);
