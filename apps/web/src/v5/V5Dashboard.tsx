@@ -74,6 +74,8 @@ export function V5Dashboard() {
   const [audioFill, setAudioFill] = useState<"procedural" | "off">("procedural");
   const [textFill, setTextFill] = useState<"llm" | "brief" | "off">("llm");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [reviseTheme, setReviseTheme] = useState("");
+  const [reviseHeadline, setReviseHeadline] = useState("");
 
   const refreshKb = useCallback(async () => {
     const r = await api<{ elements: KbElement[] }>("/api/v5/kb/elements");
@@ -160,6 +162,27 @@ export function V5Dashboard() {
       setResult(res);
     });
 
+  // Patch-first revise (modify_template) of the current result.
+  const revise = (gen: GenResult) =>
+    run("revise", async () => {
+      const patch: Record<string, unknown> = {};
+      if (reviseTheme.trim()) patch.theme = reviseTheme.trim();
+      if (reviseHeadline.trim()) patch.copyOverrides = { headline: reviseHeadline.trim() };
+      const res = await api<GenResult>(`/api/v5/generations/${gen.generationId}/revise`, {
+        method: "POST",
+        body: JSON.stringify({ projectId: "proj_v5_ui", patch })
+      });
+      setResult(res);
+    });
+
+  // "Start from this template" CTA — pick a learned capsule and jump to same_template generate.
+  const startFromTemplate = (t: TemplateMeta) => {
+    setGenMode("same_template");
+    setTemplateId(t.id);
+    setResult(null);
+    document.getElementById("v5-generate")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24, color: "#e6edf6", fontFamily: "Inter, system-ui, sans-serif" }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
@@ -171,6 +194,7 @@ export function V5Dashboard() {
           <label style={{ fontSize: 13 }}>
             <input type="checkbox" checked={autoRender} onChange={(e) => setAutoRender(e.target.checked)} /> render final.mp4
           </label>
+          <a href="#v4" style={{ marginLeft: 14, fontSize: 12, color: "#7c8aa0" }}>→ V4</a>
         </div>
       </header>
 
@@ -195,8 +219,31 @@ export function V5Dashboard() {
         {log.length > 0 && <pre style={{ marginTop: 12, color: "#9fb3d1", fontSize: 12, whiteSpace: "pre-wrap" }}>{log.join("\n")}</pre>}
       </section>
 
+      {/* 1.5 Template library — learned capsules with a primary "Start from this template" CTA. */}
+      {templates.length > 0 && (
+        <section style={card}>
+          <h2 style={{ marginTop: 0, fontSize: 16 }}>模板库 — {templates.length} 个可复用 Remotion 模板</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+            {templates.map((t) => (
+              <div key={t.id} style={{ border: `1px solid ${templateId === t.id ? "#2b6cff" : "#262a33"}`, borderRadius: 8, padding: 12, background: templateId === t.id ? "#16243f" : "#0f1117" }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</div>
+                <div style={{ fontSize: 11, color: "#7c8aa0", margin: "4px 0 8px" }}>
+                  {t.slotSchema.length} 槽位 · {t.slotSchema.filter((s) => s.required).length} 必填 · {Math.round((t.timingSignature?.durationSec ?? 0))}s · src={t.sourceSampleId.slice(0, 8)}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+                  {t.quality?.compilePassed && <span style={{ ...tag, background: "#16321f", color: "#7fdca0" }}>compiles ✓</span>}
+                  {t.quality?.renderPreviewPassed && <span style={{ ...tag, background: "#16321f", color: "#7fdca0" }}>renders ✓</span>}
+                  {t.quality?.noCopyTemplatePassed && <span style={{ ...tag, background: "#16321f", color: "#7fdca0" }}>no-copy ✓</span>}
+                </div>
+                <button style={{ ...btn, width: "100%" }} onClick={() => startFromTemplate(t)}>▶ 用此模板生成</button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* 2. Template + theme + AIGC gap fill (the DEFAULT same-template flow) */}
-      <section style={card}>
+      <section id="v5-generate" style={card}>
         <h2 style={{ marginTop: 0, fontSize: 16 }}>2 · Generate — 模板 + 主题 + 自动补全</h2>
 
         {/* Mode toggle */}
@@ -402,9 +449,28 @@ export function V5Dashboard() {
               </div>
             </div>
           </div>
+
+          {/* Revise (modify_template): patch theme / headline and re-render the SAME template, reusing visuals. */}
+          {result.templateInstance && (
+            <div style={{ marginTop: 16, borderTop: "1px solid #262a33", paddingTop: 14 }}>
+              <h3 style={{ fontSize: 14, margin: "0 0 8px" }}>改写这个视频（同模板，复用画面）</h3>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                <input value={reviseTheme} onChange={(e) => setReviseTheme(e.target.value)} placeholder="新主题（可选）" style={{ flex: "1 1 220px", padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} />
+                <input value={reviseHeadline} onChange={(e) => setReviseHeadline(e.target.value)} placeholder="新主标题文案（可选）" style={{ flex: "1 1 220px", padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} />
+                <button
+                  style={{ ...btn, opacity: (reviseTheme.trim() || reviseHeadline.trim()) && !busy ? 1 : 0.5 }}
+                  disabled={(!reviseTheme.trim() && !reviseHeadline.trim()) || !!busy}
+                  onClick={() => revise(result)}
+                >
+                  {busy === "revise" ? "改写中…" : "改写并重渲染"}
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>patch-first：只换主题/文案/配色，复用已生成的画面与音频；要换画面请重新生成。</div>
+            </div>
+          )}
         </section>
       )}
-      <footer style={{ color: "#54607a", fontSize: 12, marginTop: 8 }}>spec_v5.1 · learn → template capsule → 新主题 + AIGC 补全 → 渲染模板代码 → evaluate · AI gated by GEMINI_API_KEY</footer>
+      <footer style={{ color: "#54607a", fontSize: 12, marginTop: 8 }}>spec_v5.1 · learn → template capsule → 新主题 + AIGC 补全 → 渲染模板代码 → revise · AI gated by GEMINI_API_KEY</footer>
     </div>
   );
 }

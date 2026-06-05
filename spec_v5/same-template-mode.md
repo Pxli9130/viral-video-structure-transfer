@@ -35,10 +35,26 @@ Knowledge Base
 
 ```
 Sample video → deterministic evidence → Gen1 NeutralReconstructionProgram
-  → Gen1 Remotion Template Reconstruction (runGen1TemplateReconstruction)  → RemotionTemplateCapsule
+  → Gen1 Remotion Template Reconstruction (runGen1TemplateReconstruction)  → RemotionTemplateCapsule (deterministic codeBundle)
+  → [opt-in] Gen1 AI capsule codegen (runGen1CapsuleCodegen) — apply≠promote, triple-gated
   → validateTemplateCapsule (compile + safety scan + T1–T10)
+  → [opt-in] real frame render (renderCapsuleStill) → quality.renderPreviewPassed (T8 earned)
   → KB.saveTemplateCapsule  (+ runExtractElements → KB atomic elements)
 ```
+
+**AI capsule codegen (opt-in `runCapsuleCodegen`).** The deterministic capsule is the guaranteed
+fallback. When enabled, `runGen1CapsuleCodegen` asks Gemini (`GEMINI_CODEGEN_MODEL`) to regenerate
+**only** `codeBundle.files` (keeping `componentName`/`entryFile`/`propsSchema`/`slotSchema`/timing/safety
+fixed). The AI bundle is *applied* (held in memory) but only *promoted* (replaces the deterministic
+code) after **three gates** pass: (1) compile (T2), (2) safety/no-copy (T5/T6/T6b/T9/T10 — no sample
+paths/URLs/forbidden API/copied text), (3) a **real render** (`renderCapsuleStill` → renderStill frame 0).
+On any failure the deterministic code stays. The prompt is fed only structural/numeric evidence +
+the deterministic TSX as a worked example — never raw sample copy. Learn response reports
+`templateCode = ai | deterministic_fallback | deterministic`.
+
+**Render validation (opt-in `validateTemplateRender`, default on with codegen).** A real frame-0 render
+of the final capsule sets `quality.renderPreviewPassed` so **T8 is earned, not deferred**. Learn
+response reports `templateRenders`.
 
 Artifacts written per sample (`storage/generated/v5/learn/<assetId>/`):
 `remotion-template-capsule.json`, `template-validation.json`, plus the existing
@@ -87,13 +103,24 @@ fill that produced no asset → fail `review_demo`; sample asset path in templat
 ## API
 
 ```
-POST /api/v5/learn-samples        → { learned: [{ templateCapsuleId, templateSlots, templateCompiles, … }] }
+POST /api/v5/learn-samples        → { learned: [{ templateCapsuleId, templateSlots, templateCompiles,
+                                       templateRenders, templateCode, … }] }
+   options: { runGen1Ai?, runCapsuleCodegen?, validateTemplateRender? }
 GET  /api/v5/templates[?sourceSampleId&tag&q]   → capsule metadata + slotSchema (no code)
 GET  /api/v5/templates/:id        → full capsule
 POST /api/v5/generations          → default generationMode=same_template; returns
    { generationMode, templateCapsuleId, usedTemplateCode, usedFallbackRenderer, finalVideoUrl,
-     templateInstance, finalProgram, generatedAssets, scorecard }
+     templateInstance, finalProgram, generatedAssets, gapReport, noCopy, scorecard }
+POST /api/v5/generations/:id/revise  → modify_template: patch-first re-theme/re-copy of a prior
+   same_template generation. body { patch: { theme?, palette?, copyOverrides? } } → a new
+   modify_template generation (reuses the prior visuals; re-renders the same template code).
 ```
+
+**Scorecard honesty (same_template).** The scorecard is fed the real render facts + a real cv2/librosa
+**no-copy scan** (`runNoCopyScan` → `no-copy-scan.json`), and emits same_template-mapped canonical gates
+(V5-G17/G19/G20/G21) so the readiness ladder runs on real evidence. The instance readiness is reconciled
+to the scorecard so the two artifacts can never contradict. Procedural-only visuals / render failure /
+missing required slots / a flagged no-copy scan each cap readiness at `technical_demo`.
 
 `final-video-program.json` (same_template) states: `renderMode` (`bespoke_codegen` when the capsule
 code rendered, else `fallback`), `fallbackUsed`, and the bound `remotionProject` (the capsule files +
@@ -103,9 +130,14 @@ fixture); the result records `usedTemplateCode` / `usedFallbackRenderer` / `slot
 ## Pipeline modules
 
 ```
-apps/api/src/pipeline-v5/runGen1TemplateReconstruction.ts   — Gen1 props-driven template codegen
+apps/api/src/pipeline-v5/runGen1TemplateReconstruction.ts   — Gen1 deterministic props-driven template codegen
+apps/api/src/pipeline-v5/runGen1CapsuleCodegen.ts           — Gen1 AI capsule TSX codegen (triple-gated, apply≠promote)
 apps/api/src/pipeline-v5/validateTemplateCapsule.ts         — compile + safety scan + T-gates
-apps/api/src/pipeline-v5/renderTemplateCapsule.ts           — dynamic per-generation capsule render
-apps/api/src/pipeline-v5/runSameTemplateGeneration.ts       — same_template orchestrator + binding
+apps/api/src/pipeline-v5/renderTemplateCapsule.ts           — dynamic capsule render + renderCapsuleStill (frame-0 gate)
+apps/api/src/pipeline-v5/runSameTemplateGeneration.ts       — same_template + modify_template (revise) orchestrator
 apps/api/src/services/knowledgeBaseV5.ts                    — Level-1 capsule storage
 ```
+
+**Web entry.** The spec_v5.1 dashboard (`apps/web/src/v5/V5Dashboard.tsx`) is now the **default** web
+entry; the V4 app stays reachable at `#v4`. The dashboard has a template library with a "用此模板生成"
+(Start from this template) CTA, an AIGC gap-fill toggle, and a revise panel (theme/headline → re-render).

@@ -52,10 +52,19 @@ reads real priorities via `V5_P0_GATE_IDS`.
 New canonical contracts in `contracts-v5/templateCapsule.ts` (exported via the `v5` namespace):
 `RemotionTemplateCapsule`, `TemplateSlot`, `LearningOutput`, `GenerationMode`, `GenerationOptionsV5`
 + `DEFAULT_GENERATION_OPTIONS_V5` (generationMode=`same_template`, aigcGapFill=`auto_on`),
-`TemplateInstance`, `TemplateValidationResult`. `AssetRecipeV5`/`AudioRecipeV5`/`AudioCueType` were
-extended (added `ui_mockup`/`other`/`whoosh`/`style`). See [`same-template-mode.md`](./same-template-mode.md).
-The default generation object is now the **template capsule** (Level-1); atomic `KnowledgeElement`s
-(Level-2) are still extracted for the advanced `mix_elements` mode.
+`TemplateInstance`, `TemplatePatchSet` (modify_template/revise), `TemplateValidationResult`.
+`AssetRecipeV5`/`AudioRecipeV5`/`AudioCueType` were extended (added `ui_mockup`/`other`/`whoosh`/`style`).
+`FinalVideoProgram` gained an optional `sameTemplate` block (generationMode/templateCapsuleId/
+usedTemplateCode/usedFallbackRenderer/slotBindings) so a same_template final program is self-describing.
+`generationRequestV5Schema` was relaxed to model the same_template options (no required option keys).
+See [`same-template-mode.md`](./same-template-mode.md). The default generation object is the **template
+capsule** (Level-1); atomic `KnowledgeElement`s (Level-2) are still extracted for `mix_elements`.
+
+The capsule's `codeBundle` is deterministic by default; with the opt-in `runCapsuleCodegen` flag,
+`runGen1CapsuleCodegen` may **promote** an AI-generated TSX in its place — but only after a real
+compile + render + no-copy triple gate (apply≠promote). The same_template scorecard is fed a real
+cv2/librosa no-copy scan and same_template-mapped canonical gates; instance↔scorecard readiness is
+reconciled so they cannot contradict.
 
 ## Stage model (resolves 17-vs-14 — audit XD-01/XD-02)
 

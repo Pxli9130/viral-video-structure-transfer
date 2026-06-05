@@ -10,7 +10,9 @@
 >
 > 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
 >
-> API：`POST /api/v5/learn-samples`（返回 `templateCapsuleId`）· `GET /api/v5/templates[/:id]` · `POST /api/v5/generations`（默认 same_template）。
+> **真 AI 代码胶囊**（opt-in `runCapsuleCodegen`）：Gemini 重写模板 TSX，仅在「编译 + 真渲染 + no-copy」三重门全过后才替换确定性代码（apply≠promote），否则保留确定性兜底。**渲染验证**（`validateTemplateRender`）：学习期真渲一帧，T8 由「延迟 warn」变为「真渲染earned」。**改写**：`POST /api/v5/generations/:id/revise`（`modify_template`，patch-first 换主题/文案/配色、复用画面）。same_template 评分卡接入真 cv2/librosa no-copy 扫描，instance↔scorecard 就绪度强制对齐。
+>
+> API：`POST /api/v5/learn-samples`（`templateCapsuleId`/`templateCode`/`templateRenders`）· `GET /api/v5/templates[/:id]` · `POST /api/v5/generations`（默认 same_template）· `POST /api/v5/generations/:id/revise`。Web 默认入口已切到 spec_v5.1 看板（V4 仍可在 `#v4` 访问）。
 
 ## Spec v4.2 Submission Entry
 
