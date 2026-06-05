@@ -72,6 +72,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
     if (!sampleAssetIds.length) return fail(res, 400, "sampleAssetIds[] required");
     const wantAi = req.body?.options?.runGen1Ai === true;
     const modelFn = wantAi ? createGeminiModelFn() : undefined;
+    // V5.1 Phase 1: opt-in real AI codegen of the capsule TSX (triple-gated, apply!=promote).
+    const wantCapsuleCodegen = req.body?.options?.runCapsuleCodegen === true;
+    const capsuleCodegenModel = wantCapsuleCodegen ? createGeminiModelFn({ model: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
     const learned: unknown[] = [];
     for (const assetId of sampleAssetIds) {
       const asset = await findAsset(assetId);
@@ -93,7 +96,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         aiProgram = g1.usedAi ? g1.program : null;
         usedAi = g1.usedAi;
       }
-      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram });
+      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel });
       learned.push({
         sampleId: assetId,
         evidenceTimelineId: evidence.id,
@@ -104,6 +107,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
         templateSlots: artifacts.templateCapsule.slotSchema.length,
         templateCompiles: artifacts.templateCapsule.quality.compilePassed,
         templateValidationPassed: artifacts.templateValidation.passed,
+        // V5.1 Phase 1: did real AI capsule codegen get promoted (vs deterministic fallback)?
+        templateCode: artifacts.capsuleCodegen ? (artifacts.capsuleCodegen.usedAi ? "ai" : "deterministic_fallback") : "deterministic",
         candidateCount: artifacts.candidates.length,
         storedElements: artifacts.elements.length,
         gates: artifacts.gates,

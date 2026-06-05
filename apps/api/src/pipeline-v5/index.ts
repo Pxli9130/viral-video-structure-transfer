@@ -25,6 +25,8 @@ export type { ScorecardInput, NoCopyResult, RenderInfo } from "./runScorecardV5.
 // V5.1 Same Template Reconstruction Mode
 export { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.js";
 export { validateTemplateCapsule } from "./validateTemplateCapsule.js";
+export { runGen1CapsuleCodegen, buildCapsuleCodegenPrompt } from "./runGen1CapsuleCodegen.js";
+export type { CapsuleCodegenInput, CapsuleCodegenOptions, CapsuleCodegenResult } from "./runGen1CapsuleCodegen.js";
 export { renderTemplateCapsule } from "./renderTemplateCapsule.js";
 export { runSameTemplateGeneration } from "./runSameTemplateGeneration.js";
 export type { SameTemplateInput, SameTemplateResult } from "./runSameTemplateGeneration.js";

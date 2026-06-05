@@ -12,6 +12,8 @@ import { runGen1NeutralTemplate } from "./runGen1NeutralTemplate.js";
 import { runExtractElements } from "./runExtractElements.js";
 import { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.js";
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
+import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
+import type { Gen1ModelFn } from "./runGen1Ai.js";
 
 export interface LearnArtifacts {
   evidence: v5.EvidenceTimelineV5;
@@ -22,6 +24,8 @@ export interface LearnArtifacts {
   /** Level-1 reusable Remotion template (the default generation object). */
   templateCapsule: v5.RemotionTemplateCapsule;
   templateValidation: v5.TemplateValidationResult;
+  /** Present when AI capsule codegen was attempted; usedAi=true means the AI TSX was promoted. */
+  capsuleCodegen?: { usedAi: boolean; compilePassed: boolean; renderPreviewPassed: boolean; noCopyPassed: boolean };
   gates: v5.ScorecardGate[];
   warnings: string[];
 }
@@ -36,6 +40,8 @@ export interface LearnOptions {
   outDir?: string;
   /** Override the AI Gen1 program (when an AI path produced a valid one). */
   aiProgram?: v5.NeutralReconstructionProgram | null;
+  /** Optional model fn for AI capsule TSX codegen (triple-gated). Absent -> deterministic code (guaranteed). */
+  capsuleCodegenModel?: Gen1ModelFn | null;
 }
 
 /** Run the deterministic LEARN loop for one already-wrapped EvidenceTimelineV5. */
@@ -88,14 +94,29 @@ export async function runLearnSampleV5(
 
   // Stage 4b — Remotion Template Reconstruction: build + validate + store the reusable capsule (V5.1).
   const templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence);
-  const templateValidation = validateTemplateCapsule(templateCapsule);
+  let templateValidation = validateTemplateCapsule(templateCapsule);
+
+  // Stage 4c — OPTIONAL real AI capsule codegen (apply != promote). The deterministic code above is the
+  // guaranteed fallback; the AI TSX only replaces it after compile + safety + real-render all pass.
+  let capsuleCodegen: LearnArtifacts["capsuleCodegen"];
+  if (opts.capsuleCodegenModel) {
+    const cg = await runGen1CapsuleCodegen({ capsule: templateCapsule, program: neutralProgram, evidence, model: opts.capsuleCodegenModel });
+    capsuleCodegen = { usedAi: cg.usedAi, compilePassed: cg.validation.compilePassed, renderPreviewPassed: cg.validation.renderPreviewPassed, noCopyPassed: cg.validation.noCopyPassed };
+    if (cg.usedAi) {
+      templateCapsule.codeBundle = cg.codeBundle; // PROMOTE
+      templateCapsule.quality.renderPreviewPassed = true; // render gate passed at apply time
+      templateValidation = validateTemplateCapsule(templateCapsule); // re-validate the promoted bundle
+    }
+    warnings.push(cg.usedAi ? "AI capsule codegen promoted (compile+render+no-copy passed)." : `AI capsule codegen rejected; deterministic code retained. ${cg.warnings.slice(0, 2).join("; ")}`);
+  }
+
   templateCapsule.quality.compilePassed = templateValidation.gates.find((t) => t.id === "T2")?.status === "pass";
   templateCapsule.quality.noCopyTemplatePassed = templateValidation.gates.find((t) => t.id === "T10")?.status === "pass";
-  templateCapsule.quality.warnings = templateValidation.warnings;
+  templateCapsule.quality.warnings = [...templateCapsule.quality.warnings, ...templateValidation.warnings];
   kb.saveTemplateCapsule(templateCapsule);
   for (const t of templateValidation.gates.slice(0, 6)) gates.push(gate(t.id, t.status === "pass" ? "pass" : t.status === "warn" ? "warn" : "fail", t.message));
 
-  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, templateCapsule, templateValidation, gates, warnings };
+  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, templateCapsule, templateValidation, capsuleCodegen, gates, warnings };
 
   if (opts.outDir) {
     await fs.mkdir(opts.outDir, { recursive: true });
@@ -108,7 +129,8 @@ export async function runLearnSampleV5(
       write("knowledge-elements.json", elements),
       write("remotion-template-capsule.json", templateCapsule),
       write("template-validation.json", templateValidation),
-      write("learn-gates.json", gates)
+      write("learn-gates.json", gates),
+      ...(capsuleCodegen ? [write("capsule-codegen.json", capsuleCodegen)] : [])
     ]);
   }
 
