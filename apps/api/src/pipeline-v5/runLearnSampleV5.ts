@@ -13,6 +13,7 @@ import { runExtractElements } from "./runExtractElements.js";
 import { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.js";
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
+import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
 export interface LearnArtifacts {
@@ -42,6 +43,9 @@ export interface LearnOptions {
   aiProgram?: v5.NeutralReconstructionProgram | null;
   /** Optional model fn for AI capsule TSX codegen (triple-gated). Absent -> deterministic code (guaranteed). */
   capsuleCodegenModel?: Gen1ModelFn | null;
+  /** When true, run a real frame-0 render of the final capsule at learn time so T8/renderPreviewPassed
+   *  is earned (not deferred). Needs headless chrome; a failed render is recorded, never fatal. */
+  validateRender?: boolean;
 }
 
 /** Run the deterministic LEARN loop for one already-wrapped EvidenceTimelineV5. */
@@ -108,6 +112,16 @@ export async function runLearnSampleV5(
       templateValidation = validateTemplateCapsule(templateCapsule); // re-validate the promoted bundle
     }
     warnings.push(cg.usedAi ? "AI capsule codegen promoted (compile+render+no-copy passed)." : `AI capsule codegen rejected; deterministic code retained. ${cg.warnings.slice(0, 2).join("; ")}`);
+  }
+
+  // Stage 4d — OPTIONAL real render gate at learn time: prove the (promoted) capsule actually renders
+  // a frame, so T8/renderPreviewPassed reflects reality instead of being deferred. (AI promotion already
+  // verified this; this covers the deterministic path when requested.)
+  if (opts.validateRender && !templateCapsule.quality.renderPreviewPassed) {
+    const still = await renderCapsuleStill({ capsule: templateCapsule, boundProps: templateCapsule.fixtures.neutralFixture as Record<string, unknown> });
+    templateCapsule.quality.renderPreviewPassed = still.ok;
+    if (!still.ok) warnings.push(`capsule render validation failed (T8): ${still.error}`);
+    templateValidation = validateTemplateCapsule(templateCapsule); // T8 now reflects the real render
   }
 
   templateCapsule.quality.compilePassed = templateValidation.gates.find((t) => t.id === "T2")?.status === "pass";

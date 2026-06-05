@@ -27,7 +27,8 @@ export { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.j
 export { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 export { runGen1CapsuleCodegen, buildCapsuleCodegenPrompt } from "./runGen1CapsuleCodegen.js";
 export type { CapsuleCodegenInput, CapsuleCodegenOptions, CapsuleCodegenResult } from "./runGen1CapsuleCodegen.js";
-export { renderTemplateCapsule } from "./renderTemplateCapsule.js";
+export { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
+export type { CapsuleStillResult } from "./renderTemplateCapsule.js";
 export { runSameTemplateGeneration } from "./runSameTemplateGeneration.js";
 export type { SameTemplateInput, SameTemplateResult } from "./runSameTemplateGeneration.js";
 export { runNoCopyScan } from "./runNoCopyScan.js";

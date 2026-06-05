@@ -12,11 +12,10 @@
 //   3. real render  (renderTemplateCapsule actually bundles + renders a short clip with the neutral fixture)
 // On any failure the deterministic bundle stays. No network / no chrome in tests (inject model + probe).
 
-import path from "node:path";
 import { v5 } from "@vvst/shared";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
-import { renderTemplateCapsule } from "./renderTemplateCapsule.js";
+import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 
 export interface CapsuleCodegenInput {
   /** Deterministic capsule — only its codeBundle may be replaced; everything else is authoritative. */
@@ -118,24 +117,16 @@ ${referenceTsx.slice(0, 9000)}
 Evidence summary (structural only): ${JSON.stringify({ shots: evidence.shots?.length ?? 0, bpm: evidence.audioEvidence?.bpm, beats: (evidence.audioEvidence?.beatGridSec ?? []).length })}.${repair}`;
 }
 
-/** Default render gate: really bundle + render a SHORT clip of the candidate with the neutral fixture. */
+/** Default render gate: really bundle + render ONE FRAME of the candidate with the neutral fixture. */
 async function defaultRenderProbe(
   input: CapsuleCodegenInput,
   candidate: v5.RemotionTemplateCapsule["codeBundle"]
 ): Promise<{ ok: boolean; error?: string; warnings?: string[] }> {
-  // Probe-only clone: candidate code + shortened duration (bundling dominates; keep render cheap).
-  const probeCapsule: v5.RemotionTemplateCapsule = {
-    ...input.capsule,
-    codeBundle: candidate,
-    timingSignature: { ...input.capsule.timingSignature, durationSec: Math.min(input.capsule.timingSignature.durationSec || 16, 2) }
-  };
-  const outPath = path.join(process.cwd(), "storage", "generated", "v5", "_capsule_codegen_probe", `${input.capsule.id}_${Date.now()}.mp4`);
-  const res = await renderTemplateCapsule({
+  const probeCapsule: v5.RemotionTemplateCapsule = { ...input.capsule, codeBundle: candidate };
+  const res = await renderCapsuleStill({
     capsule: probeCapsule,
     boundProps: input.capsule.fixtures.neutralFixture as Record<string, unknown>,
-    outPath,
-    aspectRatio: "9:16",
-    proceduralAudio: false // test the TSX, not the audio mux
+    aspectRatio: "9:16"
   });
   return { ok: res.ok, error: res.error, warnings: res.warnings };
 }

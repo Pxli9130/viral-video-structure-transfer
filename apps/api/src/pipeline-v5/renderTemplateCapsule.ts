@@ -30,6 +30,75 @@ function dimsFor(aspect: string | undefined): { width: number; height: number } 
   return { width: 1080, height: 1920 };
 }
 
+/** Write the capsule files + a Remotion root registering the "Capsule" composition into workDir. */
+async function writeCapsuleProject(
+  capsule: v5.RemotionTemplateCapsule,
+  workDir: string,
+  durationFrames: number,
+  fps: number,
+  width: number,
+  height: number
+): Promise<string> {
+  await fs.mkdir(workDir, { recursive: true });
+  for (const f of capsule.codeBundle.files) {
+    const fp = path.join(workDir, f.path);
+    await fs.mkdir(path.dirname(fp), { recursive: true });
+    await fs.writeFile(fp, f.content);
+  }
+  const entryNoExt = capsule.codeBundle.entryFile.replace(/\.(tsx|ts|jsx|js)$/, "");
+  const comp = capsule.codeBundle.componentName;
+  const rootTsx = `import React from "react";
+import { Composition, registerRoot } from "remotion";
+import { ${comp} } from "./${entryNoExt}";
+const Root = () => (
+  <Composition id="Capsule" component={${comp}} durationInFrames={${Math.max(1, durationFrames)}} fps={${fps}} width={${width}} height={${height}} defaultProps={{}} />
+);
+registerRoot(Root);
+`;
+  const rootPath = path.join(workDir, "root.tsx");
+  await fs.writeFile(rootPath, rootTsx);
+  return rootPath;
+}
+
+export interface CapsuleStillResult {
+  ok: boolean;
+  pngPath?: string;
+  error?: string;
+  warnings: string[];
+}
+
+/**
+ * Fast REAL render gate: bundle the capsule code and render a single frame via renderStill.
+ * This is the cheap "does it actually bundle + render" check used by the AI codegen gate and by
+ * learn-time validation (so T8/renderPreviewPassed is earned, not deferred). Bundling dominates cost.
+ */
+export async function renderCapsuleStill(opts: {
+  capsule: v5.RemotionTemplateCapsule;
+  boundProps: Record<string, unknown>;
+  aspectRatio?: string;
+  frame?: number;
+  workDir?: string;
+  outPng?: string;
+}): Promise<CapsuleStillResult> {
+  const warnings: string[] = [];
+  const durationSec = opts.capsule.timingSignature.durationSec || 16;
+  const fps = opts.capsule.timingSignature.fps || 30;
+  const { width, height } = dimsFor(opts.aspectRatio);
+  const workDir = opts.workDir ?? path.join(repoRoot, "storage", "generated", "v5", "_capsule_still", `${opts.capsule.id}_${Date.now()}`);
+  const outPng = opts.outPng ?? path.join(workDir, "frame.png");
+  try {
+    const rootPath = await writeCapsuleProject(opts.capsule, workDir, Math.round(durationSec * fps), fps, width, height);
+    const [{ bundle }, { renderStill, selectComposition }] = await Promise.all([import("@remotion/bundler"), import("@remotion/renderer")]);
+    const serveUrl = await bundle({ entryPoint: rootPath });
+    const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps: opts.boundProps });
+    await renderStill({ composition, serveUrl, output: outPng, frame: opts.frame ?? 0, inputProps: opts.boundProps, overwrite: true });
+    const ok = existsSync(outPng);
+    return { ok, pngPath: ok ? outPng : undefined, warnings, error: ok ? undefined : "still not written to disk" };
+  } catch (err) {
+    return { ok: false, warnings, error: err instanceof Error ? err.message.slice(0, 220) : String(err) };
+  }
+}
+
 export interface CapsuleRenderOptions {
   capsule: v5.RemotionTemplateCapsule;
   boundProps: Record<string, unknown>;
