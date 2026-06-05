@@ -206,6 +206,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       const capsule = stOptions.templateCapsuleId ? kb.getTemplateCapsule(stOptions.templateCapsuleId) : kb.latestTemplateCapsule();
       if (!capsule) return fail(res, 400, "no template capsule available; run /learn-samples first (or pass options.templateCapsuleId)");
       const port = Number(process.env.APP_PORT ?? 3000);
+      const sampleVideoPath = allAssets.find((a) => a.id === capsule.sourceSampleId)?.path;
       const st = await runSameTemplateGeneration({
         projectId,
         generationId,
@@ -216,18 +217,28 @@ export function createV5Router(deps: V5RouterDeps): Router {
         outDir: outDirST,
         publicPathPrefix: `/generated/${path.relative(deps.generatedDir, path.join(outDirST, "materials")).split(path.sep).join("/")}/`,
         serveBase: `http://127.0.0.1:${port}`,
+        sampleVideoPath,
         env: process.env,
         doRender: doRender && (reqOpts.autoRender ?? true) !== false
       });
-      const sc = runScorecardV5({ generationId, stageGates: [st.gates], render: st.finalVideoUrl ? { finalMp4Exists: true, durationSec: capsule.timingSignature.durationSec, hasAudio: true, audioIntended: true } : undefined });
+      // Feed REAL render facts + the real no-copy scan into the scorecard (so V5-G23/G27/G29/G30 are
+      // earned, and the readiness ladder runs on same_template evidence — not stuck at artifact_valid).
+      const sc = runScorecardV5({
+        generationId,
+        stageGates: [st.gates],
+        render: st.finalMp4Exists
+          ? { finalMp4Exists: true, durationSec: st.renderDurationSec, expectedDurationSec: capsule.timingSignature.durationSec, width: 1080, height: 1920, expectedWidth: 1080, expectedHeight: 1920, hasAudio: st.renderHasAudio, audioIntended: stOptions.aigcGapFill.audioFill !== "off" }
+          : st.instance.slotBindings.length ? { finalMp4Exists: false } : undefined,
+        noCopy: st.noCopy
+      });
       // Part 10: surface the same-template T-gates alongside the canonical V5 gates.
       sc.gates = [...sc.gates, ...st.gates.filter((g) => g.id.startsWith("T"))];
-      // readiness must respect template rules (no review_demo on fallback/missing required slots)
-      if (st.instance.readinessImpact.readinessLevel === "technical_demo" && sc.readinessLevel && (sc.readinessLevel === "review_demo" || sc.readinessLevel === "shippable_demo")) {
-        sc.readinessLevel = "technical_demo";
-        sc.demoReady = false;
-        sc.readinessReasons = [...(sc.readinessReasons ?? []), ...st.instance.readinessImpact.warnings];
-      }
+      // Reconcile: the scorecard is the single source of truth; align the instance readiness to it so
+      // the two artifacts can never contradict (the old code let them disagree).
+      const toInstanceReadiness = (lvl?: v5.ReadinessLevel): v5.TemplateInstance["readinessImpact"]["readinessLevel"] =>
+        lvl === "shippable_demo" ? "shippable_candidate" : lvl === "review_demo" ? "review_demo" : "technical_demo";
+      st.instance.readinessImpact.readinessLevel = toInstanceReadiness(sc.readinessLevel);
+      if (st.instance.readinessImpact.warnings.length) sc.readinessReasons = [...(sc.readinessReasons ?? []), ...st.instance.readinessImpact.warnings];
       await fs.mkdir(outDirST, { recursive: true });
       const result = {
         generationId,
@@ -239,12 +250,15 @@ export function createV5Router(deps: V5RouterDeps): Router {
         templateInstance: st.instance,
         finalProgram: st.finalProgram,
         generatedAssets: st.generatedAssets,
+        gapReport: st.gapReport,
+        noCopy: st.noCopy,
         scorecard: sc,
         warnings: st.warnings
       };
       await Promise.all([
         fs.writeFile(path.join(outDirST, "template-instance.json"), JSON.stringify(st.instance, null, 2)),
         fs.writeFile(path.join(outDirST, "final-video-program.json"), JSON.stringify(st.finalProgram, null, 2)),
+        fs.writeFile(path.join(outDirST, "gap-report.json"), JSON.stringify(st.gapReport, null, 2)),
         fs.writeFile(path.join(outDirST, "scorecard.json"), JSON.stringify(sc, null, 2)),
         fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
       ]);

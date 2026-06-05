@@ -4,7 +4,7 @@
 // project UNDER the repo (so node_modules resolves), bundles, and renders. This is what makes
 // "use the same template code, new content" real — the stored template component renders the new props.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v5 } from "@vvst/shared";
@@ -98,10 +98,25 @@ registerRoot(Root);
         finalMp4 = opts.outPath;
         audioMuxed = true;
       } else {
-        warnings.push(`procedural audio mux failed: ${mux.error}`);
+        // Honest degrade: the template code rendered fine; only the procedural-audio mux failed
+        // (e.g. ffmpeg missing). Promote the silent render to the real output so final.mp4 actually
+        // EXISTS and is playable — reported with hasAudio=false rather than a URL to a missing file.
+        warnings.push(`procedural audio mux failed — emitting silent final.mp4: ${mux.error}`);
+        await fs.copyFile(remotionMp4, opts.outPath);
+        finalMp4 = opts.outPath;
       }
     }
-    return { ok: true, finalMp4, hasAudio: audioMuxed || opts.proceduralAudio === false, audioMuxed, durationSec, usedTemplateCode: true, warnings };
+    // Tie success to the file actually existing on disk; never claim a render that isn't there.
+    const finalExists = existsSync(finalMp4);
+    return {
+      ok: finalExists,
+      finalMp4,
+      hasAudio: audioMuxed,
+      audioMuxed,
+      durationSec,
+      usedTemplateCode: finalExists,
+      warnings: finalExists ? warnings : [...warnings, `render output missing on disk: ${path.basename(finalMp4)}`]
+    };
   } catch (err) {
     return { ok: false, hasAudio: false, audioMuxed: false, durationSec, usedTemplateCode: false, warnings, error: err instanceof Error ? err.message : String(err) };
   } finally {

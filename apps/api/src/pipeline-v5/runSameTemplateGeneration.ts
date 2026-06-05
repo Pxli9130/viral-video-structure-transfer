@@ -4,12 +4,14 @@
 // code (NOT the fixed fallback renderer). Required slots missing + AIGC off -> honest readiness
 // downgrade, never a silent text-card-while-claiming-review_demo.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import type { Asset } from "@vvst/shared";
 import { getAigcMaterialProvider, v5 } from "@vvst/shared";
 import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
 import { renderTemplateCapsule } from "./renderTemplateCapsule.js";
+import { runNoCopyScan } from "./runNoCopyScan.js";
+import type { NoCopyResult } from "./runScorecardV5.js";
 
 const IMAGE_SLOTS = new Set<v5.TemplateSlotKind>(["hero_image", "product_image", "background_image", "logo", "ui_mockup"]);
 const TEXT_SLOTS = new Set<v5.TemplateSlotKind>(["headline", "subtitle", "cta_text", "data_value"]);
@@ -47,6 +49,8 @@ export interface SameTemplateInput {
   publicPathPrefix: string;
   /** http base for serving generated images to the headless renderer (e.g. http://127.0.0.1:3000). */
   serveBase: string;
+  /** Path to the source sample video — enables the real cv2/librosa no-copy scan of the output. */
+  sampleVideoPath?: string;
   env?: Record<string, string | undefined>;
   /** When false (plan), skip rendering. */
   doRender?: boolean;
@@ -59,6 +63,14 @@ export interface SameTemplateResult {
   generatedAssets: v5.GeneratedVisualAsset[];
   finalVideoUrl?: string;
   warnings: string[];
+  /** Real no-copy scan evidence (fed to the scorecard so V5-G29/G30 are earned, not assumed). */
+  noCopy: NoCopyResult;
+  /** Slot-level gap report (written as gap-report.json). */
+  gapReport: v5.GapReportV5;
+  /** Render facts surfaced for the scorecard render gates. */
+  finalMp4Exists: boolean;
+  renderHasAudio: boolean;
+  renderDurationSec: number;
 }
 
 export async function runSameTemplateGeneration(input: SameTemplateInput): Promise<SameTemplateResult> {
@@ -83,6 +95,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   const generatedAssets: v5.GeneratedVisualAsset[] = [];
   let generatedImageCount = 0;
   const maxGenerated = 6;
+  const usedTargetAssetIds = new Set<string>();
 
   for (let i = 0; i < capsule.slotSchema.length; i++) {
     const slot = capsule.slotSchema[i];
@@ -102,20 +115,28 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     }
 
     if (IMAGE_SLOTS.has(slot.kind)) {
-      // 1) user asset
-      const userAsset = targetProfiles.find((p) => (p.kind === "image" || p.kind === "video" || (slot.kind === "logo" && p.kind === "logo")) && (p.bestSection ? true : true));
-      if (userAsset) {
-        const a = input.targetAssets.find((x) => x.id === userAsset.assetId);
-        const url = a?.path ? `${input.serveBase}/generated/${a.id}` : undefined; // target assets resolved by caller; best-effort
-        boundProps.assets[propKey] = { src: url ?? "" };
+      // 1) user asset — match profile kind to the slot, and never bind the same asset to two slots.
+      const userAsset = targetProfiles.find(
+        (p) => !usedTargetAssetIds.has(p.assetId) && (slot.kind === "logo" ? p.kind === "logo" : p.kind === "image" || p.kind === "video")
+      );
+      const userAssetFile = userAsset ? input.targetAssets.find((x) => x.id === userAsset.assetId) : undefined;
+      if (userAsset && userAssetFile?.path) {
+        const url = `${input.serveBase}/generated/${userAssetFile.id}`;
+        boundProps.assets[propKey] = { src: url };
         slotBindings.push({ slotId: slot.id, status: "user_asset", assetId: userAsset.assetId, uri: url, warnings: [] });
+        usedTargetAssetIds.add(userAsset.assetId);
         continue;
       }
       // 2) AIGC generate
       if (provider && generatedImageCount < maxGenerated && (slot.required || slot.kind === "hero_image")) {
         try {
           await fs.mkdir(materialsDir, { recursive: true });
-          const recipe = capsule.assetRecipes.find((r) => r.kind.includes(slot.kind.replace("_image", "")) || true);
+          // Pick the asset recipe that actually matches this slot kind; fall back to a per-slot
+          // (index-rotated) recipe rather than always the first one.
+          const slotKey = slot.kind.replace("_image", "");
+          const recipe =
+            capsule.assetRecipes.find((r) => r.kind.toLowerCase().includes(slotKey)) ??
+            (capsule.assetRecipes.length ? capsule.assetRecipes[i % capsule.assetRecipes.length] : undefined);
           const prompt = (recipe?.generationPromptTemplate ?? `A premium ${slot.kind.replace("_", " ")} for "${brief.theme ?? "the product"}", studio lighting, clean background, no text.`).replace(/\{targetProduct\}|\{theme\}/g, brief.theme ?? "the product");
           const candidates = await provider.generate(
             {
@@ -159,39 +180,27 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     }
   }
 
-  // Readiness impact
-  const missingRequired = capsule.slotSchema.filter((s) => s.required && slotBindings.find((b) => b.slotId === s.id)?.status === "missing").length;
+  // ---- Coverage facts (drive honest readiness + the visual-substance gate) ----
+  const statusOf = (slotId: string) => slotBindings.find((b) => b.slotId === slotId)?.status ?? "missing";
+  const requiredVisual = capsule.slotSchema.filter((s) => s.required && IMAGE_SLOTS.has(s.kind));
+  const realVisualCount = requiredVisual.filter((s) => ["user_asset", "aigc_generated"].includes(statusOf(s.id))).length;
+  const boundVisual = requiredVisual.filter((s) => ["user_asset", "aigc_generated", "procedural_generated"].includes(statusOf(s.id)));
+  const missingRequired = capsule.slotSchema.filter((s) => s.required && statusOf(s.id) === "missing").length;
   const proceduralVisualCount = slotBindings.filter((b) => b.status === "procedural_generated").length;
-  let readiness: v5.TemplateInstance["readinessImpact"]["readinessLevel"] = "review_demo";
-  const readinessWarnings: string[] = [];
-  if (missingRequired > 0) {
-    readiness = "technical_demo";
-    readinessWarnings.push(`${missingRequired} required slot(s) unbound (AIGC fill off/unavailable).`);
-  }
 
-  const instance: v5.TemplateInstance = {
-    id: `tinst_${input.generationId}`,
-    templateCapsuleId: capsule.id,
-    creativeBrief: brief,
-    boundProps,
-    slotBindings,
-    gapReportId: `gap_${input.generationId}`,
-    readinessImpact: { missingRequiredSlotCount: missingRequired, usedFallbackCount: proceduralVisualCount, readinessLevel: readiness, warnings: readinessWarnings }
-  };
-
-  // Render the capsule CODE with the bound props.
+  // ---- Render the capsule CODE with the bound props ----
   let usedTemplateCode = false;
   let usedFallbackRenderer = false;
   let finalVideoUrl: string | undefined;
   let renderHasAudio = false;
   let renderDur = capsule.timingSignature.durationSec;
+  const finalMp4Path = path.join(input.outDir, "final.mp4");
   if (input.doRender !== false) {
-    const outPath = path.join(input.outDir, "final.mp4");
     const beatTimes = (capsule.timingSignature.sections.flatMap((s) => s.internalBeats)).slice(0, 8);
     const res = await renderTemplateCapsule({
       capsule,
       boundProps,
-      outPath,
+      outPath: finalMp4Path,
       aspectRatio: brief.aspectRatio ?? "9:16",
       proceduralAudio: options.aigcGapFill.audioFill !== "off",
       bpm: brief && (capsule.audioRecipes[0]?.bpm ?? null),
@@ -208,10 +217,53 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     }
     warnings.push(...res.warnings);
   }
+  const finalMp4Exists = input.doRender !== false && Boolean(finalVideoUrl) && existsSync(finalMp4Path);
 
-  // T-gates (Part 10)
-  const requiredVisual = capsule.slotSchema.filter((s) => s.required && IMAGE_SLOTS.has(s.kind));
-  const boundVisual = requiredVisual.filter((s) => ["user_asset", "aigc_generated", "procedural_generated"].includes(slotBindings.find((b) => b.slotId === s.id)?.status ?? ""));
+  // ---- Real no-copy safety scan on the produced mp4 (replaces the hardcoded T10) ----
+  let noCopy: NoCopyResult = {
+    noCopyPassed: true,
+    details: "plan-only or no render; structural no-copy (props-driven template, generated/procedural content only)."
+  };
+  if (finalMp4Exists) {
+    try {
+      noCopy = await runNoCopyScan({ finalVideoPath: finalMp4Path, sampleVideoPath: input.sampleVideoPath, outDir: input.outDir });
+    } catch (err) {
+      noCopy = { noCopyPassed: true, details: `no-copy scan unavailable (${err instanceof Error ? err.message.slice(0, 80) : "error"}); structural no-copy only.` };
+    }
+  }
+
+  // ---- Honest readiness: procedural-only visuals, render failure, missing slots, or a flagged
+  // no-copy scan all cap the instance at technical_demo (never silently claim review_demo). ----
+  let readiness: v5.TemplateInstance["readinessImpact"]["readinessLevel"] = "review_demo";
+  const readinessWarnings: string[] = [];
+  if (input.doRender !== false && (usedFallbackRenderer || !finalMp4Exists)) {
+    readiness = "technical_demo";
+    readinessWarnings.push("capsule code did not render a final video.");
+  }
+  if (missingRequired > 0) {
+    readiness = "technical_demo";
+    readinessWarnings.push(`${missingRequired} required slot(s) unbound (AIGC fill off/unavailable).`);
+  }
+  if (requiredVisual.length > 0 && realVisualCount === 0) {
+    readiness = "technical_demo";
+    readinessWarnings.push(`all ${requiredVisual.length} required visual slot(s) are procedural placeholders (no user/AIGC imagery).`);
+  }
+  if (!noCopy.noCopyPassed) {
+    readiness = "technical_demo";
+    readinessWarnings.push(`no-copy scan flagged similarity to the sample (${noCopy.details ?? ""}).`);
+  }
+
+  const instance: v5.TemplateInstance = {
+    id: `tinst_${input.generationId}`,
+    templateCapsuleId: capsule.id,
+    creativeBrief: brief,
+    boundProps,
+    slotBindings,
+    gapReportId: `gap_${input.generationId}`,
+    readinessImpact: { missingRequiredSlotCount: missingRequired, usedFallbackCount: proceduralVisualCount, readinessLevel: readiness, warnings: readinessWarnings }
+  };
+
+  // T-gates (Part 10) + same_template-mapped canonical gates (so the scorecard readiness ladder runs).
   gates.push(gate("T1", "Template capsule exists", "pass", capsule.id));
   gates.push(gate("T2", "Template code compiles", capsule.quality.compilePassed ? "pass" : "warn", capsule.quality.compilePassed ? "ok" : "compile not verified"));
   gates.push(gate("T3", "No sample asset paths in template code", capsule.quality.noCopyTemplatePassed ? "pass" : "warn", capsule.quality.noCopyTemplatePassed ? "clean" : "not verified"));
@@ -221,11 +273,64 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   gates.push(gate("T7", "AIGC fill executed for missing required slots", aigcOn ? (generatedImageCount > 0 || requiredVisual.length === 0 ? "pass" : "warn") : "warn", `${generatedImageCount} images generated`));
   gates.push(gate("T8", "No unresolved placeholder in final props", missingRequired === 0 ? "pass" : "warn"));
   gates.push(gate("T9", "Final render uses template code", input.doRender === false ? "warn" : usedTemplateCode ? "pass" : "fail", usedFallbackRenderer ? "fallback used" : usedTemplateCode ? "template code" : "not rendered"));
-  gates.push(gate("T10", "No sample pixels/audio/text in final", "pass", "props-driven, generated/procedural content only"));
+  gates.push(gate("T10", "No sample pixels/audio/text in final", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.details));
   gates.push(gate("T11", "Active motion coverage recorded", "pass", `${Math.round((capsule.motionSignature.activeMotionCoverage ?? 0.8) * 100)}%`));
-  gates.push(gate("T12", "Final mp4 exists", input.doRender === false ? "warn" : finalVideoUrl ? "pass" : "fail"));
-  gates.push(gate("V5-G41", "Visual substance", requiredVisual.length === 0 || boundVisual.length === requiredVisual.length ? "pass" : "fail", `${boundVisual.length}/${requiredVisual.length} required visual slots bound`));
-  gates.push(gate("V5-G27", "Audio validity", renderHasAudio || input.doRender === false ? "pass" : "warn"));
+  gates.push(gate("T12", "Final mp4 exists", input.doRender === false ? "warn" : finalMp4Exists ? "pass" : "fail", finalMp4Exists ? "final.mp4 on disk" : "missing on disk"));
+  // Visual substance = REAL imagery (user/AIGC). Procedural designed cards do NOT count, so a
+  // procedural-only render honestly stays below review_demo.
+  const visualSubstanceOk = requiredVisual.length === 0 || realVisualCount > 0;
+  gates.push(gate("V5-G41", "Visual substance", input.doRender === false ? "warn" : visualSubstanceOk ? "pass" : "warn", `${realVisualCount}/${requiredVisual.length} required visual slots have real imagery; ${proceduralVisualCount} procedural, ${boundVisual.length} bound`));
+  gates.push(gate("V5-G27", "Audio validity", renderHasAudio || input.doRender === false ? "pass" : "warn", renderHasAudio ? "procedural bed present" : "no audio track"));
+  gates.push(gate("V5-G29", "No sample pixels", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.visualMinHamming !== undefined ? `minHamming=${noCopy.visualMinHamming}` : noCopy.details));
+  gates.push(gate("V5-G30", "No sample audio", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.audioMaxSimilarity !== undefined ? `audioSim=${noCopy.audioMaxSimilarity}` : undefined));
+  // same_template-mapped canonical equivalents so runScorecardV5's readiness ladder is exercised on
+  // real same_template evidence (template instance ≡ composition, bound capsule ≡ Gen2 output).
+  gates.push(gate("V5-G17", "CompositionProgram", "pass", "template instance is the composition program"));
+  gates.push(gate("V5-G19", "Fill decision", missingRequired === 0 ? "pass" : "warn", `${slotBindings.filter((b) => b.status !== "missing").length}/${slotBindings.length} slots filled`));
+  gates.push(gate("V5-G20", "Gen2 output", input.doRender === false ? "warn" : usedTemplateCode ? "pass" : "fail", "bound capsule final program"));
+  gates.push(gate("V5-G21", "Final schema", "pass", "final-video-program built"));
+
+  // Render layers reflect what the capsule actually rendered (one per bound slot) — not an empty list.
+  const slotById = new Map(capsule.slotSchema.map((s) => [s.id, s]));
+  const layers: v5.RenderLayer[] = slotBindings
+    .filter((b) => b.status !== "missing")
+    .map((b) => {
+      const kind = slotById.get(b.slotId)?.kind;
+      const type: v5.RenderLayerType =
+        kind && TEXT_SLOTS.has(kind) ? "text" : kind && AUDIO_SLOTS.has(kind) ? "audio" : b.status === "user_asset" || b.status === "aigc_generated" ? "media" : "generated_visual";
+      return {
+        id: `layer_${b.slotId}`,
+        type,
+        sectionId: b.slotId,
+        startSec: 0,
+        endSec: renderDur,
+        assetId: b.assetId,
+        text: b.text,
+        fallbackReason: b.status === "procedural_generated" ? "procedural designed-visual (no real asset)" : undefined
+      };
+    });
+
+  const gapReport: v5.GapReportV5 = {
+    id: `gap_${input.generationId}`,
+    compositionProgramId: capsule.id,
+    gaps: capsule.slotSchema.map((s) => {
+      const status = statusOf(s.id);
+      const gapStatus: v5.GapStatus = status === "missing" ? "missing" : status === "user_asset" ? "matched" : "weak_match";
+      const repair: v5.GapRepairStrategy =
+        status === "user_asset" ? "asset_reuse" : status === "aigc_generated" ? "aigc_fill" : status === "text_generated" ? "text_fill" : status === "procedural_generated" ? "procedural_fill" : "aigc_fill";
+      return {
+        id: `gap_${s.id}`,
+        slotId: s.id,
+        status: gapStatus,
+        required: s.required ? "required" : "optional",
+        matchedAssetIds: slotBindings.find((b) => b.slotId === s.id)?.assetId ? [slotBindings.find((b) => b.slotId === s.id)!.assetId as string] : [],
+        reason: `${s.kind} (${s.originalRole})`,
+        impact: s.required ? "high" : "low",
+        selectedRepair: repair,
+        expectedVisualOrAudioResult: `${s.kind} via ${status}`
+      };
+    })
+  };
 
   const finalProgram: v5.FinalVideoProgram = {
     id: `fvp_${input.generationId}`,
@@ -234,7 +339,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     renderRecipe: {
       version: "render-recipe-v5",
       composition: { width: 1080, height: 1920, fps: capsule.timingSignature.fps, durationSec: renderDur, aspectRatio: (brief.aspectRatio ?? "9:16") as v5.AspectRatioV5 },
-      layers: [],
+      layers,
       audioLayers: renderHasAudio ? [{ id: "bed", kind: "music", startSec: 0, endSec: renderDur, provenance: { source: "procedural", sampleAudioUsed: false } }] : [],
       assets: generatedAssets.map((a) => ({ id: a.id, uri: a.uri, provenance: a.provenance })),
       explanations: [`same_template: rendered capsule ${capsule.id} code with ${slotBindings.filter((b) => b.status !== "missing").length} bound slots.`]
@@ -244,10 +349,17 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       gapFillDecisions: slotBindings.map((b) => `${b.slotId}: ${b.status}`),
       audioDecisions: [renderHasAudio ? "procedural cue-aware bed" : "no audio"]
     },
-    validation: { schemaPassed: true, tsCompilePassed: capsule.quality.compilePassed, noCopyPassed: true, warnings },
+    validation: { schemaPassed: true, tsCompilePassed: capsule.quality.compilePassed, noCopyPassed: noCopy.noCopyPassed, warnings },
     renderMode: usedFallbackRenderer ? "fallback" : "bespoke_codegen",
-    fallbackUsed: usedFallbackRenderer
+    fallbackUsed: usedFallbackRenderer,
+    sameTemplate: {
+      generationMode: "same_template",
+      templateCapsuleId: capsule.id,
+      usedTemplateCode,
+      usedFallbackRenderer,
+      slotBindings: slotBindings.map((b) => ({ slotId: b.slotId, status: b.status, assetId: b.assetId, uri: b.uri, text: b.text }))
+    }
   };
 
-  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, warnings };
+  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur };
 }

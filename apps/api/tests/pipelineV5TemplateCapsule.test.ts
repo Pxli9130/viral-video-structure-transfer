@@ -110,7 +110,12 @@ describe("V5.1 RemotionTemplateCapsule (Gen1 reconstruction + validation + KB + 
     const copy = (out.instance.boundProps as { copy?: Record<string, string> }).copy ?? {};
     expect(Object.values(copy).join(" ")).toContain("portable fan ad");
     expect(out.gates.find((g) => g.id === "T1")?.status).toBe("pass");
-    expect(out.gates.find((g) => g.id === "T10")?.status).toBe("pass");
+    // honest: with no render there is no final video to scan, so T10 (no sample pixels/audio/text in
+    // FINAL) is "warn" (pending render) — not a hardcoded pass. The structural no-copy default still holds.
+    expect(out.gates.find((g) => g.id === "T10")?.status).toBe("warn");
+    expect(out.noCopy.noCopyPassed).toBe(true);
+    // gap report is emitted per slot
+    expect(out.gapReport.gaps.length).toBe(capsule.slotSchema.length);
     // default options are same_template + auto AIGC
     expect(v5.DEFAULT_GENERATION_OPTIONS_V5.generationMode).toBe("same_template");
     expect(v5.DEFAULT_GENERATION_OPTIONS_V5.aigcGapFill.mode).toBe("auto_on");

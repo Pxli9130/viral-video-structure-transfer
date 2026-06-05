@@ -114,4 +114,16 @@ export interface FinalVideoProgram {
   /** True when the deterministic compose fallback produced this instead of AI codegen. */
   fallbackUsed?: boolean;
   fallbackReason?: string;
+  /**
+   * V5.1 same_template provenance. Present only when generationMode="same_template" — makes the
+   * final-video-program self-describing (which capsule, did the template code render, slot bindings)
+   * instead of stranding that in a sibling result file.
+   */
+  sameTemplate?: {
+    generationMode: "same_template";
+    templateCapsuleId: string;
+    usedTemplateCode: boolean;
+    usedFallbackRenderer: boolean;
+    slotBindings: Array<{ slotId: string; status: string; assetId?: string; uri?: string; text?: string }>;
+  };
 }
