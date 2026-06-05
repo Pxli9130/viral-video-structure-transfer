@@ -10,5 +10,6 @@ export * from "./composition.js";
 export * from "./finalProgram.js";
 export * from "./scorecard.js";
 export * from "./gates.js";
+export * from "./templateCapsule.js";
 export * as v5Schemas from "./schemas.js";
 export * from "./validation.js";

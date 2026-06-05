@@ -162,7 +162,9 @@ export interface AssetRecipeV5 {
     | "product_card"
     | "sticker"
     | "logo_placeholder"
-    | "comparison_card";
+    | "comparison_card"
+    | "ui_mockup"
+    | "other";
   observedDescription: {
     subject: string;
     shape?: string;
@@ -171,6 +173,7 @@ export interface AssetRecipeV5 {
     camera?: string;
     composition?: string;
     mood?: string;
+    style?: string;
     styleKeywords?: string[];
   };
   generationPromptTemplate: string;
@@ -180,7 +183,7 @@ export interface AssetRecipeV5 {
   evidenceRefs: string[];
 }
 
-export type AudioCueType = "hit" | "riser" | "impact" | "duck";
+export type AudioCueType = "hit" | "riser" | "impact" | "duck" | "whoosh";
 
 export interface AudioCuePoint {
   /** Time in seconds (canonical key is `t`; example's `timeSec` is aligned to this). */
@@ -192,7 +195,7 @@ export interface AudioCuePoint {
 /** Recipe for REGENERATING/synthesizing audio (never copies sample audio). */
 export interface AudioRecipeV5 {
   id: string;
-  kind: "music_bed" | "impact" | "whoosh" | "riser" | "voiceover_style" | "ducking_pattern";
+  kind: "music_bed" | "impact" | "whoosh" | "riser" | "voiceover_style" | "ducking_pattern" | "other";
   bpm?: number;
   mood: string[];
   instruments?: string[];

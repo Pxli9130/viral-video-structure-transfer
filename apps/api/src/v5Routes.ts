@@ -22,6 +22,7 @@ import {
   runGen1Ai,
   runLearnSampleV5,
   runNoCopyScan,
+  runSameTemplateGeneration,
   runScorecardV5,
   toEvidenceTimelineV5,
   type NoCopyResult
@@ -98,6 +99,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
         evidenceTimelineId: evidence.id,
         reconstructionProgramId: artifacts.neutralProgram.id,
         gen1: usedAi ? "ai" : "deterministic",
+        // V5.1: the reusable Remotion template capsule (the default generation object).
+        templateCapsuleId: artifacts.templateCapsule.id,
+        templateSlots: artifacts.templateCapsule.slotSchema.length,
+        templateCompiles: artifacts.templateCapsule.quality.compilePassed,
+        templateValidationPassed: artifacts.templateValidation.passed,
         candidateCount: artifacts.candidates.length,
         storedElements: artifacts.elements.length,
         gates: artifacts.gates,
@@ -147,6 +153,20 @@ export function createV5Router(deps: V5RouterDeps): Router {
 
   router.get("/kb/decisions", (_req, res) => ok(res, { decisions: kb.getDecisions() }));
 
+  // ---- Template capsules (V5.1 — the default generation object) ----
+  router.get("/templates", (req, res) => {
+    const list = kb.listTemplateCapsules({ sourceSampleId: req.query.sourceSampleId as string | undefined, tag: req.query.tag as string | undefined, q: req.query.q as string | undefined });
+    // metadata only (omit code bundle for the list)
+    return ok(res, {
+      templates: list.map((c) => ({ id: c.id, sourceSampleId: c.sourceSampleId, name: c.name, description: c.description, tags: c.tags, slotSchema: c.slotSchema, timingSignature: c.timingSignature, motionSignature: c.motionSignature, quality: c.quality }))
+    });
+  });
+
+  router.get("/templates/:id", (req, res) => {
+    const c = kb.getTemplateCapsule(req.params.id);
+    return c ? ok(res, c) : fail(res, 404, "template capsule not found");
+  });
+
   // ---- Generation ----
   const buildGeneration = async (req: Request, res: Response, doRender: boolean) => {
     try {
@@ -169,6 +189,67 @@ export function createV5Router(deps: V5RouterDeps): Router {
     const targetAssets = targetAssetIds
       .map((id) => allAssets.find((a) => a.id === id))
       .filter((a): a is Asset => Boolean(a));
+
+    // V5.1 DEFAULT: same_template mode — reuse a learned RemotionTemplateCapsule's code with new
+    // theme + auto AIGC gap fill. (mix_elements is the advanced path below.)
+    const generationMode: v5.GenerationMode = body.options?.generationMode ?? "same_template";
+    if (generationMode === "same_template") {
+      const outDirST = genDir(generationId);
+      const reqOpts = body.options ?? {};
+      const stOptions: v5.GenerationOptionsV5 = {
+        ...v5.DEFAULT_GENERATION_OPTIONS_V5,
+        ...reqOpts,
+        generationMode: "same_template",
+        aigcGapFill: { ...v5.DEFAULT_GENERATION_OPTIONS_V5.aigcGapFill, ...(reqOpts.aigcGapFill ?? {}) },
+        fallbackPolicy: { ...v5.DEFAULT_GENERATION_OPTIONS_V5.fallbackPolicy, ...(reqOpts.fallbackPolicy ?? {}) }
+      };
+      const capsule = stOptions.templateCapsuleId ? kb.getTemplateCapsule(stOptions.templateCapsuleId) : kb.latestTemplateCapsule();
+      if (!capsule) return fail(res, 400, "no template capsule available; run /learn-samples first (or pass options.templateCapsuleId)");
+      const port = Number(process.env.APP_PORT ?? 3000);
+      const st = await runSameTemplateGeneration({
+        projectId,
+        generationId,
+        capsule,
+        brief,
+        targetAssets,
+        options: stOptions,
+        outDir: outDirST,
+        publicPathPrefix: `/generated/${path.relative(deps.generatedDir, path.join(outDirST, "materials")).split(path.sep).join("/")}/`,
+        serveBase: `http://127.0.0.1:${port}`,
+        env: process.env,
+        doRender: doRender && (reqOpts.autoRender ?? true) !== false
+      });
+      const sc = runScorecardV5({ generationId, stageGates: [st.gates], render: st.finalVideoUrl ? { finalMp4Exists: true, durationSec: capsule.timingSignature.durationSec, hasAudio: true, audioIntended: true } : undefined });
+      // Part 10: surface the same-template T-gates alongside the canonical V5 gates.
+      sc.gates = [...sc.gates, ...st.gates.filter((g) => g.id.startsWith("T"))];
+      // readiness must respect template rules (no review_demo on fallback/missing required slots)
+      if (st.instance.readinessImpact.readinessLevel === "technical_demo" && sc.readinessLevel && (sc.readinessLevel === "review_demo" || sc.readinessLevel === "shippable_demo")) {
+        sc.readinessLevel = "technical_demo";
+        sc.demoReady = false;
+        sc.readinessReasons = [...(sc.readinessReasons ?? []), ...st.instance.readinessImpact.warnings];
+      }
+      await fs.mkdir(outDirST, { recursive: true });
+      const result = {
+        generationId,
+        generationMode: "same_template",
+        templateCapsuleId: capsule.id,
+        usedTemplateCode: st.finalProgram.renderMode === "bespoke_codegen",
+        usedFallbackRenderer: st.finalProgram.fallbackUsed === true,
+        finalVideoUrl: st.finalVideoUrl,
+        templateInstance: st.instance,
+        finalProgram: st.finalProgram,
+        generatedAssets: st.generatedAssets,
+        scorecard: sc,
+        warnings: st.warnings
+      };
+      await Promise.all([
+        fs.writeFile(path.join(outDirST, "template-instance.json"), JSON.stringify(st.instance, null, 2)),
+        fs.writeFile(path.join(outDirST, "final-video-program.json"), JSON.stringify(st.finalProgram, null, 2)),
+        fs.writeFile(path.join(outDirST, "scorecard.json"), JSON.stringify(sc, null, 2)),
+        fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
+      ]);
+      return ok(res, result);
+    }
 
     const allElements = kb.list();
     const selectedElements = selectedElementIds

@@ -22,5 +22,11 @@ export { renderFinalVideoV5, buildV5RenderInputProps, muxProceduralAudio } from 
 export type { RenderV5Options, RenderV5Result, AssetMap } from "./renderV5.js";
 export { runScorecardV5 } from "./runScorecardV5.js";
 export type { ScorecardInput, NoCopyResult, RenderInfo } from "./runScorecardV5.js";
+// V5.1 Same Template Reconstruction Mode
+export { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.js";
+export { validateTemplateCapsule } from "./validateTemplateCapsule.js";
+export { renderTemplateCapsule } from "./renderTemplateCapsule.js";
+export { runSameTemplateGeneration } from "./runSameTemplateGeneration.js";
+export type { SameTemplateInput, SameTemplateResult } from "./runSameTemplateGeneration.js";
 export { runNoCopyScan } from "./runNoCopyScan.js";
 export type { NoCopyScanOptions } from "./runNoCopyScan.js";

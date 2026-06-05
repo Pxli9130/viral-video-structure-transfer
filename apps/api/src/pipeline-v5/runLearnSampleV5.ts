@@ -10,6 +10,8 @@ import { v5 } from "@vvst/shared";
 import type { KnowledgeBaseV5 } from "../services/knowledgeBaseV5.js";
 import { runGen1NeutralTemplate } from "./runGen1NeutralTemplate.js";
 import { runExtractElements } from "./runExtractElements.js";
+import { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.js";
+import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 
 export interface LearnArtifacts {
   evidence: v5.EvidenceTimelineV5;
@@ -17,6 +19,9 @@ export interface LearnArtifacts {
   candidates: v5.CandidateElement[];
   decisions: v5.KbCurationDecision[];
   elements: v5.KnowledgeElement[];
+  /** Level-1 reusable Remotion template (the default generation object). */
+  templateCapsule: v5.RemotionTemplateCapsule;
+  templateValidation: v5.TemplateValidationResult;
   gates: v5.ScorecardGate[];
   warnings: string[];
 }
@@ -81,7 +86,16 @@ export async function runLearnSampleV5(
   gates.push(gate("V5-G10", allDecided ? "pass" : "warn", `${decisions.length}/${candidates.length} decided`));
   gates.push(gate("V5-G13", elements.length ? "pass" : "warn", `${elements.length} stored/merged`));
 
-  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, gates, warnings };
+  // Stage 4b — Remotion Template Reconstruction: build + validate + store the reusable capsule (V5.1).
+  const templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence);
+  const templateValidation = validateTemplateCapsule(templateCapsule);
+  templateCapsule.quality.compilePassed = templateValidation.gates.find((t) => t.id === "T2")?.status === "pass";
+  templateCapsule.quality.noCopyTemplatePassed = templateValidation.gates.find((t) => t.id === "T10")?.status === "pass";
+  templateCapsule.quality.warnings = templateValidation.warnings;
+  kb.saveTemplateCapsule(templateCapsule);
+  for (const t of templateValidation.gates.slice(0, 6)) gates.push(gate(t.id, t.status === "pass" ? "pass" : t.status === "warn" ? "warn" : "fail", t.message));
+
+  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, templateCapsule, templateValidation, gates, warnings };
 
   if (opts.outDir) {
     await fs.mkdir(opts.outDir, { recursive: true });
@@ -92,6 +106,8 @@ export async function runLearnSampleV5(
       write("candidate-elements.json", candidates),
       write("kb-decisions.json", decisions),
       write("knowledge-elements.json", elements),
+      write("remotion-template-capsule.json", templateCapsule),
+      write("template-validation.json", templateValidation),
       write("learn-gates.json", gates)
     ]);
   }

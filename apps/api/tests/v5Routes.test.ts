@@ -121,7 +121,8 @@ describe("v5 HTTP routes (/api/v5)", () => {
         generationId: "gen_http_1",
         brief: { theme: "fan ad", targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: ["small", "quiet"] },
         targetAssetIds: ["asset_target_http"],
-        options: {}
+        // explicit mix_elements (advanced) path — same_template is the new default, tested separately.
+        options: { generationMode: "mix_elements" }
       })
     });
     expect(r.status).toBe(200);
@@ -131,6 +132,26 @@ describe("v5 HTTP routes (/api/v5)", () => {
     expect(body.scorecard.gates.length).toBe(43);
     expect(body.finalVideoUrl).toBeUndefined(); // plan does not render
     expect(body.scorecard.gates.filter((g: { status: string }) => g.status === "fail")).toEqual([]);
+  });
+
+  it("POST /generations/plan DEFAULTS to same_template mode (uses the learned capsule)", async () => {
+    const r = await fetch(`${base}/api/v5/generations/plan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectId: "proj_http",
+        generationId: "gen_st_1",
+        brief: { theme: "fan ad", targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: ["small", "quiet"] },
+        targetAssetIds: [],
+        options: { aigcGapFill: { mode: "auto_on", imageFill: "procedural", audioFill: "procedural", textFill: "llm" } }
+      })
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body.generationMode).toBe("same_template");
+    expect(body.templateCapsuleId).toBeTruthy();
+    expect(body.templateInstance).toBeTruthy();
+    expect(body.scorecard.gates.find((g: { id: string }) => g.id === "T1")).toBeTruthy();
   });
 
   it("GET /generations/:id returns the stored result", async () => {

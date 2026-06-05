@@ -14,6 +14,14 @@ export interface KnowledgeBaseFile {
   version: "knowledge-base.v5";
   elements: v5.KnowledgeElement[];
   decisions: v5.KbCurationDecision[];
+  /** Level-1 assets: full reusable Remotion template capsules (the default generation object). */
+  capsules?: v5.RemotionTemplateCapsule[];
+}
+
+export interface CapsuleQuery {
+  sourceSampleId?: string;
+  tag?: string;
+  q?: string;
 }
 
 export interface KbQuery {
@@ -26,7 +34,7 @@ export interface KbQuery {
 }
 
 function emptyFile(): KnowledgeBaseFile {
-  return { version: "knowledge-base.v5", elements: [], decisions: [] };
+  return { version: "knowledge-base.v5", elements: [], decisions: [], capsules: [] };
 }
 
 /** Stable hard-rule signature: re-learning the same sample's same kind+payload merges. */
@@ -102,7 +110,7 @@ export class KnowledgeBaseV5 {
       try {
         const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as KnowledgeBaseFile;
         if (parsed && Array.isArray(parsed.elements)) {
-          return { version: "knowledge-base.v5", elements: parsed.elements, decisions: parsed.decisions ?? [] };
+          return { version: "knowledge-base.v5", elements: parsed.elements, decisions: parsed.decisions ?? [], capsules: parsed.capsules ?? [] };
         }
       } catch {
         /* fall through to empty */
@@ -148,6 +156,55 @@ export class KnowledgeBaseV5 {
 
   getDecisions(): v5.KbCurationDecision[] {
     return [...this.data.decisions];
+  }
+
+  // ---- Level-1: template capsules (the default generation object) ----
+
+  saveTemplateCapsule(capsule: v5.RemotionTemplateCapsule): v5.RemotionTemplateCapsule {
+    if (!this.data.capsules) this.data.capsules = [];
+    this.data.capsules = [...this.data.capsules.filter((c) => c.id !== capsule.id), capsule];
+    this.save();
+    return capsule;
+  }
+
+  getTemplateCapsule(id: string): v5.RemotionTemplateCapsule | undefined {
+    return (this.data.capsules ?? []).find((c) => c.id === id);
+  }
+
+  listTemplateCapsules(query: CapsuleQuery = {}): v5.RemotionTemplateCapsule[] {
+    let items = this.data.capsules ?? [];
+    if (query.sourceSampleId) items = items.filter((c) => c.sourceSampleId === query.sourceSampleId);
+    if (query.tag) items = items.filter((c) => c.tags.includes(query.tag as string));
+    if (query.q) {
+      const q = query.q.toLowerCase();
+      items = items.filter((c) => [c.name, c.description, ...c.tags].some((s) => String(s ?? "").toLowerCase().includes(q)));
+    }
+    return [...items];
+  }
+
+  searchTemplateCapsules(queryText: string): v5.RemotionTemplateCapsule[] {
+    const terms = queryText.toLowerCase().split(/\s+/).filter(Boolean);
+    return (this.data.capsules ?? [])
+      .map((c) => {
+        const hay = [c.name, c.description, ...c.tags, ...c.motionSignature.motifs].join(" ").toLowerCase();
+        return { c, score: terms.reduce((a, t) => a + (hay.includes(t) ? 1 : 0), 0) };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.c);
+  }
+
+  /** The most recent capsule (default template for same_template generation). */
+  latestTemplateCapsule(sourceSampleId?: string): v5.RemotionTemplateCapsule | undefined {
+    const list = this.listTemplateCapsules(sourceSampleId ? { sourceSampleId } : {});
+    return list[list.length - 1];
+  }
+
+  saveKnowledgeElements(elements: v5.KnowledgeElement[]): void {
+    for (const e of elements) {
+      this.data.elements = [...this.data.elements.filter((x) => x.id !== e.id), e];
+    }
+    this.save();
   }
 
   /** Curate one candidate: hard-rule dedupe + safety, write decision (+ element when stored). */
