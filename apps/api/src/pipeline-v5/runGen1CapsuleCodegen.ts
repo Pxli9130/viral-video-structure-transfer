@@ -106,6 +106,17 @@ MOTION_SIGNATURE = ${JSON.stringify(motion)}
 GLOBAL_STYLE = ${JSON.stringify({ motionIntensity: gs.motionIntensity, pacing: gs.pacing, typographySystem: gs.typographySystem })}
 DEFAULT_PALETTE = ${JSON.stringify(palette)}   // bake as the PALETTE const default; runtime palette still comes from props.
 
+SCENE_RECIPES — the SOURCE video's per-scene look. You MUST reproduce each scene's recipe so this
+template looks like ITS source (a different source has different recipes -> a visibly different video):
+${JSON.stringify((capsule.sceneRecipes ?? []).map((r) => ({ role: r.role, transitionIn: r.transitionIn, cameraMove: r.subject?.cameraMove, subjectAnchor: r.subject?.anchor, textAnchor: r.textAnchor, textAnim: r.textAnim, mood: r.grading.mood })))}
+For each section i: enter with SCENE_RECIPES[i].transitionIn; move the hero image per cameraMove
+(push_in=scale up, pan_left/right=translateX, tilt=translateY, static=subtle); place the headline/copy
+at textAnchor (9-grid: top/center/bottom × left/center/right) animated per textAnim
+(per_char_reveal/word_stagger/pop/slide_up/flash); apply the grading MOOD as a CSS filter + vignette
+(dark_moody=darker+strong vignette, high_key=bright+light, high_contrast=contrast↑, vibrant=saturate↑,
+desaturated=saturate↓, warm/cool=tint) — but keep COLORS from the palette/theme prop, only the MOOD
+treatment from the recipe. Sections with different recipes MUST look visibly different.
+
 SLOTS — read each slot's content from its propPath (these keys MUST line up with the bound props):
 ${JSON.stringify(slots, null, 0)}
 

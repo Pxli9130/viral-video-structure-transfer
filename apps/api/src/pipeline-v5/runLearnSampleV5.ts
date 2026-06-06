@@ -14,6 +14,7 @@ import { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.j
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
+import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
 export interface LearnArtifacts {
@@ -48,6 +49,8 @@ export interface LearnOptions {
   validateRender?: boolean;
   /** Project that owns this learn run — stamped on the capsule for per-project KB scoping. */
   projectId?: string;
+  /** Dir that contains "generated" (so keyframe frameRefs resolve) — enables scene-recipe derivation. */
+  storageRoot?: string;
 }
 
 /** Run the deterministic LEARN loop for one already-wrapped EvidenceTimelineV5. */
@@ -98,8 +101,16 @@ export async function runLearnSampleV5(
   gates.push(gate("V5-G10", allDecided ? "pass" : "warn", `${decisions.length}/${candidates.length} decided`));
   gates.push(gate("V5-G13", elements.length ? "pass" : "warn", `${elements.length} stored/merged`));
 
+  // Stage 4a2 — derive content-neutral per-scene visual recipes from the sample's keyframes so the
+  // capsule reconstructs ITS source's look (grading/anchors/camera/transition). Empty -> role-varied fallback.
+  const sceneRecipes = await deriveSceneRecipes(
+    evidence,
+    neutralProgram.typedSpec.scenes.map((s) => ({ id: s.id, role: String(s.role ?? "other"), startSec: s.startSec, endSec: s.endSec })),
+    { storageRoot: opts.storageRoot }
+  );
+
   // Stage 4b — Remotion Template Reconstruction: build + validate + store the reusable capsule (V5.1).
-  const templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence);
+  const templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence, { sceneRecipes });
   let templateValidation = validateTemplateCapsule(templateCapsule);
 
   // Stage 4c — OPTIONAL real AI capsule codegen (apply != promote). The deterministic code above is the

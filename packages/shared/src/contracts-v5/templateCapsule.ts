@@ -49,6 +49,8 @@ export interface RemotionTemplateCapsule {
   sourceSampleId: string;
   /** Project that learned this capsule — enables per-project KB scoping (optional/global if absent). */
   projectId?: string;
+  /** Content-neutral per-scene visual recipes — what makes this capsule reconstruct ITS source's look. */
+  sceneRecipes?: SceneVisualRecipeV5[];
   name: string;
   description?: string;
   tags: string[];
@@ -178,6 +180,34 @@ export interface TemplateSlotBinding {
   audioId?: string;
   provenance?: Record<string, unknown>;
   warnings: string[];
+}
+
+// ---- Per-scene content-neutral visual recipe (source-faithful reconstruction) ----
+// Captures HOW each source scene looks (positions / motion / grading) — NEVER pixels or copied text —
+// so the generated template reconstructs the source's composition, not a generic gradient+card family.
+export type AnchorV5 =
+  | "top_left" | "top_center" | "top_right"
+  | "center_left" | "center" | "center_right"
+  | "bottom_left" | "bottom_center" | "bottom_right";
+export type CameraMoveV5 = "static" | "push_in" | "pull_out" | "pan_left" | "pan_right" | "tilt_up" | "tilt_down";
+export type TransitionInV5 = "hard_cut" | "dissolve" | "fade_from_black" | "slide_left" | "slide_right" | "whip_pan" | "zoom_in" | "flash";
+export type GradingMoodV5 = "neutral" | "dark_moody" | "high_key" | "warm" | "cool" | "high_contrast" | "desaturated" | "vibrant";
+export type TextAnimV5 = "none" | "per_char_reveal" | "word_stagger" | "pop" | "scale" | "flash" | "slide_up";
+
+export interface SceneVisualRecipeV5 {
+  sectionId: string;
+  role: string;
+  /** How this scene enters (derived from cut/shot boundary + motion). */
+  transitionIn: TransitionInV5;
+  /** Dominant subject placement + camera behaviour (content-neutral). */
+  subject?: { anchor: AnchorV5; areaRatio: number; cameraMove: CameraMoveV5; motionIntensity: number };
+  /** Where on-screen copy sits + how it animates (position/animation only, NEVER the sample's text). */
+  textAnchor: AnchorV5;
+  textAnim: TextAnimV5;
+  /** Per-scene colour grading (the source's colour world) — drives the rendered look. */
+  grading: { mood: GradingMoodV5; brightness: number; saturation: number; palette: string[] };
+  source: "deterministic" | "vlm";
+  confidence: number;
 }
 
 /** A patch-first revision of a same_template generation (the modify_template mode). */
