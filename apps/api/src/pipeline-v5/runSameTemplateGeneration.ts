@@ -38,6 +38,40 @@ function copyForSlot(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, idx: numb
   return points.length ? points[idx % points.length] : "Key benefit";
 }
 
+/** Infer the section role of a slot from its id / original role (hook/benefit/proof/cta). */
+function sceneRoleOf(slot: v5.TemplateSlot): "hook" | "benefit" | "proof" | "cta" {
+  const s = `${slot.id} ${slot.originalRole ?? ""}`.toLowerCase();
+  if (/hook|open|hero|intro/.test(s)) return "hook";
+  if (/cta|call|end|outro|button|offer/.test(s)) return "cta";
+  if (/proof|stat|review|testimonial|data|trust/.test(s)) return "proof";
+  return "benefit";
+}
+
+/**
+ * Build a SCENE-AWARE, on-message AIGC image prompt so each slot gets a distinct, themed visual
+ * (instead of 5 near-identical "premium product" shots). Varies by section role + a rotating selling
+ * point. No on-image text / watermark / sample lookalike (re-gated downstream anyway).
+ */
+function imagePromptFor(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, imageIdx: number): string {
+  const theme = brief.theme ?? brief.prompt ?? "the product";
+  const points = (brief.sellingPoints ?? []).filter(Boolean);
+  const point = points.length ? points[imageIdx % points.length] : "";
+  const role = sceneRoleOf(slot);
+  const scene =
+    slot.kind === "logo"
+      ? `a clean modern brand logo mark for "${theme}", vector style, solid flat background`
+      : slot.kind === "background_image"
+        ? `an atmospheric cinematic background for "${theme}", depth and mood, no subject`
+        : role === "hook"
+          ? `an eye-catching opening hero key visual for "${theme}", bold, high contrast, advertising`
+          : role === "proof"
+            ? `a convincing close-up product/detail shot for "${theme}"${point ? `, emphasizing ${point}` : ""}, studio lighting`
+            : role === "cta"
+              ? `a polished centered hero product shot for "${theme}", premium, ready for a call-to-action`
+              : `a vibrant lifestyle advertising shot for "${theme}"${point ? ` showcasing ${point}` : ""}, on-brand`;
+  return `${scene}. 9:16 vertical, photographic, no on-image text, no watermark.`;
+}
+
 export interface SameTemplateInput {
   projectId: string;
   generationId: string;
@@ -96,7 +130,9 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   const slotBindings: v5.TemplateSlotBinding[] = [];
   const generatedAssets: v5.GeneratedVisualAsset[] = [];
   let generatedImageCount = 0;
-  const maxGenerated = 6;
+  let imageSlotIdx = 0;
+  // Fill EVERY image slot with real imagery (capped) so no scene is left as an empty designed card.
+  const maxGenerated = Math.min(12, Math.max(6, capsule.slotSchema.filter((s) => IMAGE_SLOTS.has(s.kind)).length));
   const usedTargetAssetIds = new Set<string>();
 
   if (input.reviseFrom) {
@@ -143,17 +179,12 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
         usedTargetAssetIds.add(userAsset.assetId);
         continue;
       }
-      // 2) AIGC generate
-      if (provider && generatedImageCount < maxGenerated && (slot.required || slot.kind === "hero_image")) {
+      // 2) AIGC generate — for EVERY image slot (each gets a distinct, scene-aware visual), under cap.
+      if (provider && generatedImageCount < maxGenerated) {
+        const thisImageIdx = imageSlotIdx++;
         try {
           await fs.mkdir(materialsDir, { recursive: true });
-          // Pick the asset recipe that actually matches this slot kind; fall back to a per-slot
-          // (index-rotated) recipe rather than always the first one.
-          const slotKey = slot.kind.replace("_image", "");
-          const recipe =
-            capsule.assetRecipes.find((r) => r.kind.toLowerCase().includes(slotKey)) ??
-            (capsule.assetRecipes.length ? capsule.assetRecipes[i % capsule.assetRecipes.length] : undefined);
-          const prompt = (recipe?.generationPromptTemplate ?? `A premium ${slot.kind.replace("_", " ")} for "${brief.theme ?? "the product"}", studio lighting, clean background, no text.`).replace(/\{targetProduct\}|\{theme\}/g, brief.theme ?? "the product");
+          const prompt = imagePromptFor(slot, brief, thisImageIdx);
           const candidates = await provider.generate(
             {
               id: `brief_${input.generationId}_${slot.id}`,
