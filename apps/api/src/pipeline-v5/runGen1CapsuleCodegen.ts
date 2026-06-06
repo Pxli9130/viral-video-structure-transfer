@@ -140,6 +140,9 @@ HARD REQUIREMENTS (output auto-rejected otherwise):
   Text/textGeometry. ALL readable copy comes from copy.* props. For kinetic / 3D-ribbon / scrolling text,
   build it from props, e.g.: const ribbonText = Object.values(copy).filter(Boolean).join("  ·  ") || theme;
   then draw ribbonText — NEVER the source's words.
+- Fallback defaults for a missing copy prop MUST be GENERIC placeholders ("Headline", "Subtitle",
+  "Learn more"), NEVER the source's actual words/headlines (e.g. do NOT write copy.x || "GRADUATION
+  EXHIBITION"). Prefer copy.x || "" or a generic single word.
 - Full-bleed OPAQUE background; cover the FULL ${timing.durationSec}s across the sections with no gaps.
 - Use frame-driven motion only (useCurrentFrame / interpolate / spring / useFrame). Per scene, compute
   local progress from the scene's OWN duration (frame relative to its <Sequence>), not the whole video.

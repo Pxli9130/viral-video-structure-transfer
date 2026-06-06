@@ -18,6 +18,8 @@ const LONG_TEXT_LITERAL_RE = />\s*([^<>{}\n]{60,})\s*</g; // a >=60-char literal
 // Readable text baked into a <canvas> draw (fillText/strokeText) or a 3D <Text>/textGeometry — the
 // multimodal codegen path can otherwise hardcode the SAMPLE's words here, bypassing the JSX-text scan.
 const CANVAS_TEXT_RE = /\b(?:fillText|strokeText)\s*\(\s*(["'`])((?:[^"'`\\]|\\.){8,})\1/;
+// A multi-word ALL-CAPS phrase literal (e.g. a copied headline used as a `copy.x || "..."` fallback).
+const CAPS_PHRASE_RE = /(["'`])([A-Z][A-Z0-9.'\-]*(?: [A-Z0-9&.'\-]+){1,}[A-Z0-9 &.'\-]*)\1/g;
 
 function parseCompiles(content: string): { ok: boolean; error?: string } {
   try {
@@ -88,7 +90,10 @@ export function validateTemplateCapsule(capsule: v5.RemotionTemplateCapsule): v5
   while ((m = re.exec(code))) longLiterals.push(m[1].trim());
   const suspiciousText = longLiterals.filter((t) => !/^[\s{}().,;:+\-*/<>=&|?]+$/.test(t));
   const canvasText = CANVAS_TEXT_RE.test(code); // hardcoded readable text inside fillText/strokeText
-  g("T9", "No copied sample text in code", canvasText ? "fail" : suspiciousText.length ? "warn" : "pass", canvasText ? "literal text baked into a canvas/3D draw — feed it from a copy prop" : suspiciousText.length ? `${suspiciousText.length} long literal text node(s) — verify not sample copy` : "content is props-driven");
+  // multi-word ALL-CAPS phrase literals >=16 chars (copied headline used as a fallback default).
+  const capsPhrases = (code.match(CAPS_PHRASE_RE) ?? []).map((s) => s.slice(1, -1)).filter((s) => s.replace(/[^A-Z]/g, "").length >= 14 && s.includes(" "));
+  const textLeak = canvasText || capsPhrases.length > 0;
+  g("T9", "No copied sample text in code", textLeak ? "fail" : suspiciousText.length ? "warn" : "pass", canvasText ? "literal text baked into a canvas/3D draw — feed it from a copy prop" : capsPhrases.length ? `copied headline-like literal(s): ${capsPhrases.slice(0, 2).join(" / ")} — use a GENERIC fallback, not the source's words` : suspiciousText.length ? `${suspiciousText.length} long literal text node(s) — verify not sample copy` : "content is props-driven");
 
   // T10 template safe for reuse (composite)
   const safeFlags =
@@ -96,7 +101,7 @@ export function validateTemplateCapsule(capsule: v5.RemotionTemplateCapsule): v5
     capsule.safety.sampleAudioReusable === false &&
     capsule.safety.sampleTextReusable === false &&
     capsule.safety.onlyTemplateCodeReusable === true;
-  const safe = !samplePath && !mediaUrl && !localMedia && !literalHttp && !forbidden && !canvasText && safeFlags;
+  const safe = !samplePath && !mediaUrl && !localMedia && !literalHttp && !forbidden && !textLeak && safeFlags;
   g("T10", "Template safe for reuse", safe ? "pass" : "fail", safe ? "code reusable, no sample content" : "unsafe — see T5/T6/T9/safety flags");
 
   const passed = gates.every((x) => x.status !== "fail");
