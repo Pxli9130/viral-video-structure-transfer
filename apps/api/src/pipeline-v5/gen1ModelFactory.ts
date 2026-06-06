@@ -29,7 +29,8 @@ export function createGeminiVisionCodegenFn(opts: GeminiModelFnOptions = {}): Vi
   if (!apiKey) return undefined;
   const client = new GoogleGenAI({ apiKey });
   const model = opts.model ?? process.env.GEMINI_CODEGEN_MODEL ?? process.env.AI_GEMINI_MODEL ?? "gemini-flash-latest";
-  const timeoutMs = opts.timeoutMs ?? 180_000;
+  // A best-Pro model watching a full video + emitting a large capsule JSON can take minutes — allow it.
+  const timeoutMs = opts.timeoutMs ?? Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600_000);
   return async (prompt, images, videoPath) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
