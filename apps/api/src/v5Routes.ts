@@ -83,7 +83,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
     const allowVlm = String(process.env.ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS ?? "") === "1" && req.body?.options?.useVision !== false;
     // Gen1 capsule reconstruction uses the BEST Pro video model (reads the whole video). Override with
     // options.gen1Model or env GEMINI_GEN1_MODEL; defaults to gemini-2.5-pro.
-    const gen1Model = (req.body?.options?.gen1Model as string | undefined) ?? process.env.GEMINI_GEN1_MODEL ?? process.env.GEMINI_CODEGEN_MODEL ?? "gemini-2.5-pro";
+    // Best Pro video+codegen model right now: Gemini 3.1 Pro (preview). Override via options.gen1Model or GEMINI_GEN1_MODEL.
+    const gen1Model = (req.body?.options?.gen1Model as string | undefined) ?? process.env.GEMINI_GEN1_MODEL ?? "gemini-3.1-pro-preview";
     const capsuleCodegenVision = wantCapsuleCodegen && allowVlm ? createGeminiVisionCodegenFn({ model: gen1Model }) ?? null : null;
     const sceneVlm = allowVlm ? createGeminiVisionFn({ model: process.env.VLM_MODEL }) ?? null : null;
     // Real frame-0 render validation at learn time (T8) — defaults to follow capsule codegen.

@@ -142,9 +142,10 @@ export async function runLearnSampleV5(
   const sectionMeta = neutralProgram.typedSpec.scenes.map((s) => ({ id: s.id, role: String(s.role ?? "other"), startSec: s.startSec, endSec: s.endSec }));
   let sceneRecipes = await deriveSceneRecipes(evidence, sectionMeta, { storageRoot: opts.storageRoot });
 
-  // Stage 4a3 — OPTIONAL VLM enrichment: a vision model adds rich content-neutral per-scene detail
-  // (composition / layout zones / graphic elements / typography / treatment) for higher-fidelity codegen.
-  if (opts.sceneVlm && sceneRecipes.length && opts.storageRoot) {
+  // Stage 4a3 — OPTIONAL VLM enrichment of the cv2 recipes. SKIPPED when the Gen1-Pro path is active
+  // (that single call watches the video itself + returns its own sceneRecipes, so per-scene VLM calls
+  // would be wasted on the deterministic fallback only).
+  if (opts.sceneVlm && !opts.capsuleCodegenVision && sceneRecipes.length && opts.storageRoot) {
     try {
       sceneRecipes = await runSceneRecipeVlm({ evidence, sections: sectionMeta, base: sceneRecipes, storageRoot: opts.storageRoot, vision: opts.sceneVlm });
     } catch (err) {
