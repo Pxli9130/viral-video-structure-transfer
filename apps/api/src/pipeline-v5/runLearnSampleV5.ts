@@ -13,6 +13,7 @@ import { runExtractElements } from "./runExtractElements.js";
 import { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.js";
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
+import { runGen1CapsuleGemini } from "./runGen1CapsuleGemini.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
 import { runSceneRecipeVlm } from "./runSceneRecipeVlm.js";
@@ -151,36 +152,51 @@ export async function runLearnSampleV5(
     }
   }
 
-  // Stage 4b — Remotion Template Reconstruction: build + validate + store the reusable capsule (V5.1).
-  const templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence, { sceneRecipes });
+  // Stage 4b — Remotion Template Reconstruction: deterministic capsule is the GUARANTEED fallback.
+  let templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence, { sceneRecipes });
   let templateValidation = validateTemplateCapsule(templateCapsule);
+  let geminiKnowledgeElements: unknown[] | undefined;
+  let geminiSelfReview: unknown;
 
-  // Stage 4c — OPTIONAL real AI capsule codegen (apply != promote). The deterministic code above is the
-  // guaranteed fallback; the AI TSX only replaces it after compile + safety + real-render all pass.
+  // Stage 4c — PRIMARY AI path: ONE best-Pro Gemini call reads the full video -> a complete props-driven
+  // RemotionTemplateCapsule. The returned Remotion code is CANONICAL — we keep it as-is and only STOP it
+  // if it can't compile/render (repair loop). On success we adopt the whole Gemini capsule.
   let capsuleCodegen: LearnArtifacts["capsuleCodegen"];
-  if (opts.capsuleCodegenModel) {
-    // Multimodal: the vision codegen WATCHES the full source video (Files API, any size) + keyframes.
-    const frames = opts.capsuleCodegenVision && opts.storageRoot ? await readSectionFrames(evidence, sectionMeta, opts.storageRoot, 6) : undefined;
-    const cg = await runGen1CapsuleCodegen(
-      {
-        capsule: templateCapsule,
-        program: neutralProgram,
-        evidence,
-        model: opts.capsuleCodegenModel,
-        frames: frames?.length ? frames : undefined,
-        videoPath: opts.capsuleCodegenVision ? opts.sampleVideoPath : undefined,
-        visionModel: opts.capsuleCodegenVision ?? undefined
-      },
-      { maxAttempts: 3 }
-    );
+  if (opts.capsuleCodegenVision) {
+    const frames = opts.storageRoot ? await readSectionFrames(evidence, sectionMeta, opts.storageRoot, 6) : [];
+    const renderProbe = (cb: v5.RemotionTemplateCapsule["codeBundle"], fixture: Record<string, unknown>) =>
+      renderCapsuleStill({ capsule: { ...templateCapsule, codeBundle: cb, fixtures: { ...templateCapsule.fixtures, neutralFixture: fixture } }, boundProps: fixture, aspectRatio: "9:16" }).then((r) => ({ ok: r.ok, error: r.error, warnings: r.warnings }));
+    const g = await runGen1CapsuleGemini({
+      deterministic: templateCapsule,
+      evidence,
+      videoPath: opts.sampleVideoPath,
+      frames,
+      visionModel: opts.capsuleCodegenVision,
+      repairModel: opts.capsuleCodegenModel ?? undefined,
+      renderProbe,
+      maxAttempts: 3
+    });
+    capsuleCodegen = { usedAi: g.usedAi, compilePassed: g.validation.compilePassed, renderPreviewPassed: g.validation.renderPreviewPassed, noCopyPassed: g.validation.noCopyPassed };
+    if (g.usedAi && g.capsule) {
+      templateCapsule = g.capsule; // ADOPT the full Gemini capsule (code is bible)
+      if (g.sceneRecipes?.length) templateCapsule.sceneRecipes = g.sceneRecipes;
+      geminiKnowledgeElements = g.knowledgeElements;
+      geminiSelfReview = g.selfReview;
+      templateValidation = validateTemplateCapsule(templateCapsule);
+    }
+    warnings.push(...g.warnings.slice(0, 3));
+    warnings.push(g.usedAi ? "Gen1 Pro capsule promoted (compiles + renders; code kept as-is)." : "Gen1 Pro capsule unavailable/failed; deterministic capsule retained.");
+  } else if (opts.capsuleCodegenModel) {
+    // Text-only path (no video): recipe-grounded text codegen over the deterministic baseline.
+    const cg = await runGen1CapsuleCodegen({ capsule: templateCapsule, program: neutralProgram, evidence, model: opts.capsuleCodegenModel }, { maxAttempts: 2 });
     capsuleCodegen = { usedAi: cg.usedAi, compilePassed: cg.validation.compilePassed, renderPreviewPassed: cg.validation.renderPreviewPassed, noCopyPassed: cg.validation.noCopyPassed };
     if (cg.usedAi) {
-      templateCapsule.codeBundle = cg.codeBundle; // PROMOTE
-      templateCapsule.quality.renderPreviewPassed = true; // render gate passed at apply time
-      templateCapsule.quality.codeOrigin = "ai"; // honest provenance (no stale "deterministic" warning)
-      templateValidation = validateTemplateCapsule(templateCapsule); // re-validate the promoted bundle
+      templateCapsule.codeBundle = cg.codeBundle;
+      templateCapsule.quality.renderPreviewPassed = true;
+      templateCapsule.quality.codeOrigin = "ai";
+      templateValidation = validateTemplateCapsule(templateCapsule);
     }
-    warnings.push(cg.usedAi ? "AI capsule codegen promoted (compile+render+no-copy passed)." : `AI capsule codegen rejected; deterministic code retained. ${cg.warnings.slice(0, 2).join("; ")}`);
+    warnings.push(cg.usedAi ? "AI capsule codegen promoted." : "AI capsule codegen rejected; deterministic retained.");
   }
 
   // Stage 4d — OPTIONAL real render gate at learn time: prove the (promoted) capsule actually renders
@@ -214,7 +230,9 @@ export async function runLearnSampleV5(
       write("remotion-template-capsule.json", templateCapsule),
       write("template-validation.json", templateValidation),
       write("learn-gates.json", gates),
-      ...(capsuleCodegen ? [write("capsule-codegen.json", capsuleCodegen)] : [])
+      ...(capsuleCodegen ? [write("capsule-codegen.json", capsuleCodegen)] : []),
+      ...(geminiKnowledgeElements?.length ? [write("knowledge-elements-gemini.json", geminiKnowledgeElements)] : []),
+      ...(geminiSelfReview ? [write("capsule-selfreview.json", geminiSelfReview)] : [])
     ]);
   }
 

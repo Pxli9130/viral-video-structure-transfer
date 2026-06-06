@@ -81,7 +81,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
     // Multimodal codegen + VLM scene enrichment send sample FRAMES to the provider for STRUCTURE
     // analysis — gated by ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS (opt out with options.useVision=false).
     const allowVlm = String(process.env.ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS ?? "") === "1" && req.body?.options?.useVision !== false;
-    const capsuleCodegenVision = wantCapsuleCodegen && allowVlm ? createGeminiVisionCodegenFn({ model: process.env.GEMINI_CODEGEN_MODEL }) ?? null : null;
+    // Gen1 capsule reconstruction uses the BEST Pro video model (reads the whole video). Override with
+    // options.gen1Model or env GEMINI_GEN1_MODEL; defaults to gemini-2.5-pro.
+    const gen1Model = (req.body?.options?.gen1Model as string | undefined) ?? process.env.GEMINI_GEN1_MODEL ?? process.env.GEMINI_CODEGEN_MODEL ?? "gemini-2.5-pro";
+    const capsuleCodegenVision = wantCapsuleCodegen && allowVlm ? createGeminiVisionCodegenFn({ model: gen1Model }) ?? null : null;
     const sceneVlm = allowVlm ? createGeminiVisionFn({ model: process.env.VLM_MODEL }) ?? null : null;
     // Real frame-0 render validation at learn time (T8) — defaults to follow capsule codegen.
     const validateRender = req.body?.options?.validateTemplateRender ?? wantCapsuleCodegen;
