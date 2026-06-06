@@ -60,6 +60,7 @@ export function V5Dashboard() {
   const [theme, setTheme] = useState("portable fan high-click ad");
   const [sellingPoints, setSellingPoints] = useState("small, quiet, long battery");
   const [useAi, setUseAi] = useState(false);
+  const [aiCapsule, setAiCapsule] = useState(true); // V5.1: real AI capsule codegen + render validation (default ON)
   const [autoRender, setAutoRender] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -129,7 +130,7 @@ export function V5Dashboard() {
     run("learn", async () => {
       const r = await api<{ learned: Array<{ sampleId: string; storedElements?: number; gen1?: string; error?: string }>; kbSize: number }>(
         "/api/v5/learn-samples",
-        { method: "POST", body: JSON.stringify({ sampleAssetIds: sampleIds, options: { runGen1Ai: useAi } }) }
+        { method: "POST", body: JSON.stringify({ sampleAssetIds: sampleIds, options: { runGen1Ai: useAi, runCapsuleCodegen: aiCapsule } }) }
       );
       setLog(r.learned.map((l) => (l.error ? `✗ ${l.sampleId}: ${l.error}` : `✓ ${l.sampleId}: ${l.storedElements} elements (gen1=${l.gen1})`)));
       await Promise.all([refreshKb(), refreshTemplates()]);
@@ -188,6 +189,9 @@ export function V5Dashboard() {
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>V5.1 — Same-Template Reconstruction</h1>
         <div>
+          <label style={{ marginRight: 12, fontSize: 13 }} title="学习时用真 Gemini 重写模板 TSX（三重门）+ 学习期渲染验证；关掉则用确定性胶囊">
+            <input type="checkbox" checked={aiCapsule} onChange={(e) => setAiCapsule(e.target.checked)} /> AI 代码胶囊
+          </label>
           <label style={{ marginRight: 12, fontSize: 13 }}>
             <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} /> AI Gen1/Gen2
           </label>

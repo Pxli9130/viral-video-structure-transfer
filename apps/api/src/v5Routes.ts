@@ -72,11 +72,12 @@ export function createV5Router(deps: V5RouterDeps): Router {
     if (!sampleAssetIds.length) return fail(res, 400, "sampleAssetIds[] required");
     const wantAi = req.body?.options?.runGen1Ai === true;
     const modelFn = wantAi ? createGeminiModelFn() : undefined;
-    // V5.1 Phase 1: opt-in real AI codegen of the capsule TSX (triple-gated, apply!=promote).
-    const wantCapsuleCodegen = req.body?.options?.runCapsuleCodegen === true;
+    // V5.1: real AI codegen of the capsule TSX (triple-gated, apply!=promote) is now the DEFAULT
+    // (opt out with options.runCapsuleCodegen=false). Falls back to deterministic when no GEMINI key.
+    const wantCapsuleCodegen = req.body?.options?.runCapsuleCodegen !== false;
     const capsuleCodegenModel = wantCapsuleCodegen ? createGeminiModelFn({ model: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
-    // Phase 2: opt-in real frame-0 render validation at learn time (T8). On by default when codegen runs.
-    const validateRender = req.body?.options?.validateTemplateRender === true || wantCapsuleCodegen;
+    // Real frame-0 render validation at learn time (T8) — defaults to follow capsule codegen.
+    const validateRender = req.body?.options?.validateTemplateRender ?? wantCapsuleCodegen;
     const learned: unknown[] = [];
     for (const assetId of sampleAssetIds) {
       const asset = await findAsset(assetId);
