@@ -97,6 +97,21 @@ FIDELITY: do NOT collapse all scenes to one layout; do NOT default to a generic 
 unless the source truly looks that way. Each source scene should have distinct layout/motion/transition/
 text behavior based on what you SEE in the video.
 
+RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to text only. If a scene has
+a BACKGROUND VIDEO / live-action footage, reconstruct it as <OffthreadVideo src={assets.bgVideo?.src}/>
+(or a placeholder full-bleed motion layer when no asset). If it has PHOTOS / product / b-roll that pan or
+zoom, reconstruct them as <Img src={assets.clip1?.src}/> with the same camera move (ken burns / pan).
+Layer text OVER the footage like the source does. Every distinct image/footage layer you see MUST become
+its own asset slot in slotSchema (kind "image" or "video", propPath assets.<id>) so it can be filled —
+e.g. assets.bgVideo, assets.clip1, assets.clip2, assets.heroImage, assets.logo. A montage of clips ->
+multiple Sequences each with its own <Img>/<OffthreadVideo> layer, NOT a single text card.
+
+DO NOT REPRODUCE PLATFORM CHROME / WATERMARKS. Skip entirely (do not draw, do not make a slot): any
+platform watermark or badge (小红书 / Xiaohongshu / RED / 抖音 / Douyin / TikTok / Instagram / 微信 /
+Bilibili logos), account handles / IDs (e.g. "小红书号: 4287481687", @username), follow / subscribe /
+like-share end-cards, QR codes, and any "关注我" / "扫码" overlays. These are app UI, NOT the ad's content —
+reconstruct only the actual ad. If the LAST scene is just such a follow/handle card, omit that scene.
+
 Also extract (for a later content-modification step):
 - sceneRecipes[]: { id,startSec,endSec,role, visualSummary, layout:{subjectAnchor,textAnchor,depthLayers[]},
   cameraMove:{type,intensity,curve}, transitionIn:{type,durationSec,direction}, transitionOut,

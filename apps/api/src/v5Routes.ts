@@ -281,6 +281,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
       if (!capsule) return fail(res, 400, "no template capsule available; run /learn-samples first (or pass options.templateCapsuleId)");
       const port = Number(process.env.APP_PORT ?? 3000);
       const sampleVideoPath = allAssets.find((a) => a.id === capsule.sourceSampleId)?.path;
+      // Context-modification model (Pro): rewrites an AI-clone capsule's text/colour for the new theme.
+      // Opt out with options.rewriteContext=false. Uses the Gen1 Pro model.
+      const rewriteModel = reqOpts.rewriteContext === false ? null : createGeminiModelFn({ model: process.env.GEMINI_GEN1_MODEL ?? "gemini-3.1-pro-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000) }) ?? null;
       const st = await runSameTemplateGeneration({
         projectId,
         generationId,
@@ -293,7 +296,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
         serveBase: `http://127.0.0.1:${port}`,
         sampleVideoPath,
         env: process.env,
-        doRender: doRender && (reqOpts.autoRender ?? true) !== false
+        doRender: doRender && (reqOpts.autoRender ?? true) !== false,
+        rewriteModel
       });
       return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST);
     }

@@ -9,9 +9,11 @@ import path from "node:path";
 import type { Asset } from "@vvst/shared";
 import { getAigcMaterialProvider, v5 } from "@vvst/shared";
 import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
-import { renderTemplateCapsule } from "./renderTemplateCapsule.js";
+import { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
+import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
+import type { Gen1ModelFn } from "./runGen1Ai.js";
 
 const IMAGE_SLOTS = new Set<v5.TemplateSlotKind>(["hero_image", "product_image", "background_image", "logo", "ui_mockup"]);
 const TEXT_SLOTS = new Set<v5.TemplateSlotKind>(["headline", "subtitle", "cta_text", "data_value"]);
@@ -90,6 +92,9 @@ export interface SameTemplateInput {
   doRender?: boolean;
   /** modify_template: patch-first revise from a prior instance (reuse bindings, override theme/copy). */
   reviseFrom?: { instance: v5.TemplateInstance; patch?: v5.TemplatePatchSet };
+  /** Context-modification: a Pro model fn that rewrites an AI-clone capsule's text/colour for the new
+   *  theme before rendering (so "same template, new theme" actually changes the on-screen content). */
+  rewriteModel?: Gen1ModelFn | null;
 }
 
 export interface SameTemplateResult {
@@ -110,9 +115,27 @@ export interface SameTemplateResult {
 }
 
 export async function runSameTemplateGeneration(input: SameTemplateInput): Promise<SameTemplateResult> {
-  const { capsule, brief, options } = input;
+  let capsule = input.capsule;
+  const { brief, options } = input;
   const warnings: string[] = [];
   const gates: v5.ScorecardGate[] = [];
+
+  // CONTEXT-MODIFICATION: for an AI-clone capsule (whose text/colours are baked in) a separate Pro call
+  // rewrites the on-screen text + palette to the new theme BEFORE rendering, keeping the structure. This
+  // is what makes "same template, new theme" actually change what you see. Falls back to the stored code.
+  if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length)) {
+    const rw = await runCapsuleContextRewrite({
+      capsule,
+      theme: brief.theme ?? brief.prompt ?? "",
+      sellingPoints: brief.sellingPoints ?? [],
+      model: input.rewriteModel,
+      renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
+      maxAttempts: 2
+    });
+    warnings.push(...rw.warnings.slice(0, 2));
+    if (rw.usedAi) capsule = { ...capsule, codeBundle: rw.codeBundle };
+  }
+
   const aigcOn = options.aigcGapFill.mode === "auto_on";
   const palette = choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"]);
 
