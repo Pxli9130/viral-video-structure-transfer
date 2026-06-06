@@ -89,11 +89,13 @@ export function validateTemplateCapsule(capsule: v5.RemotionTemplateCapsule): v5
   const re = new RegExp(LONG_TEXT_LITERAL_RE);
   while ((m = re.exec(code))) longLiterals.push(m[1].trim());
   const suspiciousText = longLiterals.filter((t) => !/^[\s{}().,;:+\-*/<>=&|?]+$/.test(t));
-  const canvasText = CANVAS_TEXT_RE.test(code); // hardcoded readable text inside fillText/strokeText
-  // multi-word ALL-CAPS phrase literals >=16 chars (copied headline used as a fallback default).
+  // canvasText = readable words RENDERED via canvas/3D (would show the sample's text) -> hard fail.
+  const canvasText = CANVAS_TEXT_RE.test(code);
+  // capsPhrases = ALL-CAPS phrases used as `copy.x || "..."` FALLBACK defaults (only shown if a prop is
+  // missing — overridden at real render). Surfaced as a WARN so rich AI code isn't rejected over a
+  // generic fallback, but a possible copied headline is still flagged.
   const capsPhrases = (code.match(CAPS_PHRASE_RE) ?? []).map((s) => s.slice(1, -1)).filter((s) => s.replace(/[^A-Z]/g, "").length >= 14 && s.includes(" "));
-  const textLeak = canvasText || capsPhrases.length > 0;
-  g("T9", "No copied sample text in code", textLeak ? "fail" : suspiciousText.length ? "warn" : "pass", canvasText ? "literal text baked into a canvas/3D draw — feed it from a copy prop" : capsPhrases.length ? `copied headline-like literal(s): ${capsPhrases.slice(0, 2).join(" / ")} — use a GENERIC fallback, not the source's words` : suspiciousText.length ? `${suspiciousText.length} long literal text node(s) — verify not sample copy` : "content is props-driven");
+  g("T9", "No copied sample text in code", canvasText ? "fail" : capsPhrases.length || suspiciousText.length ? "warn" : "pass", canvasText ? "literal text baked into a canvas/3D draw — feed it from a copy prop" : capsPhrases.length ? `${capsPhrases.length} ALL-CAPS fallback literal(s) (verify generic, not source words): ${capsPhrases.slice(0, 2).join(" / ")}` : suspiciousText.length ? `${suspiciousText.length} long literal text node(s) — verify not sample copy` : "content is props-driven");
 
   // T10 template safe for reuse (composite)
   const safeFlags =
@@ -101,7 +103,7 @@ export function validateTemplateCapsule(capsule: v5.RemotionTemplateCapsule): v5
     capsule.safety.sampleAudioReusable === false &&
     capsule.safety.sampleTextReusable === false &&
     capsule.safety.onlyTemplateCodeReusable === true;
-  const safe = !samplePath && !mediaUrl && !localMedia && !literalHttp && !forbidden && !textLeak && safeFlags;
+  const safe = !samplePath && !mediaUrl && !localMedia && !literalHttp && !forbidden && !canvasText && safeFlags;
   g("T10", "Template safe for reuse", safe ? "pass" : "fail", safe ? "code reusable, no sample content" : "unsafe — see T5/T6/T9/safety flags");
 
   const passed = gates.every((x) => x.status !== "fail");

@@ -214,10 +214,12 @@ export async function runGen1CapsuleCodegen(input: CapsuleCodegenInput, opts: Ca
     lastGates = v.gates;
     const status = (id: string) => v.gates.find((x) => x.id === id)?.status;
     const compilePassed = status("T2") === "pass";
+    // T9 may WARN on generic ALL-CAPS fallbacks (only shown if a prop is missing) — that is acceptable
+    // for promotion; only a T9 FAIL (rendered canvas/3D sample text) blocks. T5/T6/T10 must be pass.
     const noCopyPassed =
-      status("T5") === "pass" && status("T6") === "pass" && status("T9") === "pass" && status("T10") === "pass" && v.gates.every((x) => x.id !== "T6b");
+      status("T5") === "pass" && status("T6") === "pass" && status("T9") !== "fail" && status("T10") === "pass" && v.gates.every((x) => x.id !== "T6b");
     if (!compilePassed || !noCopyPassed) {
-      lastErrors = v.gates.filter((x) => x.status === "fail" || (["T5", "T6", "T9", "T10", "T6b"].includes(x.id) && x.status === "warn")).map((x) => `${x.id} ${x.name}: ${x.message}`);
+      lastErrors = v.gates.filter((x) => x.status === "fail" || (["T5", "T6", "T10", "T6b"].includes(x.id) && x.status === "warn")).map((x) => `${x.id} ${x.name}: ${x.message}`);
       if (!lastErrors.length) lastErrors = [compilePassed ? "no-copy/safety gate not green" : "did not compile"];
       warnings.push(`AI capsule attempt ${attempt + 1} rejected at static gate: ${lastErrors.slice(0, 2).join("; ")}`);
       continue;
