@@ -27,7 +27,9 @@ export interface CapsuleCodegenInput {
   model: Gen1ModelFn;
   /** Source keyframes (base64) so a multimodal model can SEE the video it reconstructs (richer fidelity). */
   frames?: Array<{ base64: string; mimeType: string }>;
-  /** Multimodal codegen fn (prompt + frames -> code). When present with frames, used instead of `model`. */
+  /** Path to the full source video — uploaded to the vision model (Files API) so it WATCHES the motion. */
+  videoPath?: string;
+  /** Multimodal codegen fn (prompt + frames + video -> code). When present, drives the two-stage codegen. */
   visionModel?: VisionCodegenFn;
 }
 
@@ -163,6 +165,63 @@ ${JSON.stringify(slots, null, 0)}
 ${multimodal ? "" : `\nREFERENCE deterministic implementation (keep the signature + section structure; improve fidelity):\n\`\`\`tsx\n${referenceTsx.slice(0, 7000)}\n\`\`\``}${repair}`;
 }
 
+/**
+ * STAGE 1 — faithful clone. The vision model WATCHES the source video and writes a rich, accurate
+ * Remotion reconstruction (3D ribbon / kinetic typography / exact layout / motion). Minimal constraints:
+ * it MAY hardcode text/colours here — stage 2 parameterises it. Single self-contained TSX (TypeScript).
+ */
+export function buildFaithfulClonePrompt(capsule: v5.RemotionTemplateCapsule): string {
+  const t = capsule.timingSignature;
+  return `You are given a short vertical ad VIDEO (and keyframes). Reproduce its visual design as a single
+self-contained Remotion (v4) React component in TypeScript (TSX). WATCH the video and rebuild what you see
+as faithfully as possible: the exact layout/composition, any 3D (twisting ribbons, extruded text, particles
+— use "@remotion/three" <ThreeCanvas> + "three" + "@react-three/fiber"), kinetic/scrolling typography
+(programmatic <canvas> + CanvasTexture), colour grading, transitions and MOTION over time.
+
+Be ambitious and detailed — match the source's style closely. ${t.durationSec}s, ${t.fps}fps, 1080x1920.
+Use frame-driven motion (useCurrentFrame / interpolate / spring / useFrame). Full-bleed opaque background.
+
+This is a DRAFT for faithful look only — you MAY hardcode placeholder text and colours for now.
+Imports allowed: react, remotion, @remotion/three, three, @react-three/fiber. FORBIDDEN: require( /
+process. / fs. / eval( / fetch( / XMLHttpRequest / dynamic import( / any http(s) URL (no stock images).
+
+Return ONLY JSON: { "indexTsx": "<the full TSX as a JSON string>" }`;
+}
+
+/**
+ * STAGE 2 — parameterise. Rewrites the stage-1 clone into OUR reusable contract: a props-driven
+ * TemplateFromSample with every readable word from copy.* props and every photo from assets.* props,
+ * colours from palette/theme — keeping ALL the 3D/canvas/layout/motion structure intact.
+ */
+export function buildParameterizePrompt(capsule: v5.RemotionTemplateCapsule, cloneTsx: string, repairErrors?: string[]): string {
+  const name = capsule.codeBundle.componentName;
+  const copyKeys = capsule.slotSchema.filter((s) => s.propPath?.startsWith("copy.")).map((s) => s.propPath!.slice(5));
+  const assetKeys = capsule.slotSchema.filter((s) => s.propPath?.startsWith("assets.")).map((s) => s.propPath!.slice(7));
+  const repair = repairErrors?.length ? `\n\nYOUR PREVIOUS OUTPUT WAS REJECTED — fix exactly:\n- ${repairErrors.slice(0, 6).join("\n- ")}` : "";
+  return `Rewrite the Remotion component below into a REUSABLE, props-driven template. KEEP its visual
+structure EXACTLY — all 3D, canvas, geometry, layout, motion, transitions, typography placement stay the
+same. Only CONTENT becomes props.
+
+Return ONLY JSON: { "componentName": "${name}", "indexTsx": "<full TSX as a JSON string>" }
+
+RULES (output auto-rejected otherwise):
+- Single named export: export const ${name} = ({ assets = {}, copy = {}, audio = {}, theme = "", palette = PALETTE }) => ( ... ). Remove any RemotionRoot / <Composition> / registerRoot.
+- Replace EVERY readable text string (JSX text, canvas fillText/strokeText, 3D text) with a copy.* prop.
+  Map them to these EXACT keys in order of appearance: ${JSON.stringify(copyKeys)}.
+  For kinetic / 3D-ribbon / scrolling text use: const ribbonText = Object.values(copy).filter(Boolean).join("  ·  ") || theme;
+  Fallback defaults for a missing prop MUST be GENERIC ("Headline", "Subtitle"), NEVER the draft's words.
+- Replace every image with an assets.* prop (assets.<key>?.src). Available image keys: ${JSON.stringify(assetKeys)}.
+  No literal http(s) URL anywhere; if an asset is missing, draw a gradient/shape/3D placeholder.
+- Bake brand colours as a PALETTE const default but prefer the runtime palette/theme props for colour.
+- Keep imports (react, remotion, @remotion/three, three, @react-three/fiber). FORBIDDEN: require( /
+  process. / fs. / eval( / fetch( / XMLHttpRequest / dynamic import(.
+
+COMPONENT TO REWRITE:
+\`\`\`tsx
+${cloneTsx.slice(0, 14000)}
+\`\`\`${repair}`;
+}
+
 /** Default render gate: really bundle + render ONE FRAME of the candidate with the neutral fixture. */
 async function defaultRenderProbe(
   input: CapsuleCodegenInput,
@@ -187,12 +246,31 @@ export async function runGen1CapsuleCodegen(input: CapsuleCodegenInput, opts: Ca
   let lastRaw: string | undefined;
   let lastGates: v5.TemplateGateResult[] = [];
 
+  // STAGE 1 (multimodal only): the vision model WATCHES the video once -> a rich faithful clone.
+  // Reused across parameterise attempts (the expensive video pass runs once).
+  const multimodal = Boolean(input.visionModel && (input.frames?.length || input.videoPath));
+  let cloneTsx: string | undefined;
+  if (multimodal) {
+    try {
+      const cloneRaw = await input.visionModel!(buildFaithfulClonePrompt(input.capsule), input.frames ?? [], input.videoPath);
+      const obj = extractJson(cloneRaw) as { indexTsx?: string };
+      if (obj?.indexTsx && typeof obj.indexTsx === "string") cloneTsx = obj.indexTsx;
+      else warnings.push("stage-1 clone returned no indexTsx; using text codegen");
+    } catch (err) {
+      warnings.push(`stage-1 clone error: ${err instanceof Error ? err.message.slice(0, 120) : String(err)}`);
+    }
+  }
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let raw: string;
-    const multimodal = Boolean(input.visionModel && input.frames?.length);
     try {
-      const prompt = buildCapsuleCodegenPrompt(input.capsule, input.program, input.evidence, attempt > 0 ? lastErrors : undefined, multimodal);
-      raw = multimodal ? await input.visionModel!(prompt, input.frames!) : await input.model(prompt);
+      if (cloneTsx) {
+        // STAGE 2: parameterise the clone into our props-driven contract (text model, code->code).
+        raw = await input.model(buildParameterizePrompt(input.capsule, cloneTsx, attempt > 0 ? lastErrors : undefined));
+      } else {
+        // No clone (text-only path or stage-1 failed): recipe-grounded text codegen.
+        raw = await input.model(buildCapsuleCodegenPrompt(input.capsule, input.program, input.evidence, attempt > 0 ? lastErrors : undefined, false));
+      }
     } catch (err) {
       warnings.push(`capsule codegen model error: ${err instanceof Error ? err.message.slice(0, 120) : String(err)}`);
       break; // model unreachable — keep deterministic
