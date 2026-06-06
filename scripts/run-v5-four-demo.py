@@ -10,12 +10,12 @@ OUT = os.path.join(ROOT, "storage", "demo-runs")
 GEN_DIR = os.path.join(ROOT, "storage", "generated", "v5", "generations")
 LEARN_DIR = os.path.join(ROOT, "storage", "generated", "v5", "learn")
 
-# (filename, run label, theme) — 4 distinct themes.
+# (filename, run label, theme, selling points) — 4 distinct themes.
 RUNS = [
-    ("editing.mov",        "run1-editing",       "AI 视频剪辑神器 教程广告"),
-    ("marketing.mov",      "run2-marketing",     "极简智能手表 新品发布"),
-    ("motion_graph_1.mov", "run3-motiongraph1",  "加密钱包 · 安全转账广告"),
-    ("motion_graph_2.mov", "run4-motiongraph2",  "暴汗能量饮料 爆发力广告"),
+    ("editing.mov",        "run1-editing",       "AI 视频剪辑神器",     ["自动卡点", "智能字幕", "一键成片", "云端协作"]),
+    ("marketing.mov",      "run2-marketing",     "极简智能手表",        ["7天超长续航", "血氧心率监测", "50米防水", "100+ 表盘"]),
+    ("motion_graph_1.mov", "run3-motiongraph1",  "加密钱包 · 安全转账",  ["冷存储私钥", "秒级到账", "支持 50 条链", "0 手续费"]),
+    ("motion_graph_2.mov", "run4-motiongraph2",  "暴汗能量饮料",        ["200mg 咖啡因", "0 糖 0 卡", "3 秒提神", "荔枝海盐口味"]),
 ]
 
 def req(method, path, body=None, timeout=600):
@@ -37,7 +37,7 @@ def main():
         if a.get("type") == "video" and a.get("hasPath") and a["filename"] not in by_name:
             by_name[a["filename"]] = a["id"]
     manifest = []
-    for fname, label, theme in RUNS:
+    for fname, label, theme, points in RUNS:
         run_dir = os.path.join(OUT, label)
         os.makedirs(os.path.join(run_dir, "learn"), exist_ok=True)
         os.makedirs(os.path.join(run_dir, "generate"), exist_ok=True)
@@ -63,7 +63,7 @@ def main():
         gr = req("POST", "/api/v5/generations", {
             "projectId": f"proj_demo_{label}",
             "brief": {"theme": theme, "aspectRatio": "9:16", "variant": "high_click",
-                      "sellingPoints": ["亮点一", "亮点二", "亮点三"]},
+                      "sellingPoints": points},
             "options": {"templateCapsuleId": cap}
         }, timeout=900)
         json.dump(gr, open(os.path.join(run_dir, "generate-response.json"), "w"), ensure_ascii=False, indent=2)
