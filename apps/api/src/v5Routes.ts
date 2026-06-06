@@ -106,7 +106,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         aiProgram = g1.usedAi ? g1.program : null;
         usedAi = g1.usedAi;
       }
-      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, capsuleCodegenVision, sceneVlm, validateRender, projectId: asset.projectId, storageRoot: path.dirname(deps.generatedDir) });
+      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, capsuleCodegenVision, sceneVlm, validateRender, projectId: asset.projectId, storageRoot: path.dirname(deps.generatedDir), sampleVideoPath: asset.path });
       learned.push({
         sampleId: assetId,
         evidenceTimelineId: evidence.id,

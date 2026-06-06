@@ -4,7 +4,7 @@
 // and returns all artifacts + the learn-side gate results. The AI Gen1 path layers on top later by
 // replacing runGen1NeutralTemplate's output when it validates; this orchestrator stays the safety net.
 
-import { promises as fs, existsSync } from "node:fs";
+import { promises as fs, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { v5 } from "@vvst/shared";
 import type { KnowledgeBaseV5 } from "../services/knowledgeBaseV5.js";
@@ -45,6 +45,30 @@ async function readSectionFrames(
   return out;
 }
 
+/** Media for multimodal codegen: the ACTUAL source video (when small enough to inline — motion matters!)
+ *  plus section keyframes. Sending the video is what lets the model reconstruct the real visual style. */
+async function buildCodegenMedia(
+  evidence: v5.EvidenceTimelineV5,
+  sections: Array<{ id: string; startSec: number; endSec: number }>,
+  storageRoot: string,
+  sampleVideoPath?: string
+): Promise<Array<{ base64: string; mimeType: string }>> {
+  const media: Array<{ base64: string; mimeType: string }> = [];
+  if (sampleVideoPath && existsSync(sampleVideoPath)) {
+    try {
+      if (statSync(sampleVideoPath).size <= 10 * 1024 * 1024) {
+        const ext = path.extname(sampleVideoPath).toLowerCase();
+        const mime = ext === ".mp4" ? "video/mp4" : ext === ".webm" ? "video/webm" : "video/quicktime";
+        media.push({ base64: (await fs.readFile(sampleVideoPath)).toString("base64"), mimeType: mime });
+      }
+    } catch {
+      /* too big / unreadable — fall back to keyframes only */
+    }
+  }
+  media.push(...(await readSectionFrames(evidence, sections, storageRoot, media.length ? 3 : 6)));
+  return media;
+}
+
 export interface LearnArtifacts {
   evidence: v5.EvidenceTimelineV5;
   neutralProgram: v5.NeutralReconstructionProgram;
@@ -83,6 +107,8 @@ export interface LearnOptions {
   projectId?: string;
   /** Dir that contains "generated" (so keyframe frameRefs resolve) — enables scene-recipe derivation. */
   storageRoot?: string;
+  /** Path to the source video — sent to the multimodal codegen so it sees the actual motion/style. */
+  sampleVideoPath?: string;
 }
 
 /** Run the deterministic LEARN loop for one already-wrapped EvidenceTimelineV5. */
@@ -156,16 +182,19 @@ export async function runLearnSampleV5(
   // guaranteed fallback; the AI TSX only replaces it after compile + safety + real-render all pass.
   let capsuleCodegen: LearnArtifacts["capsuleCodegen"];
   if (opts.capsuleCodegenModel) {
-    // Multimodal: when a vision codegen fn + frames are available, the model SEES the source video.
-    const frames = opts.capsuleCodegenVision && opts.storageRoot ? await readSectionFrames(evidence, sectionMeta, opts.storageRoot) : undefined;
-    const cg = await runGen1CapsuleCodegen({
-      capsule: templateCapsule,
-      program: neutralProgram,
-      evidence,
-      model: opts.capsuleCodegenModel,
-      frames: frames?.length ? frames : undefined,
-      visionModel: opts.capsuleCodegenVision ?? undefined
-    });
+    // Multimodal: when a vision codegen fn is available, the model SEES the source video + keyframes.
+    const media = opts.capsuleCodegenVision && opts.storageRoot ? await buildCodegenMedia(evidence, sectionMeta, opts.storageRoot, opts.sampleVideoPath) : undefined;
+    const cg = await runGen1CapsuleCodegen(
+      {
+        capsule: templateCapsule,
+        program: neutralProgram,
+        evidence,
+        model: opts.capsuleCodegenModel,
+        frames: media?.length ? media : undefined,
+        visionModel: opts.capsuleCodegenVision ?? undefined
+      },
+      { maxAttempts: 3 }
+    );
     capsuleCodegen = { usedAi: cg.usedAi, compilePassed: cg.validation.compilePassed, renderPreviewPassed: cg.validation.renderPreviewPassed, noCopyPassed: cg.validation.noCopyPassed };
     if (cg.usedAi) {
       templateCapsule.codeBundle = cg.codeBundle; // PROMOTE

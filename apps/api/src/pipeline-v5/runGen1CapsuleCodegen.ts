@@ -103,10 +103,12 @@ export function buildCapsuleCodegenPrompt(
     : "";
 
   const seeing = multimodal
-    ? `The attached images are KEYFRAMES sampled from the ACTUAL source video (one per scene, in order).
-Reconstruct the EXACT visual style you SEE: the layout, composition, any 3D / motion-graphics elements,
-the colour treatment, the typography placement and the motion. Someone should recognise the rendered
-template as the SAME design as the source — only the words and photos are new.`
+    ? `The attached media is the ACTUAL source video (and/or its keyframes). WATCH it and reconstruct the
+EXACT visual style you SEE: the layout, composition, any 3D / motion-graphics elements (twisting ribbons,
+kinetic typography, particles), the colour treatment, the typography placement, and the MOTION over time.
+Be ambitious — if the source uses a 3D ribbon, build a real <ThreeCanvas> ribbon; if it scrolls kinetic
+text, build it. Someone should recognise the rendered template as the SAME design as the source — only the
+words and photos are new (from props).`
     : `Reconstruct the source's structure from the SCENE_RECIPES and TIMING below (you cannot see the frames).`;
 
   return `You are reconstructing a short vertical (9:16) ad video as a REUSABLE, props-driven Remotion (v4)
