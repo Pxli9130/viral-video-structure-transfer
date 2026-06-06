@@ -133,8 +133,13 @@ HARD REQUIREMENTS (output auto-rejected otherwise):
 - export const ${name} = ({ assets = {}, copy = {}, audio = {}, theme = "", palette = PALETTE }) => ( ... )
   (named export, EXACTLY this name and this destructured props signature.)
 - FORBIDDEN tokens anywhere: require( , process. , child_process , fs. , eval( , fetch( , XMLHttpRequest , dynamic import( .
-- No literal asset paths, no literal http(s) media URLs, no <Audio|Video|OffthreadVideo src="literal"> — media src from props.
-- No literal on-screen TEXT NODE longer than 60 chars; all readable copy from copy.* props.
+- NO literal http(s) URL ANYWHERE — no unsplash / stock-image / CDN links, no remote textures. EVERY
+  image comes ONLY from assets.* props (e.g. assets.heroImage?.src); if an asset prop is missing, draw a
+  gradient/shape/3D placeholder — NEVER a stock URL, NEVER a literal label like "Hero Image".
+- NO readable words hardcoded ANYWHERE — not in JSX text, not in canvas fillText/strokeText, not in 3D
+  Text/textGeometry. ALL readable copy comes from copy.* props. For kinetic / 3D-ribbon / scrolling text,
+  build it from props, e.g.: const ribbonText = Object.values(copy).filter(Boolean).join("  ·  ") || theme;
+  then draw ribbonText — NEVER the source's words.
 - Full-bleed OPAQUE background; cover the FULL ${timing.durationSec}s across the sections with no gaps.
 - Use frame-driven motion only (useCurrentFrame / interpolate / spring / useFrame). Per scene, compute
   local progress from the scene's OWN duration (frame relative to its <Sequence>), not the whole video.
