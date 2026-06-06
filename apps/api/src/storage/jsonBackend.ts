@@ -57,6 +57,8 @@ function normalizeAsset(raw: any): Asset {
   };
 }
 
+let writeSeq = 0;
+
 export class JsonStorageBackend implements StorageBackend {
   readonly name = "JsonStorageBackend";
 
@@ -82,6 +84,14 @@ export class JsonStorageBackend implements StorageBackend {
         await this.writeDatabase(db);
         return db;
       }
+      // A corrupt/torn snapshot (e.g. a partial write from before the atomic-write fix) must not brick
+      // the server forever (every request 500-ing on parse). Quarantine the bad file and start fresh.
+      if (error instanceof SyntaxError) {
+        try { await fs.rename(this.opts.dbPath, `${this.opts.dbPath}.corrupt-${process.pid}-${(writeSeq += 1)}`); } catch { /* best effort */ }
+        const db = emptyDatabase();
+        await this.writeDatabase(db);
+        return db;
+      }
       throw error;
     }
   }
@@ -92,6 +102,12 @@ export class JsonStorageBackend implements StorageBackend {
       (acc as any)[key] = (db as any)[key] ?? [];
       return acc;
     }, emptyDatabase());
-    await fs.writeFile(this.opts.dbPath, `${JSON.stringify(ordered, null, 2)}\n`, "utf8");
+    // Atomic write: serialize to a unique temp file, then rename over the target. rename(2) is atomic on
+    // the same filesystem, so a concurrent reader (e.g. job-status polling during a large generation
+    // write) never observes a torn/partial JSON snapshot — previously a poll mid-write hit
+    // "Unterminated string in JSON"/"Unexpected end of JSON input" 500s.
+    const tmp = `${this.opts.dbPath}.${process.pid}.${(writeSeq += 1)}.tmp`;
+    await fs.writeFile(tmp, `${JSON.stringify(ordered, null, 2)}\n`, "utf8");
+    await fs.rename(tmp, this.opts.dbPath);
   }
 }
