@@ -305,14 +305,18 @@ export function runGen1TemplateReconstruction(
     const slots: TemplateSection["slots"] = [];
     for (const ph of program.placeholders.filter((p) => p.sectionId === scene.id)) {
       const map = slotKindFor(ph.kind);
-      slots.push({ key: ph.id, kind: map.slot, propGroup: map.propGroup, propKey: map.propKey });
+      // SECTION-UNIQUE prop key: a kind-based key (heroImage/productImage/…) collapses every benefit/
+      // proof scene onto ONE prop, so they'd render the SAME image/copy. Suffix with the placeholder id
+      // so each scene binds its own generated visual/copy. (Logo stays shared — same brand mark.)
+      const propKey = map.slot === "logo" ? map.propKey : `${map.propKey}_${ph.id}`;
+      slots.push({ key: ph.id, kind: map.slot, propGroup: map.propGroup, propKey });
       slotSchema.push({
         id: ph.id,
         kind: map.slot,
         required: ph.required,
         originalRole: `${scene.role} ${ph.kind}`,
         replacementPolicy: replacementPolicyFor(map.slot),
-        propPath: `${map.propGroup}.${map.propKey}`
+        propPath: `${map.propGroup}.${propKey}`
       });
     }
     return {
@@ -389,7 +393,9 @@ export function runGen1TemplateReconstruction(
       compilePassed: false, // set by validateTemplateCapsule
       renderPreviewPassed: false,
       noCopyTemplatePassed: false,
-      warnings: ["deterministic template reconstruction (AI codegen not applied)"]
+      codeOrigin: "deterministic",
+      recipeSource: sceneRecipes.some((r) => r.source === "vlm") ? "vlm" : sceneRecipes.some((r) => (r.confidence ?? 0) > 0.3) ? "cv2" : "fallback",
+      warnings: []
     }
   };
   return capsule;

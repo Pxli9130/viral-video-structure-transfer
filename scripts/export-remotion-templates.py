@@ -31,10 +31,13 @@ def learn_response_kinds():
     return kinds
 
 def code_kind(cap, kinds):
+    # authoritative: the capsule records its own provenance
+    co = cap.get("quality", {}).get("codeOrigin")
+    if co in ("ai", "deterministic"):
+        return co
     k = kinds.get(cap["id"])
     if k:
         return "ai" if k == "ai" else "deterministic"
-    # fallback heuristic when no learn-response is available
     return "ai" if cap.get("quality", {}).get("renderPreviewPassed") else "deterministic"
 
 def main():

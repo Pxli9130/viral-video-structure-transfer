@@ -17,6 +17,8 @@ import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
   buildV5RenderInputProps,
   createGeminiModelFn,
+  createGeminiVisionCodegenFn,
+  createGeminiVisionFn,
   renderFinalVideoV5,
   runCreateV5,
   runGen1Ai,
@@ -76,6 +78,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
     // (opt out with options.runCapsuleCodegen=false). Falls back to deterministic when no GEMINI key.
     const wantCapsuleCodegen = req.body?.options?.runCapsuleCodegen !== false;
     const capsuleCodegenModel = wantCapsuleCodegen ? createGeminiModelFn({ model: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
+    // Multimodal codegen + VLM scene enrichment send sample FRAMES to the provider for STRUCTURE
+    // analysis — gated by ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS (opt out with options.useVision=false).
+    const allowVlm = String(process.env.ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS ?? "") === "1" && req.body?.options?.useVision !== false;
+    const capsuleCodegenVision = wantCapsuleCodegen && allowVlm ? createGeminiVisionCodegenFn({ model: process.env.GEMINI_CODEGEN_MODEL }) ?? null : null;
+    const sceneVlm = allowVlm ? createGeminiVisionFn({ model: process.env.VLM_MODEL }) ?? null : null;
     // Real frame-0 render validation at learn time (T8) — defaults to follow capsule codegen.
     const validateRender = req.body?.options?.validateTemplateRender ?? wantCapsuleCodegen;
     const learned: unknown[] = [];
@@ -99,7 +106,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         aiProgram = g1.usedAi ? g1.program : null;
         usedAi = g1.usedAi;
       }
-      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, validateRender, projectId: asset.projectId, storageRoot: path.dirname(deps.generatedDir) });
+      const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, capsuleCodegenVision, sceneVlm, validateRender, projectId: asset.projectId, storageRoot: path.dirname(deps.generatedDir) });
       learned.push({
         sampleId: assetId,
         evidenceTimelineId: evidence.id,

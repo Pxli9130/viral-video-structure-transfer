@@ -4,7 +4,7 @@
 // and returns all artifacts + the learn-side gate results. The AI Gen1 path layers on top later by
 // replacing runGen1NeutralTemplate's output when it validates; this orchestrator stays the safety net.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { v5 } from "@vvst/shared";
 import type { KnowledgeBaseV5 } from "../services/knowledgeBaseV5.js";
@@ -15,7 +15,35 @@ import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
+import { runSceneRecipeVlm } from "./runSceneRecipeVlm.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
+import type { VisionFn } from "./runSceneRecipeVlm.js";
+import type { VisionCodegenFn } from "./gen1ModelFactory.js";
+
+/** Read one source keyframe (base64) per section (nearest the section midpoint), capped, for multimodal codegen. */
+async function readSectionFrames(
+  evidence: v5.EvidenceTimelineV5,
+  sections: Array<{ id: string; startSec: number; endSec: number }>,
+  storageRoot: string,
+  cap = 6
+): Promise<Array<{ base64: string; mimeType: string }>> {
+  const kfs = (evidence.keyFrames ?? []).map((k) => ({ timeSec: k.timeSec, frameRef: (k as { frameRef?: string }).frameRef })).filter((k) => k.frameRef);
+  const out: Array<{ base64: string; mimeType: string }> = [];
+  for (const sec of sections.slice(0, cap)) {
+    const mid = (sec.startSec + sec.endSec) / 2;
+    const kf = kfs.filter((k) => k.timeSec >= sec.startSec && k.timeSec < sec.endSec).sort((a, b) => Math.abs(a.timeSec - mid) - Math.abs(b.timeSec - mid))[0]
+      ?? kfs.sort((a, b) => Math.abs(a.timeSec - mid) - Math.abs(b.timeSec - mid))[0];
+    if (!kf?.frameRef) continue;
+    const fp = path.join(storageRoot, String(kf.frameRef).replace(/^\//, ""));
+    if (!existsSync(fp)) continue;
+    try {
+      out.push({ base64: (await fs.readFile(fp)).toString("base64"), mimeType: "image/png" });
+    } catch {
+      /* skip unreadable frame */
+    }
+  }
+  return out;
+}
 
 export interface LearnArtifacts {
   evidence: v5.EvidenceTimelineV5;
@@ -44,6 +72,10 @@ export interface LearnOptions {
   aiProgram?: v5.NeutralReconstructionProgram | null;
   /** Optional model fn for AI capsule TSX codegen (triple-gated). Absent -> deterministic code (guaranteed). */
   capsuleCodegenModel?: Gen1ModelFn | null;
+  /** Optional multimodal codegen fn — when set, the codegen SEES the source keyframes (richer fidelity). */
+  capsuleCodegenVision?: VisionCodegenFn | null;
+  /** Optional VLM fn for per-scene structural enrichment (composition/layout/typography). */
+  sceneVlm?: VisionFn | null;
   /** When true, run a real frame-0 render of the final capsule at learn time so T8/renderPreviewPassed
    *  is earned (not deferred). Needs headless chrome; a failed render is recorded, never fatal. */
   validateRender?: boolean;
@@ -103,11 +135,18 @@ export async function runLearnSampleV5(
 
   // Stage 4a2 — derive content-neutral per-scene visual recipes from the sample's keyframes so the
   // capsule reconstructs ITS source's look (grading/anchors/camera/transition). Empty -> role-varied fallback.
-  const sceneRecipes = await deriveSceneRecipes(
-    evidence,
-    neutralProgram.typedSpec.scenes.map((s) => ({ id: s.id, role: String(s.role ?? "other"), startSec: s.startSec, endSec: s.endSec })),
-    { storageRoot: opts.storageRoot }
-  );
+  const sectionMeta = neutralProgram.typedSpec.scenes.map((s) => ({ id: s.id, role: String(s.role ?? "other"), startSec: s.startSec, endSec: s.endSec }));
+  let sceneRecipes = await deriveSceneRecipes(evidence, sectionMeta, { storageRoot: opts.storageRoot });
+
+  // Stage 4a3 — OPTIONAL VLM enrichment: a vision model adds rich content-neutral per-scene detail
+  // (composition / layout zones / graphic elements / typography / treatment) for higher-fidelity codegen.
+  if (opts.sceneVlm && sceneRecipes.length && opts.storageRoot) {
+    try {
+      sceneRecipes = await runSceneRecipeVlm({ evidence, sections: sectionMeta, base: sceneRecipes, storageRoot: opts.storageRoot, vision: opts.sceneVlm });
+    } catch (err) {
+      warnings.push(`VLM scene enrichment skipped: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);
+    }
+  }
 
   // Stage 4b — Remotion Template Reconstruction: build + validate + store the reusable capsule (V5.1).
   const templateCapsule = runGen1TemplateReconstruction(neutralProgram, evidence, { sceneRecipes });
@@ -117,11 +156,21 @@ export async function runLearnSampleV5(
   // guaranteed fallback; the AI TSX only replaces it after compile + safety + real-render all pass.
   let capsuleCodegen: LearnArtifacts["capsuleCodegen"];
   if (opts.capsuleCodegenModel) {
-    const cg = await runGen1CapsuleCodegen({ capsule: templateCapsule, program: neutralProgram, evidence, model: opts.capsuleCodegenModel });
+    // Multimodal: when a vision codegen fn + frames are available, the model SEES the source video.
+    const frames = opts.capsuleCodegenVision && opts.storageRoot ? await readSectionFrames(evidence, sectionMeta, opts.storageRoot) : undefined;
+    const cg = await runGen1CapsuleCodegen({
+      capsule: templateCapsule,
+      program: neutralProgram,
+      evidence,
+      model: opts.capsuleCodegenModel,
+      frames: frames?.length ? frames : undefined,
+      visionModel: opts.capsuleCodegenVision ?? undefined
+    });
     capsuleCodegen = { usedAi: cg.usedAi, compilePassed: cg.validation.compilePassed, renderPreviewPassed: cg.validation.renderPreviewPassed, noCopyPassed: cg.validation.noCopyPassed };
     if (cg.usedAi) {
       templateCapsule.codeBundle = cg.codeBundle; // PROMOTE
       templateCapsule.quality.renderPreviewPassed = true; // render gate passed at apply time
+      templateCapsule.quality.codeOrigin = "ai"; // honest provenance (no stale "deterministic" warning)
       templateValidation = validateTemplateCapsule(templateCapsule); // re-validate the promoted bundle
     }
     warnings.push(cg.usedAi ? "AI capsule codegen promoted (compile+render+no-copy passed)." : `AI capsule codegen rejected; deterministic code retained. ${cg.warnings.slice(0, 2).join("; ")}`);

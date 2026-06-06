@@ -14,6 +14,7 @@
 
 import { v5 } from "@vvst/shared";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
+import type { VisionCodegenFn } from "./gen1ModelFactory.js";
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 
@@ -22,8 +23,12 @@ export interface CapsuleCodegenInput {
   capsule: v5.RemotionTemplateCapsule;
   program: v5.NeutralReconstructionProgram;
   evidence: v5.EvidenceTimelineV5;
-  /** Injected model fn; tests pass a stub, the real path uses createGeminiModelFn({ model: GEMINI_CODEGEN_MODEL }). */
+  /** Injected text model fn; tests pass a stub, the real path uses createGeminiModelFn({ model: GEMINI_CODEGEN_MODEL }). */
   model: Gen1ModelFn;
+  /** Source keyframes (base64) so a multimodal model can SEE the video it reconstructs (richer fidelity). */
+  frames?: Array<{ base64: string; mimeType: string }>;
+  /** Multimodal codegen fn (prompt + frames -> code). When present with frames, used instead of `model`. */
+  visionModel?: VisionCodegenFn;
 }
 
 export interface CapsuleCodegenOptions {
@@ -66,66 +71,86 @@ export function buildCapsuleCodegenPrompt(
   capsule: v5.RemotionTemplateCapsule,
   program: v5.NeutralReconstructionProgram,
   evidence: v5.EvidenceTimelineV5,
-  repairErrors?: string[]
+  repairErrors?: string[],
+  multimodal?: boolean
 ): string {
+  const name = capsule.codeBundle.componentName;
   const slots = capsule.slotSchema.map((s) => ({ id: s.id, kind: s.kind, required: s.required, propPath: s.propPath }));
   const timing = {
     durationSec: capsule.timingSignature.durationSec,
     fps: capsule.timingSignature.fps,
     sections: capsule.timingSignature.sections.map((s) => ({ role: s.role, startSec: s.startSec, endSec: s.endSec, internalBeats: (s.internalBeats ?? []).slice(0, 8) }))
   };
-  const motion = capsule.motionSignature;
   const gs = (program.typedSpec?.globalStyle ?? {}) as unknown as Record<string, unknown>;
   const palette = (gs.palette as string[] | undefined) ?? (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? [];
   const referenceTsx = capsule.codeBundle.files.find((f) => f.path === capsule.codeBundle.entryFile)?.content ?? capsule.codeBundle.files[0]?.content ?? "";
+  const recipes = (capsule.sceneRecipes ?? []).map((r) => ({
+    role: r.role,
+    transitionIn: r.transitionIn,
+    cameraMove: r.subject?.cameraMove,
+    subjectAnchor: r.subject?.anchor,
+    textAnchor: r.textAnchor,
+    textAnim: r.textAnim,
+    mood: r.grading.mood,
+    composition: r.vlm?.composition,
+    layoutZones: r.vlm?.layoutZones,
+    graphicElements: r.vlm?.graphicElements,
+    typography: r.vlm?.typography,
+    treatment: r.vlm?.treatment
+  }));
   const repair = repairErrors?.length
     ? `\n\nYOUR PREVIOUS OUTPUT WAS REJECTED. Fix exactly these problems and resend the full JSON:\n- ${repairErrors.slice(0, 6).join("\n- ")}`
     : "";
 
-  return `You generate a single self-contained Remotion (v4) React template component in TypeScript (TSX).
-This template reconstructs the MOTION/STRUCTURE of a sample ad video. ALL on-screen CONTENT must come
-from props — you must NOT embed any sample imagery, audio, text, brand or asset path.
+  const seeing = multimodal
+    ? `The attached images are KEYFRAMES sampled from the ACTUAL source video (one per scene, in order).
+Reconstruct the EXACT visual style you SEE: the layout, composition, any 3D / motion-graphics elements,
+the colour treatment, the typography placement and the motion. Someone should recognise the rendered
+template as the SAME design as the source — only the words and photos are new.`
+    : `Reconstruct the source's structure from the SCENE_RECIPES and TIMING below (you cannot see the frames).`;
+
+  return `You are reconstructing a short vertical (9:16) ad video as a REUSABLE, props-driven Remotion (v4)
+template component in TypeScript (TSX). ${seeing}
 
 Return ONLY a JSON object, no prose, no markdown fences:
-{ "componentName": "${capsule.codeBundle.componentName}", "indexTsx": "<the full TSX source as a JSON string>" }
+{ "componentName": "${name}", "indexTsx": "<the full TSX source as a JSON string>" }
 
-HARD REQUIREMENTS (your output is automatically rejected if any are violated):
-- The component MUST be: export const ${capsule.codeBundle.componentName} = ({ assets = {}, copy = {}, audio = {}, theme = "", palette = PALETTE }) => ( ... )
+YOU MAY import from: "react", "remotion", "@remotion/three", "three", "@react-three/fiber".
+You MAY build, to faithfully match what the source does: real 3D (e.g. <ThreeCanvas> from
+"@remotion/three" with THREE geometry — TubeGeometry/Extrude/Text, useFrame from "@react-three/fiber"),
+programmatic <canvas> textures (document.createElement("canvas") + CanvasTexture for kinetic text on a
+ribbon/strip), inline SVG, CSS 3D transforms, masks, clip-paths, gradients, particles, shapes.
+
+THE NO-COPY RULE (strict — STRUCTURE is reusable, CONTENT is not):
+- STRUCTURE you SHOULD hardcode: layout, geometry, ribbons, shapes, 3D, motion curves, transitions,
+  colour treatment, typography STYLE/position/animation, the whole design system.
+- CONTENT you MUST NOT hardcode: any of the source's readable text, headlines, brand names, logos, or
+  its photographic imagery. Every readable WORD on screen must come from the copy.* props; every PHOTO
+  from the assets.* props. If the design has scrolling/kinetic text (e.g. on a 3D ribbon), feed that
+  text from a copy prop (e.g. Object.values(copy).filter(Boolean).join("  ·  ")), NEVER the source's words.
+
+HARD REQUIREMENTS (output auto-rejected otherwise):
+- export const ${name} = ({ assets = {}, copy = {}, audio = {}, theme = "", palette = PALETTE }) => ( ... )
   (named export, EXACTLY this name and this destructured props signature.)
-- Import ONLY from "react" and "remotion" / "@remotion/*". No other imports.
-- FORBIDDEN anywhere in the code: require( , process. , child_process , fs. , eval( , fetch( , XMLHttpRequest , import( .
-- NO literal asset paths, NO literal media URLs, NO <Audio|Video|OffthreadVideo src="literal"> — every image/media src must read from props (e.g. assets.heroImage?.src).
-- NO literal on-screen text node longer than 60 characters; all copy comes from the copy.* props.
-- Render a full-bleed OPAQUE <AbsoluteFill> with a solid/gradient background in every section (no transparent frames).
-- Graceful degradation: if an asset prop is missing, render a designed gradient/card fallback; if a copy prop is missing, render "".
-- You MAY define inline helper components for backgrounds, beat pulses, Ken Burns image, kinetic title, subtitle, CTA card, designed card.
+- FORBIDDEN tokens anywhere: require( , process. , child_process , fs. , eval( , fetch( , XMLHttpRequest , dynamic import( .
+- No literal asset paths, no literal http(s) media URLs, no <Audio|Video|OffthreadVideo src="literal"> — media src from props.
+- No literal on-screen TEXT NODE longer than 60 chars; all readable copy from copy.* props.
+- Full-bleed OPAQUE background; cover the FULL ${timing.durationSec}s across the sections with no gaps.
+- Use frame-driven motion only (useCurrentFrame / interpolate / spring / useFrame). Per scene, compute
+  local progress from the scene's OWN duration (frame relative to its <Sequence>), not the whole video.
+- Graceful fallback when a prop is missing: a designed placeholder (NEVER the source's content, NEVER a
+  literal label like "Hero Image").
 
-REPRODUCE THIS STRUCTURE EXACTLY (section boundaries + beats drive the motion; cover the full duration with no gaps):
+STRUCTURE TO REPRODUCE (cover the full duration; section boundaries + beats drive timing):
 TIMING = ${JSON.stringify(timing)}
-MOTION_SIGNATURE = ${JSON.stringify(motion)}
-GLOBAL_STYLE = ${JSON.stringify({ motionIntensity: gs.motionIntensity, pacing: gs.pacing, typographySystem: gs.typographySystem })}
 DEFAULT_PALETTE = ${JSON.stringify(palette)}   // bake as the PALETTE const default; runtime palette still comes from props.
+SCENE_RECIPES (per scene: grading mood / camera / transition / text placement${multimodal ? " + VLM composition, layoutZones, graphicElements, typography, treatment" : ""}):
+${JSON.stringify(recipes)}
 
-SCENE_RECIPES — the SOURCE video's per-scene look. You MUST reproduce each scene's recipe so this
-template looks like ITS source (a different source has different recipes -> a visibly different video):
-${JSON.stringify((capsule.sceneRecipes ?? []).map((r) => ({ role: r.role, transitionIn: r.transitionIn, cameraMove: r.subject?.cameraMove, subjectAnchor: r.subject?.anchor, textAnchor: r.textAnchor, textAnim: r.textAnim, mood: r.grading.mood })))}
-For each section i: enter with SCENE_RECIPES[i].transitionIn; move the hero image per cameraMove
-(push_in=scale up, pan_left/right=translateX, tilt=translateY, static=subtle); place the headline/copy
-at textAnchor (9-grid: top/center/bottom × left/center/right) animated per textAnim
-(per_char_reveal/word_stagger/pop/slide_up/flash); apply the grading MOOD as a CSS filter + vignette
-(dark_moody=darker+strong vignette, high_key=bright+light, high_contrast=contrast↑, vibrant=saturate↑,
-desaturated=saturate↓, warm/cool=tint) — but keep COLORS from the palette/theme prop, only the MOOD
-treatment from the recipe. Sections with different recipes MUST look visibly different.
-
-SLOTS — read each slot's content from its propPath (these keys MUST line up with the bound props):
+SLOTS — read each slot's content from its propPath; these keys are SECTION-SPECIFIC, so each scene gets
+its OWN image/copy (do NOT reuse one image across scenes):
 ${JSON.stringify(slots, null, 0)}
-
-REFERENCE IMPLEMENTATION (a known-good deterministic version — KEEP its component signature, the same
-section structure and props-driven content; you may IMPROVE the motion, layout fidelity and typography):
-\`\`\`tsx
-${referenceTsx.slice(0, 9000)}
-\`\`\`
-Evidence summary (structural only): ${JSON.stringify({ shots: evidence.shots?.length ?? 0, bpm: evidence.audioEvidence?.bpm, beats: (evidence.audioEvidence?.beatGridSec ?? []).length })}.${repair}`;
+${multimodal ? "" : `\nREFERENCE deterministic implementation (keep the signature + section structure; improve fidelity):\n\`\`\`tsx\n${referenceTsx.slice(0, 7000)}\n\`\`\``}${repair}`;
 }
 
 /** Default render gate: really bundle + render ONE FRAME of the candidate with the neutral fixture. */
@@ -154,8 +179,10 @@ export async function runGen1CapsuleCodegen(input: CapsuleCodegenInput, opts: Ca
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let raw: string;
+    const multimodal = Boolean(input.visionModel && input.frames?.length);
     try {
-      raw = await input.model(buildCapsuleCodegenPrompt(input.capsule, input.program, input.evidence, attempt > 0 ? lastErrors : undefined));
+      const prompt = buildCapsuleCodegenPrompt(input.capsule, input.program, input.evidence, attempt > 0 ? lastErrors : undefined, multimodal);
+      raw = multimodal ? await input.visionModel!(prompt, input.frames!) : await input.model(prompt);
     } catch (err) {
       warnings.push(`capsule codegen model error: ${err instanceof Error ? err.message.slice(0, 120) : String(err)}`);
       break; // model unreachable — keep deterministic

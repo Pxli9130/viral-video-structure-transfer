@@ -106,6 +106,10 @@ export interface RemotionTemplateCapsule {
     renderPreviewPassed: boolean;
     reconstructionFidelityScore?: number;
     noCopyTemplatePassed: boolean;
+    /** Honest provenance of codeBundle: "ai" = Gemini TSX promoted through the gates; else deterministic. */
+    codeOrigin?: "ai" | "deterministic";
+    /** How the per-scene recipes were derived: cv2 keyframes, VLM, or role-varied fallback. */
+    recipeSource?: "vlm" | "cv2" | "fallback";
     warnings: string[];
   };
 }
@@ -194,6 +198,20 @@ export type TransitionInV5 = "hard_cut" | "dissolve" | "fade_from_black" | "slid
 export type GradingMoodV5 = "neutral" | "dark_moody" | "high_key" | "warm" | "cool" | "high_contrast" | "desaturated" | "vibrant";
 export type TextAnimV5 = "none" | "per_char_reveal" | "word_stagger" | "pop" | "scale" | "flash" | "slide_up";
 
+/**
+ * Rich CONTENT-NEUTRAL per-scene detail from a VLM looking at the source keyframe — describes the
+ * STRUCTURE (composition, layout zones, motion-graphics elements, typography style, treatment) so the
+ * codegen can reconstruct the actual look, NOT a generic card. Never contains the sample's readable
+ * text, brand names, or identifiable subjects.
+ */
+export interface SceneVlmDetailV5 {
+  composition: string;
+  layoutZones: string[];
+  graphicElements: string[];
+  typography: { position?: string; sizeClass?: string; weight?: string; case?: string; alignment?: string; animation?: string };
+  treatment: string;
+}
+
 export interface SceneVisualRecipeV5 {
   sectionId: string;
   role: string;
@@ -206,6 +224,8 @@ export interface SceneVisualRecipeV5 {
   textAnim: TextAnimV5;
   /** Per-scene colour grading (the source's colour world) — drives the rendered look. */
   grading: { mood: GradingMoodV5; brightness: number; saturation: number; palette: string[] };
+  /** Rich VLM structural detail (when VLM analysis is enabled). */
+  vlm?: SceneVlmDetailV5;
   source: "deterministic" | "vlm";
   confidence: number;
 }

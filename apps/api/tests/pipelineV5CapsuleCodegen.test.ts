@@ -142,7 +142,8 @@ describe("V5.1 Phase 1 — AI capsule codegen (triple-gate, apply!=promote)", ()
     const { evidence, program, capsule } = build();
     const prompt = buildCapsuleCodegenPrompt(capsule, program, evidence);
     expect(prompt).toContain(capsule.codeBundle.componentName);
-    expect(prompt).toMatch(/only from "react"/i);
+    expect(prompt).toMatch(/no-copy rule/i); // content vs structure boundary stated
+    expect(prompt).toMatch(/copy\.\* props/i); // readable text must come from props
     for (const s of capsule.slotSchema.slice(0, 2)) if (s.propPath) expect(prompt).toContain(s.propPath);
   });
 
