@@ -70,6 +70,16 @@ function elevenLabsLiveEnabled(provider: ModelProviderDefinition, task: ModelTas
   return (taskFlags[task] ?? []).some((flag) => envFlag(env, flag));
 }
 
+function googleAudioLiveEnabled(provider: ModelProviderDefinition, task: ModelTask, env: Record<string, string | undefined>): boolean {
+  if (provider.id !== "google_gemini_tts" && provider.id !== "google_lyria_music") return true;
+  if (envFlag(env, "ENABLE_GOOGLE_AUDIO_LIVE_TESTS") || envFlag(env, "GOOGLE_AUDIO_ENABLE_CLOUD") || envFlag(env, "ALLOW_CLOUD_PROVIDERS")) return true;
+  const taskFlags: Partial<Record<ModelTask, string[]>> = {
+    voiceover: ["GOOGLE_AUDIO_ENABLE_TTS", "GOOGLE_AUDIO_ENABLE_VOICEOVER"],
+    music: ["GOOGLE_AUDIO_ENABLE_MUSIC"]
+  };
+  return (taskFlags[task] ?? []).some((flag) => envFlag(env, flag));
+}
+
 export function normalizeProviderId(providerId: string): { providerId: string; warning?: string } {
   const provider = MODEL_PROVIDER_REGISTRY[providerId];
   if (provider?.aliasFor) {
@@ -126,6 +136,13 @@ function providerAvailable(
       provider: provider.id,
       available: false,
       reason: "ElevenLabs live calls are disabled; set ENABLE_ELEVENLABS_LIVE_TESTS=1 or a task-specific ELEVENLABS_ENABLE_* flag"
+    };
+  }
+  if ((provider.id === "google_gemini_tts" || provider.id === "google_lyria_music") && !googleAudioLiveEnabled(provider, task, env)) {
+    return {
+      provider: provider.id,
+      available: false,
+      reason: "Google audio live calls are disabled; set GOOGLE_AUDIO_ENABLE_CLOUD=1, ENABLE_GOOGLE_AUDIO_LIVE_TESTS=1, ALLOW_CLOUD_PROVIDERS=1, or a task-specific GOOGLE_AUDIO_ENABLE_* flag"
     };
   }
   if (heavyDisabled.length) {

@@ -1,0 +1,71 @@
+{
+  "id": "kb_audio_001",
+  "kind": "audio_pattern",
+  "name": "fast electronic hook beat",
+  "description": "Commercial electronic beat pattern with hook impact and CTA hit.",
+  "tags": [
+    "audio",
+    "high_click",
+    "electronic",
+    "impact"
+  ],
+  "source": {
+    "sourceSampleId": "sample_002",
+    "reconstructionProgramId": "nrp_sample_002",
+    "evidenceRefs": [
+      "audio_beat_grid",
+      "shot_001"
+    ]
+  },
+  "payload": {
+    "bpm": 128,
+    "mood": [
+      "energetic",
+      "commercial",
+      "clean"
+    ],
+    "cuePoints": [
+      {
+        "t": 0,
+        "type": "impact",
+        "role": "hook_start"
+      },
+      {
+        "t": 1.2,
+        "type": "hit",
+        "role": "title_pop"
+      },
+      {
+        "t": 12,
+        "type": "impact",
+        "role": "cta"
+      }
+    ],
+    "generationPromptTemplate": "Generate a fast electronic commercial beat around 128 BPM with punchy kick and strong impacts at hook and CTA. Do not imitate source track."
+  },
+  "reusablePolicy": "regenerate_only",
+  "slots": [],
+  "compatibility": {
+    "aspectRatios": [
+      "9:16"
+    ],
+    "verticals": [
+      "marketing"
+    ],
+    "canCombineWith": [],
+    "conflictsWith": []
+  },
+  "safety": {
+    "noCopyChecked": true,
+    "samplePixelsRemoved": true,
+    "sampleAudioRemoved": true,
+    "sampleTextRemoved": true,
+    "renderable": false
+  },
+  "quality": {
+    "confidence": 0.8,
+    "usefulness": 0.85,
+    "distinctiveness": 0.6,
+    "coherenceRisk": 0.2
+  }
+}

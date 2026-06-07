@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
 import type {
@@ -14,6 +14,9 @@ export interface AigcMaterialProviderContext {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   allowExternalProviderCall?: boolean;
+  /** Local path to a reference still to drive image-to-video (Seedance first-frame). When set, the video
+   *  provider conditions generation on this image (base64 data URL) instead of pure text-to-video. */
+  referenceImagePath?: string;
 }
 
 export interface AigcMaterialProvider {
@@ -376,10 +379,13 @@ function seedancePrompt(brief: MaterialGenerationBrief, prompt: string): string 
   ].filter(Boolean).join("\n");
 }
 
-function seedanceRequestBody(config: SeedanceProviderConfig, prompt: string): Record<string, unknown> {
+function seedanceRequestBody(config: SeedanceProviderConfig, prompt: string, refImageDataUrl?: string): Record<string, unknown> {
+  const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
+  // Image-to-video: condition on a reference still as the FIRST frame (doubao-seedance i2v).
+  if (refImageDataUrl) content.push({ type: "image_url", image_url: { url: refImageDataUrl }, role: "first_frame" });
   const body: Record<string, unknown> = {
     model: config.model,
-    content: [{ type: "text", text: prompt }],
+    content,
     generate_audio: config.generateAudio,
     ratio: config.ratio,
     duration: config.durationSec,
@@ -605,17 +611,31 @@ export const seedanceVideoProvider: AigcMaterialProvider = {
     const fetchImpl = context.fetchImpl ?? fetch;
     const generatedAt = context.now ?? new Date().toISOString();
     const count = maxCandidateCount(brief);
+    // Optional first-frame reference (image-to-video): read the local still -> base64 data URL.
+    let refImageDataUrl: string | undefined;
+    if (context.referenceImagePath) {
+      try {
+        const buf = await readFile(context.referenceImagePath);
+        const ext = /\.png$/i.test(context.referenceImagePath) ? "png" : "jpeg";
+        refImageDataUrl = `data:image/${ext};base64,${buf.toString("base64")}`;
+      } catch { refImageDataUrl = undefined; }
+    }
     const candidates: GeneratedAssetCandidate[] = [];
     for (let index = 0; index < count; index += 1) {
       const prompt = seedancePrompt(brief, brief.promptPack?.[index] ?? brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated video material`);
-      const createResponse = await fetchImpl(seedanceTaskUrl(config), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify(seedanceRequestBody(config, prompt))
-      });
+      // Retry the create-task POST on 429/5xx with backoff — concurrent fan-out (parallel slots/videos)
+      // makes rate-limit hits likely; without this they would needlessly fail to a still.
+      const createMaxRetries = 3;
+      let createResponse: Awaited<ReturnType<typeof fetchImpl>>;
+      for (let attempt = 0; ; attempt += 1) {
+        createResponse = await fetchImpl(seedanceTaskUrl(config), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+          body: JSON.stringify(seedanceRequestBody(config, prompt, refImageDataUrl))
+        });
+        if (createResponse.ok || !retryableSeedreamStatus(createResponse.status) || attempt >= createMaxRetries) break;
+        await sleep(1500 * Math.max(1, attempt + 1));
+      }
       if (!createResponse.ok) {
         const responseText = await createResponse.text().catch(() => "");
         throw new Error(providerErrorMessage("seedance_2_0", "video task creation", createResponse.status, responseText));
@@ -681,6 +701,129 @@ export const seedanceVideoProvider: AigcMaterialProvider = {
       });
     }
     return candidates;
+  }
+};
+
+// ---- DashScope happyhorse-1.0-r2v (reference-to-video) — Seedance backup ----------------------------------
+interface DashscopeProviderConfig {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  resolution: string;
+  ratio: string;
+  durationSec: number;
+  maxPolls: number;
+  pollIntervalMs: number;
+}
+
+function resolveDashscopeProviderConfig(env: Record<string, string | undefined> | undefined, brief?: MaterialGenerationBrief): DashscopeProviderConfig {
+  const e = env ?? process.env;
+  const apiKey = envValue(e, "DASHSCOPE_API_KEY");
+  if (!apiKey) throw new Error("DASHSCOPE_API_KEY is required for happyhorse_r2v.");
+  const aspect = String(brief?.styleConstraints.aspectRatio ?? "9:16");
+  const ratio = ["16:9", "9:16", "3:4", "4:3", "4:5", "5:4", "1:1", "9:21", "21:9"].includes(aspect) ? aspect : "9:16";
+  const reqDur = parseInteger(envValue(e, "HAPPYHORSE_DURATION_SEC", "AIGC_VIDEO_DURATION_SEC"), Math.round(brief?.structureConstraints.durationSec ?? 5));
+  return {
+    apiKey,
+    model: envValue(e, "HAPPYHORSE_MODEL") ?? "happyhorse-1.0-r2v",
+    baseUrl: (envValue(e, "DASHSCOPE_BASE_URL") ?? "https://dashscope-us.aliyuncs.com/api/v1").replace(/\/+$/, ""),
+    resolution: envValue(e, "HAPPYHORSE_RESOLUTION", "AIGC_VIDEO_RESOLUTION") ?? "720P",
+    ratio,
+    durationSec: Math.max(3, Math.min(15, reqDur || 5)),
+    maxPolls: parseInteger(envValue(e, "HAPPYHORSE_MAX_POLLS"), 40),
+    pollIntervalMs: parseInteger(envValue(e, "HAPPYHORSE_POLL_INTERVAL_MS"), 15000)
+  };
+}
+
+function dashscopeField(payload: unknown, key: string): string | undefined {
+  const out = (payload as { output?: Record<string, unknown> })?.output;
+  const v = out?.[key];
+  return typeof v === "string" && v.length ? v : undefined;
+}
+
+/** Reference-to-video backup (Alibaba DashScope happyhorse-1.0-r2v). Uses the Gemini still as a base64
+ *  reference_image. Async: create task -> poll /tasks/{id} -> download. Region: model+endpoint+key must match
+ *  (US key -> dashscope-us). Used when Seedance fails (e.g. AccountOverdue / 403). */
+export const happyhorseR2vProvider: AigcMaterialProvider = {
+  id: "happyhorse_r2v",
+  kind: "video",
+  async generate(brief, context) {
+    if (brief.assetType !== "short_video") throw new Error(`happyhorse_r2v only supports short_video generation; got ${brief.assetType}.`);
+    if (brief.privacyPolicy.sampleFramesAllowedToProvider) throw new Error("happyhorse_r2v refuses briefs that allow sample frames to be sent externally.");
+    if (context.allowExternalProviderCall !== true) throw new Error("happyhorse_r2v requires explicit external-provider opt-in.");
+    if (!context.referenceImagePath) throw new Error("happyhorse_r2v (reference-to-video) requires a reference image (context.referenceImagePath).");
+    await mkdir(context.outputDir, { recursive: true });
+    const config = resolveDashscopeProviderConfig(context.env, brief);
+    const fetchImpl = context.fetchImpl ?? fetch;
+    const generatedAt = context.now ?? new Date().toISOString();
+    // Reference still -> base64 data URL (DashScope accepts data:{mime};base64,{data}).
+    const buf = await readFile(context.referenceImagePath);
+    const mime = /\.png$/i.test(context.referenceImagePath) ? "image/png" : /\.webp$/i.test(context.referenceImagePath) ? "image/webp" : "image/jpeg";
+    const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+    const prompt = seedancePrompt(brief, brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated video material`);
+    const body = {
+      model: config.model,
+      input: { prompt, media: [{ type: "reference_image", url: dataUrl }] },
+      parameters: { resolution: config.resolution, ratio: config.ratio, duration: config.durationSec }
+    };
+    // Create task (async; retry the POST on 429/5xx).
+    let createResponse: Awaited<ReturnType<typeof fetchImpl>>;
+    for (let attempt = 0; ; attempt += 1) {
+      createResponse = await fetchImpl(`${config.baseUrl}/services/aigc/video-generation/video-synthesis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-DashScope-Async": "enable", Authorization: `Bearer ${config.apiKey}` },
+        body: JSON.stringify(body)
+      });
+      if (createResponse.ok || !retryableSeedreamStatus(createResponse.status) || attempt >= 3) break;
+      await sleep(1500 * Math.max(1, attempt + 1));
+    }
+    if (!createResponse.ok) {
+      const responseText = await createResponse.text().catch(() => "");
+      throw new Error(providerErrorMessage("happyhorse_r2v", "r2v task creation", createResponse.status, responseText));
+    }
+    const created = await createResponse.json();
+    const taskId = dashscopeField(created, "task_id");
+    if (!taskId) throw new Error("happyhorse_r2v create response did not include output.task_id.");
+
+    let task: unknown = created;
+    for (let poll = 0; poll < config.maxPolls; poll += 1) {
+      const status = dashscopeField(task, "task_status");
+      if (status === "SUCCEEDED") break;
+      if (status === "FAILED" || status === "CANCELED" || status === "UNKNOWN") {
+        throw new Error(`happyhorse_r2v task ${taskId} ${status}: ${String(dashscopeField(task, "message") ?? "").slice(0, 300)}`);
+      }
+      await sleep(config.pollIntervalMs);
+      const getResponse = await fetchImpl(`${config.baseUrl}/tasks/${taskId}`, { method: "GET", headers: { Authorization: `Bearer ${config.apiKey}` } });
+      if (!getResponse.ok) {
+        const responseText = await getResponse.text().catch(() => "");
+        throw new Error(providerErrorMessage("happyhorse_r2v", "task polling", getResponse.status, responseText));
+      }
+      task = await getResponse.json();
+    }
+    if (dashscopeField(task, "task_status") !== "SUCCEEDED") {
+      throw new Error(`happyhorse_r2v task ${taskId} did not succeed after ${config.maxPolls} polls.`);
+    }
+    const remoteUrl = dashscopeField(task, "video_url");
+    if (!remoteUrl) throw new Error(`happyhorse_r2v task ${taskId} succeeded but did not include output.video_url.`);
+    const videoResponse = await fetchImpl(remoteUrl);
+    if (!videoResponse.ok) throw new Error(`happyhorse_r2v video download failed with HTTP ${videoResponse.status}.`);
+    const fileBuffer = Buffer.from(await videoResponse.arrayBuffer());
+    const filename = `${brief.slotId}_${brief.assetType}_01_happyhorse.mp4`.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    await writeFile(path.join(context.outputDir, filename), fileBuffer);
+    return [{
+      id: `generated_${brief.slotId}_01`.replace(/[^a-zA-Z0-9_.-]/g, "_"),
+      briefId: brief.id,
+      slotId: brief.slotId,
+      provider: "happyhorse_r2v",
+      model: config.model,
+      type: "video",
+      materialRole: "aigc_generated_material",
+      path: candidatePath(context.publicPathPrefix, filename),
+      prompt,
+      negativePrompt: brief.negativePrompts.join("; "),
+      provenance: { generatedAt, userApproved: false, externalProviderUsed: true, sampleFramesSentExternally: false, targetAssetsSentExternally: false },
+      quality: { usable: undefined, issues: [] }
+    }];
   }
 };
 
@@ -805,6 +948,7 @@ export const AIGC_MATERIAL_PROVIDER_REGISTRY: Record<AigcMaterialProviderId, Aig
   volcengine_seedream: volcengineSeedreamProvider,
   seedance_2_0: seedanceVideoProvider,
   ark_seedance_provider_stub: seedanceVideoProvider,
+  happyhorse_r2v: happyhorseR2vProvider,
   image_provider: disabledProvider("image_provider"),
   copy_provider: disabledProvider("copy_provider"),
   none: disabledProvider("none")

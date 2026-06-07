@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CompositionProgram",
+  "type": "object",
+  "required": [
+    "id",
+    "projectId",
+    "creativeBrief",
+    "selectedElements",
+    "composition",
+    "sections",
+    "stylePlan",
+    "slotPlan",
+    "materialPlan",
+    "audioPlan",
+    "explanation"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string"
+    },
+    "creativeBrief": {
+      "type": "object"
+    },
+    "selectedElements": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "composition": {
+      "type": "object"
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "stylePlan": {
+      "type": "object"
+    },
+    "slotPlan": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "materialPlan": {
+      "type": "object"
+    },
+    "audioPlan": {
+      "type": "object"
+    },
+    "explanation": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

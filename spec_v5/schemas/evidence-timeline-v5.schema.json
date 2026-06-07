@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvidenceTimelineV5",
+  "type": "object",
+  "required": [
+    "id",
+    "assetId",
+    "video",
+    "shots",
+    "keyFrames",
+    "warnings"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "assetId": {
+      "type": "string"
+    },
+    "video": {
+      "type": "object",
+      "required": [
+        "durationSec",
+        "width",
+        "height",
+        "fps",
+        "hasAudio"
+      ],
+      "properties": {
+        "durationSec": {
+          "type": "number"
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "fps": {
+          "type": "number"
+        },
+        "aspectRatio": {
+          "type": "string"
+        },
+        "hasAudio": {
+          "type": "boolean"
+        }
+      }
+    },
+    "shots": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "keyFrames": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "textEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "speechEvidence": {
+      "type": "object"
+    },
+    "audioEvidence": {
+      "type": "object"
+    },
+    "motionEvidence": {
+      "type": "object"
+    },
+    "contactSheetRef": {
+      "type": "string"
+    },
+    "recommendedVideoInputPolicy": {
+      "type": "object"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -23,13 +23,14 @@
       "task": "music",
       "candidates": [
         {
-          "provider": "elevenlabs_music",
-          "model": "eleven-music",
+          "provider": "google_lyria_music",
+          "model": "lyria-3-clip-preview",
           "priority": 1,
           "enabled": false,
           "maxCostUsd": 0.5,
           "timeoutMs": 120000,
-          "fallbackOn": ["timeout", "rate_limit", "api_error"]
+          "fallbackOn": ["timeout", "rate_limit", "api_error"],
+          "fallbackChain": ["elevenlabs_music", "procedural_synth"]
         }
       ],
       "deterministicFallback": {

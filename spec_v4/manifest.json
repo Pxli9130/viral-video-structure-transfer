@@ -31,10 +31,12 @@
       "Veo/Kling/Runway/GPT Image/Nano Banana adapters"
     ],
     "optional_aigc_audio": [
+      "Google Gemini TTS",
+      "Google Lyria Music",
       "ElevenLabs Scribe",
-      "ElevenLabs TTS",
+      "ElevenLabs TTS fallback",
       "ElevenLabs Sound Effects",
-      "ElevenLabs Music",
+      "ElevenLabs Music fallback",
       "ElevenLabs Audio Isolation",
       "ElevenLabs Forced Alignment"
     ]

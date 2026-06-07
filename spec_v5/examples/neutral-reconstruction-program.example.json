@@ -1,0 +1,116 @@
+{
+  "id": "nrp_sample_001",
+  "sourceSampleId": "asset_sample_001",
+  "evidenceTimelineId": "evidence_sample_001",
+  "evidenceRefs": ["shot_001", "beat_001", "ocr_001", "frame_001"],
+  "typedSpec": {
+    "composition": { "width": 720, "height": 1280, "fps": 30, "durationSec": 16, "aspectRatio": "9:16", "background": "#050505" },
+    "scenes": [
+      {
+        "id": "sec_hook",
+        "role": "hook",
+        "startSec": 0,
+        "endSec": 2,
+        "intent": "fast attention grab",
+        "layers": [
+          { "id": "layer_hero", "type": "media", "placeholderId": "ph_hero_product", "startSec": 0, "endSec": 2, "style": { "position": "center", "scale": 1.15 }, "motion": { "kind": "impact_zoom", "intensity": 0.8 }, "evidenceRefs": ["frame_001"] },
+          { "id": "layer_title", "type": "text", "placeholderId": "ph_hook_text", "startSec": 0.3, "endSec": 2, "style": { "fontWeight": 800, "safeArea": "top" }, "motion": { "kind": "slide_up_pop" }, "evidenceRefs": ["ocr_001"] }
+        ],
+        "motionGrammar": ["impact_zoom", "title_pop"],
+        "packagingGrammar": ["bold_condensed_title"],
+        "evidenceRefs": ["shot_001", "beat_001"]
+      },
+      {
+        "id": "sec_benefit",
+        "role": "benefit",
+        "startSec": 2,
+        "endSec": 10,
+        "intent": "show three selling points",
+        "layers": [
+          { "id": "layer_product", "type": "media", "placeholderId": "ph_product_closeup", "startSec": 2, "endSec": 10, "style": { "position": "center" }, "motion": { "kind": "slow_push" }, "evidenceRefs": ["shot_002"] },
+          { "id": "layer_benefit_text", "type": "text", "placeholderId": "ph_benefit_text", "startSec": 2.5, "endSec": 9.5, "style": { "fontWeight": 700 }, "motion": { "kind": "fade_swap" }, "evidenceRefs": ["ocr_003"] }
+        ],
+        "motionGrammar": ["slow_push", "fade_swap"],
+        "packagingGrammar": ["white_subtitles"],
+        "evidenceRefs": ["shot_002", "ocr_003"]
+      },
+      {
+        "id": "sec_cta",
+        "role": "cta",
+        "startSec": 10,
+        "endSec": 16,
+        "intent": "conversion card",
+        "layers": [
+          { "id": "layer_cta", "type": "cta", "placeholderId": "ph_cta_card", "startSec": 10, "endSec": 16, "style": { "shape": "rounded black card" }, "motion": { "kind": "card_in" }, "evidenceRefs": ["shot_006"] }
+        ],
+        "motionGrammar": ["card_in"],
+        "packagingGrammar": ["rounded_black_card"],
+        "evidenceRefs": ["shot_006", "beat_018"]
+      }
+    ],
+    "globalStyle": {
+      "palette": ["#050505", "#FFFFFF", "#F7C948"],
+      "typographySystem": "bold condensed title with white subtitles",
+      "motionIntensity": "high",
+      "textDensity": "medium",
+      "pacing": "fast",
+      "coherenceNotes": ["Keep one warm accent (#F7C948) for CTA only"]
+    },
+    "audioCues": [
+      { "t": 0, "type": "impact", "role": "hook_start", "evidenceRef": "beat_001" },
+      { "t": 2, "type": "hit", "role": "title_pop", "evidenceRef": "beat_004" },
+      { "t": 10, "type": "impact", "role": "cta", "evidenceRef": "beat_018" }
+    ],
+    "rhythm": { "cutDensity": "high", "beatAlignedCuts": true, "peakMomentsSec": [0, 2, 10], "pacingCurve": [{ "timeSec": 0, "value": 0.9 }, { "timeSec": 8, "value": 0.6 }, { "timeSec": 14, "value": 0.9 }] },
+    "packaging": { "typographySystem": "bold condensed title with white subtitles", "subtitleStyle": { "density": "medium" }, "titleCardStyle": { "shape": "rounded black card" }, "palette": ["#050505", "#FFFFFF", "#F7C948"] }
+  },
+  "remotionProject": {
+    "entryFile": "index.tsx",
+    "componentName": "NeutralSampleReconstruction",
+    "files": [
+      { "path": "index.tsx", "content": "// neutral reconstruction entry — placeholder-driven, no sample media paths" }
+    ],
+    "propsSchema": {},
+    "fixture": {},
+    "allowedImports": ["react", "remotion", "zod"]
+  },
+  "placeholders": [
+    { "id": "ph_hero_product", "kind": "hero_product", "required": true, "sectionId": "sec_hook", "startSec": 0, "endSec": 2, "evidenceRefs": ["frame_001"], "replacementPolicy": "target_asset", "safetyPolicy": "must_replace_sample", "sourcePolicy": "sample_evidence_only" },
+    { "id": "ph_hook_text", "kind": "subtitle_text", "required": true, "sectionId": "sec_hook", "startSec": 0.3, "endSec": 2, "evidenceRefs": ["ocr_001"], "replacementPolicy": "text_fallback", "safetyPolicy": "can_use_user_asset", "sourcePolicy": "sample_evidence_only" },
+    { "id": "ph_product_closeup", "kind": "product_closeup", "required": false, "sectionId": "sec_benefit", "startSec": 2, "endSec": 10, "evidenceRefs": ["shot_002"], "replacementPolicy": "target_asset", "safetyPolicy": "must_replace_sample", "sourcePolicy": "sample_evidence_only" },
+    { "id": "ph_benefit_text", "kind": "subtitle_text", "required": false, "sectionId": "sec_benefit", "startSec": 2.5, "endSec": 9.5, "evidenceRefs": ["ocr_003"], "replacementPolicy": "text_fallback", "safetyPolicy": "can_use_user_asset", "sourcePolicy": "sample_evidence_only" },
+    { "id": "ph_cta_card", "kind": "cta_card", "required": true, "sectionId": "sec_cta", "startSec": 10, "endSec": 16, "evidenceRefs": ["shot_006"], "replacementPolicy": "generate", "safetyPolicy": "procedural_only", "sourcePolicy": "sample_evidence_only" }
+  ],
+  "timingMap": [
+    { "id": "tm_001", "startSec": 0, "endSec": 2, "role": "hook", "visualTechnique": "center hero impact zoom", "motionTechnique": "beat-aligned zoom", "audioCue": "impact", "evidenceRefs": ["shot_001", "beat_001"] },
+    { "id": "tm_002", "startSec": 2, "endSec": 10, "role": "benefit", "visualTechnique": "slow push on product", "motionTechnique": "subtitle fade swap", "audioCue": "bed", "evidenceRefs": ["shot_002", "ocr_003"] },
+    { "id": "tm_003", "startSec": 10, "endSec": 16, "role": "cta", "visualTechnique": "rounded CTA card reveal", "motionTechnique": "card-in", "audioCue": "impact", "evidenceRefs": ["shot_006", "beat_018"] }
+  ],
+  "learnedAssetRecipes": [
+    {
+      "id": "vr_hero_product",
+      "kind": "hero_product",
+      "observedDescription": { "subject": "large centered hero object", "lighting": "rim light", "camera": "close-up", "composition": "fills center", "mood": "premium", "styleKeywords": ["glossy", "dark", "impact"] },
+      "generationPromptTemplate": "Create a new premium hero image for {targetProduct}, centered, glossy, rim light, dark background, strong hook composition.",
+      "negativePrompt": "Do not copy sample product, logo, text, face, watermark.",
+      "placementHint": { "sectionRole": "hook", "bboxNorm": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.5 }, "motion": "impact zoom", "durationSec": 2 },
+      "reusablePolicy": "regenerate_only",
+      "evidenceRefs": ["frame_001"]
+    }
+  ],
+  "learnedAudioRecipes": [
+    {
+      "id": "ar_hook_impact",
+      "kind": "impact",
+      "bpm": 128,
+      "mood": ["energetic", "commercial"],
+      "cuePoints": [{ "t": 0, "type": "impact", "role": "hook_start" }, { "t": 10, "type": "impact", "role": "cta" }],
+      "generationPromptTemplate": "Create punchy commercial impact hits aligned with hook and CTA.",
+      "negativePrompt": "Do not recreate sample track or melody.",
+      "reusablePolicy": "procedural_recreate",
+      "evidenceRefs": ["audio_beat_grid"]
+    }
+  ],
+  "reconstructionQuality": { "structureCoverage": 0.82, "timingCoverage": 0.9, "placeholderCoverage": 0.95, "warnings": [] },
+  "safety": { "samplePixelsRemoved": true, "sampleTextSanitized": true, "sampleAudioRemoved": true, "renderableSampleMaterialRefs": [] }
+}

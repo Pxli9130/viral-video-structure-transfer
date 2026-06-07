@@ -45,6 +45,50 @@ function addProceduralAudio(mp4Path, motif, durSec) {
   return false;
 }
 
+/** Mean loudness (dBFS) of the first audio stream via ffmpeg volumedetect, or null if unmeasurable. */
+function meanVolumeDb(mp4Path) {
+  const r = spawnSync("ffmpeg", ["-hide_banner", "-nostats", "-i", mp4Path, "-map", "0:a:0?", "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+  const text = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const m = /mean_volume:\s*(-?\d+(?:\.\d+)?) dB/.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Render-time blank verification (the objective backstop for the codegen blank-media bug): longest run
+ * (seconds) of consecutive near-uniform frames via the deterministic analyzer's per-frame contentStd
+ * (spatial luma stdev — flat frame ~0), and a gate verdict vs the proportional allowance max(2s, 20% of
+ * duration). Keys off content presence, not darkness, so dark-but-populated motifs are not penalized.
+ * Returns null when conda python / contentStd is unavailable.
+ */
+function blankSectionVerdict(mp4Path) {
+  const condaBase = process.env.CONDA_BASE ?? path.join(process.env.HOME ?? "", "anaconda3");
+  const condaEnv = process.env.VIRAL_CONDA_ENV ?? "viral";
+  const py = path.join(condaBase, "envs", condaEnv, "bin", "python");
+  if (!existsSync(py)) return null;
+  const r = spawnSync(py, [path.join(ROOT, "scripts/analyze-evidence-timeline.py"), "--video", mp4Path, "--metrics-only"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${path.join(condaBase, "envs", condaEnv, "bin")}:${process.env.PATH ?? ""}` }
+  });
+  if (r.status !== 0) return null;
+  let parsed;
+  try { parsed = JSON.parse(r.stdout); } catch { return null; }
+  const frames = parsed.frameMetrics;
+  if (!Array.isArray(frames) || frames.length < 8 || !frames.some((f) => typeof f.contentStd === "number")) return null;
+  const BLANK_STD = Number(process.env.BLANK_CONTENT_STD ?? 0.04);
+  const interval = (Number(frames.at(-1).timeSec) - Number(frames[0].timeSec)) / (frames.length - 1);
+  let longest = 0;
+  let runStart = null;
+  for (const f of frames) {
+    const t = Number(f.timeSec ?? 0);
+    if ((f.contentStd ?? 1) < BLANK_STD) { if (runStart == null) runStart = t; longest = Math.max(longest, t - runStart); }
+    else runStart = null;
+  }
+  const blankSpanSec = longest > 0 ? longest + (Number.isFinite(interval) ? interval : 0) : 0;
+  const dur = Number(parsed.metadata?.durationSec ?? 0);
+  const allowanceSec = Math.max(2, 0.2 * dur);
+  return { blankSpanSec: Number(blankSpanSec.toFixed(2)), allowanceSec: Number(allowanceSec.toFixed(2)), pass: blankSpanSec <= allowanceSec };
+}
+
 const ROOT = process.cwd();
 const CASE_ORDER = ["marketing", "motion_graph_1", "motion_graph_2", "editing"];
 
@@ -136,13 +180,32 @@ async function renderCase({ caseId, runDir, maxSec, browser, bundleApi, renderer
     // Task 4: mux deterministic procedural per-motif audio so the preview is never silent.
     if (existsSync(outPath)) {
       const durSec = Math.min(Number(fixture.durationSec) > 0 ? Number(fixture.durationSec) : 8, maxSec);
-      result.audio = addProceduralAudio(outPath, metadata.motifFamily, durSec) ? "procedural" : "silent(ffmpeg_unavailable)";
+      const muxed = addProceduralAudio(outPath, metadata.motifFamily, durSec);
+      // Verify the muxed bed actually carries signal (physics check), not just that ffmpeg returned 0.
+      const mv = muxed ? meanVolumeDb(outPath) : null;
+      result.audio = muxed
+        ? (mv == null ? "procedural(unmeasured)" : mv > -50 ? `procedural(${mv.toFixed(1)}dB)` : `silent(${mv.toFixed(1)}dB)`)
+        : "silent(ffmpeg_unavailable)";
+      result.audioMeanVolumeDb = mv;
     }
     result.rendered = existsSync(outPath);
     result.output = result.rendered ? outPath : null;
+    // Render-time blank verification (objective backstop): does this output dwell on a near-blank
+    // frame? Recorded per case so the harness honestly flags the codegen blank-media bug.
+    if (result.rendered) {
+      const blank = blankSectionVerdict(outPath);
+      if (blank) {
+        result.blankSpanSec = blank.blankSpanSec;
+        result.blankAllowanceSec = blank.allowanceSec;
+        result.blankGatePass = blank.pass;
+        if (!blank.pass) console.warn(`[render-pure] ${caseId}: ⚠️ near-blank ${blank.blankSpanSec}s > ${blank.allowanceSec}s allowed (codegen blank-media; regenerate with hardened prompt)`);
+      } else {
+        result.blankGatePass = null; // unmeasured (conda python unavailable)
+      }
+    }
     // copy alongside the proposal too for convenience
     if (result.rendered) copyFileSync(outPath, path.join(proposalDir, "pure-codegen.remotion.mp4"));
-    console.log(`[render-pure] ${caseId}: ${result.rendered ? "OK -> " + outPath : "no output produced"}`);
+    console.log(`[render-pure] ${caseId}: ${result.rendered ? "OK -> " + outPath : "no output produced"}${result.blankGatePass === false ? " [BLANK-FAIL]" : result.blankGatePass === true ? " [content OK]" : ""}`);
   } catch (error) {
     result.error = `render failed: ${error?.message ?? error}`;
     console.error(`[render-pure] ${caseId}: ${result.error}`);

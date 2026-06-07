@@ -16,7 +16,7 @@
 
 ## v4.2 相比 v4.1 的新增点
 
-1. **默认模型升级到当前 Google 线**（env 可配，见 `.env.example`）：LLM/VLM/创意特效 codegen 默认 `gemini-3.5-flash`；图像 `gemini-3.1-flash-image`（Nano Banana 2）。旧 `gemini-2.5-*` 作为可选备选；**视频仍默认 Seedance 2.0**。Nano Banana Pro / Imagen 4 / Gemini TTS / Lyria / Veo 3.1 为需接 adapter 的备选项。
+1. **默认模型升级到当前 Google 线**（env 可配，见 `.env.example`）：LLM/VLM/创意特效 codegen 默认 `gemini-3.5-flash`；图像 `gemini-3.1-flash-image`（Nano Banana 2）；音频生成默认 Gemini TTS + Lyria，ElevenLabs 作为备选，FFmpeg 程序化音频为最终 fallback。旧 `gemini-2.5-*` 作为可选备选；**视频仍默认 Seedance 2.0**。Nano Banana Pro / Imagen 4 / Veo 3.1 仍是需接 adapter 的备选项。
 2. **创意特效 codegen 层**：证据 → MotifFamily → CreativeEffectSpec → live Gemini 生成可复用 Remotion 特效组件（`schema.ts` 用 zod、`index.tsx` props 驱动）→ 静态校验 → apply→KB→manifest→EffectRegistry→RenderRecipe→渲染。五个 motif：poster_ribbon_marketing / card_orbit_motion_graph / blue_spotlight_ui_pitch / beat_cut_chinese_editing_tutorial / **split_screen_compare（新）**。
 3. **校验加固**：file-aware zod 策略（zod 仅 `schema.ts`）+ fixture `proceduralFallback`/`assets` + **具名 import 存在性校验**（对照已安装 remotion/react，渲染前拦住被移除的 API，如 `Extrapolate`）；promotion 闸门（generated 特效需显式提升才覆盖 built-in）。
 

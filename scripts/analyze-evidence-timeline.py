@@ -226,9 +226,14 @@ def sample_frame_metrics(video, n=60, width=240):
                               round(float(xs.max() - xs.min()) / gw, 3), round(float(ys.max() - ys.min()) / gh, 3)]
             except Exception:
                 flow_mag = diff
+        # contentStd: spatial stdev of grayscale luma (0..1). A blank/uniform frame (flat black, flat
+        # white, or any solid color) is ~0; a frame with text/panels/shapes is higher EVEN IF dark — so
+        # it detects empty frames without penalizing legitimately dark-but-populated motifs (e.g. a dark
+        # UI pitch). The blank-section gate keys off this, not blackBgRatio (which over-flags dark designs).
+        content_std = round(float(gray.std()) / 255.0, 4)
         frame_metrics.append({
             "timeSec": t, "blackBgRatio": round(dark, 4), "redYellowRatio": round(ry, 4),
-            "motionDiffMean": round(diff, 4), "cutLikeCount": is_cut,
+            "motionDiffMean": round(diff, 4), "cutLikeCount": is_cut, "contentStd": content_std,
         })
         flow_samples.append({"timeSec": t, "flowMag": flow_mag, "region": region})
         prev_gray = gray

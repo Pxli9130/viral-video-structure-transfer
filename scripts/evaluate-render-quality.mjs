@@ -40,9 +40,19 @@ const scriptsDir = path.dirname(new URL(import.meta.url).pathname);
 const PLACEHOLDER_PATTERNS = [/proxy/i, /placeholder/i, /插槽/, /占位/, /运动图插槽/, /Card stack proxy/i, /Beat montage proxy/i];
 const GENERIC_B2B = [/b2b_marketing_mg/i, /B2B MG Promo Structure/i];
 
+const FFMPEG = process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.includes("/") ? process.env.FFMPEG_PATH : "ffmpeg";
+
 function ffprobeStreams(file) {
   const out = spawnSync(FFPROBE, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file], { encoding: "utf8" });
   try { return JSON.parse(out.stdout || "{}"); } catch { return {}; }
+}
+
+/** Mean loudness (dBFS) of the first audio stream via ffmpeg volumedetect, or null if unmeasurable. */
+function meanVolumeDb(file) {
+  const res = spawnSync(FFMPEG, ["-hide_banner", "-nostats", "-i", file, "-map", "0:a:0?", "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+  const text = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  const m = /mean_volume:\s*(-?\d+(?:\.\d+)?) dB/.exec(text);
+  return m ? Number(m[1]) : null;
 }
 
 function readJson(file) {
@@ -70,6 +80,43 @@ function runMetrics(video) {
   ], { encoding: "utf8", env: { ...process.env, PATH: `${path.join(condaBase, "envs", condaEnv, "bin")}:${process.env.PATH ?? ""}` } });
   if (res.status !== 0) return undefined;
   try { return JSON.parse(res.stdout).metadata; } catch { return undefined; }
+}
+
+/** Full metrics-only output (incl. per-frame frameMetrics) for the universal visual-density gate. */
+function runFrameMetrics(video) {
+  if (!existsSync(PYTHON)) return undefined;
+  const res = spawnSync(PYTHON, [
+    path.join(scriptsDir, "analyze-evidence-timeline.py"),
+    "--video", video, "--metrics-only"
+  ], { encoding: "utf8", env: { ...process.env, PATH: `${path.join(condaBase, "envs", condaEnv, "bin")}:${process.env.PATH ?? ""}` } });
+  if (res.status !== 0) return undefined;
+  try { return JSON.parse(res.stdout); } catch { return undefined; }
+}
+
+/**
+ * Longest run (seconds) of consecutive near-blank sampled frames — a frame whose spatial luma stdev
+ * (contentStd) is below `stdThreshold` is essentially uniform (a flat color: black, white, or any solid
+ * fill) with no foreground content. Keys off content PRESENCE, not darkness, so a legitimately dark
+ * motif with visible text/panels (high stdev) is NOT penalized; only genuinely empty stretches are.
+ * Returns null when < 8 frames (or no contentStd) are available. Motif-agnostic.
+ */
+function longestBlankSectionSec(frameMetrics, stdThreshold) {
+  if (!Array.isArray(frameMetrics) || frameMetrics.length < 8) return null;
+  if (!frameMetrics.some((f) => typeof f.contentStd === "number")) return null;
+  const interval = (Number(frameMetrics[frameMetrics.length - 1].timeSec) - Number(frameMetrics[0].timeSec)) / (frameMetrics.length - 1);
+  let longest = 0;
+  let runStart = null;
+  for (const f of frameMetrics) {
+    const t = Number(f.timeSec ?? 0);
+    if ((f.contentStd ?? 1) < stdThreshold) {
+      if (runStart == null) runStart = t;
+      longest = Math.max(longest, t - runStart);
+    } else {
+      runStart = null;
+    }
+  }
+  // Add one sample interval so a trailing near-blank frame's coverage isn't undercounted.
+  return longest > 0 ? longest + (Number.isFinite(interval) ? interval : 0) : 0;
 }
 
 const gates = [];
@@ -100,6 +147,30 @@ gate("output_portrait_9_16", height > width, `${width}x${height}`, { width, heig
 // 2. audio present unless explicitly silent
 const audioPolicy = timeline?.renderPlan?.audioPolicy ?? "unknown";
 gate("audio_present_or_silent_ok", Boolean(astream) || audioPolicy === "silent", `hasAudio=${Boolean(astream)} audioPolicy=${audioPolicy}`, { audioPolicy });
+// Universal loudness silence guard (runs for ALL flows, not just beat_cut): a render that carries an
+// audio stream and is not silent-by-design must have real signal (> -50 dBFS), not an empty -91 dB
+// track. Physics threshold, motif-agnostic. Skipped (warn) when ffmpeg can't measure.
+if (astream && audioPolicy !== "silent") {
+  const SILENCE_DB = Number(process.env.AUDIO_SILENCE_DB ?? -50);
+  const mv = meanVolumeDb(render);
+  if (mv == null) warnings.push("audio_not_silent: could not measure mean_volume (ffmpeg unavailable); skipped");
+  else gate("audio_not_silent", mv > SILENCE_DB, `mean_volume=${mv.toFixed(1)}dB (> ${SILENCE_DB}dB required)`, { meanVolumeDb: mv });
+}
+
+// Universal visual-density guard (ALL flows, not just beat_cut): a render must not dwell on a near-blank
+// frame for a long stretch (the codegen blank-media bug). Allowance is proportional — max(2s, 20% of
+// duration) — so it is fair to both short and long videos and is not tuned to any one sample.
+{
+  const BLANK_STD = Number(process.env.BLANK_CONTENT_STD ?? 0.04);
+  const full = runFrameMetrics(render);
+  const blankSpan = longestBlankSectionSec(full?.frameMetrics, BLANK_STD);
+  if (blankSpan == null) {
+    warnings.push("no_long_blank_section: frame metrics unavailable (conda python?); skipped");
+  } else {
+    const allowance = Math.max(2, 0.2 * duration);
+    gate("no_long_blank_section", blankSpan <= allowance, `longestNearBlank=${blankSpan.toFixed(1)}s (<= ${allowance.toFixed(1)}s allowed; frame contentStd<${BLANK_STD})`, { blankSpan, allowance });
+  }
+}
 
 // 3. videoType not generic B2B (and matches expectation if given)
 if (template) {

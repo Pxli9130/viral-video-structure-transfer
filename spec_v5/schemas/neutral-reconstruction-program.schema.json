@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NeutralReconstructionProgram",
+  "type": "object",
+  "required": [
+    "id",
+    "sourceSampleId",
+    "evidenceTimelineId",
+    "typedSpec",
+    "remotionProject",
+    "placeholders",
+    "timingMap",
+    "safety"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "sourceSampleId": {
+      "type": "string"
+    },
+    "evidenceTimelineId": {
+      "type": "string"
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "typedSpec": {
+      "type": "object"
+    },
+    "remotionProject": {
+      "type": "object"
+    },
+    "placeholders": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "timingMap": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "learnedAssetRecipes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "learnedAudioRecipes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "reconstructionQuality": {
+      "type": "object"
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "samplePixelsRemoved",
+        "sampleTextSanitized",
+        "sampleAudioRemoved"
+      ],
+      "properties": {
+        "samplePixelsRemoved": {
+          "type": "boolean"
+        },
+        "sampleTextSanitized": {
+          "type": "boolean"
+        },
+        "sampleAudioRemoved": {
+          "type": "boolean"
+        },
+        "renderableSampleMaterialRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

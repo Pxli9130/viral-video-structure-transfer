@@ -152,6 +152,7 @@ export type AigcMaterialProviderId =
   | "volcengine_seedream"
   | "seedance_2_0"
   | "ark_seedance_provider_stub"
+  | "happyhorse_r2v"
   | "image_provider"
   | "copy_provider"
   | "none";
@@ -395,6 +396,8 @@ export interface GeneratedAssetCandidate {
 export type OptionalProviderId =
   | "seedance_2_0"
   | "seedream_4_0"
+  | "google_gemini_tts"
+  | "google_lyria_music"
   | "elevenlabs_scribe"
   | "elevenlabs_tts"
   | "elevenlabs_sound_effects"

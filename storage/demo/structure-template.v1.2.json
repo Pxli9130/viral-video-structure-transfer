@@ -1,11 +1,14 @@
 {
   "id": "template_1a6ktxt",
   "projectId": "demo_v1_2_project",
-  "name": "B2B MG Promo Structure: Hook Body Proof CTA",
+  "name": "B2B MG Promo Structure: Hook Body Proof CTA · sample · 2026-06-03T19:48Z",
+  "sourceAssetFilename": "sample",
   "vertical": "b2b_marketing_mg",
   "sourceSampleIds": [
     "demo_sample_video"
   ],
+  "videoType": "b2b_marketing_mg",
+  "excludeSegments": [],
   "targetDurationSec": 15,
   "segments": [
     {
@@ -29,6 +32,7 @@
       "intent": "Explain core value with usage, closeup and MG selling-point cards.",
       "scriptPattern": "One benefit per shot, alternating closeup, usage and text card.",
       "slots": [
+        "auto_slot_body_kinetic_typography_001",
         "slot_product_closeup",
         "slot_usage_scene",
         "slot_subtitle_text"
@@ -62,6 +66,54 @@
     }
   ],
   "requiredSlots": [
+    {
+      "id": "auto_slot_body_kinetic_typography_001",
+      "role": "body",
+      "slotType": "title_card",
+      "required": true,
+      "description": "kinetic_typography: kinetic_text_card (beat_scale_typography)",
+      "preferredTags": [
+        "kinetic_typography_candidate",
+        "kinetic_text_card_candidate"
+      ],
+      "fallbackStrategies": [
+        "procedural_generation",
+        "packaging_overlay",
+        "text_card"
+      ],
+      "visualForm": "kinetic_text_card",
+      "visualFormFamily": "kinetic_typography",
+      "modality": "text",
+      "inducedSlotId": "auto_slot_body_kinetic_typography_001",
+      "assetRequirement": {
+        "required": false,
+        "type": "copy",
+        "minCount": 1
+      },
+      "rendererCandidates": [
+        "kinetic_text_card",
+        "text_card"
+      ],
+      "sourceEvidence": {
+        "confidence": 0.75,
+        "frameIds": [],
+        "textEvidence": [
+          "text_card_candidate",
+          "text_card_candidate",
+          "Bold MG subtitle",
+          "Lower-third bold subtitle, one benefit per shot."
+        ],
+        "summary": "text_card_candidate"
+      },
+      "confidence": 0.75,
+      "semanticLabel": "kinetic_text",
+      "motionSpec": {
+        "type": "scale",
+        "speed": 0.5,
+        "preserveFromSlot": true
+      },
+      "clickToReplace": false
+    },
     {
       "id": "slot_hook_visual",
       "role": "hook",
@@ -155,7 +207,7 @@
     }
   ],
   "rhythm": {
-    "pace": "fast",
+    "pace": "slow",
     "averageShotDurationSec": 3,
     "peakTimeRatio": 0.7,
     "notes": "Fast opening, value pulses through the middle, readable CTA hold."
@@ -177,7 +229,6 @@
       "name": "Result-first hook",
       "description": "Open with the clearest product/result frame and a short benefit claim.",
       "applicableVerticals": [
-        "b2b_marketing_mg",
         "b2b_marketing_mg"
       ],
       "usageRules": "Use when prompt contains a concrete product or pain point.",
@@ -193,7 +244,6 @@
       "name": "Fast cuts with value pulses",
       "description": "Alternate 1.5–2.5s shots, one benefit per cut.",
       "applicableVerticals": [
-        "b2b_marketing_mg",
         "b2b_marketing_mg"
       ],
       "usageRules": "Use when target duration is under 20s and pace is fast.",
@@ -208,7 +258,6 @@
       "name": "Bold MG subtitle",
       "description": "Lower-third bold subtitle, one benefit per shot.",
       "applicableVerticals": [
-        "b2b_marketing_mg",
         "b2b_marketing_mg"
       ],
       "usageRules": "Use high subtitle density when source visuals are weak.",
@@ -223,7 +272,6 @@
       "name": "Proof by contrast card",
       "description": "Split layout for before/after or pain/solution.",
       "applicableVerticals": [
-        "b2b_marketing_mg",
         "b2b_marketing_mg"
       ],
       "usageRules": "Use when source has comparison footage or prompt mentions improvement.",
@@ -238,7 +286,6 @@
       "name": "Readable CTA end card",
       "description": "Hold final CTA with benefit recap and brand mark.",
       "applicableVerticals": [
-        "b2b_marketing_mg",
         "b2b_marketing_mg"
       ],
       "usageRules": "Use for any marketing/promo output.",
@@ -253,7 +300,6 @@
       "name": "Crop-zoom + benefit overlay",
       "description": "Reuse the strongest source shot with crop/zoom; overlay benefit text.",
       "applicableVerticals": [
-        "b2b_marketing_mg",
         "b2b_marketing_mg"
       ],
       "usageRules": "Use when product closeup or usage slots have no direct source.",
@@ -299,12 +345,132 @@
       "person_likeness"
     ]
   },
-  "qualityRationale": "Hook + value body + proof + CTA mirrors successful B-end MG promos; replacement policy keeps the system from copying sample frames.",
+  "qualityRationale": "Hook + value body + proof + CTA mirrors successful B-end MG promos; replacement policy keeps the system from copying sample frames. Open-world induced slots: kinetic_typography:required:0.75, object_motion:suggested:0.48.",
+  "aiEnrichmentStatus": "skipped",
   "sourcePolicy": {
     "sampleSource": "demo_only",
     "commercialUse": false,
     "notes": "Mock fallback template transfers structure only; does not reuse sample visuals."
   },
-  "createdAt": "2026-05-22T19:32:03.987Z",
-  "updatedAt": "2026-05-22T19:32:03.987Z"
+  "createdAt": "2026-06-03T19:48:00.242Z",
+  "updatedAt": "2026-06-03T19:48:00.242Z",
+  "inducedSlots": [
+    {
+      "id": "auto_slot_body_kinetic_typography_001",
+      "role": "body",
+      "modality": "text",
+      "visualForm": "kinetic_text_card",
+      "visualFormFamily": "kinetic_typography",
+      "motionPattern": "beat_scale_typography",
+      "layoutRelation": "centered_bold_text",
+      "assetRequirement": {
+        "required": false,
+        "type": "copy",
+        "minCount": 1
+      },
+      "sourceEvidence": {
+        "confidence": 0.75,
+        "frameIds": [],
+        "textEvidence": [
+          "text_card_candidate",
+          "text_card_candidate",
+          "Bold MG subtitle",
+          "Lower-third bold subtitle, one benefit per shot."
+        ],
+        "summary": "text_card_candidate"
+      },
+      "rendererCandidates": [
+        "kinetic_text_card",
+        "text_card"
+      ],
+      "fallbackStrategies": [
+        "procedural_generation",
+        "packaging_overlay",
+        "text_card"
+      ],
+      "replacementPolicy": {
+        "clickToReplace": false,
+        "acceptedAssetTypes": [
+          "copy",
+          "image"
+        ]
+      },
+      "confidence": 0.75,
+      "status": "required"
+    },
+    {
+      "id": "slot_rotating_hero_object_intro",
+      "role": "hook",
+      "modality": "image_or_video_or_3d_model",
+      "visualForm": "rotating_3d_object",
+      "visualFormFamily": "object_motion",
+      "motionPattern": "spin_orbit_screen_y",
+      "layoutRelation": "center_hero_object",
+      "assetRequirement": {
+        "required": true,
+        "type": "image_or_video_or_3d_model",
+        "minCount": 1
+      },
+      "sourceEvidence": {
+        "confidence": 0.48000000000000004,
+        "frameIds": [],
+        "textEvidence": [
+          "MG card with icon/sticker and 1-line headline",
+          "0–20% segment opens with product crop and top-bar headline."
+        ],
+        "summary": "MG card with icon/sticker and 1-line headline"
+      },
+      "rendererCandidates": [
+        "rotating_object_proxy",
+        "generic_asset_proxy"
+      ],
+      "fallbackStrategies": [
+        "proxy_placeholder",
+        "user_asset_replace",
+        "aigc_placeholder"
+      ],
+      "replacementPolicy": {
+        "clickToReplace": true,
+        "acceptedAssetTypes": [
+          "image",
+          "video",
+          "gif",
+          "glb",
+          "lottie"
+        ]
+      },
+      "confidence": 0.48000000000000004,
+      "status": "suggested"
+    }
+  ],
+  "techniqueAtoms": [
+    {
+      "id": "tech_ctaendslate_4wpw5g",
+      "name": "CTAEndSlate",
+      "category": "cta",
+      "sourceSampleId": "demo_sample_video",
+      "sourceEvidenceRefs": [
+        "template://template_1a6ktxt/segment/seg_cta"
+      ],
+      "visualPattern": "CTA segment structure",
+      "timingPattern": "slow, 3s avg shot",
+      "requiredAssets": [
+        "text",
+        "image"
+      ],
+      "renderer": {
+        "preferred": "remotion_recipe_compose",
+        "component": "CTAEndSlate"
+      },
+      "fallbackComponent": "CTAEndSlate",
+      "transferRules": [
+        "derive CTA copy from target brief",
+        "keep learned end-slate timing"
+      ],
+      "qualityHints": [
+        "CTA should not contain prompt/meta instructions"
+      ],
+      "confidence": 0.58
+    }
+  ]
 }

@@ -52,3 +52,6 @@ export * from "./mockPipeline.js";
 export * from "./schemas.js";
 export * from "./types.js";
 export * from "./validation.js";
+// spec_v5 (Program-KB Dual Codegen) canonical contracts, namespaced to run in parallel with V4.
+// Consume via: import { v5 } from "@vvst/shared";  type X = v5.NeutralReconstructionProgram;
+export * as v5 from "./contracts-v5/index.js";

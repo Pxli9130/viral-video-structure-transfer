@@ -102,28 +102,29 @@ image model: `resolveSeedreamProviderConfig` throws unless `SEEDREAM_ARK_MODEL` 
 }
 ```
 
-### ElevenLabs audio providers
+### Audio providers
 
 Implementation mapping:
 
+- `google_gemini_tts` -> ModelTask `voiceover`, fallback `elevenlabs_tts`, then `skip_with_warning` / subtitles-only.
+- `google_lyria_music` -> ModelTask `music`, fallback `elevenlabs_music`, then procedural BGM from `audioPlan.layers`.
 - `elevenlabs_scribe` -> ModelTask `asr`, fallback `faster_whisper`, then `no_asr_with_warning`.
-- `elevenlabs_tts` -> ModelTask `voiceover`, fallback `skip_with_warning` / procedural audio.
+- `elevenlabs_tts` -> ModelTask `voiceover`, backup after Google TTS, fallback `skip_with_warning` / procedural audio.
 - `elevenlabs_sound_effects` -> ModelTask `sound_effect`, fallback procedural SFX.
-- `elevenlabs_music` -> ModelTask `music`, fallback procedural BGM from `audioPlan.layers`.
+- `elevenlabs_music` -> ModelTask `music`, backup after Lyria, fallback procedural BGM from `audioPlan.layers`.
 - `elevenlabs_audio_isolation` -> ModelTask `audio_cleanup`, allowed only for authorized user/source audio, never sample evidence.
 - `elevenlabs_forced_alignment` -> ModelTask `forced_alignment`, allowed only for generated voiceover or authorized user/source audio.
 - `elevenlabs_models` and `elevenlabs_voices_read` are read-only discovery providers.
 
-ElevenLabs generation routes keep `sampleFramesAllowedAsInput=false` and `sampleAudioAllowedAsInput=false`; generated voice/music/SFX assets require provenance. ElevenLabs Scribe may receive sample audio only when external sample analysis is explicitly enabled and recorded.
+Google/ElevenLabs generation routes keep `sampleFramesAllowedAsInput=false` and `sampleAudioAllowedAsInput=false`; generated voice/music/SFX assets require provenance. ElevenLabs Scribe may receive sample audio only when external sample analysis is explicitly enabled and recorded. Google TTS/Lyria do not receive sample audio in this repo.
 
-The library default keeps `enabledByDefault=false`, but the shipped `.env.example`
-opts these routes in via `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`
-plus per-task `ELEVENLABS_ENABLE_MUSIC`/`ELEVENLABS_ENABLE_SFX`/`ELEVENLABS_ENABLE_TTS`
-(`.env.example:80-84`).
+The runtime opts Google audio in via `GOOGLE_AUDIO_ENABLE_CLOUD` or `ALLOW_CLOUD_PROVIDERS`
+plus per-task `GOOGLE_AUDIO_ENABLE_MUSIC`/`GOOGLE_AUDIO_ENABLE_TTS`. ElevenLabs backup routes
+remain gated by `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD` plus per-task flags.
 
 ```json
 {
-  "provider": "elevenlabs_music",
+  "provider": "google_lyria_music",
   "category": "audio",
   "requiredForCoreDemo": false,
   "enabledByDefault": false,

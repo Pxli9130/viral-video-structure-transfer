@@ -1,0 +1,35 @@
+{
+  "id": "score_001",
+  "generationId": "gen_001",
+  "gates": [
+    {
+      "id": "V5-G23",
+      "name": "Final video exists",
+      "status": "pass"
+    }
+  ],
+  "rubricCoverage": [
+    {
+      "rubricItem": "P0 Sample Parse",
+      "status": "done",
+      "evidenceArtifactRefs": [
+        "ev_001"
+      ]
+    },
+    {
+      "rubricItem": "P0 Gap Fill",
+      "status": "done",
+      "evidenceArtifactRefs": [
+        "gap_001"
+      ]
+    }
+  ],
+  "renderQuality": {
+    "durationSec": 16,
+    "audioNotSilent": true
+  },
+  "safety": {
+    "noSampleCopy": true
+  },
+  "warnings": []
+}

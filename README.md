@@ -2,6 +2,28 @@
 
 **Viral Video Structure Transfer Engine / 爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
 
+## Spec v5.1 — Same Template Reconstruction Mode（最新默认行为）
+
+> 上传你喜欢的视频 → 系统把它变成一套**可复用、props 驱动的 Remotion 模板**（`RemotionTemplateCapsule`）→ 输入新主题 → **自动补全缺失的画面/文案/音频，并用同一套动效模板渲染新内容**。
+>
+> 安全边界：可复用「模板代码 / 时间线 / 布局 / 动画曲线 / 排版行为 / 转场编排 / 音频 cue 位置 / props & slot schema」；**不可复用**样例的「原图像素 / 视频帧 / 音频 / 字幕文本 / logo / 人物 / 商品素材」。
+>
+> 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
+>
+> **Gen1-Pro 视觉胶囊（主路径）**：一次最强 Gemini Pro 调用（`GEMINI_GEN1_MODEL`，默认 `gemini-3.1-pro-preview`）**看完整段视频** + 确定性证据 → 一份忠实、props 驱动的 `RemotionTemplateCapsule`（react + remotion + `@remotion/three` 真 3D）。**返回的代码即圣经**：`mergeCapsule` 逐字节保留代码、只补缺失元数据,并合并 `timingSignature`（durationSec/fps 回退确定性，杜绝「31s 只渲 16s」）。只用「**编译 + 真渲染**」两道门(其余只记录不拦)。长视频(>34s)按 scene-cut 切 ≤30s 块并发重建后拼成一个多文件胶囊。Gemini 还返回 `assetPlan`（每个「代码画不出的 missing 素材」一条,带 key/mediaKind/AIGC prompt）。**运动/覆盖保真自修**：代码若违背它自己的 sceneRecipe（该滚动的字幕静止、该 3D 单轴的 ribbon 双轴翻滚、覆盖不足)触发一次 repair；**AI 优先**：能编译+渲染的 AI 胶囊永不因保真瑕疵被丢回确定性。
+>
+> **生成：换主题 + AIGC 补「动态素材」**。context-rewrite 用一次 Pro 调用换文案/配色(保结构、保源明暗)。footage 槽(`mediaKind=video`)填**真实视频**：**Seedance 2.0**(火山 Ark 文生视频)为主 → **happyhorse r2v**(阿里 DashScope 参考生视频,用 Gemini 静图作 `reference_image`,Seedance 欠费/403 时自动顶上)为备份 → AIGC 静图兜底；图片槽用 Gemini 图。渲染后:**色彩守卫**(源浅底却渲成暗→重写重渲一次) + **裁掉结尾纯色冗余镜头**。并发与稳定:全局渲染信号量(`RENDER_CONCURRENCY=2`×`RENDER_TABS_PER_JOB=2`)+ `RENDER_TIMEOUT_MS=120000` + 渲染/探针崩溃重试 + 全局 AIGC 信号量(`AIGC_GLOBAL_CONCURRENCY=8` 防 429)。**改写**:`POST /api/v5/generations/:id/revise`。
+>
+> API：`POST /api/v5/learn-samples`（`templateCapsuleId`/`templateCode`/`templateRenders`）· `GET /api/v5/templates[/:id]` · `POST /api/v5/generations`（默认 same_template）· `POST /api/v5/generations/:id/revise`。Web 默认入口已切到 spec_v5.1 看板（V4 仍可在 `#v4` 访问）。
+>
+> **四视频并行 demo**（需 conda env `viral` + 真实 key；输出 `storage/demo-runs-*/`）：
+> ```bash
+> export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
+> npm run build && node apps/api/dist/server.js   # 或 npm run dev
+> VIDEO_CONCURRENCY=4 OUT_DIR=demo-runs python scripts/run-v5-four-aigc.py   # 四条样例：各自 learn(切块)+generate(换随机主题+AIGC 视频/静图)
+> ```
+> 视频 provider env：`AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`（主）；`AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1`（备份）。**依赖必须装好** `@remotion/three@4.0.341` + `@react-three/fiber@8.15.19` + `three@0.176.0`（缺 `@remotion/three` → AI 真 3D 渲染失败 → 退回确定性）。
+
 ## Spec v4.2 Submission Entry
 
 当前提交目标是：**学结构，不抄内容**。样例视频只进入 analysis/template/TechniqueAtom/GapReport 作为结构证据；最终画面只允许使用目标素材、用户授权素材、本地程序化素材，或带 provenance 的生成素材。
@@ -374,15 +396,23 @@ SEEDREAM_IMAGE_SIZE=2K
 SEEDREAM_STREAM=false
 SEEDREAM_WATERMARK=false
 
-# video material：Volcengine Seedance 2.0 Fast（Ark task API）
+# video material（主）：Volcengine Seedance 2.0 Fast（Ark task API，纯文生视频）
 AIGC_VIDEO_PROVIDER=seedance_2_0
 AIGC_VIDEO_MODEL=doubao-seedance-2-0-fast-260128
-AIGC_VIDEO_MAX_ASSETS_PER_RUN=1
 # 可复用同一个 Ark bearer key；若已设置 SEEDREAM_ARK_API_KEY，可不单独设置这一项
 SEEDANCE_ARK_API_KEY=<your_seedance_or_seedream_ark_key>
 SEEDANCE_TASK_ENDPOINT=/contents/generations/tasks
 SEEDANCE_GENERATE_AUDIO=true
 SEEDANCE_WATERMARK=false
+
+# video material（备份）：Alibaba DashScope happyhorse-1.0-r2v（reference-to-video）
+# Seedance 失败（AccountOverdue/403/审核 400）时自动顶上；用 Gemini 静图作 base64 reference_image。
+# 地域必须一致：US key → dashscope-us 域名。
+AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v
+DASHSCOPE_API_KEY=<your_dashscope_key>
+DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1
+HAPPYHORSE_MODEL=happyhorse-1.0-r2v
+HAPPYHORSE_RESOLUTION=720P
 ```
 
 Gemini VLM 既驱动视频理解，也作为生成素材质量 gate（默认 `gemini-3.5-flash`；`gemini-2.5-pro`/`gemini-2.5-flash` 为可选备选，经 `VLM_MODEL` 切换）：
@@ -430,15 +460,15 @@ AIGC 安全策略：
 | LLM（文本增强/改写/评分） | `gemini`（默认 `gemini-3.5-flash`；alt 2.5-pro/2.5-flash） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`；`AI_GEMINI_MODEL` 选模型 |
 | VLM | disabled | Gemini（默认 `VLM_MODEL=gemini-3.5-flash`；alt `gemini-2.5-pro`/`gemini-2.5-flash`） | `VLM_PROVIDER=gemini` |
 | 创意特效 codegen | disabled | Gemini 生成 Remotion 特效组件（默认 `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`；zod schema + 静态校验 + named-import 存在性检查），失败回 local_fallback | `CREATIVE_EFFECT_GEMINI=1` + `ALLOW_CLOUD_PROVIDERS=1` |
-| ASR | `elevenlabs_scribe`（首选，cloud-first） | ElevenLabs Scribe（`scribe_v2`，云端，需 ElevenLabs key + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`/`_SCRIBE`/`_ASR`）→ faster-whisper（本地 fallback）→ `no_asr_with_warning` | `ASR_PROVIDER=elevenlabs_scribe\|faster_whisper` |
+| ASR | `elevenlabs_scribe`（首选，cloud-first） | ElevenLabs Scribe（`scribe_v2`，云端，需 ElevenLabs key + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD`/`_SCRIBE`/`_ASR`）→ faster-whisper（本地 fallback）→ `no_asr_with_warning`。Google TTS/Lyria 不替代带 word timestamp 的 ASR。 | `ASR_PROVIDER=elevenlabs_scribe\|faster_whisper` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
 | AIGC image material | disabled | Google Gemini Image 默认 `gemini-3.1-flash-image`（Nano Banana 2；alt Nano Banana Pro `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`，首选）→ Volcengine Seedream（可选 backup，模型由 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 指定，无默认）→ `deterministic_local_image_fill`（本地确定性兜底，不中断） | `GEMINI_IMAGE_MODEL` 选模型；`AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
-| AIGC video material | disabled | Volcengine Seedance 2.0 Fast via Ark task API；失败不中断（保留程序化代理） | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`/`SEEDREAM_ARK_API_KEY` + explicit flag |
-| ElevenLabs 音频生成 | disabled（opt-in，永不致命） | Music（`/music`）+ TTS 旁白（`eleven_multilingual_v2`）+ SFX（`eleven_text_to_sound_v2`），经 FFmpeg 分层混音到 BGM 床上（bed 0.42 / voiceover 1.25+adelay400 / SFX 0.7，amix + highpass + alimiter）；失败降级为警告 + 程序化音频 | `ELEVENLABS_API_KEY` + `ENABLE_ELEVENLABS_LIVE_TESTS`/`ELEVENLABS_ENABLE_CLOUD` + 分任务 `ELEVENLABS_ENABLE_MUSIC\|TTS\|SFX` |
+| AIGC video material | disabled | 主 Volcengine Seedance 2.0 Fast（Ark，纯 t2v）→ 备份 Alibaba DashScope happyhorse-1.0-r2v（参考生视频，Gemini 静图作 base64 reference_image，Seedance 欠费/403 时自动顶上）→ AIGC 静图兜底 | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`；`AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`（US 域名） |
+| 音频生成 | Google 优先（opt-in，永不致命） | Voiceover：Gemini TTS（默认 `gemini-3.1-flash-tts-preview`）→ ElevenLabs TTS → 字幕/无旁白；Music：Lyria（默认 `lyria-3-clip-preview`）→ ElevenLabs Music → FFmpeg 程序化 BGM；SFX：ElevenLabs SFX → FFmpeg 程序化 SFX。最终经 FFmpeg 分层混音到 BGM 床上（bed 0.42 / voiceover 1.25+adelay400 / SFX 0.7，amix + highpass + alimiter）。 | `GEMINI_API_KEY` + `GOOGLE_AUDIO_ENABLE_CLOUD`/`ALLOW_CLOUD_PROVIDERS` + `GOOGLE_AUDIO_ENABLE_MUSIC\|TTS`；ElevenLabs 作为备选用 `ELEVENLABS_*` |
 | Renderer | FFmpeg（mock 已删除） | FFmpeg / Remotion / HyperFrames stub（程序化卡片，无 debug 文字） | request `rendererTarget` |
 | Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
 
-> ElevenLabs 音频栈（Scribe ASR、TTS 旁白、SFX、Music、Audio Isolation、Forced Alignment）已完整接入 `apps/api/src/adapters/elevenlabs.ts` 并由 server 在渲染前注入（`applyElevenLabsMusic` / `applyElevenLabsVoiceAndSfx`，server.ts:2061-2109、2150-2212）、由 FFmpeg 分层混音落到最终音轨（renderers.ts:915-973）。全部为显式 opt-in，失败仅降级为警告 + 程序化音频，永不致命。Dubbing / Lip Sync **尚未实现**（`dubbing` ModelTask 首选 `skip_with_warning`，无 adapter 方法；不存在 `lip_sync` 任务），不作为当前能力。
+> Google 音频栈（Gemini TTS voiceover + Lyria music）已接入 `apps/api/src/adapters/googleAudio.ts`，server 渲染前先注入 Google 音频，再尝试 ElevenLabs 备选，最后走本地 FFmpeg 程序化音频。ElevenLabs 仍负责 Scribe ASR、SFX、Audio Isolation、Forced Alignment，并作为 TTS/Music 备选。全部为显式 opt-in，失败仅降级为 warning + 下一层 fallback，永不致命。Dubbing / Lip Sync **尚未实现**（`dubbing` ModelTask 首选 `skip_with_warning`，无 adapter 方法；不存在 `lip_sync` 任务），不作为当前能力。
 
 ## 仍需人工配置的内容
 
@@ -446,7 +476,8 @@ AIGC 安全策略：
 - Gemini key：用于真实 VLM 视频理解和 AIGC 素材质量 gate。
 - Seedream key + model id：用于可选外部图片素材生成；`SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 无内置默认，未设置时配置直接抛错。
 - Seedance/Ark key：用于可选外部视频素材生成；可复用 `SEEDREAM_ARK_API_KEY`。
-- ElevenLabs key：用于可选 ElevenLabs 音频栈（Scribe ASR / TTS / SFX / Music）；默认 ASR 首选 cloud Scribe（`ASR_PROVIDER=elevenlabs_scribe`）。
+- Google audio：Gemini TTS / Lyria 复用 `GEMINI_API_KEY`，需要 `GOOGLE_AUDIO_ENABLE_CLOUD=1` 或 `ALLOW_CLOUD_PROVIDERS=1`，当前账号仍需要可用 billing/credits。
+- ElevenLabs key：用于备选 ElevenLabs 音频栈（Scribe ASR / TTS / SFX / Music）；默认 ASR 首选 cloud Scribe（`ASR_PROVIDER=elevenlabs_scribe`）。
 - faster-whisper / easyocr：按需安装到 conda env `viral`（faster-whisper 是 cloud Scribe 不可用时的本地 ASR fallback）。
 - Remotion Chromium：第一次真实 Remotion render 会下载浏览器缓存。
 

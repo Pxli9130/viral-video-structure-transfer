@@ -35,6 +35,32 @@ export const DEFAULT_PROVIDER_POLICIES: ProviderPolicy[] = [
     fallbackReason: "Seedream is optional; missing env falls back to packaging/procedural visuals."
   },
   {
+    id: "google_gemini_tts",
+    displayName: "Google Gemini TTS",
+    tasks: ["text_to_speech"],
+    optional: true,
+    envVars: ["GEMINI_API_KEY"],
+    mayReceiveSampleFrames: false,
+    mayReceiveSampleAudio: false,
+    mayReceiveUserAssets: false,
+    generatedProvenance: "aigc_generated_material",
+    fallbackProviderId: "elevenlabs_tts",
+    fallbackReason: "Google Gemini TTS is optional; missing env or disabled live calls fall back to ElevenLabs TTS."
+  },
+  {
+    id: "google_lyria_music",
+    displayName: "Google Lyria Music",
+    tasks: ["music_generation"],
+    optional: true,
+    envVars: ["GEMINI_API_KEY"],
+    mayReceiveSampleFrames: false,
+    mayReceiveSampleAudio: false,
+    mayReceiveUserAssets: false,
+    generatedProvenance: "aigc_generated_material",
+    fallbackProviderId: "elevenlabs_music",
+    fallbackReason: "Google Lyria music is optional; missing env or disabled live calls fall back to ElevenLabs Music."
+  },
+  {
     id: "elevenlabs_scribe",
     displayName: "ElevenLabs Scribe",
     tasks: ["speech_to_text"],
@@ -201,6 +227,14 @@ function envFlag(env: Record<string, string | undefined>, key: string): boolean 
 }
 
 function providerEnabled(policy: ProviderPolicy, task: ProviderTask, env: Record<string, string | undefined>): boolean {
+  if (policy.id === "google_gemini_tts" || policy.id === "google_lyria_music") {
+    if (envFlag(env, "ENABLE_GOOGLE_AUDIO_LIVE_TESTS") || envFlag(env, "GOOGLE_AUDIO_ENABLE_CLOUD") || envFlag(env, "ALLOW_CLOUD_PROVIDERS")) return true;
+    const taskFlags: Partial<Record<ProviderTask, string[]>> = {
+      text_to_speech: ["GOOGLE_AUDIO_ENABLE_TTS", "GOOGLE_AUDIO_ENABLE_VOICEOVER"],
+      music_generation: ["GOOGLE_AUDIO_ENABLE_MUSIC"]
+    };
+    return (taskFlags[task] ?? []).some((flag) => envFlag(env, flag));
+  }
   if (!policy.id.startsWith("elevenlabs_")) return true;
   if (envFlag(env, "ENABLE_ELEVENLABS_LIVE_TESTS") || envFlag(env, "ELEVENLABS_ENABLE_CLOUD")) return true;
   const taskFlags: Partial<Record<ProviderTask, string[]>> = {
@@ -239,18 +273,30 @@ export function resolveProviderRoute(
   const preferred = requested && requested.tasks.includes(task) ? requested : candidates[0];
   if (!preferred) throw new Error(`No provider policy registered for task ${task}.`);
 
-  if (envHasAny(env, preferred.envVars) && providerEnabled(preferred, task, env)) {
-    return {
-      task,
-      requestedProviderId,
-      selectedProviderId: preferred.id,
-      available: true,
-      fallbackUsed: false,
-      policy: preferred
-    };
+  const seen = new Set<OptionalProviderId>();
+  let selected = preferred;
+  let fallbackUsed = false;
+  let fallbackReason: string | undefined;
+  while (true) {
+    if (envHasAny(env, selected.envVars) && providerEnabled(selected, task, env)) {
+      return {
+        task,
+        requestedProviderId,
+        selectedProviderId: selected.id,
+        available: true,
+        fallbackUsed,
+        ...(fallbackReason ? { fallbackReason } : {}),
+        policy: selected
+      };
+    }
+    fallbackUsed = true;
+    fallbackReason = fallbackReason ? `${fallbackReason} ${selected.fallbackReason}` : selected.fallbackReason;
+    if (seen.has(selected.id) || selected.fallbackProviderId === selected.id) break;
+    seen.add(selected.id);
+    selected = policyFor(selected.fallbackProviderId, policies);
   }
 
-  const fallback = policyFor(preferred.fallbackProviderId, policies);
+  const fallback = selected;
   return {
     task,
     requestedProviderId,

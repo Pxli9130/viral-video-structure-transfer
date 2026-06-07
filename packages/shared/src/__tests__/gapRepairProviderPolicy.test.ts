@@ -72,6 +72,27 @@ describe("Gap repair options and provider policy", () => {
     expect(buildProviderCallRecord(enabled).sampleAudioSentExternally).toBe(false);
   });
 
+  it("routes Google audio to ElevenLabs and then local in the legacy provider router", () => {
+    const disabled = resolveProviderRoute("music_generation", { env: { GEMINI_API_KEY: "test-key" } }, "google_lyria_music");
+    const eleven = resolveProviderRoute(
+      "music_generation",
+      { env: { GEMINI_API_KEY: "test-key", ELEVENLABS_API_KEY: "eleven-test", ENABLE_ELEVENLABS_LIVE_TESTS: "1" } },
+      "google_lyria_music"
+    );
+    const google = resolveProviderRoute(
+      "music_generation",
+      { env: { GEMINI_API_KEY: "test-key", GOOGLE_AUDIO_ENABLE_CLOUD: "1" } },
+      "google_lyria_music"
+    );
+
+    expect(disabled.selectedProviderId).toBe("local_ffmpeg_procedural");
+    expect(eleven.selectedProviderId).toBe("elevenlabs_music");
+    expect(google.selectedProviderId).toBe("google_lyria_music");
+    for (const route of [eleven, google]) {
+      expect(buildProviderCallRecord(route).sampleAudioSentExternally).toBe(false);
+    }
+  });
+
   it("selects Seedance in the legacy provider router when the shared Ark key is present", () => {
     const route = resolveProviderRoute("video_generation", { env: { SEEDREAM_ARK_API_KEY: "test-key" } }, "seedance_2_0");
     expect(route.selectedProviderId).toBe("seedance_2_0");

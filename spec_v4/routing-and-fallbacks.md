@@ -16,9 +16,9 @@ The router should choose models by task, quality, cost, and availability. It mus
 | OCR | PaddleOCR / EasyOCR | Qwen3-VL OCR | manual/empty typography with warning |
 | Static image fill | google_gemini_image (default gemini-3.1-flash-image = Nano Banana 2; alt gemini-3-pro-image / imagen-4.0-generate-001 / gemini-2.5-flash-image) | volcengine_seedream (model from SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL, no default) | deterministic_local_image_fill / Remotion shape card |
 | Video fill | Seedance 2.0 (doubao-seedance-2-0-fast-260128) | remotion_procedural_motion (Veo/Kling/Runway are unimplemented candidates) | ffmpeg_proxy_motion |
-| Voiceover | ElevenLabs TTS | provider-specific TTS | no voiceover + subtitle emphasis |
+| Voiceover | Gemini TTS (`google_gemini_tts`) | ElevenLabs TTS | no voiceover + subtitle emphasis |
 | Sound effects | ElevenLabs SFX | procedural SFX | FFmpeg generated hits/whooshes |
-| Music | ElevenLabs Music | stock/user audio | procedural synth from AudioLayer |
+| Music | Lyria (`google_lyria_music`) | ElevenLabs Music | procedural synth from AudioLayer |
 
 ## 3. Routing config
 
@@ -101,8 +101,9 @@ If optional providers fail:
 ```text
 Seedance unavailable -> Remotion motion-graph insert
 Seedream unavailable -> Remotion generated poster/card
-ElevenLabs Music unavailable -> procedural synth from audioPlan.layers
-ElevenLabs TTS unavailable -> subtitles-only CTA
+Google Lyria unavailable -> ElevenLabs Music -> procedural synth from audioPlan.layers
+Google Gemini TTS unavailable -> ElevenLabs TTS -> subtitles-only CTA
+ElevenLabs SFX unavailable -> procedural SFX
 ElevenLabs Scribe unavailable -> faster-whisper
 Gemini unavailable -> Qwen/Doubao or deterministic JSON compiler
 ```

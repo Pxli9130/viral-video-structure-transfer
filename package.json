@@ -18,6 +18,8 @@
     "seed:demo": "npm run build --workspace @vvst/shared && node scripts/seed-demo.mjs",
     "demo:seed": "npm run seed:demo",
     "validate:schemas": "npm run build --workspace @vvst/shared && node scripts/validate-schemas.mjs",
+    "validate:schemas:v5": "npm run build --workspace @vvst/shared && node scripts/validate-v5-contracts.mjs",
+    "v5:golden": "npm run build --workspace @vvst/shared && node node_modules/.bin/tsx scripts/run-v5-golden.ts",
     "test": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run test --workspace @vvst/shared && npm run test --workspace @vvst/api",
     "test:marketing": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run build --workspace @vvst/api && npm run test --workspace @vvst/shared -- src/__tests__/marketingPosterCase.test.ts && node scripts/run-marketing-poster-case.mjs",
     "test:unit": "npm run test --workspace @vvst/shared",
@@ -49,8 +51,13 @@
     "typecheck": "npm run build --workspace @vvst/shared && npm run build --workspace @vvst/renderer && npm run typecheck --workspaces"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@react-three/fiber": "^9.6.1",
+    "@remotion/three": "^4.0.341"
   }
 }

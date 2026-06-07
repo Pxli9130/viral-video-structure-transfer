@@ -51,6 +51,57 @@ function probe(file) {
   }
 }
 
+/**
+ * Loudness of the first audio stream in dBFS via ffmpeg volumedetect, or null if no audio / ffmpeg
+ * unavailable. Physics-based, motif-agnostic: a real procedural bed is ~-14..-18 dB; Remotion's empty
+ * default stereo track is -91 dB. Used by G29 to catch silent renders that pass stream-presence checks.
+ */
+function meanVolumeDb(file) {
+  if (!file || !existsSync(file)) return null;
+  const bin = process.env.FFMPEG_PATH && process.env.FFMPEG_PATH.includes("/") ? process.env.FFMPEG_PATH : "ffmpeg";
+  const res = spawnSync(bin, ["-hide_banner", "-nostats", "-i", file, "-map", "0:a:0?", "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+  const text = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  const m = /mean_volume:\s*(-?\d+(?:\.\d+)?) dB/.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Longest near-blank stretch (seconds) in a rendered mp4 via the deterministic frame-metrics analyzer.
+ * Returns null when conda python / contentStd is unavailable (so a missing analyzer blocks, never
+ * false-fails). Keys off per-frame spatial luma stdev (contentStd) — a uniform/flat frame is ~0 — so
+ * it detects empty frames WITHOUT penalizing legitimately dark-but-populated motifs (e.g. a dark UI).
+ */
+function longestBlankSectionSec(file) {
+  if (!file || !existsSync(file)) return null;
+  const condaBase = process.env.CONDA_BASE ?? path.join(process.env.HOME ?? "", "anaconda3");
+  const condaEnv = process.env.VIRAL_CONDA_ENV ?? "viral";
+  const py = path.join(condaBase, "envs", condaEnv, "bin", "python");
+  if (!existsSync(py)) return null;
+  const res = spawnSync(py, [path.join(ROOT, "scripts/analyze-evidence-timeline.py"), "--video", file, "--metrics-only"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${path.join(condaBase, "envs", condaEnv, "bin")}:${process.env.PATH ?? ""}` }
+  });
+  if (res.status !== 0) return null;
+  let frames;
+  try { frames = JSON.parse(res.stdout).frameMetrics; } catch { return null; }
+  if (!Array.isArray(frames) || frames.length < 8) return null;
+  if (!frames.some((f) => typeof f.contentStd === "number")) return null;
+  const BLANK_STD = Number(process.env.BLANK_CONTENT_STD ?? 0.04);
+  const interval = (Number(frames[frames.length - 1].timeSec) - Number(frames[0].timeSec)) / (frames.length - 1);
+  let longest = 0;
+  let runStart = null;
+  for (const f of frames) {
+    const t = Number(f.timeSec ?? 0);
+    if ((f.contentStd ?? 1) < BLANK_STD) {
+      if (runStart == null) runStart = t;
+      longest = Math.max(longest, t - runStart);
+    } else {
+      runStart = null;
+    }
+  }
+  return longest > 0 ? longest + (Number.isFinite(interval) ? interval : 0) : 0;
+}
+
 function primitiveHistogram(recipe) {
   const hist = {};
   for (const clip of recipe?.clips ?? []) hist[clip.selectedPrimitive] = (hist[clip.selectedPrimitive] ?? 0) + 1;
@@ -229,6 +280,34 @@ export function evaluateCaseGates(caseRoot, options = {}) {
   }
   gates.push(recipeLintReport?.status ? gate("G27_recipe_lint_status_recorded", recipeLintReport.status !== "fail", `recipeLint=${recipeLintReport.status}`) : blocked("G27_recipe_lint_status_recorded", "old artifact has no recipe lint report"));
   gates.push(videoCriticReport?.score ? gate("G28_offline_video_critic_recorded", true, `videoCriticScore=${videoCriticReport.score}`) : blocked("G28_offline_video_critic_recorded", "old artifact has no offline video critic report"));
+  // G29: loudness silence guard. When the recipe declares audio (same expectation as G15), every
+  // rendered mp4 that exists must carry real signal (> -50 dBFS) — not Remotion's empty -91 dB track.
+  // Skips when no audio is declared; blocks (not fails) when ffmpeg can't measure, so a missing ffmpeg
+  // never false-fails. Physics threshold, motif-agnostic.
+  const expectsAudio = counts.recipe.audioLayers > 0 || Object.keys(recipe?.global?.audioPlan?.layers ?? {}).length > 0;
+  const SILENCE_DB = Number(process.env.AUDIO_SILENCE_DB ?? -50);
+  if (!expectsAudio) {
+    gates.push(gate("G29_audio_not_silent", true, "recipe declares no audio layers (silence acceptable)"));
+  } else {
+    const measured = [["final.mp4", meanVolumeDb(finalMp4)], ["final.remotion.mp4", meanVolumeDb(remotionMp4)]].filter(([, db]) => db != null);
+    if (!measured.length) {
+      gates.push(blocked("G29_audio_not_silent", "audio declared but no audio stream measurable (ffmpeg unavailable or silent track absent)"));
+    } else {
+      const silent = measured.filter(([, db]) => db <= SILENCE_DB);
+      gates.push(gate("G29_audio_not_silent", silent.length === 0, `${measured.map(([n, db]) => `${n}=${db.toFixed(1)}dB`).join(", ")} (> ${SILENCE_DB}dB required)`));
+    }
+  }
+  // G30: visual-density / no-long-blank-section. A render must not dwell on a near-blank frame for a
+  // long stretch (catches the codegen blank-media branch). Allowance is proportional (max 2s, 20% of
+  // duration). Motif-agnostic (foreground-absence, not motif identity); blocks when python unavailable.
+  const blankSpan = longestBlankSectionSec(finalMp4) ?? longestBlankSectionSec(remotionMp4);
+  if (blankSpan == null) {
+    gates.push(blocked("G30_no_long_blank_section", "frame-metrics analyzer unavailable (conda python?)"));
+  } else {
+    const dur = finalProbe?.durationSec ?? remotionProbe?.durationSec ?? 0;
+    const allowance = Math.max(2, 0.2 * dur);
+    gates.push(gate("G30_no_long_blank_section", blankSpan <= allowance, `longestNearBlank=${blankSpan.toFixed(1)}s (<= ${allowance.toFixed(1)}s allowed)`));
+  }
 
   const pass = gates.filter((item) => item.status === "pass").length;
   const fail = gates.filter((item) => item.status === "fail").length;

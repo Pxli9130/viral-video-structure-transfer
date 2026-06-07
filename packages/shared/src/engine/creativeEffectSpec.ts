@@ -69,7 +69,10 @@ export interface CreativeEffectEvidenceInput {
 }
 
 const CJK_RE = /[㐀-鿿豈-﫿぀-ヿ]/;
-const HIGH_BPM = 120;
+// Editing tutorials cluster above pop-ad tempo; 128 BPM (standard fast-electronic band) is the
+// discriminating floor. Strict (>), so a calm 120-BPM poster does NOT read as high-tempo. BPM is one
+// additive vote, never a standalone amplifier (a lone high BPM must not jackpot a poster into beat_cut).
+const BEATCUT_BPM = 128;
 
 const NAME_TO_HEX_COOL = /blue|navy|cyan|teal|azure|indigo/;
 
@@ -162,7 +165,7 @@ export function mapEvidenceToMotifFamily(input: CreativeEffectEvidenceInput): Mo
   const paletteText = lc(input.palette);
   const hasChinese = input.hasChineseText ?? ocr.some((t) => typeof t === "string" && CJK_RE.test(t));
   const isBeatCut = /beat_cut|beatcut/.test(lc([input.videoType, ...(input.techniqueKeywords ?? [])]));
-  const highBpm = typeof input.bpm === "number" && input.bpm >= HIGH_BPM;
+  const highTempo = typeof input.bpm === "number" && input.bpm > BEATCUT_BPM;
   const hasGlitchWhip = /glitch|whip|hard_cut|flash_cut/.test(haystack);
 
   const scores: Record<MotifFamily, number> = {
@@ -174,9 +177,13 @@ export function mapEvidenceToMotifFamily(input: CreativeEffectEvidenceInput): Mo
     generic_motion_graph: 0
   };
 
-  // Chinese editing tutorial requires Chinese text AND a beat-cut / glitch / high-tempo signal.
-  if (hasChinese && (isBeatCut || hasGlitchWhip || highBpm)) {
-    scores.beat_cut_chinese_editing_tutorial = 3 + (isBeatCut ? 1 : 0) + (highBpm ? 1 : 0) + (hasGlitchWhip ? 1 : 0);
+  // Chinese editing tutorial: requires Chinese text AND a GENUINE fast-edit signal — the deterministic
+  // beat_cut videoType, OR a glitch/whip + fast-tempo combo. A lone high BPM (a calm Chinese poster can
+  // sit at 120-130) must NOT trigger it (the old `3 + …` base-score jackpot did exactly that). Each
+  // signal is a single additive vote on the SAME scale as the other families — no jackpot base score.
+  const editingSignal = isBeatCut || (hasGlitchWhip && highTempo);
+  if (hasChinese && editingSignal) {
+    scores.beat_cut_chinese_editing_tutorial = 2 + (isBeatCut ? 1 : 0) + (hasGlitchWhip ? 1 : 0) + (highTempo ? 1 : 0);
   }
 
   scores.blue_spotlight_ui_pitch =
