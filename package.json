@@ -55,5 +55,9 @@
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@react-three/fiber": "^9.6.1",
+    "@remotion/three": "^4.0.341"
   }
 }
