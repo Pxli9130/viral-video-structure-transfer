@@ -16,6 +16,7 @@ import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
 import { runGen1CapsuleGemini } from "./runGen1CapsuleGemini.js";
 import { runGen1ChunkedCapsule } from "./runGen1ChunkedCapsule.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
+import { overallMeanLuma } from "./postRenderChecks.js";
 import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
 import { runSceneRecipeVlm } from "./runSceneRecipeVlm.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
@@ -47,6 +48,18 @@ async function readSectionFrames(
   return out;
 }
 
+
+/** Source light/dark by sampling the SOURCE VIDEO directly (ffmpeg mean luma). v5 evidence keyframes don't
+ *  carry a dominant palette, so we measure the source pixels — robust across all videos. luma>140 ≈ light. */
+async function detectSourceIsLight(videoPath: string | undefined, durationSec: number): Promise<boolean | undefined> {
+  if (!videoPath) return undefined;
+  try {
+    const luma = await overallMeanLuma(videoPath, durationSec > 0 ? durationSec : 16);
+    return luma === null ? undefined : luma > 140;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface LearnArtifacts {
   evidence: v5.EvidenceTimelineV5;
@@ -222,6 +235,10 @@ export async function runLearnSampleV5(
   templateCapsule.quality.compilePassed = templateValidation.gates.find((t) => t.id === "T2")?.status === "pass";
   templateCapsule.quality.noCopyTemplatePassed = templateValidation.gates.find((t) => t.id === "T10")?.status === "pass";
   templateCapsule.quality.warnings = [...templateCapsule.quality.warnings, ...templateValidation.warnings];
+  // Source colour fidelity: measure the source video's lightness so generation can keep the background's
+  // lightness faithful (a light/white source must not render on a dark background).
+  const srcDur = evidence.shots?.length ? evidence.shots[evidence.shots.length - 1].endSec : (templateCapsule.timingSignature.durationSec || 16);
+  templateCapsule.quality.sourceIsLight = await detectSourceIsLight(opts.sampleVideoPath, srcDur);
   if (opts.projectId) templateCapsule.projectId = opts.projectId;
   kb.saveTemplateCapsule(templateCapsule);
   for (const t of templateValidation.gates.slice(0, 6)) gates.push(gate(t.id, t.status === "pass" ? "pass" : t.status === "warn" ? "warn" : "fail", t.message));

@@ -10,7 +10,8 @@ import type { Asset } from "@vvst/shared";
 import { getAigcMaterialProvider, v5 } from "@vvst/shared";
 import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
 import { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
-import { mapLimit } from "./concurrency.js";
+import { mapLimit, aigcSemaphore } from "./concurrency.js";
+import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
@@ -130,6 +131,11 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // CONTEXT-MODIFICATION: for an AI-clone capsule (whose text/colours are baked in) a separate Pro call
   // rewrites the on-screen text + palette to the new theme BEFORE rendering, keeping the structure. This
   // is what makes "same template, new theme" actually change what you see. Falls back to the stored code.
+  // Colour-fidelity directive baked into the FIRST rewrite: if the source reads light/high-key, force the
+  // re-theme to keep a light background (Gemini otherwise tends to darken). Data-driven (sourceIsLight from cv2).
+  const lightDirective = capsule.quality?.sourceIsLight
+    ? `The SOURCE video has a LIGHT / high-key background (dominant ${capsule.quality.sourceDominantHex ?? "near-white"}). The rewritten video MUST keep a LIGHT (white/off-white) background with dark text — do NOT render on a dark/black background.`
+    : undefined;
   if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length)) {
     const rw = await runCapsuleContextRewrite({
       capsule,
@@ -137,7 +143,8 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       sellingPoints: brief.sellingPoints ?? [],
       model: input.rewriteModel,
       renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
-      maxAttempts: 2
+      maxAttempts: 2,
+      extraDirective: lightDirective
     });
     warnings.push(...rw.warnings.slice(0, 2));
     if (rw.usedAi) capsule = { ...capsule, codeBundle: rw.codeBundle };
@@ -153,10 +160,13 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // auto-differs from the source (no copyright concern). Capped: t2v is slow/expensive; overflow -> still.
   const arkKey = input.env?.SEEDANCE_ARK_API_KEY || input.env?.SEEDANCE_API_KEY || input.env?.SEEDREAM_ARK_API_KEY || input.env?.ARK_API_KEY;
   const videoProvider = aigcOn && arkKey && String(input.env?.AIGC_VIDEO_FILL ?? "1") !== "0" ? getAigcMaterialProvider("seedance_2_0") : undefined;
-  const maxVideos = Math.max(0, Number(input.env?.AIGC_VIDEO_MAX ?? 8));
+  // Default: give EVERY mediaKind:"video" slot a real video (footage = video by default). AIGC_VIDEO_MAX is
+  // an OPTIONAL cost cap (not a low default) — without it set, no chunk gets starved into stills.
+  const videoSlotCount = capsule.slotSchema.filter((s) => s.mediaKind === "video").length;
+  const maxVideos = input.env?.AIGC_VIDEO_MAX ? Math.max(0, Number(input.env.AIGC_VIDEO_MAX)) : videoSlotCount;
   const materialsDir = path.join(input.outDir, "materials");
 
-  const boundProps: { theme?: string; palette: string[]; assets: Record<string, { src: string }>; copy: Record<string, string>; audio: Record<string, unknown> } = {
+  const boundProps: { theme?: string; palette: string[]; assets: Record<string, { src: string; mediaKind?: string }>; copy: Record<string, string>; audio: Record<string, unknown> } = {
     theme: brief.theme ?? brief.prompt,
     palette,
     assets: {},
@@ -257,14 +267,31 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     type FillResult = { t: AigcTask; kind: "video" | "image"; path: string; prompt: string } | { t: AigcTask; kind: "fallback" };
     const results = await mapLimit<AigcTask, FillResult>(aigcTasks, Number(input.env?.AIGC_FILL_CONCURRENCY ?? 6), async (t) => {
       if (t.method === "video" && videoProvider) {
+        // Image-to-video: first make a CONTROLLED Gemini still (themed, from aigcPrompt) and use it as the
+        // Seedance first-frame — more faithful/consistent than pure text->video. The still is also the fallback.
+        let still: { path?: string; prompt?: string } | undefined;
+        if (provider) {
+          try { still = (await aigcSemaphore.run(() => provider.generate(imageBrief(t) as never, ctx)))[0]; }
+          catch (err) { warnings.push(`i2v still ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
+        }
+        const stillLocal = still?.path ? path.join(materialsDir, path.basename(still.path)) : undefined;
+        // Attempt 1: image-to-video (Gemini still as first-frame).
+        if (stillLocal && existsSync(stillLocal)) {
+          try {
+            const c = (await aigcSemaphore.run(() => videoProvider.generate(videoBrief(t) as never, { ...ctx, referenceImagePath: stillLocal })))[0];
+            if (c?.path) return { t, kind: "video", path: c.path, prompt: c.prompt };
+          } catch (err) { warnings.push(`i2v ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)} -> t2v`); }
+        }
+        // Attempt 2: pure text-to-video (no reference) — salvages when the i2v reference image is content-filtered.
         try {
-          const c = (await videoProvider.generate(videoBrief(t) as never, ctx))[0];
+          const c = (await aigcSemaphore.run(() => videoProvider.generate(videoBrief(t) as never, ctx)))[0];
           if (c?.path) return { t, kind: "video", path: c.path, prompt: c.prompt };
-        } catch (err) { warnings.push(`video fill ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 100) : String(err)} -> still`); }
+        } catch (err) { warnings.push(`t2v ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)} -> still`); }
+        if (still?.path) return { t, kind: "image", path: still.path, prompt: still.prompt ?? "" }; // fall back to the still
       }
       if (provider) {
         try {
-          const c = (await provider.generate(imageBrief(t) as never, ctx))[0];
+          const c = (await aigcSemaphore.run(() => provider.generate(imageBrief(t) as never, ctx)))[0];
           if (c?.path) return { t, kind: "image", path: c.path, prompt: c.prompt };
         } catch (err) { warnings.push(`image fill ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`); }
       }
@@ -273,7 +300,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     for (const r of results) {
       if (r.kind === "fallback") { pushFallback(r.t.slotId); continue; }
       const httpSrc = `${input.serveBase}${r.path.startsWith("/") ? "" : "/"}${r.path}`;
-      boundProps.assets[r.t.propKey] = { src: httpSrc };
+      boundProps.assets[r.t.propKey] = { src: httpSrc, mediaKind: r.kind }; // carry video/image so code can branch on it
       generatedAssets.push({ id: `genasset_${r.t.slotId}`, kind: r.kind, uri: r.path, provenance: { assetId: `genasset_${r.t.slotId}`, source: "aigc_generated", createdByStage: "same_template_fill", promptRef: r.prompt, samplePixelsUsed: false } });
       slotBindings.push({ slotId: r.t.slotId, status: "aigc_generated", assetId: `genasset_${r.t.slotId}`, uri: httpSrc, provenance: { source: "aigc_generated" }, warnings: r.kind === "video" ? ["seedance t2v"] : [] });
     }
@@ -318,6 +345,51 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     warnings.push(...res.warnings);
   }
   const finalMp4Exists = input.doRender !== false && Boolean(finalVideoUrl) && existsSync(finalMp4Path);
+
+  // ---- Post-render fidelity passes (AI capsule with a real render) ----
+  if (finalMp4Exists && capsule.quality.codeOrigin === "ai") {
+    // (A) Colour fidelity: source is light but the output rendered DARK -> re-theme with a hard light
+    // directive and re-render once (to a temp path, so a failed correction can't corrupt the good render).
+    if (capsule.quality.sourceIsLight && input.rewriteModel) {
+      try {
+        const luma = await overallMeanLuma(finalMp4Path, renderDur);
+        if (luma !== null && luma < 90) {
+          warnings.push(`colour-fidelity: source light but output luma ${Math.round(luma)} (dark) -> correcting`);
+          const rw = await runCapsuleContextRewrite({
+            capsule, theme: brief.theme ?? brief.prompt ?? "", sellingPoints: brief.sellingPoints ?? [], model: input.rewriteModel,
+            renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
+            maxAttempts: 2,
+            extraDirective: `COLOUR FIX (mandatory): the current render is too DARK (mean luma ${Math.round(luma)}) but the source background is LIGHT (${capsule.quality.sourceDominantHex ?? "near-white"}). Make the BASE BACKGROUND light (white/off-white) with dark text everywhere; keep accent colours but NEVER a dark/black full-screen background.`
+          });
+          if (rw.usedAi) {
+            const fixCapsule = { ...capsule, codeBundle: rw.codeBundle };
+            const fixPath = `${finalMp4Path}.fix.mp4`;
+            const beats2 = capsule.timingSignature.sections.flatMap((s) => s.internalBeats).slice(0, 8);
+            const res2 = await renderTemplateCapsule({ capsule: fixCapsule, boundProps, outPath: fixPath, aspectRatio: brief.aspectRatio ?? "9:16", proceduralAudio: options.aigcGapFill.audioFill !== "off", bpm: capsule.audioRecipes[0]?.bpm ?? null, hitTimes: beats2 });
+            if (res2.ok && existsSync(fixPath)) {
+              await fs.rename(fixPath, finalMp4Path);
+              capsule = fixCapsule; renderDur = res2.durationSec; renderHasAudio = res2.hasAudio;
+              warnings.push("colour-fidelity correction applied (light background restored).");
+            } else {
+              warnings.push(`colour-fidelity correction render failed (${res2.error?.slice(0, 80)}); kept original.`);
+            }
+          }
+        }
+      } catch (err) { warnings.push(`colour-fidelity check skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
+    }
+    // (B) Trailing redundant scene: trim a flat single-colour tail (no pic/shape/text) off the end.
+    try {
+      const tailStart = await detectUniformTailSec(finalMp4Path, renderDur);
+      if (tailStart && tailStart > 1 && renderDur - tailStart >= 1) {
+        const trimmed = `${finalMp4Path}.trim.mp4`;
+        if ((await trimTo(finalMp4Path, tailStart, trimmed)) && existsSync(trimmed)) {
+          await fs.rename(trimmed, finalMp4Path);
+          warnings.push(`trimmed ${(renderDur - tailStart).toFixed(1)}s flat trailing scene (kept 0-${tailStart.toFixed(1)}s).`);
+          renderDur = tailStart;
+        }
+      }
+    } catch (err) { warnings.push(`trailing-trim skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
+  }
 
   // ---- Real no-copy safety scan on the produced mp4 (replaces the hardcoded T10) ----
   let noCopy: NoCopyResult = {

@@ -156,20 +156,34 @@ registerRoot(Root);
     const inputProps = opts.boundProps;
     const remotionMp4 = opts.proceduralAudio ? `${opts.outPath}.silent.mp4` : opts.outPath;
     // Cap concurrent headless-Chrome renders process-wide AND cap tabs-per-render (memory = slots × tabs).
-    await renderSemaphore.run(async () => {
-      const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
-        import("@remotion/bundler"),
-        import("@remotion/renderer")
-      ]);
-      const serveUrl = await bundle({ entryPoint: path.join(workDir, "root.tsx") });
-      const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps });
-      await renderMedia({ composition, serveUrl, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB });
-    });
+    // Bound the OffthreadVideo frame cache too (heavy montages with many <OffthreadVideo> can otherwise
+    // balloon the Rust compositor's cache -> frame_cache panic). Retry once on transient compositor crashes.
+    const offthreadCacheBytes = Number(process.env.OFFTHREAD_VIDEO_CACHE_BYTES ?? 512 * 1024 * 1024);
+    let renderErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await renderSemaphore.run(async () => {
+          const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
+            import("@remotion/bundler"),
+            import("@remotion/renderer")
+          ]);
+          const serveUrl = await bundle({ entryPoint: path.join(workDir, "root.tsx") });
+          const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps });
+          await renderMedia({ composition, serveUrl, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB, offthreadVideoCacheSizeInBytes: offthreadCacheBytes });
+        });
+        renderErr = undefined;
+        break;
+      } catch (err) {
+        renderErr = err;
+        warnings.push(`render attempt ${attempt + 1} failed: ${err instanceof Error ? err.message.slice(0, 140) : String(err)}`);
+      }
+    }
+    if (renderErr) throw renderErr;
 
     let finalMp4 = remotionMp4;
     let audioMuxed = false;
     if (opts.proceduralAudio) {
-      const mux = muxProceduralAudio(remotionMp4, opts.outPath, durationSec, { bpm: opts.bpm ?? null, hitTimes: opts.hitTimes ?? [], riserTime: opts.riserTime });
+      const mux = await muxProceduralAudio(remotionMp4, opts.outPath, durationSec, { bpm: opts.bpm ?? null, hitTimes: opts.hitTimes ?? [], riserTime: opts.riserTime });
       if (mux.ok) {
         finalMp4 = opts.outPath;
         audioMuxed = true;

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
 import type {
@@ -14,6 +14,9 @@ export interface AigcMaterialProviderContext {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   allowExternalProviderCall?: boolean;
+  /** Local path to a reference still to drive image-to-video (Seedance first-frame). When set, the video
+   *  provider conditions generation on this image (base64 data URL) instead of pure text-to-video. */
+  referenceImagePath?: string;
 }
 
 export interface AigcMaterialProvider {
@@ -376,10 +379,13 @@ function seedancePrompt(brief: MaterialGenerationBrief, prompt: string): string 
   ].filter(Boolean).join("\n");
 }
 
-function seedanceRequestBody(config: SeedanceProviderConfig, prompt: string): Record<string, unknown> {
+function seedanceRequestBody(config: SeedanceProviderConfig, prompt: string, refImageDataUrl?: string): Record<string, unknown> {
+  const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
+  // Image-to-video: condition on a reference still as the FIRST frame (doubao-seedance i2v).
+  if (refImageDataUrl) content.push({ type: "image_url", image_url: { url: refImageDataUrl }, role: "first_frame" });
   const body: Record<string, unknown> = {
     model: config.model,
-    content: [{ type: "text", text: prompt }],
+    content,
     generate_audio: config.generateAudio,
     ratio: config.ratio,
     duration: config.durationSec,
@@ -605,6 +611,15 @@ export const seedanceVideoProvider: AigcMaterialProvider = {
     const fetchImpl = context.fetchImpl ?? fetch;
     const generatedAt = context.now ?? new Date().toISOString();
     const count = maxCandidateCount(brief);
+    // Optional first-frame reference (image-to-video): read the local still -> base64 data URL.
+    let refImageDataUrl: string | undefined;
+    if (context.referenceImagePath) {
+      try {
+        const buf = await readFile(context.referenceImagePath);
+        const ext = /\.png$/i.test(context.referenceImagePath) ? "png" : "jpeg";
+        refImageDataUrl = `data:image/${ext};base64,${buf.toString("base64")}`;
+      } catch { refImageDataUrl = undefined; }
+    }
     const candidates: GeneratedAssetCandidate[] = [];
     for (let index = 0; index < count; index += 1) {
       const prompt = seedancePrompt(brief, brief.promptPack?.[index] ?? brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated video material`);
@@ -616,7 +631,7 @@ export const seedanceVideoProvider: AigcMaterialProvider = {
         createResponse = await fetchImpl(seedanceTaskUrl(config), {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
-          body: JSON.stringify(seedanceRequestBody(config, prompt))
+          body: JSON.stringify(seedanceRequestBody(config, prompt, refImageDataUrl))
         });
         if (createResponse.ok || !retryableSeedreamStatus(createResponse.status) || attempt >= createMaxRetries) break;
         await sleep(1500 * Math.max(1, attempt + 1));

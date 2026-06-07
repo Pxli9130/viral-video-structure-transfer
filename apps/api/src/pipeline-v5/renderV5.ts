@@ -4,7 +4,7 @@
 // importing this module stays cheap and test-safe. A procedural FFmpeg audio bed is muxed when the
 // recipe asks for audio but no real audio asset is present (routing-and-fallbacks.md §7).
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,12 +95,18 @@ export function buildProceduralAudioArgs(videoPath: string, outPath: string, dur
   ];
 }
 
-/** Best-effort cue-aware procedural audio muxed under a silent render. */
-export function muxProceduralAudio(videoPath: string, outPath: string, durationSec: number, opts: ProceduralAudioOpts = {}): { ok: boolean; error?: string } {
+/** Best-effort cue-aware procedural audio muxed under a silent render. ASYNC (spawn, not spawnSync) so it
+ *  never blocks the Node event loop — critical under concurrent renders, where a blocked loop starves the
+ *  in-process asset server that ANOTHER render's compositor fetches material images/videos from (a stalled
+ *  fetch makes the Remotion compositor crash with a frame_cache panic). */
+export function muxProceduralAudio(videoPath: string, outPath: string, durationSec: number, opts: ProceduralAudioOpts = {}): Promise<{ ok: boolean; error?: string }> {
   const ffmpeg = resolveFfmpeg();
-  const res = spawnSync(ffmpeg, buildProceduralAudioArgs(videoPath, outPath, durationSec, opts), { stdio: "pipe", encoding: "utf8" });
-  if (res.status === 0) return { ok: true };
-  return { ok: false, error: (res.stderr || res.error?.message || "ffmpeg failed").slice(-400) };
+  const args = buildProceduralAudioArgs(videoPath, outPath, durationSec, opts);
+  return new Promise((resolve) => {
+    const p = spawn(ffmpeg, args, { stdio: "ignore" });
+    p.on("error", (e) => resolve({ ok: false, error: String(e.message).slice(-400) }));
+    p.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg mux exit ${code}` }));
+  });
 }
 
 export interface RenderV5Options {
@@ -163,7 +169,7 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
       // Derive beat-synced hit/riser cues from the recipe's audio layers.
       const hitTimes = recipe.audioLayers.flatMap((a) => (a.kind === "sfx" && a.id !== "sfx_riser" ? a.cueAlignSec ?? [] : []));
       const riserLayer = recipe.audioLayers.find((a) => a.id === "sfx_riser");
-      const mux = muxProceduralAudio(remotionMp4, opts.outPath, durationSec, {
+      const mux = await muxProceduralAudio(remotionMp4, opts.outPath, durationSec, {
         bpm: opts.bpm ?? null,
         hitTimes,
         riserTime: riserLayer?.cueAlignSec?.[0]

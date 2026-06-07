@@ -16,9 +16,10 @@ export interface ContextRewriteResult {
   warnings: string[];
 }
 
-export function buildContextRewritePrompt(code: string, theme: string, sellingPoints: string[], repairErrors?: string[]): string {
+export function buildContextRewritePrompt(code: string, theme: string, sellingPoints: string[], repairErrors?: string[], extraDirective?: string): string {
   const points = sellingPoints.filter(Boolean);
   const repair = repairErrors?.length ? `\n\nYour previous output did not compile/render. Fix exactly:\n- ${repairErrors.slice(0, 6).join("\n- ")}` : "";
+  const extra = extraDirective ? `\n\nIMPORTANT EXTRA DIRECTIVE (must satisfy this):\n${extraDirective}` : "";
   return `You are given a complete Remotion v4 component that renders one specific ad video. Rewrite it for a
 NEW campaign.
 
@@ -46,7 +47,7 @@ Return ONLY valid JSON (no markdown): { "componentName": "TemplateFromSample", "
 COMPONENT TO REWRITE:
 \`\`\`tsx
 ${code.slice(0, 16000)}
-\`\`\`${repair}`;
+\`\`\`${repair}${extra}`;
 }
 
 function extractJson(raw: string): { componentName?: string; indexTsx?: string } | null {
@@ -69,6 +70,8 @@ export async function runCapsuleContextRewrite(input: {
   model: Gen1ModelFn;
   renderProbe: (codeBundle: v5.RemotionTemplateCapsule["codeBundle"], neutralFixture: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
   maxAttempts?: number;
+  /** Extra hard requirement injected into the prompt (e.g. a colour-fidelity correction). */
+  extraDirective?: string;
 }): Promise<ContextRewriteResult> {
   const warnings: string[] = [];
   const original = input.capsule.codeBundle;
@@ -85,7 +88,7 @@ export async function runCapsuleContextRewrite(input: {
     // Rewrite every target file CONCURRENTLY (one model call each — "send it to gemini multiple times" per chunk).
     const fileResults = await mapLimit(targets, Number(process.env.REWRITE_CONCURRENCY ?? 4), async (f) => {
       try {
-        const raw = await input.model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, attempt > 0 ? lastErrors : undefined));
+        const raw = await input.model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, attempt > 0 ? lastErrors : undefined, input.extraDirective));
         const obj = extractJson(raw);
         if (!obj?.indexTsx) return { path: f.path, content: null as string | null, error: `output for ${f.path} was not valid JSON {componentName, indexTsx}` };
         return { path: f.path, content: obj.indexTsx as string | null, error: null as string | null };

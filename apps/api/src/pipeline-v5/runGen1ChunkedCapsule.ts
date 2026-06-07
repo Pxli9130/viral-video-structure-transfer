@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { v5 } from "@vvst/shared";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 import type { VisionCodegenFn } from "./gen1ModelFactory.js";
-import { runGen1CapsuleGemini, assetPlanToSlots, type Gen1CapsuleGeminiResult } from "./runGen1CapsuleGemini.js";
+import { runGen1CapsuleGemini, assetPlanToSlots, maxSequenceCoverageSec, type Gen1CapsuleGeminiResult } from "./runGen1CapsuleGemini.js";
 import { resolveBin } from "./renderV5.js";
 import { mapLimit, nextSeq } from "./concurrency.js";
 
@@ -206,10 +206,16 @@ export async function runGen1ChunkedCapsule(input: Gen1ChunkedInput): Promise<Ge
       try {
         const cb = g.capsule.codeBundle;
         const code = renameExport(cb.files[0]?.content ?? "", cb.componentName || "TemplateFromSample", `Chunk${i}`);
+        // Reconcile the parent slot to the chunk code's REAL internal coverage — if Gemini under-covered its
+        // time budget, using the source-span length here would leave a black gap inside the chunk (the parent
+        // bg shows through). Clamp to the chunk code's actual <Sequence> coverage when it's shorter.
+        const coverFrames = Math.round(maxSequenceCoverageSec(code, fps) * fps);
+        const useFrames = coverFrames > 0 && coverFrames < frames ? coverFrames : frames;
+        if (useFrames < frames) w.push(`chunk ${i}: code covers ${(useFrames / fps).toFixed(1)}s of ${(frames / fps).toFixed(1)}s reserved -> trimming slot to avoid black gap`);
         // Namespace asset keys (c{i}__) so the shared assets object never collides; parent's chunkAssets() strips it.
         const slots = g.assetPlan?.length ? assetPlanToSlots(g.assetPlan, `c${i}__`) : [];
         const recipes = (g.sceneRecipes ?? []).map((r) => ({ ...r, sectionId: `c${i}_${r.sectionId}` }));
-        return { frames, file: { path: `chunk${i}.tsx`, content: code }, ai: true, slots, recipes, knowledge: g.knowledgeElements ?? [], warnings: w };
+        return { frames: useFrames, file: { path: `chunk${i}.tsx`, content: code }, ai: true, slots, recipes, knowledge: g.knowledgeElements ?? [], warnings: w };
       } catch (err) {
         // A post-model transform error must NEVER reject the whole batch — degrade this chunk to filler.
         w.push(`chunk ${i} post-process error: ${err instanceof Error ? err.message.slice(0, 100) : String(err)} -> filler`);

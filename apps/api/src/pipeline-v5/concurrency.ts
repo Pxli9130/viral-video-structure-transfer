@@ -73,3 +73,10 @@ export function nextSeq(): number {
  */
 export const renderSemaphore = new Semaphore(Number(process.env.RENDER_CONCURRENCY ?? 3));
 export const RENDER_TABS_PER_JOB = Math.max(1, Number(process.env.RENDER_TABS_PER_JOB ?? 2));
+
+/**
+ * SHARED, process-wide cap on simultaneous external AIGC calls (Seedance t2v + Gemini image). Without this,
+ * N parallel videos × per-request fill concurrency = a 429 storm. Bounds total in-flight AIGC across ALL
+ * concurrent generations. Tune with AIGC_GLOBAL_CONCURRENCY (default 8).
+ */
+export const aigcSemaphore = new Semaphore(Number(process.env.AIGC_GLOBAL_CONCURRENCY ?? 8));

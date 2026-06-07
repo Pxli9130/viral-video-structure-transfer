@@ -119,6 +119,10 @@ export interface RemotionTemplateCapsule {
     codeOrigin?: "ai" | "deterministic";
     /** How the per-scene recipes were derived: cv2 keyframes, VLM, or role-varied fallback. */
     recipeSource?: "vlm" | "cv2" | "fallback";
+    /** Source video's overall dominant colour (hex) + whether it reads as light/high-key — used to keep
+     *  the generated background's lightness faithful to the source (detect→correct at generation). */
+    sourceDominantHex?: string;
+    sourceIsLight?: boolean;
     warnings: string[];
   };
 }

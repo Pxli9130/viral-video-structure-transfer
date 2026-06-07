@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = "http://127.0.0.1:3000"
 ROOT = "/home/pxli/viral-video-structure-transfer"
-OUT = os.path.join(ROOT, "storage", "demo-runs-aigc")
+# Timestamped per-run dir so runs never clobber each other (no mv/rm of prior outputs).
+OUT = os.path.join(ROOT, "storage", os.environ.get("OUT_DIR", "demo-runs-aigc-" + time.strftime("%m%d-%H%M")))
 GEN_DIR = os.path.join(ROOT, "storage", "generated", "v5", "generations")
 LEARN_DIR = os.path.join(ROOT, "storage", "generated", "v5", "learn")
 
@@ -73,8 +74,8 @@ def main():
     for a in assets:
         if a.get("type") == "video" and a.get("hasPath") and a["filename"] not in by_name:
             by_name[a["filename"]] = a["id"]
-    conc = int(os.environ.get("VIDEO_CONCURRENCY", "2"))
-    print(f"=== running {len(RUNS)} videos, {conc} concurrent ===", flush=True)
+    conc = int(os.environ.get("VIDEO_CONCURRENCY", "4"))
+    print(f"=== running {len(RUNS)} videos, {conc} concurrent -> {OUT} ===", flush=True)
     manifest = []
     with ThreadPoolExecutor(max_workers=conc) as ex:
         futs = {ex.submit(run_one, fn, lb, th, pts, by_name.get(fn)): lb for fn, lb, th, pts in RUNS}

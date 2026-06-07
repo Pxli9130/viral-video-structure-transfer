@@ -140,6 +140,30 @@ FIDELITY: do NOT collapse all scenes to one layout; do NOT default to a generic 
 unless the source truly looks that way. Each source scene should have distinct layout/motion/transition/
 text behavior based on what you SEE in the video.
 
+MOTION FIDELITY — reproduce each element's EXACT motion with FRAME-DRIVEN animation (useCurrentFrame),
+NEVER a static snapshot. If a scene's textAnimation is continuous_scroll/marquee/ticker, the code MUST
+actually animate that text — a static label is WRONG. For EVERY moving element, reproduce:
+- TEXT MARQUEE / SCROLL: if a line of text scrolls horizontally and wraps (exits one edge, re-appears from
+  the opposite edge), implement a CONTINUOUS, CONSTANT-SPEED loop driven by frame — e.g. a translateX that
+  moves right-to-left and WRAPS modulo the total width so the text exits the left and re-enters from the
+  right, forever. Do NOT use a static label, a one-shot slide, a centered translateX(-50%), or a fade. Match
+  the on-screen direction and speed.
+- ROTATION: a twisting ribbon / extruded text / spinning object rotates about ONE dominant axis (vertical =
+  rotation.y for an upright ribbon; horizontal = rotation.x). Build REAL 3D (@remotion/three) and rotate
+  ONLY about that single axis — do NOT tumble on two axes at once (no simultaneous rotation.y + rotation.z),
+  and never fake depth rotation with 2D skew/scaleX. A DNA/helix twist = a helical form rotating about the
+  single vertical axis.
+- ENTER/EXIT direction, easing, looping, per-element timing offsets exactly as seen.
+
+SIZE / COVERAGE FIDELITY — match each element's on-screen SIZE to the source. Estimate the fraction of the
+frame each element occupies (width & height as a % of the composition) and reproduce that fraction. If a
+card / graphic / subject covers most of the frame width in the source (only small side margins), it MUST do
+so in your render — size with %/vw/vh or px derived from useVideoConfig().width, NOT tiny fixed pixels. Do
+not shrink prominent elements into small centered boxes.
+
+Infer all of this from THIS video — do not assume defaults, and do not hardcode any specific axis /
+direction / size unless the source actually shows it.
+
 RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to text only. The on-screen
 text / shapes / gradients you CAN draw in code yourself. But the real PIXEL CONTENT you canNOT draw —
 live-action footage, movie clips, photos, b-roll, product shots — these are "MISSING 素材" (assets the
@@ -151,6 +175,11 @@ own <OffthreadVideo>/<Img> layer keyed to a DISTINCT asset (assets.clip1, assets
 
 ASSET KEY RULES (critical — these keys are how we fill the footage with AIGC later):
 - Read each asset as assets.<key>?.src  OR assets['<key>'].  Use simple, unique, descriptive keys.
+- MEDIA TAG BY EXTENSION (use this exact convention for EVERY asset-backed layer so it works whether the
+  filled asset turns out to be a video or an image): choose the tag from the src extension at runtime —
+  if assets.<key>?.src ends with .mp4/.webm/.mov render <OffthreadVideo src=... muted/>, otherwise render
+  <Img src=.../>. ALWAYS full-bleed (style width:'100%',height:'100%',objectFit:'cover'). Do NOT invent a
+  custom asset.mediaKind flag check, and do NOT hardcode one tag — branch on the extension every time.
 - DO NOT invent a getAsset()/dummy helper and DO NOT fall back to any remote URL (no dummyimage.com, no
   http/https) — headless rendering CANNOT fetch remote URLs. If an asset is absent, fall back to a SOLID
   colour from palette (e.g. style={{ backgroundColor: palette[0] }}) — never a remote image.
@@ -188,6 +217,46 @@ ${evidenceJson}
 Return only valid JSON.`;
 }
 
+/** Compare the model's OWN declared motion (sceneRecipes / visualSummary) against its emitted code; return
+ *  human-readable gaps that drive a single fidelity-repair. General — no per-video assumptions. */
+function motionFidelityGaps(code: string, sceneRecipes: Array<Record<string, unknown>>): string[] {
+  const gaps: string[] = [];
+  const wantsScroll = sceneRecipes.some((r) => {
+    const ta = (r?.textAnimation ?? r?.textAnim) as { type?: string } | undefined;
+    return /scroll|marquee|ticker|slide/i.test(String(ta?.type ?? ""));
+  });
+  if (wantsScroll) {
+    const frameDrivenTranslate = /translateX|translate\(/.test(code) && /interpolate\s*\(\s*frame|frame\s*[*%/]/.test(code);
+    if (!frameDrivenTranslate) {
+      gaps.push("Your sceneRecipes mark text as continuous_scroll/marquee but the code renders it STATIC. Implement a constant-speed marquee for that text: a frame-driven translateX that moves right-to-left and WRAPS (exits the left edge, re-enters from the right) continuously via useCurrentFrame — not a static label or a centered translateX(-50%).");
+    }
+  }
+  // A described twisting ribbon / helix / spinning object should rotate about ONE axis, not tumble on 2+.
+  const wantsTwist = sceneRecipes.some((r) => /ribbon|helix|twist|dna|spin|rotat/i.test(String(r?.visualSummary ?? "")));
+  const axes = (["x", "y", "z"] as const).filter((a) => new RegExp(`rotation\\.${a}\\s*[=:]`).test(code));
+  if (wantsTwist && axes.length >= 2) {
+    gaps.push(`Your 3D object rotates on multiple axes (rotation.${axes.join(" + rotation.")}). A twisting ribbon/helix should rotate about ONE dominant axis (vertical = rotation.y for an upright ribbon). Remove the secondary-axis rotation so it twists cleanly about a single axis.`);
+  }
+  return gaps;
+}
+
+/** Repair prompt for code that COMPILES + RENDERS but misses motion the model itself described. */
+export function buildGen1FidelityRepairPrompt(gaps: string[], codeBundleJson: string): string {
+  return `Your RemotionTemplateCapsule COMPILES and RENDERS, but it does NOT faithfully reproduce some motion
+you yourself described in the source. Fix ONLY these motion issues; keep everything else (structure, layout,
+3D geometry, timing, text content, colours) IDENTICAL. Return the SAME top-level JSON schema.
+
+MOTION ISSUES TO FIX:
+- ${gaps.slice(0, 6).join("\n- ")}
+
+Requirements: frame-driven animation via useCurrentFrame (NOT static); keep the exact
+"export const TemplateFromSample = ({ assets, copy, audio, theme, palette }) => ..." signature; no forbidden
+tokens (require/process/fs/eval/fetch/XMLHttpRequest/dynamic import); no remote http(s) URLs. Return ONLY valid JSON.
+
+CURRENT codeBundle:
+${codeBundleJson.slice(0, 14000)}`;
+}
+
 export function buildGen1RepairPrompt(errors: string[], codeBundleJson: string): string {
   return `Your RemotionTemplateCapsule did not COMPILE or RENDER. Return a corrected JSON response with the
 SAME top-level schema. Only change what's needed to fix the errors — do NOT remove motion/3D complexity
@@ -207,6 +276,19 @@ ${codeBundleJson.slice(0, 14000)}`;
 
 function asArray(v: unknown): unknown[] | undefined {
   return Array.isArray(v) && v.length ? v : undefined;
+}
+/** Largest (from + durationInFrames) across the code's <Sequence>s, in seconds — a last-resort duration
+ *  when neither Gemini nor the deterministic capsule supplies one. 0 if no literal Sequence bounds found.
+ *  Also reused per-chunk in the chunked path to reconcile each chunk's reserved slot to its real coverage. */
+export function maxSequenceCoverageSec(code: string, fps: number): number {
+  let max = 0;
+  for (const m of code.matchAll(/<Sequence\b([^>]*)>/g)) {
+    const f = /from=\{?(\d+)/.exec(m[1]);
+    const d = /durationInFrames=\{?(\d+)/.exec(m[1]);
+    const end = (f ? Number(f[1]) : 0) + (d ? Number(d[1]) : 0);
+    if (end > max) max = end;
+  }
+  return max > 0 ? +(max / (fps || 30)).toFixed(3) : 0;
 }
 function asObject(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
@@ -245,12 +327,29 @@ function mergeCapsule(det: v5.RemotionTemplateCapsule, g: Record<string, unknown
   // the footage the code references. Falls back to Gemini's slotSchema, then deterministic.
   const assetPlan = asArray(g.assetPlan) as AssetPlanEntry[] | undefined;
   const assetSlots = assetPlan?.length ? assetPlanToSlots(assetPlan) : undefined;
+  // MERGE timingSignature — Gemini often returns a PARTIAL one (e.g. {bpm, sections} with NO durationSec/fps).
+  // Wholesale-adopting it leaves durationSec undefined, and the renderer then defaults to 16s -> the video
+  // "ends too soon". Always fall back to the deterministic duration/fps (and code coverage as a last resort).
+  const gts = asObject(gc.timingSignature) as Partial<v5.RemotionTemplateCapsule["timingSignature"]> | undefined;
+  const fps = (typeof gts?.fps === "number" && gts.fps > 0 ? gts.fps : undefined) ?? det.timingSignature.fps ?? 30;
+  const coverSec = maxSequenceCoverageSec(code, fps);
+  const durationSec = (typeof gts?.durationSec === "number" && gts.durationSec > 0 ? gts.durationSec : undefined)
+    ?? (det.timingSignature.durationSec && det.timingSignature.durationSec > 0 ? det.timingSignature.durationSec : undefined)
+    ?? (coverSec > 0 ? coverSec : undefined)
+    ?? 16;
+  const timingSignature: v5.RemotionTemplateCapsule["timingSignature"] = {
+    ...det.timingSignature,
+    ...(gts ?? {}),
+    fps,
+    durationSec,
+    sections: gts?.sections?.length ? gts.sections : det.timingSignature.sections
+  };
   const capsule: v5.RemotionTemplateCapsule = {
     ...det,
     codeBundle, // CANONICAL — Gemini's code, untouched
     slotSchema: assetSlots ?? validSlots ?? det.slotSchema,
     propsSchema: asObject(gc.propsSchema) ?? det.propsSchema,
-    timingSignature: (asObject(gc.timingSignature) as unknown as v5.RemotionTemplateCapsule["timingSignature"]) ?? det.timingSignature,
+    timingSignature,
     motionSignature: (asObject(gc.motionSignature) as unknown as v5.RemotionTemplateCapsule["motionSignature"]) ?? det.motionSignature,
     assetRecipes: (asArray(gc.assetRecipes) as v5.AssetRecipeV5[]) ?? det.assetRecipes,
     audioRecipes: (asArray(gc.audioRecipes) as v5.AudioRecipeV5[]) ?? det.audioRecipes,
@@ -258,7 +357,6 @@ function mergeCapsule(det: v5.RemotionTemplateCapsule, g: Record<string, unknown
     safety: det.safety, // metadata only; never rewrites code
     quality: { ...det.quality, codeOrigin: "ai", recipeSource: "vlm" }
   };
-  if (!capsule.timingSignature?.sections?.length) capsule.timingSignature = det.timingSignature;
   if (!capsule.fixtures?.neutralFixture) capsule.fixtures = det.fixtures;
   return { capsule, code };
 }
@@ -271,14 +369,16 @@ export async function runGen1CapsuleGemini(input: Gen1CapsuleGeminiInput): Promi
 
   let lastErrors: string[] = [];
   let lastRaw: string | undefined;
+  let lastErrorKind: "build" | "fidelity" = "build";
+  let fidelityRepairDone = false;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let raw: string;
     try {
       if (attempt === 0) {
         raw = await input.visionModel(buildGen1CapsulePrompt(evidenceJson), input.frames ?? [], input.videoPath);
       } else {
-        // Repair: code-only, prefer the cheaper text model.
-        const repairPrompt = buildGen1RepairPrompt(lastErrors, lastRaw ?? "");
+        // Repair: code-only, prefer the cheaper text model. Fidelity repairs use a motion-specific prompt.
+        const repairPrompt = lastErrorKind === "fidelity" ? buildGen1FidelityRepairPrompt(lastErrors, lastRaw ?? "") : buildGen1RepairPrompt(lastErrors, lastRaw ?? "");
         raw = input.repairModel ? await input.repairModel(repairPrompt) : await input.visionModel(repairPrompt, [], undefined);
       }
     } catch (err) {
@@ -320,9 +420,23 @@ export async function runGen1CapsuleGemini(input: Gen1CapsuleGeminiInput): Promi
     if (probe.warnings?.length) warnings.push(...probe.warnings);
     if (!probe.ok) {
       lastErrors = [`render failed: ${probe.error ?? "unknown"}`];
+      lastErrorKind = "build";
       warnings.push(`gen1 capsule attempt ${attempt + 1}: render error -> repair`);
       continue;
     }
+    // MOTION-FIDELITY: drive ONE repair when the code contradicts the model's OWN declared motion
+    // (sceneRecipes say text scrolls but code is static; a twisting ribbon tumbles on 2 axes). Evidence-
+    // driven + general; never blocks — after one repair we promote regardless ("code is bible").
+    const gaps = motionFidelityGaps(code, (asArray(parsed.sceneRecipes) as Array<Record<string, unknown>>) ?? []);
+    if (gaps.length && !fidelityRepairDone && attempt < maxAttempts - 1) {
+      fidelityRepairDone = true;
+      lastErrors = gaps;
+      lastErrorKind = "fidelity";
+      lastRaw = JSON.stringify({ capsule: { codeBundle: capsule.codeBundle } });
+      warnings.push(`gen1 motion-fidelity gap -> repair: ${gaps[0].slice(0, 90)}`);
+      continue;
+    }
+    if (gaps.length) warnings.push(`gen1 motion-fidelity (kept after repair): ${gaps.join(" | ").slice(0, 160)}`);
     // PROMOTE — it compiles and renders. Stored as-is.
     capsule.quality.renderPreviewPassed = true;
     if (!noCopyPassed) warnings.push("note: returned code may contain source-derived text (kept as-is; change at generation time)");
