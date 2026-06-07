@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v5 } from "@vvst/shared";
 import { muxProceduralAudio } from "./renderV5.js";
+import { renderSemaphore, RENDER_TABS_PER_JOB, nextSeq } from "./concurrency.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
@@ -84,16 +85,19 @@ export async function renderCapsuleStill(opts: {
   const durationSec = opts.capsule.timingSignature.durationSec || 16;
   const fps = opts.capsule.timingSignature.fps || 30;
   const { width, height } = dimsFor(opts.aspectRatio);
-  const workDir = opts.workDir ?? path.join(repoRoot, "storage", "generated", "v5", "_capsule_still", `${opts.capsule.id}_${Date.now()}`);
+  // Unique workDir (Date.now + monotonic seq) so concurrent still-renders of the same capsule never collide.
+  const workDir = opts.workDir ?? path.join(repoRoot, "storage", "generated", "v5", "_capsule_still", `${opts.capsule.id}_${Date.now()}_${nextSeq()}`);
   const outPng = opts.outPng ?? path.join(workDir, "frame.png");
   try {
     const rootPath = await writeCapsuleProject(opts.capsule, workDir, Math.round(durationSec * fps), fps, width, height);
-    const [{ bundle }, { renderStill, selectComposition }] = await Promise.all([import("@remotion/bundler"), import("@remotion/renderer")]);
-    const serveUrl = await bundle({ entryPoint: rootPath });
-    const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps: opts.boundProps });
-    await renderStill({ composition, serveUrl, output: outPng, frame: opts.frame ?? 0, inputProps: opts.boundProps, overwrite: true });
-    const ok = existsSync(outPng);
-    return { ok, pngPath: ok ? outPng : undefined, warnings, error: ok ? undefined : "still not written to disk" };
+    return await renderSemaphore.run(async () => {
+      const [{ bundle }, { renderStill, selectComposition }] = await Promise.all([import("@remotion/bundler"), import("@remotion/renderer")]);
+      const serveUrl = await bundle({ entryPoint: rootPath });
+      const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps: opts.boundProps });
+      await renderStill({ composition, serveUrl, output: outPng, frame: opts.frame ?? 0, inputProps: opts.boundProps, overwrite: true });
+      const ok = existsSync(outPng);
+      return { ok, pngPath: ok ? outPng : undefined, warnings, error: ok ? undefined : "still not written to disk" };
+    });
   } catch (err) {
     return { ok: false, warnings, error: err instanceof Error ? err.message.slice(0, 220) : String(err) };
   }
@@ -118,7 +122,7 @@ export async function renderTemplateCapsule(opts: CapsuleRenderOptions): Promise
   const durationSec = opts.capsule.timingSignature.durationSec || 16;
   const fps = opts.capsule.timingSignature.fps || 30;
   const { width, height } = dimsFor(opts.aspectRatio);
-  const workDir = opts.workDir ?? path.join(repoRoot, "storage", "generated", "v5", "_capsule_render", `${opts.capsule.id}_${Math.round(durationSec * 1000)}`);
+  const workDir = opts.workDir ?? path.join(repoRoot, "storage", "generated", "v5", "_capsule_render", `${opts.capsule.id}_${Math.round(durationSec * 1000)}_${nextSeq()}`);
 
   try {
     await fs.mkdir(workDir, { recursive: true });
@@ -149,15 +153,18 @@ registerRoot(Root);
 `;
     await fs.writeFile(path.join(workDir, "root.tsx"), rootTsx);
 
-    const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
-      import("@remotion/bundler"),
-      import("@remotion/renderer")
-    ]);
-    const serveUrl = await bundle({ entryPoint: path.join(workDir, "root.tsx") });
     const inputProps = opts.boundProps;
-    const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps });
     const remotionMp4 = opts.proceduralAudio ? `${opts.outPath}.silent.mp4` : opts.outPath;
-    await renderMedia({ composition, serveUrl, codec: "h264", outputLocation: remotionMp4, inputProps });
+    // Cap concurrent headless-Chrome renders process-wide AND cap tabs-per-render (memory = slots × tabs).
+    await renderSemaphore.run(async () => {
+      const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
+        import("@remotion/bundler"),
+        import("@remotion/renderer")
+      ]);
+      const serveUrl = await bundle({ entryPoint: path.join(workDir, "root.tsx") });
+      const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps });
+      await renderMedia({ composition, serveUrl, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB });
+    });
 
     let finalMp4 = remotionMp4;
     let audioMuxed = false;

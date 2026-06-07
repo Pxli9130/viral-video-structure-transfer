@@ -42,6 +42,15 @@ export interface TemplateSlot {
   replacementPolicy: TemplateSlotReplacementPolicy;
   /** Path into boundProps where this slot's content is injected (e.g. "assets.heroImage"). */
   propPath?: string;
+  /** Human/AIGC description of what this slot shows (from the Gen1 model's assetPlan). */
+  description?: string;
+  /** For AI-reconstructed footage slots ("missing 素材" the code can't draw itself): whether the
+   *  AIGC fill should be a still image (ken-burns) or a real moving video (text-to-video / Seedance). */
+  mediaKind?: "image" | "video";
+  /** Ready-to-use AIGC prompt that recreates this footage in a copyright-safe, theme-appropriate way. */
+  aigcPrompt?: string;
+  /** Camera / motion hint (e.g. "slow push-in", "whip pan") for ken-burns or t2v. */
+  motionHint?: string;
 }
 
 export interface RemotionTemplateCapsule {

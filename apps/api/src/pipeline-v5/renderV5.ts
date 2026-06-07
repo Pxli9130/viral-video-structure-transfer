@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v5 } from "@vvst/shared";
+import { renderSemaphore, RENDER_TABS_PER_JOB } from "./concurrency.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
@@ -29,7 +30,7 @@ export function buildV5RenderInputProps(
   return { recipe, assetMap: map };
 }
 
-function resolveBin(name: "ffmpeg" | "ffprobe"): string {
+export function resolveBin(name: "ffmpeg" | "ffprobe"): string {
   const condaBase = process.env.CONDA_BASE;
   const env = process.env.VIRAL_CONDA_ENV ?? "viral";
   const override = name === "ffmpeg" ? process.env.FFMPEG_PATH : process.env.FFPROBE_PATH;
@@ -141,15 +142,19 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
   let bundleLocation = opts.bundleLocation;
   let inputProps: { recipe: v5.RenderRecipeV5; assetMap: AssetMap };
   try {
-    const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
-      import("@remotion/bundler"),
-      import("@remotion/renderer")
-    ]);
-    if (!bundleLocation) bundleLocation = await bundle({ entryPoint });
-    inputProps = buildV5RenderInputProps(opts.finalProgram, opts.assetMap);
-    const composition = await selectComposition({ serveUrl: bundleLocation, id: "V5Final", inputProps });
     const remotionMp4 = opts.proceduralAudio ? `${opts.outPath}.silent.mp4` : opts.outPath;
-    await renderMedia({ composition, serveUrl: bundleLocation, codec: "h264", outputLocation: remotionMp4, inputProps });
+    inputProps = buildV5RenderInputProps(opts.finalProgram, opts.assetMap);
+    // Bound by the SHARED render semaphore + tab cap (same budget as renderTemplateCapsule) so this path
+    // can't blow memory under concurrent generate requests.
+    await renderSemaphore.run(async () => {
+      const [{ bundle }, { renderMedia, selectComposition }] = await Promise.all([
+        import("@remotion/bundler"),
+        import("@remotion/renderer")
+      ]);
+      if (!bundleLocation) bundleLocation = await bundle({ entryPoint });
+      const composition = await selectComposition({ serveUrl: bundleLocation, id: "V5Final", inputProps });
+      await renderMedia({ composition, serveUrl: bundleLocation, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB });
+    });
 
     let finalMp4 = remotionMp4;
     let audioMuxed = false;

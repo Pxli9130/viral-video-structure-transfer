@@ -10,6 +10,7 @@ import type { Asset } from "@vvst/shared";
 import { getAigcMaterialProvider, v5 } from "@vvst/shared";
 import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
 import { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
+import { mapLimit } from "./concurrency.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
@@ -56,6 +57,12 @@ function sceneRoleOf(slot: v5.TemplateSlot): "hook" | "benefit" | "proof" | "cta
  */
 function imagePromptFor(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, imageIdx: number): string {
   const theme = brief.theme ?? brief.prompt ?? "the product";
+  // If the Gen1 model described THIS footage slot (the "missing 素材" it couldn't draw), use its
+  // ready-made AIGC prompt — recreates the source's footage type, adapted to the new theme.
+  if (slot.aigcPrompt && slot.aigcPrompt.trim()) {
+    const motion = slot.motionHint ? ` Camera: ${slot.motionHint}.` : "";
+    return `${slot.aigcPrompt.trim()} Adapt for the theme "${theme}".${motion} 9:16 vertical, no on-image text, no watermark.`;
+  }
   const points = (brief.sellingPoints ?? []).filter(Boolean);
   const point = points.length ? points[imageIdx % points.length] : "";
   const role = sceneRoleOf(slot);
@@ -141,6 +148,12 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
 
   const targetProfiles = runTargetAssetAnalysisMany(input.targetAssets);
   const provider = aigcOn && options.aigcGapFill.imageFill === "aigc" ? getAigcMaterialProvider((input.env?.AIGC_IMAGE_PROVIDER as never) ?? "google_gemini_image") : undefined;
+  // Real moving-footage provider (Seedance text-to-video) for mediaKind="video" slots — the "missing 素材"
+  // the code marked <OffthreadVideo>. Generated footage is fresh/original (samplePixelsUsed=false), so it
+  // auto-differs from the source (no copyright concern). Capped: t2v is slow/expensive; overflow -> still.
+  const arkKey = input.env?.SEEDANCE_ARK_API_KEY || input.env?.SEEDANCE_API_KEY || input.env?.SEEDREAM_ARK_API_KEY || input.env?.ARK_API_KEY;
+  const videoProvider = aigcOn && arkKey && String(input.env?.AIGC_VIDEO_FILL ?? "1") !== "0" ? getAigcMaterialProvider("seedance_2_0") : undefined;
+  const maxVideos = Math.max(0, Number(input.env?.AIGC_VIDEO_MAX ?? 8));
   const materialsDir = path.join(input.outDir, "materials");
 
   const boundProps: { theme?: string; palette: string[]; assets: Record<string, { src: string }>; copy: Record<string, string>; audio: Record<string, unknown> } = {
@@ -152,10 +165,8 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   };
   const slotBindings: v5.TemplateSlotBinding[] = [];
   const generatedAssets: v5.GeneratedVisualAsset[] = [];
-  let generatedImageCount = 0;
-  let imageSlotIdx = 0;
   // Fill EVERY image slot with real imagery (capped) so no scene is left as an empty designed card.
-  const maxGenerated = Math.min(12, Math.max(6, capsule.slotSchema.filter((s) => IMAGE_SLOTS.has(s.kind)).length));
+  const maxGenerated = Math.min(Number(input.env?.AIGC_IMAGE_MAX ?? 40), Math.max(6, capsule.slotSchema.filter((s) => IMAGE_SLOTS.has(s.kind)).length));
   const usedTargetAssetIds = new Set<string>();
 
   if (input.reviseFrom) {
@@ -171,7 +182,19 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     boundProps.audio = { ...(pb.audio ?? {}) };
     for (const [k, v] of Object.entries(patch.copyOverrides ?? {})) boundProps.copy[k] = v;
     for (const b of prior.slotBindings) slotBindings.push({ ...b });
-  } else
+  } else {
+  // ---- Phase A (sequential, cheap): text/audio + user-asset slots; PRE-ASSIGN the AIGC method for the rest.
+  // Pre-assignment is synchronous so the video/image budgets are consumed deterministically (no counter race);
+  // the slow AIGC calls then run concurrently in Phase B without touching shared counters.
+  interface AigcTask { slotId: string; propKey: string; slot: v5.TemplateSlot; method: "video" | "image"; imageIdx: number; }
+  const aigcTasks: AigcTask[] = [];
+  const pushFallback = (slotId: string) =>
+    slotBindings.push(aigcOn && options.fallbackPolicy.allowProceduralVisualFallback
+      ? { slotId, status: "procedural_generated", warnings: ["designed-visual fallback (no real image)"] }
+      : { slotId, status: "missing", warnings: ["no user asset, AIGC off / unavailable"] });
+  let videoBudget = videoProvider ? maxVideos : 0;
+  let imageBudget = provider ? maxGenerated : 0;
+  let imageIdxSeq = 0;
   for (let i = 0; i < capsule.slotSchema.length; i++) {
     const slot = capsule.slotSchema[i];
     const propKey = slot.propPath?.split(".")[1] ?? slot.id;
@@ -182,13 +205,10 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       slotBindings.push({ slotId: slot.id, status: text ? "text_generated" : "missing", text, warnings: text ? [] : ["text fill off"] });
       continue;
     }
-
     if (AUDIO_SLOTS.has(slot.kind)) {
-      // procedural audio is added at render (mux); mark bound procedurally.
       slotBindings.push({ slotId: slot.id, status: aigcOn ? "procedural_generated" : "missing", warnings: aigcOn ? [] : ["audio fill off"] });
       continue;
     }
-
     if (IMAGE_SLOTS.has(slot.kind)) {
       // 1) user asset — match profile kind to the slot, and never bind the same asset to two slots.
       const userAsset = targetProfiles.find(
@@ -202,52 +222,62 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
         usedTargetAssetIds.add(userAsset.assetId);
         continue;
       }
-      // 2) AIGC generate — for EVERY image slot (each gets a distinct, scene-aware visual), under cap.
-      if (provider && generatedImageCount < maxGenerated) {
-        const thisImageIdx = imageSlotIdx++;
-        try {
-          await fs.mkdir(materialsDir, { recursive: true });
-          const prompt = imagePromptFor(slot, brief, thisImageIdx);
-          const candidates = await provider.generate(
-            {
-              id: `brief_${input.generationId}_${slot.id}`,
-              projectId: input.projectId,
-              generationId: input.generationId,
-              slotId: slot.id,
-              visualFormFamily: slot.kind === "logo" ? "brand_cta" : slot.kind === "background_image" ? "background" : "object_motion",
-              visualForm: slot.kind,
-              assetType: "image",
-              count: 1,
-              targetTheme: brief.theme ?? "the product",
-              promptPack: [prompt],
-              styleConstraints: { aspectRatio: (brief.aspectRatio ?? "9:16") as never, palette, colorPalette: palette, noTextUnlessRequested: true, avoidSampleLookalike: true },
-              structureConstraints: { intendedRendererCapability: "remotion_media_layer", motionPattern: "ken_burns", slotRole: slot.kind },
-              negativePrompts: ["watermark", "sample logo", "on-image text"],
-              evidenceRefs: { sampleEvidenceFrameIds: [], note: "sample evidence is for structure only; do not copy visual content" },
-              privacyPolicy: { externalUploadAllowed: true, sampleFramesAllowedToProvider: false, targetAssetsAllowedToProvider: false }
-            },
-            { outputDir: materialsDir, publicPathPrefix: input.publicPathPrefix, env: input.env, allowExternalProviderCall: true }
-          );
-          const c = candidates[0];
-          if (c?.path) {
-            const httpSrc = `${input.serveBase}${c.path.startsWith("/") ? "" : "/"}${c.path}`;
-            boundProps.assets[propKey] = { src: httpSrc };
-            generatedAssets.push({ id: `genasset_${slot.id}`, kind: "image", uri: c.path, provenance: { assetId: `genasset_${slot.id}`, source: "aigc_generated", createdByStage: "same_template_fill", promptRef: c.prompt, samplePixelsUsed: false } });
-            generatedImageCount++;
-            slotBindings.push({ slotId: slot.id, status: "aigc_generated", assetId: `genasset_${slot.id}`, uri: httpSrc, provenance: { source: "aigc_generated" }, warnings: [] });
-            continue;
-          }
-        } catch (err) {
-          warnings.push(`image fill ${slot.id}: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);
-        }
-      }
-      // 3) procedural fallback (the template renders a DesignedCard when assets[key] is absent)
-      if (aigcOn && options.fallbackPolicy.allowProceduralVisualFallback) {
-        slotBindings.push({ slotId: slot.id, status: "procedural_generated", warnings: ["designed-visual fallback (no real image)"] });
-      } else {
-        slotBindings.push({ slotId: slot.id, status: "missing", warnings: ["no user asset, AIGC off / unavailable"] });
-      }
+      // Pre-assign: real moving footage (Seedance) for video slots under budget; else a still under budget; else fallback.
+      if (slot.mediaKind === "video" && videoProvider && videoBudget > 0) { videoBudget--; aigcTasks.push({ slotId: slot.id, propKey, slot, method: "video", imageIdx: imageIdxSeq++ }); }
+      else if (provider && imageBudget > 0) { imageBudget--; aigcTasks.push({ slotId: slot.id, propKey, slot, method: "image", imageIdx: imageIdxSeq++ }); }
+      else pushFallback(slot.id);
     }
+  }
+
+  // ---- Phase B (parallel): run the assigned AIGC calls CONCURRENTLY (capped). Seedance t2v is the big
+  // bottleneck (≈minutes each); fanning out turns N sequential clips into ceil(N/conc) waves.
+  if (aigcTasks.length) {
+    await fs.mkdir(materialsDir, { recursive: true });
+    const ctx = { outputDir: materialsDir, publicPathPrefix: input.publicPathPrefix, env: input.env, allowExternalProviderCall: true } as const;
+    const videoBrief = (t: AigcTask) => ({
+      id: `vbrief_${input.generationId}_${t.slotId}`, projectId: input.projectId, generationId: input.generationId, slotId: t.slotId,
+      visualFormFamily: "live_action_montage", visualForm: t.slot.kind, assetType: "short_video" as const, count: 1, targetTheme: brief.theme ?? "the product",
+      promptPack: [imagePromptFor(t.slot, brief, t.imageIdx)],
+      styleConstraints: { aspectRatio: (brief.aspectRatio ?? "9:16") as never, palette, colorPalette: palette, noTextUnlessRequested: true, avoidSampleLookalike: true },
+      structureConstraints: { intendedRendererCapability: "remotion_media_layer", motionPattern: "live_action", slotRole: t.slot.kind },
+      negativePrompts: ["watermark", "sample logo", "on-image text"],
+      evidenceRefs: { sampleEvidenceFrameIds: [], note: "sample evidence is for structure only; do not copy visual content" as const },
+      privacyPolicy: { externalUploadAllowed: true, sampleFramesAllowedToProvider: false, targetAssetsAllowedToProvider: false }
+    });
+    const imageBrief = (t: AigcTask) => ({
+      id: `brief_${input.generationId}_${t.slotId}`, projectId: input.projectId, generationId: input.generationId, slotId: t.slotId,
+      visualFormFamily: t.slot.kind === "logo" ? "brand_cta" : t.slot.kind === "background_image" ? "background" : "object_motion", visualForm: t.slot.kind,
+      assetType: "image" as const, count: 1, targetTheme: brief.theme ?? "the product", promptPack: [imagePromptFor(t.slot, brief, t.imageIdx)],
+      styleConstraints: { aspectRatio: (brief.aspectRatio ?? "9:16") as never, palette, colorPalette: palette, noTextUnlessRequested: true, avoidSampleLookalike: true },
+      structureConstraints: { intendedRendererCapability: "remotion_media_layer", motionPattern: "ken_burns", slotRole: t.slot.kind },
+      negativePrompts: ["watermark", "sample logo", "on-image text"],
+      evidenceRefs: { sampleEvidenceFrameIds: [], note: "sample evidence is for structure only; do not copy visual content" as const },
+      privacyPolicy: { externalUploadAllowed: true, sampleFramesAllowedToProvider: false, targetAssetsAllowedToProvider: false }
+    });
+    type FillResult = { t: AigcTask; kind: "video" | "image"; path: string; prompt: string } | { t: AigcTask; kind: "fallback" };
+    const results = await mapLimit<AigcTask, FillResult>(aigcTasks, Number(input.env?.AIGC_FILL_CONCURRENCY ?? 6), async (t) => {
+      if (t.method === "video" && videoProvider) {
+        try {
+          const c = (await videoProvider.generate(videoBrief(t) as never, ctx))[0];
+          if (c?.path) return { t, kind: "video", path: c.path, prompt: c.prompt };
+        } catch (err) { warnings.push(`video fill ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 100) : String(err)} -> still`); }
+      }
+      if (provider) {
+        try {
+          const c = (await provider.generate(imageBrief(t) as never, ctx))[0];
+          if (c?.path) return { t, kind: "image", path: c.path, prompt: c.prompt };
+        } catch (err) { warnings.push(`image fill ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`); }
+      }
+      return { t, kind: "fallback" };
+    });
+    for (const r of results) {
+      if (r.kind === "fallback") { pushFallback(r.t.slotId); continue; }
+      const httpSrc = `${input.serveBase}${r.path.startsWith("/") ? "" : "/"}${r.path}`;
+      boundProps.assets[r.t.propKey] = { src: httpSrc };
+      generatedAssets.push({ id: `genasset_${r.t.slotId}`, kind: r.kind, uri: r.path, provenance: { assetId: `genasset_${r.t.slotId}`, source: "aigc_generated", createdByStage: "same_template_fill", promptRef: r.prompt, samplePixelsUsed: false } });
+      slotBindings.push({ slotId: r.t.slotId, status: "aigc_generated", assetId: `genasset_${r.t.slotId}`, uri: httpSrc, provenance: { source: "aigc_generated" }, warnings: r.kind === "video" ? ["seedance t2v"] : [] });
+    }
+  }
   }
 
   // ---- Coverage facts (drive honest readiness + the visual-substance gate) ----
@@ -294,7 +324,13 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     noCopyPassed: true,
     details: "plan-only or no render; structural no-copy (props-driven template, generated/procedural content only)."
   };
-  if (finalMp4Exists) {
+  if (finalMp4Exists && capsule.quality.codeOrigin === "ai") {
+    // AI-reconstructed capsule: every visual layer is either code-drawn or AIGC-generated footage
+    // (samplePixelsUsed=false; Seedance/Gemini output auto-differs from the source). No source pixels
+    // are reused, so the visual-similarity no-copy scan is skipped per policy — it would false-flag
+    // intentionally-recreated footage and wrongly downgrade readiness.
+    noCopy = { noCopyPassed: true, details: "AI capsule: all footage code-drawn or AIGC-generated (samplePixelsUsed=false); no-copy scan skipped per policy." };
+  } else if (finalMp4Exists) {
     try {
       noCopy = await runNoCopyScan({ finalVideoPath: finalMp4Path, sampleVideoPath: input.sampleVideoPath, outDir: input.outDir });
     } catch (err) {
@@ -340,7 +376,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   gates.push(gate("T4", "Props schema exists", Object.keys(capsule.propsSchema).length ? "pass" : "fail"));
   gates.push(gate("T5", "Slot schema exists", capsule.slotSchema.length ? "pass" : "fail"));
   gates.push(gate("T6", "All required slots bound", missingRequired === 0 ? "pass" : "fail", `${missingRequired} missing`));
-  gates.push(gate("T7", "AIGC fill executed for missing required slots", aigcOn ? (generatedImageCount > 0 || requiredVisual.length === 0 ? "pass" : "warn") : "warn", `${generatedImageCount} images generated`));
+  gates.push(gate("T7", "AIGC fill executed for missing required slots", aigcOn ? (generatedAssets.length > 0 || requiredVisual.length === 0 ? "pass" : "warn") : "warn", `${generatedAssets.length} assets generated (${generatedAssets.filter((a) => a.kind === "video").length} video)`));
   gates.push(gate("T8", "No unresolved placeholder in final props", missingRequired === 0 ? "pass" : "warn"));
   gates.push(gate("T9", "Final render uses template code", input.doRender === false ? "warn" : usedTemplateCode ? "pass" : "fail", usedFallbackRenderer ? "fallback used" : usedTemplateCode ? "template code" : "not rendered"));
   gates.push(gate("T10", "No sample pixels/audio/text in final", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.details));

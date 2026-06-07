@@ -608,14 +608,19 @@ export const seedanceVideoProvider: AigcMaterialProvider = {
     const candidates: GeneratedAssetCandidate[] = [];
     for (let index = 0; index < count; index += 1) {
       const prompt = seedancePrompt(brief, brief.promptPack?.[index] ?? brief.promptPack?.[0] ?? `${brief.visualFormFamily} generated video material`);
-      const createResponse = await fetchImpl(seedanceTaskUrl(config), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify(seedanceRequestBody(config, prompt))
-      });
+      // Retry the create-task POST on 429/5xx with backoff — concurrent fan-out (parallel slots/videos)
+      // makes rate-limit hits likely; without this they would needlessly fail to a still.
+      const createMaxRetries = 3;
+      let createResponse: Awaited<ReturnType<typeof fetchImpl>>;
+      for (let attempt = 0; ; attempt += 1) {
+        createResponse = await fetchImpl(seedanceTaskUrl(config), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+          body: JSON.stringify(seedanceRequestBody(config, prompt))
+        });
+        if (createResponse.ok || !retryableSeedreamStatus(createResponse.status) || attempt >= createMaxRetries) break;
+        await sleep(1500 * Math.max(1, attempt + 1));
+      }
       if (!createResponse.ok) {
         const responseText = await createResponse.text().catch(() => "");
         throw new Error(providerErrorMessage("seedance_2_0", "video task creation", createResponse.status, responseText));

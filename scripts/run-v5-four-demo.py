@@ -48,7 +48,7 @@ def main():
             rec["error"] = "asset not found"; manifest.append(rec)
             json.dump(rec, open(os.path.join(run_dir, "summary.json"), "w"), ensure_ascii=False, indent=2); continue
         # 1) LEARN (no options -> default pipeline: AI capsule codegen + render validation)
-        lr = req("POST", "/api/v5/learn-samples", {"sampleAssetIds": [asset_id]}, timeout=600)
+        lr = req("POST", "/api/v5/learn-samples", {"sampleAssetIds": [asset_id]}, timeout=1200)
         learned = lr["learned"][0]
         json.dump(lr, open(os.path.join(run_dir, "learn-response.json"), "w"), ensure_ascii=False, indent=2)
         cap = learned.get("templateCapsuleId")

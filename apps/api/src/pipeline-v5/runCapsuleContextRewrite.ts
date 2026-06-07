@@ -8,6 +8,7 @@
 import { v5 } from "@vvst/shared";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
+import { mapLimit } from "./concurrency.js";
 
 export interface ContextRewriteResult {
   codeBundle: v5.RemotionTemplateCapsule["codeBundle"];
@@ -29,10 +30,14 @@ Rewrite RULES:
 - Replace EVERY readable on-screen word (headlines, captions, CTAs, kinetic text, canvas fillText/strokeText,
   3D text, SVG <text>) with NEW copy that fits the new theme + key points. Nothing from the original ad's
   wording may remain.
-- You MAY shift the colour palette / accent colours toward the new theme's mood.
+- You MAY shift ACCENT colours toward the new theme's mood, BUT you MUST PRESERVE THE SOURCE'S OVERALL
+  BACKGROUND LIGHTNESS: if the original code renders on a LIGHT / white / high-key background, keep it
+  light; if it renders dark, keep it dark. Do NOT flip a light background to dark (or dark to light).
+  Only swap accent/text colours — never invert the base background tone.
 - KEEP EVERYTHING ELSE IDENTICAL: component structure, layout, every Sequence, all animation/motion/3D,
   transitions, timing, image/video layers, fonts behaviour. Only CONTENT (words + colours) changes.
-- Keep the exact export: export const TemplateFromSample = ({ assets = {}, copy = {}, audio = {}, theme = "", palette = PALETTE }) => ...
+- Keep the EXACT SAME exported component name and signature as the original file (do NOT rename the export,
+  do NOT add or remove exports — this file may be imported by a parent that renders it).
 - Do NOT add any platform watermark / handle / follow-card. Do NOT use forbidden tokens (require/process/
   fs/eval/fetch/XMLHttpRequest/dynamic import) or remote http(s) URLs.
 
@@ -67,29 +72,41 @@ export async function runCapsuleContextRewrite(input: {
 }): Promise<ContextRewriteResult> {
   const warnings: string[] = [];
   const original = input.capsule.codeBundle;
-  const entry = original.files.find((f) => f.path === original.entryFile)?.content ?? original.files[0]?.content ?? "";
-  if (!entry) return { codeBundle: original, usedAi: false, warnings: ["no entry code to rewrite"] };
+  // Files whose on-screen text we re-theme: for a stitched multi-file (chunked) capsule the text lives in
+  // the chunk modules, NOT the structural parent entry; for a single-file capsule it's the entry itself.
+  const isMulti = original.files.length > 1;
+  const targets = (isMulti ? original.files.filter((f) => f.path !== original.entryFile) : original.files.filter((f) => f.path === original.entryFile))
+    .filter((f) => typeof f.content === "string" && f.content.length);
+  if (!targets.length) return { codeBundle: original, usedAi: false, warnings: ["no text-bearing code to rewrite"] };
+  const fixture = (input.capsule.fixtures?.neutralFixture ?? {}) as Record<string, unknown>;
   const maxAttempts = Math.max(1, input.maxAttempts ?? 2);
   let lastErrors: string[] = [];
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    let raw: string;
-    try {
-      raw = await input.model(buildContextRewritePrompt(entry, input.theme, input.sellingPoints, attempt > 0 ? lastErrors : undefined));
-    } catch (err) {
-      warnings.push(`context rewrite model error: ${err instanceof Error ? err.message.slice(0, 120) : String(err)}`);
-      break;
-    }
-    const obj = extractJson(raw);
-    if (!obj?.indexTsx) {
-      lastErrors = ["output was not valid JSON {componentName, indexTsx}"];
+    // Rewrite every target file CONCURRENTLY (one model call each — "send it to gemini multiple times" per chunk).
+    const fileResults = await mapLimit(targets, Number(process.env.REWRITE_CONCURRENCY ?? 4), async (f) => {
+      try {
+        const raw = await input.model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, attempt > 0 ? lastErrors : undefined));
+        const obj = extractJson(raw);
+        if (!obj?.indexTsx) return { path: f.path, content: null as string | null, error: `output for ${f.path} was not valid JSON {componentName, indexTsx}` };
+        return { path: f.path, content: obj.indexTsx as string | null, error: null as string | null };
+      } catch (err) {
+        return { path: f.path, content: null as string | null, error: `context rewrite model error (${f.path}): ${err instanceof Error ? err.message.slice(0, 100) : String(err)}` };
+      }
+    });
+    const failed = fileResults.filter((r) => !r.content);
+    if (failed.length) {
+      for (const fr of failed) warnings.push(fr.error ?? `rewrite failed (${fr.path})`);
+      lastErrors = failed.map((fr) => fr.error ?? `rewrite failed (${fr.path})`).slice(0, 4);
       continue;
     }
+    const rewritten = new Map<string, string>();
+    for (const r of fileResults) rewritten.set(r.path, r.content as string);
+    // Assemble the FULL bundle (parent + rewritten chunks) and gate it once: compile + render.
     const candidate: v5.RemotionTemplateCapsule["codeBundle"] = {
-      files: [{ path: original.entryFile, content: obj.indexTsx }],
+      files: original.files.map((f) => (rewritten.has(f.path) ? { ...f, content: rewritten.get(f.path) as string } : f)),
       entryFile: original.entryFile,
       componentName: original.componentName
     };
-    // Gate: compile (syntax) + render (the only "won't run" checks; no no-copy gate).
     const v = validateTemplateCapsule({ ...input.capsule, codeBundle: candidate });
     if (v.gates.find((g) => g.id === "T2")?.status !== "pass") {
       lastErrors = v.gates.filter((g) => g.id === "T2" && g.status === "fail").map((g) => g.message);
@@ -99,7 +116,7 @@ export async function runCapsuleContextRewrite(input: {
     }
     let probe: { ok: boolean; error?: string };
     try {
-      probe = await input.renderProbe(candidate, (input.capsule.fixtures?.neutralFixture ?? {}) as Record<string, unknown>);
+      probe = await input.renderProbe(candidate, fixture);
     } catch (err) {
       probe = { ok: false, error: err instanceof Error ? err.message.slice(0, 160) : String(err) };
     }
@@ -108,7 +125,7 @@ export async function runCapsuleContextRewrite(input: {
       warnings.push(`context rewrite attempt ${attempt + 1}: render error -> repair`);
       continue;
     }
-    warnings.push("context rewrite applied (new theme/copy; structure kept).");
+    warnings.push(`context rewrite applied (new theme/copy; structure kept; ${rewritten.size} file(s)).`);
     return { codeBundle: candidate, usedAi: true, warnings };
   }
   warnings.push("context rewrite failed; using the original (un-rethemed) capsule code.");

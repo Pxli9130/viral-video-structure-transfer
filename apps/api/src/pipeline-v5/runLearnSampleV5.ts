@@ -14,6 +14,7 @@ import { runGen1TemplateReconstruction } from "./runGen1TemplateReconstruction.j
 import { validateTemplateCapsule } from "./validateTemplateCapsule.js";
 import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
 import { runGen1CapsuleGemini } from "./runGen1CapsuleGemini.js";
+import { runGen1ChunkedCapsule } from "./runGen1ChunkedCapsule.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
 import { runSceneRecipeVlm } from "./runSceneRecipeVlm.js";
@@ -167,16 +168,24 @@ export async function runLearnSampleV5(
     const frames = opts.storageRoot ? await readSectionFrames(evidence, sectionMeta, opts.storageRoot, 6) : [];
     const renderProbe = (cb: v5.RemotionTemplateCapsule["codeBundle"], fixture: Record<string, unknown>) =>
       renderCapsuleStill({ capsule: { ...templateCapsule, codeBundle: cb, fixtures: { ...templateCapsule.fixtures, neutralFixture: fixture } }, boundProps: fixture, aspectRatio: "9:16" }).then((r) => ({ ok: r.ok, error: r.error, warnings: r.warnings }));
-    const g = await runGen1CapsuleGemini({
-      deterministic: templateCapsule,
-      evidence,
-      videoPath: opts.sampleVideoPath,
-      frames,
-      visionModel: opts.capsuleCodegenVision,
-      repairModel: opts.capsuleCodegenModel ?? undefined,
-      renderProbe,
-      maxAttempts: 3
+    const singleCall = () => runGen1CapsuleGemini({
+      deterministic: templateCapsule, evidence, videoPath: opts.sampleVideoPath, frames,
+      visionModel: opts.capsuleCodegenVision as VisionCodegenFn, repairModel: opts.capsuleCodegenModel ?? undefined, renderProbe, maxAttempts: 3
     });
+    // Long videos: Gemini reliably reconstructs only ~30s per call (longer → truncated → black tail). Split
+    // at scene cuts into ≤CHUNK_MAX_SEC chunks, reconstruct each, stitch. Fall back to one whole-video call.
+    const totalDur = evidence.shots?.length ? evidence.shots[evidence.shots.length - 1].endSec : templateCapsule.timingSignature.durationSec;
+    const chunkTrigger = Number(process.env.CHUNK_TRIGGER_SEC ?? 34);
+    let g: Awaited<ReturnType<typeof runGen1CapsuleGemini>>;
+    if (opts.sampleVideoPath && totalDur > chunkTrigger) {
+      g = await runGen1ChunkedCapsule({
+        deterministic: templateCapsule, evidence, videoPath: opts.sampleVideoPath,
+        visionModel: opts.capsuleCodegenVision, repairModel: opts.capsuleCodegenModel ?? undefined, renderProbe
+      });
+      if (!g.usedAi) { warnings.push("chunked Gen1 produced no AI code; retrying as a single whole-video call"); g = await singleCall(); }
+    } else {
+      g = await singleCall();
+    }
     capsuleCodegen = { usedAi: g.usedAi, compilePassed: g.validation.compilePassed, renderPreviewPassed: g.validation.renderPreviewPassed, noCopyPassed: g.validation.noCopyPassed };
     if (g.usedAi && g.capsule) {
       templateCapsule = g.capsule; // ADOPT the full Gemini capsule (code is bible)

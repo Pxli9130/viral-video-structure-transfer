@@ -23,15 +23,54 @@ export interface Gen1CapsuleGeminiInput {
   maxAttempts?: number;
 }
 
+/** One "missing 素材" the Remotion code can't draw itself — AIGC fills it from this description. */
+export interface AssetPlanEntry {
+  key: string;
+  mediaKind?: "image" | "video";
+  description?: string;
+  aigcPrompt?: string;
+  motion?: string;
+}
+
 export interface Gen1CapsuleGeminiResult {
   usedAi: boolean;
   capsule?: v5.RemotionTemplateCapsule;
   sceneRecipes?: v5.SceneVisualRecipeV5[];
   knowledgeElements?: unknown[];
   selfReview?: unknown;
+  /** Per-asset AIGC plan keyed to the code's actual asset variables (assets.<key>). */
+  assetPlan?: AssetPlanEntry[];
   validation: { compilePassed: boolean; renderPreviewPassed: boolean; noCopyPassed: boolean };
   warnings: string[];
   raw?: string;
+}
+
+/** Turn the model's assetPlan into TemplateSlots keyed to the code's asset vars (optionally prefixed for
+ *  per-chunk namespacing). kind is mapped into IMAGE_SLOTS so the existing fill path picks them up; the
+ *  real image-vs-video intent is carried by mediaKind (Seedance fills mediaKind="video"). */
+export function assetPlanToSlots(plan: AssetPlanEntry[], keyPrefix = ""): v5.TemplateSlot[] {
+  const seen = new Set<string>();
+  const slots: v5.TemplateSlot[] = [];
+  for (const e of plan) {
+    if (!e || typeof e.key !== "string" || !e.key.trim()) continue;
+    const fullKey = keyPrefix + e.key.trim();
+    if (seen.has(fullKey)) continue;
+    seen.add(fullKey);
+    const mediaKind: "image" | "video" = e.mediaKind === "video" ? "video" : "image";
+    slots.push({
+      id: fullKey,
+      kind: mediaKind === "video" ? "background_image" : "product_image",
+      required: true,
+      originalRole: (e.description ?? "footage").slice(0, 60),
+      replacementPolicy: "aigc_generate",
+      propPath: `assets.${fullKey}`,
+      description: e.description,
+      mediaKind,
+      aigcPrompt: e.aigcPrompt,
+      motionHint: e.motion
+    });
+  }
+  return slots;
 }
 
 /** Compact deterministic-evidence JSON fed to the model as ground truth. */
@@ -79,6 +118,7 @@ Return ONLY valid JSON (no markdown, no code fences, no prose) matching this top
     "propsSchema": {}, "slotSchema": [], "timingSignature": {}, "motionSignature": {},
     "assetRecipes": [], "audioRecipes": [], "fixtures": { "neutralFixture": {}, "exampleThemeFixture": {} },
     "safety": {}, "quality": {} },
+  "assetPlan": [],
   "sceneRecipes": [], "knowledgeElements": [],
   "selfReview": { "fidelityRisks": [], "compileRisks": [], "safetyRisks": [], "missingEvidence": [] } }
 
@@ -88,7 +128,10 @@ signature (so our renderer can mount it — you MAY ignore the props and hardcod
   export const TemplateFromSample = ({ assets = {}, copy = {}, audio = {}, theme = "", palette = PALETTE }) => { ... };
 
 The code must: (1) cover the full duration with no gaps; (2) one Sequence per detected scene; (3) use
-SECTION-LOCAL frame progress for animation; (4) always render an opaque full-bleed background; (5) include
+SECTION-LOCAL frame progress for animation; (4) always render an opaque full-bleed background WHOSE
+LIGHTNESS MATCHES THE SOURCE — if the source background is light / white / high-key, bake a LIGHT
+background + LIGHT PALETTE (e.g. white/off-white) and do NOT default to a dark background; if the source
+is dark, keep it dark. Get the overall light-vs-dark right per scene; (5) include
 real motion throughout each scene (not a 0.3s intro then static); (6) use SCENE-SPECIFIC transitions; (7)
 scene-specific text anchor + animation matching the video; stable keys; no CSS transitions for frame-driven
 motion; use optional chaining + fallbacks so it never crashes.
@@ -97,14 +140,22 @@ FIDELITY: do NOT collapse all scenes to one layout; do NOT default to a generic 
 unless the source truly looks that way. Each source scene should have distinct layout/motion/transition/
 text behavior based on what you SEE in the video.
 
-RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to text only. If a scene has
-a BACKGROUND VIDEO / live-action footage, reconstruct it as <OffthreadVideo src={assets.bgVideo?.src}/>
-(or a placeholder full-bleed motion layer when no asset). If it has PHOTOS / product / b-roll that pan or
-zoom, reconstruct them as <Img src={assets.clip1?.src}/> with the same camera move (ken burns / pan).
-Layer text OVER the footage like the source does. Every distinct image/footage layer you see MUST become
-its own asset slot in slotSchema (kind "image" or "video", propPath assets.<id>) so it can be filled —
-e.g. assets.bgVideo, assets.clip1, assets.clip2, assets.heroImage, assets.logo. A montage of clips ->
-multiple Sequences each with its own <Img>/<OffthreadVideo> layer, NOT a single text card.
+RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to text only. The on-screen
+text / shapes / gradients you CAN draw in code yourself. But the real PIXEL CONTENT you canNOT draw —
+live-action footage, movie clips, photos, b-roll, product shots — these are "MISSING 素材" (assets the
+code can't render alone). For EACH of those, render an asset-backed layer with a STABLE asset key:
+  - MOVING footage / background video / movie clips  -> <OffthreadVideo src={assets.<key>?.src}/>  (mediaKind "video")
+  - STATIC photo / product still that pans or zooms   -> <Img src={assets.<key>?.src}/> with the camera move (mediaKind "image")
+Layer text OVER the footage like the source does. A montage of clips -> multiple Sequences, each with its
+own <OffthreadVideo>/<Img> layer keyed to a DISTINCT asset (assets.clip1, assets.clip2, …), NOT one text card.
+
+ASSET KEY RULES (critical — these keys are how we fill the footage with AIGC later):
+- Read each asset as assets.<key>?.src  OR assets['<key>'].  Use simple, unique, descriptive keys.
+- DO NOT invent a getAsset()/dummy helper and DO NOT fall back to any remote URL (no dummyimage.com, no
+  http/https) — headless rendering CANNOT fetch remote URLs. If an asset is absent, fall back to a SOLID
+  colour from palette (e.g. style={{ backgroundColor: palette[0] }}) — never a remote image.
+- For EVERY asset key you read in the code, you MUST add a matching entry to the top-level "assetPlan"
+  (below) describing what footage goes there, so we can generate it.
 
 DO NOT REPRODUCE PLATFORM CHROME / WATERMARKS. Skip entirely (do not draw, do not make a slot): any
 platform watermark or badge (小红书 / Xiaohongshu / RED / 抖音 / Douyin / TikTok / Instagram / 微信 /
@@ -113,6 +164,13 @@ like-share end-cards, QR codes, and any "关注我" / "扫码" overlays. These a
 reconstruct only the actual ad. If the LAST scene is just such a follow/handle card, omit that scene.
 
 Also extract (for a later content-modification step):
+- assetPlan[]: ONE entry for EVERY asset key your code reads (the "missing 素材" — footage/photos the code
+  can't draw). Each: { "key":"<EXACT key as read in code, e.g. clip1>", "mediaKind":"video"|"image",
+  "description":"<what this footage shows in the source — subject, action, setting>",
+  "aigcPrompt":"<a ready-to-use text-to-VIDEO (for video) or text-to-IMAGE (for image) prompt that RECREATES
+    this kind of footage in a fresh, copyright-safe, theme-neutral way — describe subject/action/camera/
+    lighting/style, 9:16 vertical, no on-image text, no watermark>", "motion":"<camera move e.g. slow push-in>" }.
+  The "key" MUST exactly match what the code reads (assets.<key>). Every <OffthreadVideo>/<Img> asset key -> one entry.
 - sceneRecipes[]: { id,startSec,endSec,role, visualSummary, layout:{subjectAnchor,textAnchor,depthLayers[]},
   cameraMove:{type,intensity,curve}, transitionIn:{type,durationSec,direction}, transitionOut,
   textAnimation:{type,split,staggerFrames}, imageTreatment:{type,vignette,grain},
@@ -183,10 +241,14 @@ function mergeCapsule(det: v5.RemotionTemplateCapsule, g: Record<string, unknown
   };
   const slotSchema = asArray(gc.slotSchema) as v5.TemplateSlot[] | undefined;
   const validSlots = slotSchema?.every((s) => s && typeof s.id === "string" && typeof s.propPath === "string") ? slotSchema : undefined;
+  // Prefer the assetPlan keyed to the code's REAL asset vars (assets.<key>) — this is what lets AIGC fill
+  // the footage the code references. Falls back to Gemini's slotSchema, then deterministic.
+  const assetPlan = asArray(g.assetPlan) as AssetPlanEntry[] | undefined;
+  const assetSlots = assetPlan?.length ? assetPlanToSlots(assetPlan) : undefined;
   const capsule: v5.RemotionTemplateCapsule = {
     ...det,
     codeBundle, // CANONICAL — Gemini's code, untouched
-    slotSchema: validSlots ?? det.slotSchema,
+    slotSchema: assetSlots ?? validSlots ?? det.slotSchema,
     propsSchema: asObject(gc.propsSchema) ?? det.propsSchema,
     timingSignature: (asObject(gc.timingSignature) as unknown as v5.RemotionTemplateCapsule["timingSignature"]) ?? det.timingSignature,
     motionSignature: (asObject(gc.motionSignature) as unknown as v5.RemotionTemplateCapsule["motionSignature"]) ?? det.motionSignature,
@@ -270,6 +332,7 @@ export async function runGen1CapsuleGemini(input: Gen1CapsuleGeminiInput): Promi
       sceneRecipes: (asArray(parsed.sceneRecipes) as v5.SceneVisualRecipeV5[]) ?? undefined,
       knowledgeElements: asArray(parsed.knowledgeElements),
       selfReview: asObject(parsed.selfReview),
+      assetPlan: (asArray(parsed.assetPlan) as AssetPlanEntry[]) ?? undefined,
       validation: { compilePassed: true, renderPreviewPassed: true, noCopyPassed },
       warnings,
       raw
