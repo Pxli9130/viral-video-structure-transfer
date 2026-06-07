@@ -25,6 +25,18 @@ function aspectRatioFrom(width: number, height: number): string {
   return `${width}:${height}`;
 }
 
+function bboxRegion(bbox: [number, number, number, number]): { x: number; y: number; w: number; h: number } {
+  return { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] };
+}
+
+function textRoleFromLayout(layoutRole: string | undefined): v5.TextEvidence["role"] {
+  const role = String(layoutRole ?? "").toLowerCase();
+  if (/cta|button|end/.test(role)) return "cta";
+  if (/subtitle|caption|lower/.test(role)) return "subtitle";
+  if (/title|headline|center/.test(role)) return "title";
+  return "other";
+}
+
 export interface EvidenceV5WrapOptions {
   /** Override width/height/fps when not present on the asset metadata. */
   width?: number;
@@ -65,6 +77,17 @@ export function toEvidenceTimelineV5(
   });
 
   const textEvidence: v5.TextEvidence[] = [];
+  for (const t of timeline.typographyEvidence ?? []) {
+    if (t.text && t.text.trim()) {
+      textEvidence.push({
+        id: t.textLayerId || `ocr_${textEvidence.length + 1}`,
+        timeSec: t.timeSec,
+        text: t.text,
+        region: bboxRegion(t.bboxNorm),
+        role: textRoleFromLayout(t.layoutRole)
+      });
+    }
+  }
   for (const s of timeline.shots ?? []) {
     for (const t of s.ocrText ?? []) {
       if (t && t.trim()) {
@@ -104,7 +127,8 @@ export function toEvidenceTimelineV5(
   const motionEvidence: v5.MotionEvidence = {
     intensityCurve: intensityCurve.length ? intensityCurve : undefined,
     peakMomentsSec: peakMomentsSec.length ? peakMomentsSec : undefined,
-    cutDensity
+    cutDensity,
+    movingObjectCandidates: timeline.movingObjectCandidates?.length ? timeline.movingObjectCandidates : undefined
   };
 
   // Recommended video input policy (Stage 3): short videos -> whole-video low fps; add a detail pass
@@ -142,5 +166,11 @@ export function toEvidenceTimelineV5(
   };
   if (textEvidence.length) out.textEvidence = textEvidence;
   if (typeof timeline.contactSheetPath === "string" && timeline.contactSheetPath) out.contactSheetRef = timeline.contactSheetPath;
+  if (timeline.movingObjectCandidates?.length) out.movingObjectCandidates = timeline.movingObjectCandidates;
+  if (timeline.typographyEvidence?.length) out.typographyEvidence = timeline.typographyEvidence;
+  if (timeline.visualElementGraph?.elements?.length) out.visualElementGraph = timeline.visualElementGraph;
+  if (timeline.motionAtoms?.length) out.motionAtoms = timeline.motionAtoms;
+  if (timeline.detectedStyle) out.detectedStyle = timeline.detectedStyle;
+  if (timeline.audioStructure) out.audioStructure = timeline.audioStructure;
   return out;
 }

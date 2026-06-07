@@ -181,21 +181,24 @@ export async function runLearnSampleV5(
     const frames = opts.storageRoot ? await readSectionFrames(evidence, sectionMeta, opts.storageRoot, 6) : [];
     const renderProbe = (cb: v5.RemotionTemplateCapsule["codeBundle"], fixture: Record<string, unknown>) =>
       renderCapsuleStill({ capsule: { ...templateCapsule, codeBundle: cb, fixtures: { ...templateCapsule.fixtures, neutralFixture: fixture } }, boundProps: fixture, aspectRatio: "9:16" }).then((r) => ({ ok: r.ok, error: r.error, warnings: r.warnings }));
-    const singleCall = () => runGen1CapsuleGemini({
-      deterministic: templateCapsule, evidence, videoPath: opts.sampleVideoPath, frames,
-      visionModel: opts.capsuleCodegenVision as VisionCodegenFn, repairModel: opts.capsuleCodegenModel ?? undefined, renderProbe, maxAttempts: 3
-    });
     // Long videos: Gemini reliably reconstructs only ~30s per call (longer → truncated → black tail). Split
-    // at scene cuts into ≤CHUNK_MAX_SEC chunks, reconstruct each, stitch. Fall back to one whole-video call.
+    // at scene cuts into ≤CHUNK_MAX_SEC chunks; if chunked AI fails, keep deterministic fallback.
     const totalDur = evidence.shots?.length ? evidence.shots[evidence.shots.length - 1].endSec : templateCapsule.timingSignature.durationSec;
     const chunkTrigger = Number(process.env.CHUNK_TRIGGER_SEC ?? 34);
+    const singleCall = () => runGen1CapsuleGemini({
+      deterministic: templateCapsule, evidence, videoPath: opts.sampleVideoPath, frames,
+      visionModel: opts.capsuleCodegenVision as VisionCodegenFn, repairModel: opts.capsuleCodegenModel ?? undefined, renderProbe, maxAttempts: 3,
+      targetDurationSec: totalDur // single-call must cover the full source duration (no early end)
+    });
     let g: Awaited<ReturnType<typeof runGen1CapsuleGemini>>;
     if (opts.sampleVideoPath && totalDur > chunkTrigger) {
       g = await runGen1ChunkedCapsule({
         deterministic: templateCapsule, evidence, videoPath: opts.sampleVideoPath,
         visionModel: opts.capsuleCodegenVision, repairModel: opts.capsuleCodegenModel ?? undefined, renderProbe
       });
-      if (!g.usedAi) { warnings.push("chunked Gen1 produced no AI code; retrying as a single whole-video call"); g = await singleCall(); }
+      if (!g.usedAi) {
+        warnings.push("chunked Gen1 produced no AI code; not retrying as a single whole-video call because long-video Gemini inputs must stay within CHUNK_MAX_SEC.");
+      }
     } else {
       g = await singleCall();
     }

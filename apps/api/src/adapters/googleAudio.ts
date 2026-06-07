@@ -196,13 +196,17 @@ export class GoogleAudioAdapter {
     });
     const parts = data.candidates?.[0]?.content?.parts ?? [];
     const audio = decodeInlineAudio(parts.find((part) => part.inlineData?.data));
+    const textParts = parts
+      .map((part) => part.text?.trim())
+      .filter((text): text is string => Boolean(text));
     const extension = extensionFromMime(audio.mimeType, "mp3");
     return this.writeGeneratedAudio("google_lyria_music", "aigc_music", audio.bytes, extension, {
       modelId: this.musicModelId,
       mimeType: audio.mimeType,
       promptHash: promptHash(prompt),
       requestedDurationSec: input.durationSec,
-      generatedDurationSec: duration
+      generatedDurationSec: duration,
+      textParts: textParts.slice(0, 4)
     });
   }
 

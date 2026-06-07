@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v5 } from "@vvst/shared";
-import { renderSemaphore, RENDER_TABS_PER_JOB } from "./concurrency.js";
+import { renderSemaphore, RENDER_TABS_PER_JOB, RENDER_TIMEOUT_MS } from "./concurrency.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
@@ -159,7 +159,7 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
       ]);
       if (!bundleLocation) bundleLocation = await bundle({ entryPoint });
       const composition = await selectComposition({ serveUrl: bundleLocation, id: "V5Final", inputProps });
-      await renderMedia({ composition, serveUrl: bundleLocation, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB });
+      await renderMedia({ composition, serveUrl: bundleLocation, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB, timeoutInMilliseconds: RENDER_TIMEOUT_MS });
     });
 
     let finalMp4 = remotionMp4;

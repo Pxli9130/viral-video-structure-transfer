@@ -390,7 +390,7 @@ export const generationRequestV5Schema = {
           properties: {
             mode: { enum: ["auto_on", "off"] },
             imageFill: { enum: ["aigc", "procedural", "off"] },
-            audioFill: { enum: ["procedural", "off"] },
+            audioFill: { enum: ["aigc", "procedural", "off"] },
             textFill: { enum: ["llm", "brief", "off"] }
           }
         },

@@ -152,6 +152,7 @@ export type AigcMaterialProviderId =
   | "volcengine_seedream"
   | "seedance_2_0"
   | "ark_seedance_provider_stub"
+  | "happyhorse_r2v"
   | "image_provider"
   | "copy_provider"
   | "none";

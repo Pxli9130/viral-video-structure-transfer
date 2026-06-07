@@ -71,8 +71,12 @@ export function nextSeq(): number {
  * tabs (each render call opens up to `concurrency` tabs; Remotion defaults to ~cpus/2 ≈ 8, which would blow
  * memory). Keep RENDER_CONCURRENCY × RENDER_TABS_PER_JOB tabs within the RAM budget (~1-1.5GB/tab).
  */
-export const renderSemaphore = new Semaphore(Number(process.env.RENDER_CONCURRENCY ?? 3));
+export const renderSemaphore = new Semaphore(Number(process.env.RENDER_CONCURRENCY ?? 2));
 export const RENDER_TABS_PER_JOB = Math.max(1, Number(process.env.RENDER_TABS_PER_JOB ?? 2));
+/** delayRender timeout (ms). Raised well above Remotion's 30s default: <OffthreadVideo> assets are fetched
+ *  from the in-process server, and under concurrent renders those video fetches can take a while — a 30s
+ *  timeout trips delayRender and crashes the compositor. */
+export const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS ?? 120000);
 
 /**
  * SHARED, process-wide cap on simultaneous external AIGC calls (Seedance t2v + Gemini image). Without this,

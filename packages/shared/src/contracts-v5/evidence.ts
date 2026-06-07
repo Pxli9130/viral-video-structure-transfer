@@ -10,6 +10,8 @@
 
 import type { AspectRatioV5, VideoInputPolicyV5 } from "./common.js";
 
+export type EvidenceBBoxNorm = [number, number, number, number];
+
 export interface EvidenceVideoMeta {
   durationSec: number;
   width: number;
@@ -70,6 +72,59 @@ export interface MotionEvidence {
   intensityCurve?: Array<{ t: number; value: number }>;
   peakMomentsSec?: number[];
   cutDensity?: "low" | "medium" | "high";
+  /** Existing deterministic foreground-motion windows from the V4 analyzer. Evidence-only. */
+  movingObjectCandidates?: MovingObjectCandidateEvidence[];
+}
+
+export interface MovingObjectCandidateEvidence {
+  startSec: number;
+  endSec: number;
+  confidence: number;
+  region?: EvidenceBBoxNorm;
+  motionEnergy?: number;
+}
+
+export interface TypographyEvidenceV5 {
+  textLayerId: string;
+  timeSec: number;
+  shotId?: string;
+  text?: string;
+  bboxNorm: EvidenceBBoxNorm;
+  layoutRole: string;
+  colorRole: string;
+  fontSizeRatio: number;
+  animationHint: string;
+  beatAligned?: boolean;
+  confidence?: number;
+  providerSource?: string;
+}
+
+export interface VisualElementNodeV5 {
+  id: string;
+  family: string;
+  timeRangeSec: [number, number];
+  bboxTrackNorm?: Array<{ t: number; bbox: EvidenceBBoxNorm }>;
+  pointTracks?: Array<{ t: number; points: Array<[number, number]> }>;
+  centerTrajectory?: Array<[number, number]>;
+  areaRatioCurve?: number[];
+  orientationCurve?: number[] | null;
+  motionPattern?: string;
+  sizeClass?: string;
+  positionClass?: string;
+  appearance?: object;
+  text?: object;
+  evidence?: { frameIds?: Array<string | undefined>; detector?: string; confidence?: number };
+  providerSource?: string;
+}
+
+export interface VisualElementGraphV5 {
+  schemaVersion: string;
+  fpsSampled?: number;
+  elementCount?: number;
+  heavyTracker?: string;
+  elements: VisualElementNodeV5[];
+  shots?: object[];
+  globalStyle?: object;
 }
 
 export interface EvidenceTimelineV5 {
@@ -84,5 +139,12 @@ export interface EvidenceTimelineV5 {
   motionEvidence?: MotionEvidence;
   contactSheetRef?: string;
   recommendedVideoInputPolicy?: VideoInputPolicyV5;
+  /** Rich deterministic evidence forwarded from the V4 analyzer. Evidence-only; never reusable content. */
+  movingObjectCandidates?: MovingObjectCandidateEvidence[];
+  typographyEvidence?: TypographyEvidenceV5[];
+  visualElementGraph?: VisualElementGraphV5;
+  motionAtoms?: object[];
+  detectedStyle?: object;
+  audioStructure?: object;
   warnings: string[];
 }

@@ -72,7 +72,7 @@ export function V5Dashboard() {
   const [templateId, setTemplateId] = useState<string>(""); // "" = latest learned capsule
   const [aigcOn, setAigcOn] = useState(true);
   const [imageFill, setImageFill] = useState<"aigc" | "procedural" | "off">("aigc");
-  const [audioFill, setAudioFill] = useState<"procedural" | "off">("procedural");
+  const [audioFill, setAudioFill] = useState<"aigc" | "procedural" | "off">("aigc");
   const [textFill, setTextFill] = useState<"llm" | "brief" | "off">("llm");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [reviseTheme, setReviseTheme] = useState("");
@@ -329,7 +329,7 @@ export function V5Dashboard() {
                     <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 12, color: "#9fb3d1", flexWrap: "wrap" }}>
                       <label>画面 <select value={imageFill} onChange={(e) => setImageFill(e.target.value as typeof imageFill)} style={{ background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6", padding: "2px 6px" }}><option value="aigc">AIGC 生成</option><option value="procedural">程序化设计卡</option><option value="off">关闭</option></select></label>
                       <label>文案 <select value={textFill} onChange={(e) => setTextFill(e.target.value as typeof textFill)} style={{ background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6", padding: "2px 6px" }}><option value="llm">LLM 文案</option><option value="brief">直接用 brief</option><option value="off">关闭</option></select></label>
-                      <label>音频 <select value={audioFill} onChange={(e) => setAudioFill(e.target.value as typeof audioFill)} style={{ background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6", padding: "2px 6px" }}><option value="procedural">程序化节拍床</option><option value="off">关闭</option></select></label>
+                      <label>音频 <select value={audioFill} onChange={(e) => setAudioFill(e.target.value as typeof audioFill)} style={{ background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6", padding: "2px 6px" }}><option value="aigc">Google Lyria</option><option value="procedural">程序化节拍床</option><option value="off">关闭</option></select></label>
                     </div>
                   )}
                 </div>
