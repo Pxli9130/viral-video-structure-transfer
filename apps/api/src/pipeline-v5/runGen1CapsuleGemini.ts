@@ -21,6 +21,9 @@ export interface Gen1CapsuleGeminiInput {
   repairModel?: Gen1ModelFn;
   renderProbe: (codeBundle: v5.RemotionTemplateCapsule["codeBundle"], neutralFixture: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
   maxAttempts?: number;
+  /** Seconds this reconstruction MUST cover end-to-end (chunk span / source duration). If the returned code
+   *  covers materially less, a repair is triggered to extend it — prevents "ends too soon" / black tails. */
+  targetDurationSec?: number;
 }
 
 /** One "missing 素材" the Remotion code can't draw itself — AIGC fills it from this description. */
@@ -30,6 +33,8 @@ export interface AssetPlanEntry {
   description?: string;
   aigcPrompt?: string;
   motion?: string;
+  /** Whether this block is a good candidate for a USER-SUPPLIED asset (hero/product/logo/main subject). */
+  userAssetSlot?: boolean;
 }
 
 export interface Gen1CapsuleGeminiResult {
@@ -67,23 +72,133 @@ export function assetPlanToSlots(plan: AssetPlanEntry[], keyPrefix = ""): v5.Tem
       description: e.description,
       mediaKind,
       aigcPrompt: e.aigcPrompt,
-      motionHint: e.motion
+      motionHint: e.motion,
+      userAssetSlot: e.userAssetSlot === true
     });
   }
   return slots;
 }
 
+/** Static asset keys the code actually reads: assets.<key> / assets['<key>'] / assets[`<key>`]. */
+export function extractAssetKeys(code: string): string[] {
+  const keys = new Set<string>();
+  for (const m of code.matchAll(/assets\s*\.\s*([a-zA-Z_$][\w$]*)/g)) keys.add(m[1]);
+  for (const m of code.matchAll(/assets\s*\[\s*[`'"]([a-zA-Z_$][\w$]*)[`'"]\s*\]/g)) keys.add(m[1]);
+  for (const k of ["src", "length", "map", "filter", "forEach", "keys", "values", "entries", "mediaKind", "hasOwnProperty"]) keys.delete(k);
+  return [...keys];
+}
+
+/** Ensure EVERY asset key the code reads has a slot, so AIGC actually fills it. The model often
+ *  under-declares its assetPlan (e.g. code reads assets.card1..card8 but only 4 entries) -> the extra
+ *  <Img>/<OffthreadVideo> render EMPTY. This adds a generic IMAGE slot for any read-but-unplanned key. */
+export function ensureSlotsCoverCode(slots: v5.TemplateSlot[], code: string, keyPrefix = ""): v5.TemplateSlot[] {
+  const have = new Set(slots.map((s) => s.id));
+  const out = [...slots];
+  for (const key of extractAssetKeys(code)) {
+    const fullKey = keyPrefix + key;
+    if (have.has(fullKey)) continue;
+    have.add(fullKey);
+    out.push({
+      id: fullKey,
+      kind: "product_image",
+      required: true,
+      originalRole: "footage",
+      replacementPolicy: "aigc_generate",
+      propPath: `assets.${fullKey}`,
+      description: `auto-detected footage block (${key})`,
+      mediaKind: "image",
+      aigcPrompt: "a clean, on-brand photographic visual for the ad scene, 9:16 vertical, no on-image text, no watermark",
+      userAssetSlot: false
+    });
+  }
+  return out;
+}
+
 /** Compact deterministic-evidence JSON fed to the model as ground truth. */
 export function buildEvidenceJson(ev: v5.EvidenceTimelineV5): string {
   const me = (ev.motionEvidence ?? {}) as Record<string, unknown>;
+  const sample = <T>(items: T[] | undefined, limit: number): T[] | undefined => {
+    if (!items?.length) return undefined;
+    if (items.length <= limit) return items;
+    if (limit <= 1) return [items[0]];
+    const out: T[] = [];
+    for (let i = 0; i < limit; i++) {
+      out.push(items[Math.round((i * (items.length - 1)) / (limit - 1))]);
+    }
+    return out;
+  };
+  const bboxCenter = (bbox: [number, number, number, number]): [number, number] => [
+    +(bbox[0] + bbox[2] / 2).toFixed(3),
+    +(bbox[1] + bbox[3] / 2).toFixed(3)
+  ];
+  const visualElements = sample(ev.visualElementGraph?.elements, 24)?.map((el) => ({
+    id: el.id,
+    family: el.family,
+    timeRangeSec: el.timeRangeSec,
+    motionPattern: el.motionPattern,
+    positionClass: el.positionClass,
+    sizeClass: el.sizeClass,
+    bboxTrackNorm: sample(el.bboxTrackNorm, 8),
+    pointTracks: sample(el.pointTracks, 5),
+    centerTrajectory: sample(el.centerTrajectory, 8),
+    providerSource: el.providerSource ?? el.evidence?.detector,
+    confidence: el.evidence?.confidence
+  }));
+  const movingTextTracks = (ev.visualElementGraph?.elements ?? [])
+    .filter((el) => /text|typography|subtitle|caption|ocr/i.test(el.family) && (el.bboxTrackNorm?.length ?? 0) >= 2)
+    .map((el) => {
+      const track = sample(el.bboxTrackNorm, 8) ?? [];
+      const first = track[0]?.bbox;
+      const last = track[track.length - 1]?.bbox;
+      const firstCenter = first ? bboxCenter(first) : undefined;
+      const lastCenter = last ? bboxCenter(last) : undefined;
+      return {
+        id: el.id,
+        timeRangeSec: el.timeRangeSec,
+        bboxTrackNorm: track,
+        firstCenter,
+        lastCenter,
+        deltaNorm: firstCenter && lastCenter ? [+(lastCenter[0] - firstCenter[0]).toFixed(3), +(lastCenter[1] - firstCenter[1]).toFixed(3)] : undefined
+      };
+    })
+    .filter((track) => !track.deltaNorm || Math.abs(track.deltaNorm[0]) >= 0.015 || Math.abs(track.deltaNorm[1]) >= 0.015)
+    .slice(0, 12);
   return JSON.stringify({
-    durationSec: ev.shots?.length ? ev.shots[ev.shots.length - 1].endSec : undefined,
-    fps: 30,
-    aspectRatio: "9:16",
+    durationSec: ev.video?.durationSec ?? (ev.shots?.length ? ev.shots[ev.shots.length - 1].endSec : undefined),
+    fps: ev.video?.fps ?? 30,
+    aspectRatio: ev.video?.aspectRatio ?? "9:16",
+    videoInputPolicy: ev.recommendedVideoInputPolicy,
     shots: (ev.shots ?? []).map((s) => ({ id: s.id, startSec: s.startSec, endSec: s.endSec, summary: (s as { summary?: string }).summary })),
     keyFrames: (ev.keyFrames ?? []).map((k) => ({ timeSec: k.timeSec })),
+    textEvidence: sample(ev.textEvidence, 32)?.map((t) => ({ id: t.id, timeSec: t.timeSec, role: t.role, region: t.region, text: t.text })),
+    typographyEvidence: sample(ev.typographyEvidence, 24)?.map((t) => ({
+      id: t.textLayerId,
+      timeSec: t.timeSec,
+      text: t.text,
+      bboxNorm: t.bboxNorm,
+      layoutRole: t.layoutRole,
+      fontSizeRatio: t.fontSizeRatio,
+      animationHint: t.animationHint,
+      confidence: t.confidence
+    })),
     audio: { bpm: ev.audioEvidence?.bpm, beatGridSec: (ev.audioEvidence?.beatGridSec ?? []).slice(0, 32), onsetsSec: (ev.audioEvidence?.onsetsSec ?? []).slice(0, 32) },
-    motion: { peakMomentsSec: (me.peakMomentsSec as number[] | undefined)?.slice(0, 16), cutDensity: me.cutDensity }
+    motion: {
+      intensityCurve: sample(me.intensityCurve as Array<{ t: number; value: number }> | undefined, 32),
+      peakMomentsSec: (me.peakMomentsSec as number[] | undefined)?.slice(0, 16),
+      cutDensity: me.cutDensity,
+      movingObjectCandidates: sample(ev.movingObjectCandidates ?? (me.movingObjectCandidates as v5.MovingObjectCandidateEvidence[] | undefined), 16),
+      movingTextTracks,
+      motionAtoms: sample(ev.motionAtoms, 12)
+    },
+    visualElementGraph: visualElements?.length
+      ? {
+          fpsSampled: ev.visualElementGraph?.fpsSampled,
+          elementCount: ev.visualElementGraph?.elementCount,
+          elements: visualElements
+        }
+      : undefined,
+    detectedStyle: ev.detectedStyle,
+    audioStructure: ev.audioStructure
   });
 }
 
@@ -91,12 +206,14 @@ export function buildGen1CapsulePrompt(evidenceJson: string): string {
   return `You are a senior Remotion v4 motion-design engineer and creative reconstruction agent.
 
 You are given:
-1. The full source video as video input.
+1. The attached video input. For short sources this may be the whole source video; for long sources this is
+   one source chunk capped by CHUNK_MAX_SEC (default 30s). Reconstruct only the attached clip/span.
 2. Deterministic evidence extracted from the same video (duration, fps, aspect ratio, shot timeline,
-   keyframes, beat grid / audio energy, motion intensity).
+   keyframes, beat grid / audio energy, motion intensity, OCR/text regions, visual element tracks,
+   moving-object regions, and motion atoms when available).
 
-Your task: WATCH the entire video and write a complete Remotion v4 component that RE-CREATES this exact
-video as faithfully as possible — same look, same layout, same composition, same camera movement, same
+Your task: WATCH the attached video and write a complete Remotion v4 component that RE-CREATES this exact
+clip as faithfully as possible — same look, same layout, same composition, same camera movement, same
 transitions, same kinetic typography, same colour grading, same motion over time, same beat timing. Be
 ambitious and detailed. If the source uses 3D (twisting ribbon, extruded text, particles), build real 3D
 with @remotion/three + three + @react-three/fiber. If it uses kinetic text, build it (programmatic
@@ -104,7 +221,7 @@ with @remotion/three + three + @react-three/fiber. If it uses kinetic text, buil
 is the faithful reconstruction; a later step changes the text/theme.
 
 This is NOT a generic ad template, NOT a summary, NOT a storyboard, NOT a static card renderer. It must
-visibly look like THIS source video when rendered.
+visibly look like THIS attached clip when rendered.
 
 Allowed imports: react, remotion, @remotion/three, three, @react-three/fiber. Use Remotion v4 APIs
 (AbsoluteFill, Sequence, Img, Audio, interpolate, spring, Easing, useCurrentFrame, useVideoConfig).
@@ -143,6 +260,11 @@ text behavior based on what you SEE in the video.
 MOTION FIDELITY — reproduce each element's EXACT motion with FRAME-DRIVEN animation (useCurrentFrame),
 NEVER a static snapshot. If a scene's textAnimation is continuous_scroll/marquee/ticker, the code MUST
 actually animate that text — a static label is WRONG. For EVERY moving element, reproduce:
+- EVIDENCE TRACKS: deterministic evidence may include textEvidence.region, typographyEvidence.bboxNorm,
+  motion.movingTextTracks, motion.movingObjectCandidates, visualElementGraph.elements[].bboxTrackNorm /
+  pointTracks / centerTrajectory, and motion.motionAtoms. Treat those as motion measurements from the
+  attached clip. If a bbox/point track changes x/y over time, implement that movement with frame-driven
+  interpolate() or equivalent math. Do not turn a moving tracked element into a fixed div.
 - TEXT MARQUEE / SCROLL: if a line of text scrolls horizontally and wraps (exits one edge, re-appears from
   the opposite edge), implement a CONTINUOUS, CONSTANT-SPEED loop driven by frame — e.g. a translateX that
   moves right-to-left and WRAPS modulo the total width so the text exits the left and re-enters from the
@@ -161,17 +283,34 @@ card / graphic / subject covers most of the frame width in the source (only smal
 so in your render — size with %/vw/vh or px derived from useVideoConfig().width, NOT tiny fixed pixels. Do
 not shrink prominent elements into small centered boxes.
 
-Infer all of this from THIS video — do not assume defaults, and do not hardcode any specific axis /
+Infer all of this from THIS attached clip — do not assume defaults, and do not hardcode any specific axis /
 direction / size unless the source actually shows it.
 
-RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to text only. The on-screen
-text / shapes / gradients you CAN draw in code yourself. But the real PIXEL CONTENT you canNOT draw —
-live-action footage, movie clips, photos, b-roll, product shots — these are "MISSING 素材" (assets the
-code can't render alone). For EACH of those, render an asset-backed layer with a STABLE asset key:
-  - MOVING footage / background video / movie clips  -> <OffthreadVideo src={assets.<key>?.src}/>  (mediaKind "video")
-  - STATIC photo / product still that pans or zooms   -> <Img src={assets.<key>?.src}/> with the camera move (mediaKind "image")
+RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to text only.
+DRAW IN CODE BY DEFAULT (it is FREE): all on-screen text, shapes, gradients, masks, kinetic typography,
+abstract motion graphics, particles, UI/data-viz, and any 3D you can build with @remotion/three — render
+these IN CODE. Do NOT create an asset / assetPlan entry for anything code can plausibly draw.
+Only the real PIXEL CONTENT you canNOT draw — live-action footage, movie clips, photos, b-roll, real
+product shots — are "MISSING 素材" (assets to fill later). For EACH of those, render an asset-backed layer
+with a STABLE asset key, and MINIMISE generated VIDEO (it is the most expensive step):
+  - DEFAULT to mediaKind "image": a STATIC photo / product still + a code-driven camera move (ken-burns /
+    pan / zoom / parallax) -> <Img src={assets.<key>?.src}/>. Use this whenever a still can carry the shot.
+  - mediaKind "video" ONLY when the real IN-FRAME MOTION is essential and un-drawable (live-action human/
+    object movement, a real moving camera over a real scene) -> <OffthreadVideo src={assets.<key>?.src}/>.
+    Never request a video for something a still + code motion, or pure code, could convey.
 Layer text OVER the footage like the source does. A montage of clips -> multiple Sequences, each with its
 own <OffthreadVideo>/<Img> layer keyed to a DISTINCT asset (assets.clip1, assets.clip2, …), NOT one text card.
+TEXT LINE BREAKS: never put a literal "\n" inside on-screen text (JSX renders it verbatim as the characters
+backslash-n). For a multi-line label use separate elements (<div>line1</div><div>line2</div>) or <br/>.
+TEXT CONTRAST (mandatory, readability): every text layer MUST have STRONG luminance contrast with whatever
+is directly behind it — near-WHITE text over dark areas, near-BLACK text over light areas. NEVER low-contrast
+(grey-on-grey, dark-grey on black, light-grey on white, mid-tone text on a mid-tone card). If text sits over
+footage / a photo / a coloured or mid-tone card, put a solid contrasting plate, a scrim, or a strong
+text-shadow behind it so it stays legible. When you drive text colour from palette[], pick the index that
+contrasts with that element's actual background — do not just use palette[1] everywhere.
+TEXT NO-OVERLAP: lay out distinct text blocks so they do NOT overlap each other — give each its own region
+(corners / thirds / safe margins) OR reveal them at DIFFERENT times via <Sequence>. Never stack two separate
+text blocks at the same coordinates so they render on top of each other.
 
 ASSET KEY RULES (critical — these keys are how we fill the footage with AIGC later):
 - Read each asset as assets.<key>?.src  OR assets['<key>'].  Use simple, unique, descriptive keys.
@@ -193,12 +332,16 @@ like-share end-cards, QR codes, and any "关注我" / "扫码" overlays. These a
 reconstruct only the actual ad. If the LAST scene is just such a follow/handle card, omit that scene.
 
 Also extract (for a later content-modification step):
-- assetPlan[]: ONE entry for EVERY asset key your code reads (the "missing 素材" — footage/photos the code
-  can't draw). Each: { "key":"<EXACT key as read in code, e.g. clip1>", "mediaKind":"video"|"image",
-  "description":"<what this footage shows in the source — subject, action, setting>",
+- assetPlan[]: ONE entry for EVERY asset key your code reads (the "missing 素材" — REAL footage/photos the
+  code can't draw; NOT things you drew in code). Each: { "key":"<EXACT key as read in code, e.g. clip1>",
+  "mediaKind":"video"|"image" (prefer "image" — only use "video" when in-frame motion is essential and
+  un-drawable, see above), "description":"<what this footage shows in the source — subject, action, setting>",
   "aigcPrompt":"<a ready-to-use text-to-VIDEO (for video) or text-to-IMAGE (for image) prompt that RECREATES
     this kind of footage in a fresh, copyright-safe, theme-neutral way — describe subject/action/camera/
-    lighting/style, 9:16 vertical, no on-image text, no watermark>", "motion":"<camera move e.g. slow push-in>" }.
+    lighting/style, 9:16 vertical, no on-image text, no watermark>", "motion":"<camera move e.g. slow push-in>",
+  "userAssetSlot": true|false (TRUE if this block is a natural place for the END USER to drop their OWN
+    asset later — the hero product shot, brand logo, main subject/spokesperson; FALSE for incidental b-roll/
+    texture/background that only needs to look right) }.
   The "key" MUST exactly match what the code reads (assets.<key>). Every <OffthreadVideo>/<Img> asset key -> one entry.
 - sceneRecipes[]: { id,startSec,endSec,role, visualSummary, layout:{subjectAnchor,textAnchor,depthLayers[]},
   cameraMove:{type,intensity,curve}, transitionIn:{type,durationSec,direction}, transitionOut,
@@ -221,20 +364,30 @@ Return only valid JSON.`;
  *  human-readable gaps that drive a single fidelity-repair. General — no per-video assumptions. */
 function motionFidelityGaps(code: string, sceneRecipes: Array<Record<string, unknown>>): string[] {
   const gaps: string[] = [];
+  const recipeText = sceneRecipes.map((r) => `${String(r?.visualSummary ?? "")} ${JSON.stringify(r?.layout ?? "")}`).join(" ");
   const wantsScroll = sceneRecipes.some((r) => {
     const ta = (r?.textAnimation ?? r?.textAnim) as { type?: string } | undefined;
     return /scroll|marquee|ticker|slide/i.test(String(ta?.type ?? ""));
   });
   if (wantsScroll) {
-    const frameDrivenTranslate = /translateX|translate\(/.test(code) && /interpolate\s*\(\s*frame|frame\s*[*%/]/.test(code);
-    if (!frameDrivenTranslate) {
-      gaps.push("Your sceneRecipes mark text as continuous_scroll/marquee but the code renders it STATIC. Implement a constant-speed marquee for that text: a frame-driven translateX that moves right-to-left and WRAPS (exits the left edge, re-enters from the right) continuously via useCurrentFrame — not a static label or a centered translateX(-50%).");
+    // A real marquee = a frame-driven translateX whose value changes — NOT the static translateX(-50%)/(-100%)
+    // centering transforms. Count dynamic translateX (anything that isn't a bare `translateX(<n>%)`).
+    const totalTx = (code.match(/translateX\(/g) || []).length;
+    const staticTx = (code.match(/translateX\(\s*-?\d+(?:\.\d+)?%\s*\)/g) || []).length;
+    const hasFrame = /interpolate\s*\(\s*frame|frame\s*[*%/]/.test(code);
+    const hasMarquee = totalTx > staticTx && hasFrame;
+    if (!hasMarquee) {
+      gaps.push("Your sceneRecipes mark text as continuous_scroll/marquee but the code does not animate it (only static translateX(-50%) centering). Implement a constant-speed marquee on that text: a frame-driven translateX (value computed from useCurrentFrame) that moves right-to-left and WRAPS modulo the total width so the text exits the left edge and re-enters from the right, forever — not a static label, centered transform, or one-shot slide.");
     }
   }
-  // A described twisting ribbon / helix / spinning object should rotate about ONE axis, not tumble on 2+.
-  const wantsTwist = sceneRecipes.some((r) => /ribbon|helix|twist|dna|spin|rotat/i.test(String(r?.visualSummary ?? "")));
+  const has3D = /@remotion\/three|@react-three|from\s+['"]three|THREE\.|<mesh\b|TubeGeometry|BufferGeometry/.test(code);
   const axes = (["x", "y", "z"] as const).filter((a) => new RegExp(`rotation\\.${a}\\s*[=:]`).test(code));
-  if (wantsTwist && axes.length >= 2) {
+  const wantsTwist = /ribbon|helix|twist|dna|3d|extrud|spin/i.test(recipeText);
+  if (wantsTwist && !has3D) {
+    // Described as a 3D ribbon/twist but reconstructed flat (e.g. a 2D canvas) — build real 3D.
+    gaps.push("Your sceneRecipes describe a 3D ribbon/twisting/extruded element, but the code has NO real 3D (no @remotion/three / three / mesh). Build it as REAL 3D with @remotion/three and rotate it about a SINGLE vertical axis (rotation.y) so it twists like a DNA/helix — do not fake it with a flat 2D canvas.");
+  } else if (wantsTwist && axes.length >= 2) {
+    // 3D but tumbling on multiple axes — a twisting ribbon should rotate about one axis.
     gaps.push(`Your 3D object rotates on multiple axes (rotation.${axes.join(" + rotation.")}). A twisting ribbon/helix should rotate about ONE dominant axis (vertical = rotation.y for an upright ribbon). Remove the secondary-axis rotation so it twists cleanly about a single axis.`);
   }
   return gaps;
@@ -347,7 +500,7 @@ function mergeCapsule(det: v5.RemotionTemplateCapsule, g: Record<string, unknown
   const capsule: v5.RemotionTemplateCapsule = {
     ...det,
     codeBundle, // CANONICAL — Gemini's code, untouched
-    slotSchema: assetSlots ?? validSlots ?? det.slotSchema,
+    slotSchema: ensureSlotsCoverCode(assetSlots ?? validSlots ?? det.slotSchema ?? [], code),
     propsSchema: asObject(gc.propsSchema) ?? det.propsSchema,
     timingSignature,
     motionSignature: (asObject(gc.motionSignature) as unknown as v5.RemotionTemplateCapsule["motionSignature"]) ?? det.motionSignature,
@@ -371,6 +524,7 @@ export async function runGen1CapsuleGemini(input: Gen1CapsuleGeminiInput): Promi
   let lastRaw: string | undefined;
   let lastErrorKind: "build" | "fidelity" = "build";
   let fidelityRepairDone = false;
+  let best: Gen1CapsuleGeminiResult | undefined; // last compile+render-passing AI capsule (never lose it to deterministic)
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let raw: string;
     try {
@@ -424,23 +578,12 @@ export async function runGen1CapsuleGemini(input: Gen1CapsuleGeminiInput): Promi
       warnings.push(`gen1 capsule attempt ${attempt + 1}: render error -> repair`);
       continue;
     }
-    // MOTION-FIDELITY: drive ONE repair when the code contradicts the model's OWN declared motion
-    // (sceneRecipes say text scrolls but code is static; a twisting ribbon tumbles on 2 axes). Evidence-
-    // driven + general; never blocks — after one repair we promote regardless ("code is bible").
-    const gaps = motionFidelityGaps(code, (asArray(parsed.sceneRecipes) as Array<Record<string, unknown>>) ?? []);
-    if (gaps.length && !fidelityRepairDone && attempt < maxAttempts - 1) {
-      fidelityRepairDone = true;
-      lastErrors = gaps;
-      lastErrorKind = "fidelity";
-      lastRaw = JSON.stringify({ capsule: { codeBundle: capsule.codeBundle } });
-      warnings.push(`gen1 motion-fidelity gap -> repair: ${gaps[0].slice(0, 90)}`);
-      continue;
-    }
-    if (gaps.length) warnings.push(`gen1 motion-fidelity (kept after repair): ${gaps.join(" | ").slice(0, 160)}`);
-    // PROMOTE — it compiles and renders. Stored as-is.
+    // Render passed — a VALID AI capsule. Save it as `best` FIRST: we must never discard a compile+render-
+    // passing AI reconstruction for the deterministic fallback just because a fidelity/coverage gap remains
+    // ("code is bible"). The fidelity repair below is a best-effort improvement, not a gate.
     capsule.quality.renderPreviewPassed = true;
     if (!noCopyPassed) warnings.push("note: returned code may contain source-derived text (kept as-is; change at generation time)");
-    return {
+    const result: Gen1CapsuleGeminiResult = {
       usedAi: true,
       capsule,
       sceneRecipes: (asArray(parsed.sceneRecipes) as v5.SceneVisualRecipeV5[]) ?? undefined,
@@ -451,6 +594,30 @@ export async function runGen1CapsuleGemini(input: Gen1CapsuleGeminiInput): Promi
       warnings,
       raw
     };
+    best = result;
+    // MOTION-FIDELITY + coverage: drive ONE repair if the code contradicts the model's OWN declared motion
+    // (text static vs scroll, 2-axis tumble, missing 3D) or under-covers the duration. `best` is already
+    // saved, so a failed/unconverged repair degrades to this render-passing AI — never to deterministic.
+    const gaps = motionFidelityGaps(code, (asArray(parsed.sceneRecipes) as Array<Record<string, unknown>>) ?? []);
+    if (input.targetDurationSec && input.targetDurationSec > 1) {
+      const coverSec = maxSequenceCoverageSec(code, capsule.timingSignature.fps || 30);
+      if (coverSec > 0.5 && coverSec < input.targetDurationSec * 0.85) {
+        gaps.push(`Your code only covers ${coverSec.toFixed(1)}s but this scene is ${input.targetDurationSec.toFixed(1)}s long. EXTEND it to cover the FULL ${input.targetDurationSec.toFixed(1)}s with content that matches the source through to the end (add the remaining scenes; continue the motion). Do NOT leave the end empty, black, frozen, or cut short.`);
+      }
+    }
+    if (gaps.length && !fidelityRepairDone && attempt < maxAttempts - 1) {
+      fidelityRepairDone = true;
+      lastErrors = gaps;
+      lastErrorKind = "fidelity";
+      lastRaw = JSON.stringify({ capsule: { codeBundle: capsule.codeBundle } });
+      warnings.push(`gen1 motion-fidelity gap -> repair: ${gaps[0].slice(0, 90)}`);
+      continue;
+    }
+    if (gaps.length) warnings.push(`gen1 motion-fidelity (kept after repair): ${gaps.join(" | ").slice(0, 160)}`);
+    return result;
   }
+  // Attempts exhausted: if ANY attempt produced a render-passing AI capsule, promote it (don't fall back to
+  // deterministic over a mere fidelity gap). Only truly-unrenderable output falls through to deterministic.
+  if (best) { best.warnings = warnings; return best; }
   return { ...fail, raw: lastRaw };
 }

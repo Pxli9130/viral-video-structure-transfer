@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { v5 } from "@vvst/shared";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 import type { VisionCodegenFn } from "./gen1ModelFactory.js";
-import { runGen1CapsuleGemini, assetPlanToSlots, maxSequenceCoverageSec, type Gen1CapsuleGeminiResult } from "./runGen1CapsuleGemini.js";
+import { runGen1CapsuleGemini, assetPlanToSlots, ensureSlotsCoverCode, maxSequenceCoverageSec, type Gen1CapsuleGeminiResult } from "./runGen1CapsuleGemini.js";
 import { resolveBin } from "./renderV5.js";
 import { mapLimit, nextSeq } from "./concurrency.js";
 
@@ -34,11 +34,24 @@ export interface Gen1ChunkedInput {
 
 interface ChunkSpan { startSec: number; endSec: number; }
 
-/** Greedily group shots into ≤ maxChunkSec spans that START on shot boundaries (no mid-scene cuts). */
+function pushCappedSpan(spans: ChunkSpan[], startSec: number, endSec: number, maxChunkSec: number): void {
+  let start = Math.max(0, startSec);
+  const end = Math.max(start, endSec);
+  while (end - start > maxChunkSec + 0.001) {
+    const cappedEnd = +(start + maxChunkSec).toFixed(3);
+    spans.push({ startSec: +start.toFixed(3), endSec: cappedEnd });
+    start = cappedEnd;
+  }
+  if (end - start > 0.001) {
+    spans.push({ startSec: +start.toFixed(3), endSec: +end.toFixed(3) });
+  }
+}
+
+/** Greedily group shots into ≤ maxChunkSec spans; prefer shot boundaries, split inside a long shot if needed. */
 export function planChunkSpans(shots: Array<{ startSec: number; endSec: number }>, totalSec: number, maxChunkSec: number): ChunkSpan[] {
   const spans: ChunkSpan[] = [];
   if (!shots.length) {
-    for (let t = 0; t < totalSec; t += maxChunkSec) spans.push({ startSec: t, endSec: Math.min(totalSec, t + maxChunkSec) });
+    pushCappedSpan(spans, 0, totalSec, maxChunkSec);
     return spans.length ? spans : [{ startSec: 0, endSec: totalSec }];
   }
   const ordered = [...shots].sort((a, b) => a.startSec - b.startSec);
@@ -48,13 +61,17 @@ export function planChunkSpans(shots: Array<{ startSec: number; endSec: number }
     const next = ordered[i + 1];
     // Close the current chunk at the NEXT shot's start if extending to it would exceed the cap.
     if (next && next.startSec - chunkStart > maxChunkSec) {
-      spans.push({ startSec: chunkStart, endSec: sh.endSec });
+      pushCappedSpan(spans, chunkStart, sh.endSec, maxChunkSec);
       chunkStart = next.startSec;
     }
   }
-  spans.push({ startSec: chunkStart, endSec: totalSec });
+  pushCappedSpan(spans, chunkStart, totalSec, maxChunkSec);
   // Merge any sub-1s tail into the previous span.
-  if (spans.length > 1 && spans[spans.length - 1].endSec - spans[spans.length - 1].startSec < 1) {
+  if (
+    spans.length > 1 &&
+    spans[spans.length - 1].endSec - spans[spans.length - 1].startSec < 1 &&
+    spans[spans.length - 1].endSec - spans[spans.length - 2].startSec <= maxChunkSec + 0.001
+  ) {
     const tail = spans.pop() as ChunkSpan;
     spans[spans.length - 1].endSec = tail.endSec;
   }
@@ -75,6 +92,79 @@ function extractChunk(videoPath: string, startSec: number, durSec: number, outPa
   });
 }
 
+function rebaseTimedItems<T extends object>(
+  items: T[] | undefined,
+  startSec: number,
+  endSec: number
+): T[] | undefined {
+  if (!items?.length) return undefined;
+  const reb = (t: number) => Math.max(0, +(t - startSec).toFixed(3));
+  const out = items
+    .map((item) => {
+      const rec = item as Record<string, unknown>;
+      const timeSec = typeof rec.timeSec === "number" ? rec.timeSec : undefined;
+      if (timeSec !== undefined) {
+        return timeSec >= startSec - 0.001 && timeSec < endSec + 0.001
+          ? ({ ...rec, timeSec: reb(timeSec) } as T)
+          : undefined;
+      }
+      const itemStart = typeof rec.startSec === "number" ? rec.startSec : undefined;
+      const itemEnd = typeof rec.endSec === "number" ? rec.endSec : undefined;
+      if (itemStart !== undefined && itemEnd !== undefined && itemEnd > startSec && itemStart < endSec) {
+        return { ...rec, startSec: reb(Math.max(itemStart, startSec)), endSec: reb(Math.min(itemEnd, endSec)) } as T;
+      }
+      const range = Array.isArray(rec.timeRangeSec) ? rec.timeRangeSec : undefined;
+      if (range && typeof range[0] === "number" && typeof range[1] === "number" && range[1] > startSec && range[0] < endSec) {
+        return { ...rec, timeRangeSec: [reb(Math.max(range[0], startSec)), reb(Math.min(range[1], endSec))] } as T;
+      }
+      return undefined;
+    })
+    .filter((item): item is T => Boolean(item));
+  return out.length ? out : undefined;
+}
+
+function rebaseTrack<T extends { t: number }>(items: T[] | undefined, startSec: number, endSec: number): T[] | undefined {
+  if (!items?.length) return undefined;
+  const out = items
+    .filter((item) => item.t >= startSec - 0.001 && item.t < endSec + 0.001)
+    .map((item) => ({ ...item, t: Math.max(0, +(item.t - startSec).toFixed(3)) }));
+  return out.length ? out : undefined;
+}
+
+function sliceVisualElementGraph(
+  graph: v5.VisualElementGraphV5 | undefined,
+  startSec: number,
+  endSec: number
+): v5.VisualElementGraphV5 | undefined {
+  if (!graph?.elements?.length) return undefined;
+  const elements = graph.elements
+    .map((element) => {
+      if (element.timeRangeSec[1] <= startSec || element.timeRangeSec[0] >= endSec) return undefined;
+      const bboxTrackNorm = rebaseTrack(element.bboxTrackNorm, startSec, endSec);
+      const pointTracks = rebaseTrack(element.pointTracks, startSec, endSec);
+      if ((element.bboxTrackNorm?.length && !bboxTrackNorm?.length) || (element.pointTracks?.length && !pointTracks?.length)) {
+        return undefined;
+      }
+      return {
+        ...element,
+        timeRangeSec: [
+          Math.max(0, +(Math.max(element.timeRangeSec[0], startSec) - startSec).toFixed(3)),
+          Math.max(0, +(Math.min(element.timeRangeSec[1], endSec) - startSec).toFixed(3))
+        ] as [number, number],
+        ...(bboxTrackNorm ? { bboxTrackNorm } : {}),
+        ...(pointTracks ? { pointTracks } : {})
+      };
+    })
+    .filter((item): item is v5.VisualElementNodeV5 => Boolean(item));
+  if (!elements.length) return undefined;
+  return {
+    ...graph,
+    elementCount: elements.length,
+    elements,
+    shots: rebaseTimedItems(graph.shots, startSec, endSec),
+  };
+}
+
 /** Chunk-local evidence: shots/keyFrames/audio windowed to [start,end) and rebased to chunk-relative time. */
 function sliceEvidence(ev: v5.EvidenceTimelineV5, startSec: number, endSec: number): v5.EvidenceTimelineV5 {
   const within = (t: number) => t >= startSec - 0.001 && t < endSec + 0.001;
@@ -84,12 +174,27 @@ function sliceEvidence(ev: v5.EvidenceTimelineV5, startSec: number, endSec: numb
   const keyFrames = (ev.keyFrames ?? []).filter((k) => within(k.timeSec)).map((k) => ({ ...k, timeSec: reb(k.timeSec) }));
   const ae = ev.audioEvidence ?? ({} as NonNullable<v5.EvidenceTimelineV5["audioEvidence"]>);
   const me = (ev.motionEvidence ?? {}) as Record<string, unknown>;
+  const movingObjectCandidates = rebaseTimedItems(ev.movingObjectCandidates, startSec, endSec);
+  const typographyEvidence = rebaseTimedItems(ev.typographyEvidence, startSec, endSec);
+  const motionAtoms = rebaseTimedItems(ev.motionAtoms, startSec, endSec);
+  const visualElementGraph = sliceVisualElementGraph(ev.visualElementGraph, startSec, endSec);
   return {
     ...ev,
+    video: { ...ev.video, durationSec: +(endSec - startSec).toFixed(3) },
     shots: shots.length ? shots : [{ id: "s0", startSec: 0, endSec: +(endSec - startSec).toFixed(3) } as v5.EvidenceTimelineV5["shots"][number]],
     keyFrames,
     audioEvidence: { ...ae, beatGridSec: (ae.beatGridSec ?? []).filter(within).map(reb), onsetsSec: (ae.onsetsSec ?? []).filter(within).map(reb) },
-    motionEvidence: { ...me, peakMomentsSec: ((me.peakMomentsSec as number[] | undefined) ?? []).filter(within).map(reb) } as v5.EvidenceTimelineV5["motionEvidence"]
+    textEvidence: rebaseTimedItems(ev.textEvidence, startSec, endSec),
+    typographyEvidence,
+    visualElementGraph,
+    movingObjectCandidates,
+    motionAtoms,
+    motionEvidence: {
+      ...me,
+      intensityCurve: rebaseTrack(me.intensityCurve as Array<{ t: number; value: number }> | undefined, startSec, endSec),
+      peakMomentsSec: ((me.peakMomentsSec as number[] | undefined) ?? []).filter(within).map(reb),
+      movingObjectCandidates
+    } as v5.EvidenceTimelineV5["motionEvidence"]
   };
 }
 
@@ -153,7 +258,7 @@ ${seqs}
 
 /**
  * Reconstruct a long source as N ≤maxChunkSec Gemini reconstructions stitched into one capsule.
- * Returns the same shape as runGen1CapsuleGemini (usedAi=false → caller falls back to a single whole-video call).
+ * Returns the same shape as runGen1CapsuleGemini (usedAi=false → caller keeps deterministic fallback).
  */
 export async function runGen1ChunkedCapsule(input: Gen1ChunkedInput): Promise<Gen1CapsuleGeminiResult> {
   const warnings: string[] = [];
@@ -196,7 +301,8 @@ export async function runGen1ChunkedCapsule(input: Gen1ChunkedInput): Promise<Ge
     try {
       g = await runGen1CapsuleGemini({
         deterministic: input.deterministic, evidence: chunkEv, videoPath: chunkMp4, frames: [],
-        visionModel: input.visionModel, repairModel: input.repairModel, renderProbe: input.renderProbe, maxAttempts: 3
+        visionModel: input.visionModel, repairModel: input.repairModel, renderProbe: input.renderProbe, maxAttempts: 3,
+        targetDurationSec: durSec // chunk must cover its full span (else it "ends too soon" / leaves a gap)
       });
     } catch (err) {
       g = { usedAi: false, validation: { compilePassed: false, renderPreviewPassed: false, noCopyPassed: false }, warnings: [err instanceof Error ? err.message.slice(0, 120) : String(err)] };
@@ -213,7 +319,9 @@ export async function runGen1ChunkedCapsule(input: Gen1ChunkedInput): Promise<Ge
         const useFrames = coverFrames > 0 && coverFrames < frames ? coverFrames : frames;
         if (useFrames < frames) w.push(`chunk ${i}: code covers ${(useFrames / fps).toFixed(1)}s of ${(frames / fps).toFixed(1)}s reserved -> trimming slot to avoid black gap`);
         // Namespace asset keys (c{i}__) so the shared assets object never collides; parent's chunkAssets() strips it.
-        const slots = g.assetPlan?.length ? assetPlanToSlots(g.assetPlan, `c${i}__`) : [];
+        // Completeness: ensure EVERY asset key the chunk code reads has a slot (model often under-declares
+        // its assetPlan -> extra <Img>/<OffthreadVideo> render empty). Namespaced c{i}__ like the others.
+        const slots = ensureSlotsCoverCode(g.assetPlan?.length ? assetPlanToSlots(g.assetPlan, `c${i}__`) : [], code, `c${i}__`);
         const recipes = (g.sceneRecipes ?? []).map((r) => ({ ...r, sectionId: `c${i}_${r.sectionId}` }));
         return { frames: useFrames, file: { path: `chunk${i}.tsx`, content: code }, ai: true, slots, recipes, knowledge: g.knowledgeElements ?? [], warnings: w };
       } catch (err) {
@@ -235,8 +343,8 @@ export async function runGen1ChunkedCapsule(input: Gen1ChunkedInput): Promise<Ge
     warnings.push(...r.warnings);
   }
 
-  if (aiChunks === 0) {
-    warnings.push("chunked gen1: no chunk produced AI code; falling back to single whole-video call");
+  if (aiChunks < spans.length) {
+    warnings.push(`chunked gen1: ${spans.length - aiChunks}/${spans.length} chunks produced no AI code; not stitching filler chunks`);
     return fail;
   }
 
