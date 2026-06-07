@@ -5,7 +5,7 @@ export { runGen1NeutralTemplate } from "./runGen1NeutralTemplate.js";
 export type { Gen1TemplateResult } from "./runGen1NeutralTemplate.js";
 export { runGen1Ai, buildGen1Prompt } from "./runGen1Ai.js";
 export type { Gen1ModelFn, Gen1AiResult } from "./runGen1Ai.js";
-export { createGeminiModelFn, createGeminiVisionCodegenFn } from "./gen1ModelFactory.js";
+export { createGeminiModelFn, createGeminiVisionCodegenFn, createDoubaoModelFn, createTextModelFn } from "./gen1ModelFactory.js";
 export type { VisionCodegenFn } from "./gen1ModelFactory.js";
 export { createGeminiVisionFn } from "./runSceneRecipeVlm.js";
 export type { VisionFn } from "./runSceneRecipeVlm.js";

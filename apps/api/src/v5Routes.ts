@@ -19,6 +19,7 @@ import {
   createGeminiModelFn,
   createGeminiVisionCodegenFn,
   createGeminiVisionFn,
+  createTextModelFn,
   renderFinalVideoV5,
   runCreateV5,
   runGen1Ai,
@@ -81,11 +82,13 @@ export function createV5Router(deps: V5RouterDeps): Router {
     // Multimodal codegen + VLM scene enrichment send sample FRAMES to the provider for STRUCTURE
     // analysis — gated by ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS (opt out with options.useVision=false).
     const allowVlm = String(process.env.ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS ?? "") === "1" && req.body?.options?.useVision !== false;
-    // Gen1 capsule reconstruction uses the BEST Pro video model (reads the whole video). Override with
-    // options.gen1Model or env GEMINI_GEN1_MODEL; defaults to gemini-2.5-pro.
-    // Best Pro video+codegen model right now: Gemini 3.1 Pro (preview). Override via options.gen1Model or GEMINI_GEN1_MODEL.
-    const gen1Model = (req.body?.options?.gen1Model as string | undefined) ?? process.env.GEMINI_GEN1_MODEL ?? "gemini-3.1-pro-preview";
-    const capsuleCodegenVision = wantCapsuleCodegen && allowVlm ? createGeminiVisionCodegenFn({ model: gen1Model }) ?? null : null;
+    // Gen1 capsule reconstruction is MULTIMODAL (reads the attached short video or <=30s long-video chunk)
+    // -> stays on Gemini. HYBRID model (chosen per-asset below): long/complex sources (>= GEMINI_GEN1_PRO_MIN_SEC,
+    // i.e. videos that get chunked) use the stronger Pro model so they reliably reconstruct footage/video slots;
+    // short sources use the cheaper flash. Override with options.gen1Model / gen1ModelLong or env.
+    const gen1ModelShort = (req.body?.options?.gen1Model as string | undefined) ?? process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview";
+    const gen1ModelLong = (req.body?.options?.gen1ModelLong as string | undefined) ?? process.env.GEMINI_GEN1_MODEL_LONG ?? "gemini-3.1-pro-preview";
+    const gen1ProMinSec = Number(process.env.GEMINI_GEN1_PRO_MIN_SEC ?? process.env.CHUNK_TRIGGER_SEC ?? 34);
     const sceneVlm = allowVlm ? createGeminiVisionFn({ model: process.env.VLM_MODEL }) ?? null : null;
     // Real frame-0 render validation at learn time (T8) — defaults to follow capsule codegen.
     const validateRender = req.body?.options?.validateTemplateRender ?? wantCapsuleCodegen;
@@ -103,6 +106,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
         continue;
       }
       const evidence = toEvidenceTimelineV5(v4Timeline, asset);
+      // HYBRID Gen1 model: long/complex (chunked) sources -> Pro (reliable footage reconstruction); short -> flash.
+      // Source duration lives at evidence.video.durationSec (top-level evidence.durationSec is undefined).
+      const srcDurationSec = evidence.video?.durationSec ?? (evidence.shots?.length ? evidence.shots[evidence.shots.length - 1].endSec : 0) ?? 0;
+      const gen1Model = srcDurationSec >= gen1ProMinSec ? gen1ModelLong : gen1ModelShort;
+      const capsuleCodegenVision = wantCapsuleCodegen && allowVlm ? createGeminiVisionCodegenFn({ model: gen1Model }) ?? null : null;
       let aiProgram: v5.NeutralReconstructionProgram | null = null;
       let usedAi = false;
       if (modelFn) {
@@ -116,6 +124,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         evidenceTimelineId: evidence.id,
         reconstructionProgramId: artifacts.neutralProgram.id,
         gen1: usedAi ? "ai" : "deterministic",
+        gen1Model,
         // V5.1: the reusable Remotion template capsule (the default generation object).
         templateCapsuleId: artifacts.templateCapsule.id,
         templateSlots: artifacts.templateCapsule.slotSchema.length,
@@ -281,9 +290,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
       if (!capsule) return fail(res, 400, "no template capsule available; run /learn-samples first (or pass options.templateCapsuleId)");
       const port = Number(process.env.APP_PORT ?? 3000);
       const sampleVideoPath = allAssets.find((a) => a.id === capsule.sourceSampleId)?.path;
-      // Context-modification model (Pro): rewrites an AI-clone capsule's text/colour for the new theme.
-      // Opt out with options.rewriteContext=false. Uses the Gen1 Pro model.
-      const rewriteModel = reqOpts.rewriteContext === false ? null : createGeminiModelFn({ model: process.env.GEMINI_GEN1_MODEL ?? "gemini-3.1-pro-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000) }) ?? null;
+      // Context-modification is a TEXT-TO-TEXT task -> Doubao (Volcengine Ark) when configured, else
+      // Gemini. Opt out with options.rewriteContext=false.
+      const rewriteModel = reqOpts.rewriteContext === false ? null : createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000) }) ?? null;
       const st = await runSameTemplateGeneration({
         projectId,
         generationId,

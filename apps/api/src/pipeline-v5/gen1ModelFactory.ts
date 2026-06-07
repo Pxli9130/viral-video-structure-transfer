@@ -14,8 +14,8 @@ export interface GeminiModelFnOptions {
 }
 
 /**
- * Multimodal codegen fn: prompt + source keyframes + (optionally) the FULL source video -> code.
- * Lets the model WATCH the video it reconstructs. The video goes via the Gemini Files API (any size).
+ * Multimodal codegen fn: prompt + source keyframes + (optionally) the attached source video/chunk -> code.
+ * Lets the model WATCH the clip it reconstructs. The video goes via the Gemini Files API.
  */
 export type VisionCodegenFn = (prompt: string, images: Array<{ base64: string; mimeType: string }>, videoPath?: string) => Promise<string>;
 
@@ -36,7 +36,7 @@ export function createGeminiVisionCodegenFn(opts: GeminiModelFnOptions = {}): Vi
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const parts: unknown[] = [];
-      // Upload the full source video via the Files API (no inline size cap) and wait until ACTIVE.
+      // Upload the caller-provided source clip/chunk via the Files API and wait until ACTIVE.
       if (videoPath) {
         try {
           let up = await client.files.upload({ file: videoPath, config: { mimeType: videoMime(videoPath) } });
@@ -86,4 +86,64 @@ export function createGeminiModelFn(opts: GeminiModelFnOptions = {}): Gen1ModelF
       clearTimeout(timer);
     }
   };
+}
+
+export interface DoubaoModelFnOptions {
+  apiKey?: string;
+  /** An Ark inference-endpoint id (ep-...) or model name. */
+  model?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+  temperature?: number;
+}
+
+/**
+ * Doubao (Volcengine Ark) TEXT-TO-TEXT model fn — OpenAI-compatible /chat/completions. This is the
+ * preferred backend for text-to-text tasks (capsule code-modification / context-rewrite). Returns the
+ * raw assistant message (callers extract JSON). undefined when no Ark key + endpoint is configured.
+ */
+export function createDoubaoModelFn(opts: DoubaoModelFnOptions = {}): Gen1ModelFn | undefined {
+  // ARK_API_KEY / ARK_MODEL in .env ARE the Doubao Seed 2.0 lite text endpoint creds — use them as the
+  // canonical fallback so no separate config is needed (DOUBAO_* still override if set).
+  const apiKey = opts.apiKey ?? process.env.DOUBAO_ARK_API_KEY ?? process.env.DOUBAO_API_KEY ?? process.env.ARK_API_KEY;
+  const model = opts.model ?? process.env.DOUBAO_ARK_MODEL ?? process.env.DOUBAO_MODEL ?? process.env.ARK_MODEL;
+  if (!apiKey || !model) return undefined;
+  const baseUrl = (opts.baseUrl ?? process.env.DOUBAO_ARK_BASE_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
+  const timeoutMs = opts.timeoutMs ?? Number(process.env.DOUBAO_TIMEOUT_MS ?? 120_000);
+  return async (prompt: string): Promise<string> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: "You are a precise senior front-end engineer. Follow the user's instructions exactly. When asked to return JSON, output raw valid JSON only — no markdown code fences, no commentary." },
+            { role: "user", content: prompt }
+          ],
+          temperature: opts.temperature ?? 0.3
+        }),
+        signal: controller.signal
+      });
+      if (!resp.ok) throw new Error(`doubao ark ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 200)}`);
+      const j = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      return j.choices?.[0]?.message?.content ?? "";
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+/**
+ * Canonical TEXT-TO-TEXT model fn for code-modification / context-rewrite. Prefers Doubao (Volcengine
+ * Ark) when DOUBAO_ARK_API_KEY + DOUBAO_ARK_MODEL are set, else falls back to Gemini. Multimodal video
+ * codegen stays on Gemini (createGeminiVisionCodegenFn) — only text-to-text routes through here.
+ */
+export function createTextModelFn(opts: { geminiModel?: string; timeoutMs?: number; temperature?: number } = {}): Gen1ModelFn | undefined {
+  return (
+    createDoubaoModelFn({ timeoutMs: opts.timeoutMs, temperature: opts.temperature }) ??
+    createGeminiModelFn({ model: opts.geminiModel, timeoutMs: opts.timeoutMs, temperature: opts.temperature })
+  );
 }

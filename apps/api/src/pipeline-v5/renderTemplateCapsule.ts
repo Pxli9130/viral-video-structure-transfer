@@ -4,12 +4,13 @@
 // project UNDER the repo (so node_modules resolves), bundles, and renders. This is what makes
 // "use the same template code, new content" real — the stored template component renders the new props.
 
+import { spawn } from "node:child_process";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v5 } from "@vvst/shared";
-import { muxProceduralAudio } from "./renderV5.js";
-import { renderSemaphore, RENDER_TABS_PER_JOB, nextSeq } from "./concurrency.js";
+import { muxProceduralAudio, resolveBin } from "./renderV5.js";
+import { renderSemaphore, RENDER_TABS_PER_JOB, RENDER_TIMEOUT_MS, nextSeq } from "./concurrency.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
@@ -19,6 +20,7 @@ export interface CapsuleRenderResult {
   finalMp4?: string;
   hasAudio: boolean;
   audioMuxed: boolean;
+  audioSource?: "generated" | "procedural";
   durationSec: number;
   usedTemplateCode: boolean;
   warnings: string[];
@@ -69,6 +71,26 @@ export interface CapsuleStillResult {
 }
 
 /**
+ * Make the bound `assets` prop satisfy BOTH access styles an AI capsule may use: OBJECT
+ * (`assets.<slotKey>`) AND ARRAY (`assets[i]`, `assets.length`). The pipeline always binds assets by slot
+ * name, but generated code sometimes treats `assets` as an array (`assets[i % assets.length]`) — which on a
+ * plain object yields `assets.length === undefined` -> every asset null -> EMPTY cards / no footage. This
+ * returns a JSON-safe plain object carrying the named keys PLUS numeric indices + a numeric `length`, so
+ * both styles resolve. No-op when assets is absent/empty or already array-shaped.
+ */
+function withArrayViewAssets(props: Record<string, unknown>): Record<string, unknown> {
+  const a = props.assets as Record<string, unknown> | undefined;
+  if (!a || typeof a !== "object" || Array.isArray(a)) return props;
+  const named = Object.keys(a).filter((k) => !/^\d+$/.test(k) && k !== "length");
+  if (!named.length) return props;
+  const hybrid: Record<string, unknown> = {};
+  for (const k of named) hybrid[k] = a[k];
+  named.forEach((k, i) => { hybrid[i] = a[k]; });
+  hybrid.length = named.length;
+  return { ...props, assets: hybrid };
+}
+
+/**
  * Fast REAL render gate: bundle the capsule code and render a single frame via renderStill.
  * This is the cheap "does it actually bundle + render" check used by the AI codegen gate and by
  * learn-time validation (so T8/renderPreviewPassed is earned, not deferred). Bundling dominates cost.
@@ -88,16 +110,28 @@ export async function renderCapsuleStill(opts: {
   // Unique workDir (Date.now + monotonic seq) so concurrent still-renders of the same capsule never collide.
   const workDir = opts.workDir ?? path.join(repoRoot, "storage", "generated", "v5", "_capsule_still", `${opts.capsule.id}_${Date.now()}_${nextSeq()}`);
   const outPng = opts.outPng ?? path.join(workDir, "frame.png");
+  let lastErr: unknown;
   try {
     const rootPath = await writeCapsuleProject(opts.capsule, workDir, Math.round(durationSec * fps), fps, width, height);
-    return await renderSemaphore.run(async () => {
-      const [{ bundle }, { renderStill, selectComposition }] = await Promise.all([import("@remotion/bundler"), import("@remotion/renderer")]);
-      const serveUrl = await bundle({ entryPoint: rootPath });
-      const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps: opts.boundProps });
-      await renderStill({ composition, serveUrl, output: outPng, frame: opts.frame ?? 0, inputProps: opts.boundProps, overwrite: true });
-      const ok = existsSync(outPng);
-      return { ok, pngPath: ok ? outPng : undefined, warnings, error: ok ? undefined : "still not written to disk" };
-    });
+    // Retry once: the compositor can crash transiently under concurrent load (frame_cache panic / Request
+    // closed). Without a retry, a transient crash here wrongly fails Gen1 validation -> deterministic fallback.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await renderSemaphore.run(async () => {
+          const [{ bundle }, { renderStill, selectComposition }] = await Promise.all([import("@remotion/bundler"), import("@remotion/renderer")]);
+          const serveUrl = await bundle({ entryPoint: rootPath });
+          const stillProps = withArrayViewAssets(opts.boundProps);
+          const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps: stillProps });
+          await renderStill({ composition, serveUrl, output: outPng, frame: opts.frame ?? 0, inputProps: stillProps, overwrite: true, timeoutInMilliseconds: RENDER_TIMEOUT_MS });
+          const ok = existsSync(outPng);
+          return { ok, pngPath: ok ? outPng : undefined, warnings, error: ok ? undefined : "still not written to disk" };
+        });
+      } catch (err) {
+        lastErr = err;
+        warnings.push(`still render attempt ${attempt + 1} failed: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);
+      }
+    }
+    return { ok: false, warnings, error: lastErr instanceof Error ? lastErr.message.slice(0, 220) : String(lastErr) };
   } catch (err) {
     return { ok: false, warnings, error: err instanceof Error ? err.message.slice(0, 220) : String(err) };
   }
@@ -111,9 +145,33 @@ export interface CapsuleRenderOptions {
   workDir?: string;
   aspectRatio?: string;
   proceduralAudio?: boolean;
+  /** Renderable generated/target audio bed to mux under the rendered capsule. */
+  audioPath?: string;
   bpm?: number | null;
   hitTimes?: number[];
   riserTime?: number;
+}
+
+function muxAudioBed(videoPath: string, audioPath: string, outPath: string, durationSec: number): Promise<{ ok: boolean; error?: string }> {
+  const dur = Math.max(1, durationSec).toFixed(2);
+  const fadeOutStart = Math.max(0, Number(dur) - 0.35).toFixed(2);
+  const ffmpeg = resolveBin("ffmpeg");
+  const args = [
+    "-y",
+    "-i", videoPath,
+    "-stream_loop", "-1", "-i", audioPath,
+    "-filter_complex", `[1:a]aresample=44100,volume=0.72,afade=t=in:st=0:d=0.2,afade=t=out:st=${fadeOutStart}:d=0.35[a]`,
+    "-map", "0:v:0", "-map", "[a]",
+    "-t", dur,
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart",
+    outPath
+  ];
+  return new Promise((resolve) => {
+    const p = spawn(ffmpeg, args, { stdio: "ignore" });
+    p.on("error", (e) => resolve({ ok: false, error: String(e.message).slice(-400) }));
+    p.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg audio mux exit ${code}` }));
+  });
 }
 
 /** Render the capsule's stored Remotion component with the bound props. */
@@ -153,8 +211,9 @@ registerRoot(Root);
 `;
     await fs.writeFile(path.join(workDir, "root.tsx"), rootTsx);
 
-    const inputProps = opts.boundProps;
-    const remotionMp4 = opts.proceduralAudio ? `${opts.outPath}.silent.mp4` : opts.outPath;
+    const inputProps = withArrayViewAssets(opts.boundProps);
+    const needsAudioMux = Boolean(opts.audioPath) || Boolean(opts.proceduralAudio);
+    const remotionMp4 = needsAudioMux ? `${opts.outPath}.silent.mp4` : opts.outPath;
     // Cap concurrent headless-Chrome renders process-wide AND cap tabs-per-render (memory = slots × tabs).
     // Bound the OffthreadVideo frame cache too (heavy montages with many <OffthreadVideo> can otherwise
     // balloon the Rust compositor's cache -> frame_cache panic). Retry once on transient compositor crashes.
@@ -169,7 +228,7 @@ registerRoot(Root);
           ]);
           const serveUrl = await bundle({ entryPoint: path.join(workDir, "root.tsx") });
           const composition = await selectComposition({ serveUrl, id: "Capsule", inputProps });
-          await renderMedia({ composition, serveUrl, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB, offthreadVideoCacheSizeInBytes: offthreadCacheBytes });
+          await renderMedia({ composition, serveUrl, codec: "h264", outputLocation: remotionMp4, inputProps, concurrency: RENDER_TABS_PER_JOB, offthreadVideoCacheSizeInBytes: offthreadCacheBytes, timeoutInMilliseconds: RENDER_TIMEOUT_MS });
         });
         renderErr = undefined;
         break;
@@ -182,11 +241,25 @@ registerRoot(Root);
 
     let finalMp4 = remotionMp4;
     let audioMuxed = false;
-    if (opts.proceduralAudio) {
+    let audioSource: CapsuleRenderResult["audioSource"];
+    if (opts.audioPath && existsSync(opts.audioPath)) {
+      const mux = await muxAudioBed(remotionMp4, opts.audioPath, opts.outPath, durationSec);
+      if (mux.ok) {
+        finalMp4 = opts.outPath;
+        audioMuxed = true;
+        audioSource = "generated";
+      } else {
+        warnings.push(`generated audio mux failed: ${mux.error}`);
+      }
+    } else if (opts.audioPath) {
+      warnings.push(`generated audio missing on disk: ${path.basename(opts.audioPath)}`);
+    }
+    if (!audioMuxed && opts.proceduralAudio) {
       const mux = await muxProceduralAudio(remotionMp4, opts.outPath, durationSec, { bpm: opts.bpm ?? null, hitTimes: opts.hitTimes ?? [], riserTime: opts.riserTime });
       if (mux.ok) {
         finalMp4 = opts.outPath;
         audioMuxed = true;
+        audioSource = "procedural";
       } else {
         // Honest degrade: the template code rendered fine; only the procedural-audio mux failed
         // (e.g. ffmpeg missing). Promote the silent render to the real output so final.mp4 actually
@@ -203,6 +276,7 @@ registerRoot(Root);
       finalMp4,
       hasAudio: audioMuxed,
       audioMuxed,
+      audioSource,
       durationSec,
       usedTemplateCode: finalExists,
       warnings: finalExists ? warnings : [...warnings, `render output missing on disk: ${path.basename(finalMp4)}`]

@@ -4,12 +4,15 @@
 // code (NOT the fixed fallback renderer). Required slots missing + AIGC off -> honest readiness
 // downgrade, never a silent text-card-while-claiming-review_demo.
 
+import { spawn } from "node:child_process";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import type { Asset } from "@vvst/shared";
 import { getAigcMaterialProvider, v5 } from "@vvst/shared";
+import { GoogleAudioAdapter, type GoogleGeneratedAudioAsset } from "../adapters/googleAudio.js";
 import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
 import { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
+import { resolveBin } from "./renderV5.js";
 import { mapLimit, aigcSemaphore } from "./concurrency.js";
 import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
@@ -25,13 +28,54 @@ function gate(id: string, name: string, status: v5.GateStatus, message?: string)
   return { id, name, status, message };
 }
 
-function choosePalette(brief: v5.CreativeBriefV5, fallback: string[]): string[] {
+/** Perceptual luma 0..255 of a #rgb/#rrggbb hex, or null if unparseable. */
+function hexLuma(hex?: string): number | null {
+  if (!hex) return null;
+  let h = hex.trim().replace(/^#/, "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  const n = parseInt(h, 16);
+  return 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+}
+const isLightHex = (hex?: string): boolean => (hexLuma(hex) ?? 0) > 175;
+
+/** A light-background palette [bg, text, accent, accent2] derived from the source's own light tone. */
+function lightPalette(accent: string | undefined, sourceDominantHex?: string): string[] {
+  const bg = isLightHex(sourceDominantHex) ? (sourceDominantHex as string) : "#F2F5F9";
+  return [bg, "#0B132B", accent && !isLightHex(accent) ? accent : "#4361EE", "#13233F"];
+}
+
+function choosePalette(brief: v5.CreativeBriefV5, fallback: string[], quality?: { sourceIsLight?: boolean; sourceDominantHex?: string }): string[] {
   const hay = `${brief.theme ?? ""} ${(brief.sellingPoints ?? []).join(" ")} ${brief.prompt ?? ""}`.toLowerCase();
-  if (/fan|cool|breeze|portable|air|chill/.test(hay)) return ["#0A1A2E", "#E8F4FF", "#00C2FF", "#0E2A47"];
-  if (/fintech|bank|pay|money|secure|wallet|transfer/.test(hay)) return ["#0B1F3A", "#FFFFFF", "#1EC28B", "#123A63"];
-  if (/energy|hype|explosive|sport|gym|drink|boost/.test(hay)) return ["#0A0A0C", "#FFEC3D", "#FF3E3E", "#1A1A1F"];
-  if (/cinematic|night|drive|neon|teaser|city/.test(hay)) return ["#070710", "#E6E6FF", "#7A5CFF", "#141430"];
-  return fallback;
+  const themed =
+    /fan|cool|breeze|portable|air|chill/.test(hay) ? ["#0A1A2E", "#E8F4FF", "#00C2FF", "#0E2A47"] :
+    /fintech|bank|pay|money|secure|wallet|transfer/.test(hay) ? ["#0B1F3A", "#FFFFFF", "#1EC28B", "#123A63"] :
+    /energy|hype|explosive|sport|gym|drink|boost/.test(hay) ? ["#0A0A0C", "#FFEC3D", "#FF3E3E", "#1A1A1F"] :
+    /cinematic|night|drive|neon|teaser|city/.test(hay) ? ["#070710", "#E6E6FF", "#7A5CFF", "#141430"] :
+    fallback;
+  // Colour fidelity (deterministic, no LLM): if the SOURCE reads light/high-key, the bound background
+  // (palette[0], which the capsule renders as its base fill) MUST be light with dark text. This auto-
+  // inserts a light bg colour so a light source never renders as a black video.
+  if (quality?.sourceIsLight) return lightPalette(themed[2], quality.sourceDominantHex);
+  return themed;
+}
+
+/** Deterministically force any DARK full-screen background colour literal in the capsule code to a light
+ * colour (used when the source is light but the render is still dark — a hardcoded dark bg, not palette-
+ * driven). Conservative: only rewrites `background`/`backgroundColor` string literals whose colour is dark. */
+function forceLightBackgroundCode(bundle: v5.RemotionTemplateCapsule["codeBundle"], lightHex: string): { bundle: v5.RemotionTemplateCapsule["codeBundle"]; changed: boolean } {
+  let changed = false;
+  const files = bundle.files.map((f) => {
+    if (typeof f.content !== "string") return f;
+    let c = f.content.replace(/(background(?:Color)?\s*:\s*)(['"`])(#[0-9a-fA-F]{3,6})\2/g, (m, p: string, q: string, hex: string) => {
+      const l = hexLuma(hex);
+      if (l !== null && l < 70) { changed = true; return `${p}${q}${lightHex}${q}`; }
+      return m;
+    });
+    c = c.replace(/(background(?:Color)?\s*:\s*)(['"`])(black)\2/gi, (_m, p: string, q: string) => { changed = true; return `${p}${q}${lightHex}${q}`; });
+    return { ...f, content: c };
+  });
+  return { bundle: { ...bundle, files }, changed };
 }
 
 function copyForSlot(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, idx: number): string {
@@ -82,6 +126,48 @@ function imagePromptFor(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, imageI
   return `${scene}. 9:16 vertical, photographic, no on-image text, no watermark.`;
 }
 
+/** Pull a {"prompt": "..."} string out of a model reply (raw JSON, fenced, or plain prose). */
+function extractPromptText(raw: string): string | null {
+  try {
+    const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+    if (s >= 0 && e > s) {
+      const o = JSON.parse(raw.slice(s, e + 1)) as { prompt?: unknown };
+      if (typeof o.prompt === "string" && o.prompt.trim()) return o.prompt;
+    }
+  } catch { /* not JSON — fall through */ }
+  const t = raw.replace(/```[a-z]*\s*|\s*```/gi, "").trim();
+  return t.length > 20 ? t : null;
+}
+
+/**
+ * A DETAILED image + video (motion) description for a missing-footage slot (mediaKind="video" — the asset
+ * the compiled Remotion code can't draw). This DRIVES text-to-video directly; we do NOT generate a
+ * reference still for the primary (Seedance) path. The text-to-text model (Doubao) expands the slot's own
+ * AIGC prompt + motion hint into one rich img+motion paragraph; falls back to a deterministic template.
+ */
+async function videoDescriptionFor(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, model?: Gen1ModelFn | null): Promise<string> {
+  const seed = imagePromptFor(slot, brief, 0);
+  const theme = brief.theme ?? brief.prompt ?? "the product";
+  if (model) {
+    try {
+      const raw = await model(
+        `You write prompts for a TEXT-TO-VIDEO model. Produce ONE vivid prompt for a short ~4s, 9:16 vertical ` +
+        `footage clip used as the "${slot.kind}" layer of an ad for "${theme}". Describe BOTH: (a) the IMAGE — ` +
+        `subject, composition, setting, lighting, colour/mood; (b) the VIDEO MOTION over the clip — subject ` +
+        `action and camera movement/pacing.${slot.motionHint ? ` Intended camera/motion: ${slot.motionHint}.` : ""} ` +
+        `Seed idea: ${seed}. Cinematic/photographic, no on-screen text, no watermark, no logos. ` +
+        `Return ONLY JSON: {"prompt":"<one rich paragraph>"}`
+      );
+      const p = extractPromptText(raw);
+      if (p && p.trim().length > 20) return `${p.trim()} 9:16 vertical, no on-image text, no watermark.`;
+    } catch { /* fall through to deterministic */ }
+  }
+  const motion = slot.motionHint
+    ? ` Camera/motion: ${slot.motionHint}.`
+    : " Motion: gentle cinematic camera move (slow push-in or parallax) with natural subject motion.";
+  return `${seed}${motion} Smooth pacing over ~4 seconds, photographic, no on-image text, no watermark.`;
+}
+
 export interface SameTemplateInput {
   projectId: string;
   generationId: string;
@@ -122,6 +208,148 @@ export interface SameTemplateResult {
   renderDurationSec: number;
 }
 
+interface GeneratedMusicBed {
+  id: string;
+  path: string;
+  provider: "google_lyria_music";
+  modelId?: string;
+  promptHash?: string;
+  segmentCount: number;
+}
+
+function cleanMusicDirective(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value
+    .replace(/prompt|watermark|水印|学习样例|不要复制|不复制|sample\s+(audio|video|frame)|copy\s+the\s+sample/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text ? text.slice(0, 700) : undefined;
+}
+
+function audioRecipePrompt(
+  capsule: v5.RemotionTemplateCapsule,
+  brief: v5.CreativeBriefV5,
+  durationSec: number,
+  segmentIndex: number,
+  segmentCount: number,
+  previousSummary?: string,
+  previousSectionBrief?: string
+): string {
+  const recipe = capsule.audioRecipes.find((r) => r.kind === "music_bed") ?? capsule.audioRecipes[0];
+  const theme = cleanMusicDirective(brief.theme ?? brief.prompt) ?? "a modern product advertisement";
+  const mood = (recipe?.mood ?? []).map(cleanMusicDirective).filter((v): v is string => Boolean(v)).slice(0, 6).join(", ") || "modern, polished, energetic";
+  const instruments = (recipe?.instruments ?? []).map(cleanMusicDirective).filter((v): v is string => Boolean(v)).slice(0, 8).join(", ") || "clean synth bass, soft percussion, bright plucks, subtle risers";
+  const bpm = recipe?.bpm ?? capsule.audioRecipes.find((r) => typeof r.bpm === "number")?.bpm;
+  const cueTimes = (recipe?.cuePoints ?? [])
+    .map((cue) => (Number.isFinite(cue.t) ? `${cue.type} at ${cue.t.toFixed(1)}s` : undefined))
+    .filter((v): v is string => Boolean(v))
+    .slice(0, 8)
+    .join(", ");
+  const energy = (recipe?.energyCurve ?? [])
+    .map((point) => `${point.t.toFixed(1)}s=${point.value.toFixed(2)}`)
+    .slice(0, 8)
+    .join(", ");
+  const section =
+    segmentCount <= 1
+      ? `Create one complete section for a ${Math.round(durationSec)} second vertical ad.`
+      : `Create section ${segmentIndex + 1} of ${segmentCount}, exactly 30 seconds, continuing the same track identity.`;
+  return [
+    `Original instrumental music bed for a vertical product video about ${theme}.`,
+    section,
+    `Mood: ${mood}.`,
+    `Instrumentation: ${instruments}.`,
+    bpm ? `Tempo around ${Math.round(bpm)} BPM, steady enough for visual edits.` : "Tempo should be steady enough for visual edits.",
+    energy ? `Energy shape: ${energy}.` : "Energy should rise gently toward the final call-to-action.",
+    cueTimes ? `Important cue moments: ${cueTimes}.` : "Add light impacts and risers at major visual changes.",
+    previousSectionBrief ? `Previous section brief: ${previousSectionBrief}.` : undefined,
+    previousSummary ? `Previous generated section structure: ${previousSummary}. Keep the same key, tempo, instrumentation, and mix character.` : undefined,
+    "Start on a clean downbeat and end with a bar that can crossfade into the next section.",
+    "No vocals. No copyrighted melody. Clean commercial mix."
+  ].filter(Boolean).join(" ");
+}
+
+function generatedMusicSummary(asset: GoogleGeneratedAudioAsset): string | undefined {
+  const parts = Array.isArray(asset.metadata.textParts)
+    ? asset.metadata.textParts.map(cleanMusicDirective).filter((v): v is string => Boolean(v))
+    : [];
+  return cleanMusicDirective(parts.join(" "));
+}
+
+function runAudioFfmpeg(args: string[]): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const p = spawn(resolveBin("ffmpeg"), args, { stdio: "ignore" });
+    p.on("error", (err) => resolve({ ok: false, error: err.message.slice(-400) }));
+    p.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg exit ${code}` }));
+  });
+}
+
+async function stitchGoogleMusicSegments(segments: GoogleGeneratedAudioAsset[], outPath: string, durationSec: number): Promise<{ ok: boolean; path?: string; error?: string }> {
+  if (!segments.length) return { ok: false, error: "no Google music segments" };
+  if (segments.length === 1) return { ok: true, path: segments[0].path };
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  const inputs = segments.flatMap((segment) => ["-i", segment.path]);
+  const filters: string[] = [];
+  let prev = "[0:a]";
+  for (let i = 1; i < segments.length; i++) {
+    const out = i === segments.length - 1 ? "[a]" : `[a${i}]`;
+    filters.push(`${prev}[${i}:a]acrossfade=d=1.25:c1=tri:c2=tri${out}`);
+    prev = out;
+  }
+  const mux = await runAudioFfmpeg([
+    "-y",
+    ...inputs,
+    "-filter_complex", filters.join(";"),
+    "-map", "[a]",
+    "-t", Math.max(1, durationSec).toFixed(2),
+    "-c:a", "aac", "-b:a", "192k",
+    outPath
+  ]);
+  return mux.ok ? { ok: true, path: outPath } : { ok: false, error: mux.error };
+}
+
+async function generateGoogleMusicBed(input: SameTemplateInput, capsule: v5.RemotionTemplateCapsule, durationSec: number): Promise<GeneratedMusicBed | undefined> {
+  if (input.options.aigcGapFill.audioFill !== "aigc" || input.options.aigcGapFill.mode !== "auto_on") return undefined;
+  const apiKey = input.env?.GEMINI_API_KEY?.trim();
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured for Google Lyria music.");
+  const outputDir = path.join(input.outDir, "materials", "audio");
+  const adapter = new GoogleAudioAdapter({
+    apiKey,
+    enabled: true,
+    outputDir,
+    musicModelId: input.env?.GOOGLE_MUSIC_MODEL ?? "lyria-3-clip-preview"
+  });
+  const segmentCount = Math.max(1, Math.ceil(Math.max(1, durationSec) / 30));
+  const segments: GoogleGeneratedAudioAsset[] = [];
+  let previousSummary: string | undefined;
+  let previousSectionBrief: string | undefined;
+  for (let i = 0; i < segmentCount; i++) {
+    const prompt = audioRecipePrompt(capsule, input.brief, durationSec, i, segmentCount, previousSummary, previousSectionBrief);
+    // Lyria intermittently returns no inline audio ("did not include inline audio data") — retry a few
+    // times before letting the whole bed fall back to procedural.
+    let audio: GoogleGeneratedAudioAsset | undefined;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { audio = await adapter.generateMusic({ prompt, durationSec: Math.min(30, Math.max(3, durationSec - i * 30)) }); break; }
+      catch (err) { lastErr = err; }
+    }
+    if (!audio) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    segments.push(audio);
+    previousSectionBrief = cleanMusicDirective(prompt);
+    previousSummary = generatedMusicSummary(audio) ?? previousSummary;
+  }
+  const stitched = await stitchGoogleMusicSegments(segments, path.join(outputDir, `google_lyria_${input.generationId}_bed.m4a`), durationSec);
+  if (!stitched.ok || !stitched.path) throw new Error(`Google Lyria stitch failed: ${stitched.error ?? "unknown"}`);
+  const first = segments[0];
+  return {
+    id: segmentCount === 1 ? first.id : `google_lyria_${input.generationId}_bed`,
+    path: stitched.path,
+    provider: "google_lyria_music",
+    modelId: String(first.metadata.modelId ?? "lyria-3-clip-preview"),
+    promptHash: first.provenance.promptHash,
+    segmentCount
+  };
+}
+
 export async function runSameTemplateGeneration(input: SameTemplateInput): Promise<SameTemplateResult> {
   let capsule = input.capsule;
   const { brief, options } = input;
@@ -151,7 +379,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   }
 
   const aigcOn = options.aigcGapFill.mode === "auto_on";
-  const palette = choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"]);
+  const palette = choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"], capsule.quality);
 
   const targetProfiles = runTargetAssetAnalysisMany(input.targetAssets);
   const provider = aigcOn && options.aigcGapFill.imageFill === "aigc" ? getAigcMaterialProvider((input.env?.AIGC_IMAGE_PROVIDER as never) ?? "google_gemini_image") : undefined;
@@ -160,6 +388,9 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // auto-differs from the source (no copyright concern). Capped: t2v is slow/expensive; overflow -> still.
   const arkKey = input.env?.SEEDANCE_ARK_API_KEY || input.env?.SEEDANCE_API_KEY || input.env?.SEEDREAM_ARK_API_KEY || input.env?.ARK_API_KEY;
   const videoProvider = aigcOn && arkKey && String(input.env?.AIGC_VIDEO_FILL ?? "1") !== "0" ? getAigcMaterialProvider("seedance_2_0") : undefined;
+  // happyhorse r2v (DashScope) is the FALLBACK footage provider; Seedance 2.0 fast (above) is PRIMARY.
+  const backupVideoProvider = aigcOn && input.env?.DASHSCOPE_API_KEY && String(input.env?.AIGC_VIDEO_BACKUP_PROVIDER ?? "happyhorse_r2v") !== "off"
+    ? getAigcMaterialProvider((input.env?.AIGC_VIDEO_BACKUP_PROVIDER as never) ?? "happyhorse_r2v") : undefined;
   // Default: give EVERY mediaKind:"video" slot a real video (footage = video by default). AIGC_VIDEO_MAX is
   // an OPTIONAL cost cap (not a low default) — without it set, no chunk gets starved into stills.
   const videoSlotCount = capsule.slotSchema.filter((s) => s.mediaKind === "video").length;
@@ -244,10 +475,11 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   if (aigcTasks.length) {
     await fs.mkdir(materialsDir, { recursive: true });
     const ctx = { outputDir: materialsDir, publicPathPrefix: input.publicPathPrefix, env: input.env, allowExternalProviderCall: true } as const;
-    const videoBrief = (t: AigcTask) => ({
+    const videoBrief = (t: AigcTask, vprompt?: string) => ({
       id: `vbrief_${input.generationId}_${t.slotId}`, projectId: input.projectId, generationId: input.generationId, slotId: t.slotId,
       visualFormFamily: "live_action_montage", visualForm: t.slot.kind, assetType: "short_video" as const, count: 1, targetTheme: brief.theme ?? "the product",
-      promptPack: [imagePromptFor(t.slot, brief, t.imageIdx)],
+      // DETAILED img+video description drives text-to-video for missing-footage slots (no reference still).
+      promptPack: [vprompt ?? imagePromptFor(t.slot, brief, t.imageIdx)],
       styleConstraints: { aspectRatio: (brief.aspectRatio ?? "9:16") as never, palette, colorPalette: palette, noTextUnlessRequested: true, avoidSampleLookalike: true },
       structureConstraints: { intendedRendererCapability: "remotion_media_layer", motionPattern: "live_action", slotRole: t.slot.kind },
       negativePrompts: ["watermark", "sample logo", "on-image text"],
@@ -266,28 +498,34 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     });
     type FillResult = { t: AigcTask; kind: "video" | "image"; path: string; prompt: string } | { t: AigcTask; kind: "fallback" };
     const results = await mapLimit<AigcTask, FillResult>(aigcTasks, Number(input.env?.AIGC_FILL_CONCURRENCY ?? 6), async (t) => {
-      if (t.method === "video" && videoProvider) {
-        // Image-to-video: first make a CONTROLLED Gemini still (themed, from aigcPrompt) and use it as the
-        // Seedance first-frame — more faithful/consistent than pure text->video. The still is also the fallback.
+      if (t.method === "video" && (videoProvider || backupVideoProvider)) {
+        // VIDEO footage slot (the "missing 素材" the compiled code can't draw). Provider order:
+        //   1) Seedance 2.0 fast (PRIMARY) — plain text-to-video from a DETAILED img+video description.
+        //   2) happyhorse r2v (FALLBACK, DashScope) — reference still + the same description.
+        const vdesc = await videoDescriptionFor(t.slot, brief, input.rewriteModel);
+        // 1) PRIMARY: Seedance plain text-to-video.
+        if (videoProvider) {
+          try {
+            const c = (await aigcSemaphore.run(() => videoProvider.generate(videoBrief(t, vdesc) as never, ctx)))[0];
+            if (c?.path) return { t, kind: "video", path: c.path, prompt: c.prompt };
+          } catch (err) { warnings.push(`seedance ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)} -> happyhorse`); }
+        }
+        // 2) FALLBACK: happyhorse r2v — needs a reference still (image model: gemini-3.1-flash-image).
+        //    Generated lazily here, only once Seedance failed; it is also the final still fallback.
         let still: { path?: string; prompt?: string } | undefined;
         if (provider) {
           try { still = (await aigcSemaphore.run(() => provider.generate(imageBrief(t) as never, ctx)))[0]; }
-          catch (err) { warnings.push(`i2v still ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
+          catch (err) { warnings.push(`video still ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
         }
         const stillLocal = still?.path ? path.join(materialsDir, path.basename(still.path)) : undefined;
-        // Attempt 1: image-to-video (Gemini still as first-frame).
-        if (stillLocal && existsSync(stillLocal)) {
+        if (backupVideoProvider && stillLocal && existsSync(stillLocal)) {
           try {
-            const c = (await aigcSemaphore.run(() => videoProvider.generate(videoBrief(t) as never, { ...ctx, referenceImagePath: stillLocal })))[0];
+            const c = (await aigcSemaphore.run(() => backupVideoProvider.generate(videoBrief(t, vdesc) as never, { ...ctx, referenceImagePath: stillLocal })))[0];
             if (c?.path) return { t, kind: "video", path: c.path, prompt: c.prompt };
-          } catch (err) { warnings.push(`i2v ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)} -> t2v`); }
+          } catch (err) { warnings.push(`happyhorse ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)} -> still`); }
         }
-        // Attempt 2: pure text-to-video (no reference) — salvages when the i2v reference image is content-filtered.
-        try {
-          const c = (await aigcSemaphore.run(() => videoProvider.generate(videoBrief(t) as never, ctx)))[0];
-          if (c?.path) return { t, kind: "video", path: c.path, prompt: c.prompt };
-        } catch (err) { warnings.push(`t2v ${t.slotId}: ${err instanceof Error ? err.message.slice(0, 80) : String(err)} -> still`); }
-        if (still?.path) return { t, kind: "image", path: still.path, prompt: still.prompt ?? "" }; // fall back to the still
+        // 3) Still fallback.
+        if (still?.path) return { t, kind: "image", path: still.path, prompt: still.prompt ?? "" };
       }
       if (provider) {
         try {
@@ -320,9 +558,38 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   let usedFallbackRenderer = false;
   let finalVideoUrl: string | undefined;
   let renderHasAudio = false;
+  let renderAudioSource: "generated" | "procedural" | undefined;
   let renderDur = capsule.timingSignature.durationSec;
+  let generatedMusicBed: GeneratedMusicBed | undefined;
   const finalMp4Path = path.join(input.outDir, "final.mp4");
   if (input.doRender !== false) {
+    if (options.aigcGapFill.audioFill === "aigc") {
+      try {
+        generatedMusicBed = await generateGoogleMusicBed(input, capsule, renderDur);
+        if (generatedMusicBed) {
+          boundProps.audio.musicBed = {
+            src: generatedMusicBed.path,
+            provider: generatedMusicBed.provider,
+            modelId: generatedMusicBed.modelId,
+            segmentCount: generatedMusicBed.segmentCount
+          };
+          const audioSlotIds = new Set(capsule.slotSchema.filter((s) => AUDIO_SLOTS.has(s.kind)).map((s) => s.id));
+          for (const b of slotBindings) {
+            if (audioSlotIds.has(b.slotId)) {
+              b.status = "aigc_generated";
+              b.audioId = generatedMusicBed.id;
+              b.assetId = generatedMusicBed.id;
+              b.uri = generatedMusicBed.path;
+              b.provenance = { source: "aigc_generated", provider: generatedMusicBed.provider, sampleAudioUsed: false };
+              b.warnings = [`google lyria music (${generatedMusicBed.segmentCount} clip${generatedMusicBed.segmentCount === 1 ? "" : "s"})`];
+            }
+          }
+          warnings.push(`Google Lyria music generated: ${generatedMusicBed.segmentCount} clip${generatedMusicBed.segmentCount === 1 ? "" : "s"} using ${generatedMusicBed.modelId ?? "lyria-3-clip-preview"}.`);
+        }
+      } catch (err) {
+        warnings.push(`Google Lyria music unavailable: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}; using procedural audio fallback.`);
+      }
+    }
     const beatTimes = (capsule.timingSignature.sections.flatMap((s) => s.internalBeats)).slice(0, 8);
     const res = await renderTemplateCapsule({
       capsule,
@@ -330,11 +597,13 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       outPath: finalMp4Path,
       aspectRatio: brief.aspectRatio ?? "9:16",
       proceduralAudio: options.aigcGapFill.audioFill !== "off",
+      audioPath: generatedMusicBed?.path,
       bpm: brief && (capsule.audioRecipes[0]?.bpm ?? null),
       hitTimes: beatTimes
     });
     usedTemplateCode = res.usedTemplateCode && res.ok;
     renderHasAudio = res.hasAudio;
+    renderAudioSource = res.audioSource;
     renderDur = res.durationSec;
     if (res.ok && res.finalMp4) {
       finalVideoUrl = `${input.publicPathPrefix.replace(/materials\/$/, "")}final.mp4`;
@@ -348,31 +617,32 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
 
   // ---- Post-render fidelity passes (AI capsule with a real render) ----
   if (finalMp4Exists && capsule.quality.codeOrigin === "ai") {
-    // (A) Colour fidelity: source is light but the output rendered DARK -> re-theme with a hard light
-    // directive and re-render once (to a temp path, so a failed correction can't corrupt the good render).
-    if (capsule.quality.sourceIsLight && input.rewriteModel) {
+    // (A) Colour fidelity (DETERMINISTIC, no LLM): source is light but the output rendered DARK -> auto-
+    // insert a light background (lighten the bound palette + any hardcoded dark full-screen bg in code),
+    // re-render once to a temp path, and RE-MEASURE luma — only keep the fix if it actually got lighter
+    // (so we never falsely claim "corrected" while the video is still black).
+    if (capsule.quality.sourceIsLight) {
       try {
         const luma = await overallMeanLuma(finalMp4Path, renderDur);
         if (luma !== null && luma < 90) {
-          warnings.push(`colour-fidelity: source light but output luma ${Math.round(luma)} (dark) -> correcting`);
-          const rw = await runCapsuleContextRewrite({
-            capsule, theme: brief.theme ?? brief.prompt ?? "", sellingPoints: brief.sellingPoints ?? [], model: input.rewriteModel,
-            renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
-            maxAttempts: 2,
-            extraDirective: `COLOUR FIX (mandatory): the current render is too DARK (mean luma ${Math.round(luma)}) but the source background is LIGHT (${capsule.quality.sourceDominantHex ?? "near-white"}). Make the BASE BACKGROUND light (white/off-white) with dark text everywhere; keep accent colours but NEVER a dark/black full-screen background.`
-          });
-          if (rw.usedAi) {
-            const fixCapsule = { ...capsule, codeBundle: rw.codeBundle };
-            const fixPath = `${finalMp4Path}.fix.mp4`;
-            const beats2 = capsule.timingSignature.sections.flatMap((s) => s.internalBeats).slice(0, 8);
-            const res2 = await renderTemplateCapsule({ capsule: fixCapsule, boundProps, outPath: fixPath, aspectRatio: brief.aspectRatio ?? "9:16", proceduralAudio: options.aigcGapFill.audioFill !== "off", bpm: capsule.audioRecipes[0]?.bpm ?? null, hitTimes: beats2 });
-            if (res2.ok && existsSync(fixPath)) {
-              await fs.rename(fixPath, finalMp4Path);
-              capsule = fixCapsule; renderDur = res2.durationSec; renderHasAudio = res2.hasAudio;
-              warnings.push("colour-fidelity correction applied (light background restored).");
-            } else {
-              warnings.push(`colour-fidelity correction render failed (${res2.error?.slice(0, 80)}); kept original.`);
-            }
+          const lightHex = isLightHex(capsule.quality.sourceDominantHex) ? (capsule.quality.sourceDominantHex as string) : "#F2F5F9";
+          warnings.push(`colour-fidelity: source light but output luma ${Math.round(luma)} (dark) -> light-bg correction (${lightHex})`);
+          const prevPalette = boundProps.palette;
+          boundProps.palette = lightPalette(prevPalette[2], capsule.quality.sourceDominantHex);
+          const patched = forceLightBackgroundCode(capsule.codeBundle, lightHex);
+          const fixCapsule = { ...capsule, codeBundle: patched.bundle };
+          const fixPath = `${finalMp4Path}.fix.mp4`;
+          const beats2 = capsule.timingSignature.sections.flatMap((s) => s.internalBeats).slice(0, 8);
+          const res2 = await renderTemplateCapsule({ capsule: fixCapsule, boundProps, outPath: fixPath, aspectRatio: brief.aspectRatio ?? "9:16", proceduralAudio: options.aigcGapFill.audioFill !== "off", audioPath: generatedMusicBed?.path, bpm: capsule.audioRecipes[0]?.bpm ?? null, hitTimes: beats2 });
+          const luma2 = res2.ok && existsSync(fixPath) ? await overallMeanLuma(fixPath, res2.durationSec) : null;
+          if (res2.ok && existsSync(fixPath) && luma2 !== null && luma2 > Math.max(luma + 20, 100)) {
+            await fs.rename(fixPath, finalMp4Path);
+            capsule = fixCapsule; renderDur = res2.durationSec; renderHasAudio = res2.hasAudio; renderAudioSource = res2.audioSource;
+            warnings.push(`colour-fidelity correction applied (luma ${Math.round(luma)} -> ${Math.round(luma2)}).`);
+          } else {
+            await fs.rm(fixPath, { force: true }).catch(() => {});
+            boundProps.palette = prevPalette; // reject: keep the original render + its palette
+            warnings.push(`colour-fidelity correction ineffective (luma ${Math.round(luma)} -> ${luma2 === null ? "?" : Math.round(luma2)}); kept original.`);
           }
         }
       } catch (err) { warnings.push(`colour-fidelity check skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
@@ -458,7 +728,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // procedural-only render honestly stays below review_demo.
   const visualSubstanceOk = requiredVisual.length === 0 || realVisualCount > 0;
   gates.push(gate("V5-G41", "Visual substance", input.doRender === false ? "warn" : visualSubstanceOk ? "pass" : "warn", `${realVisualCount}/${requiredVisual.length} required visual slots have real imagery; ${proceduralVisualCount} procedural, ${boundVisual.length} bound`));
-  gates.push(gate("V5-G27", "Audio validity", renderHasAudio || input.doRender === false ? "pass" : "warn", renderHasAudio ? "procedural bed present" : "no audio track"));
+  gates.push(gate("V5-G27", "Audio validity", renderHasAudio || input.doRender === false ? "pass" : "warn", renderHasAudio ? `${renderAudioSource ?? "audio"} bed present` : "no audio track"));
   gates.push(gate("V5-G29", "No sample pixels", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.visualMinHamming !== undefined ? `minHamming=${noCopy.visualMinHamming}` : noCopy.details));
   gates.push(gate("V5-G30", "No sample audio", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.audioMaxSimilarity !== undefined ? `audioSim=${noCopy.audioMaxSimilarity}` : undefined));
   // same_template-mapped canonical equivalents so runScorecardV5's readiness ladder is exercised on
@@ -518,14 +788,23 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       version: "render-recipe-v5",
       composition: { width: 1080, height: 1920, fps: capsule.timingSignature.fps, durationSec: renderDur, aspectRatio: (brief.aspectRatio ?? "9:16") as v5.AspectRatioV5 },
       layers,
-      audioLayers: renderHasAudio ? [{ id: "bed", kind: "music", startSec: 0, endSec: renderDur, provenance: { source: "procedural", sampleAudioUsed: false } }] : [],
+      audioLayers: renderHasAudio ? [{
+        id: "bed",
+        kind: "music",
+        uri: renderAudioSource === "generated" ? generatedMusicBed?.path : undefined,
+        startSec: 0,
+        endSec: renderDur,
+        provenance: renderAudioSource === "generated"
+          ? { assetId: generatedMusicBed?.id, source: "aigc_generated", createdByStage: "same_template_audio_fill", promptHash: generatedMusicBed?.promptHash, sampleAudioUsed: false }
+          : { source: "procedural", sampleAudioUsed: false }
+      }] : [],
       assets: generatedAssets.map((a) => ({ id: a.id, uri: a.uri, provenance: a.provenance })),
       explanations: [`same_template: rendered capsule ${capsule.id} code with ${slotBindings.filter((b) => b.status !== "missing").length} bound slots.`]
     },
     explanation: {
       usedElements: [{ elementId: capsule.id, sourceSampleId: capsule.sourceSampleId, appliedAtSec: 0, reason: "Used the sample's full Remotion template (same structure/timing/motion, new content)." }],
       gapFillDecisions: slotBindings.map((b) => `${b.slotId}: ${b.status}`),
-      audioDecisions: [renderHasAudio ? "procedural cue-aware bed" : "no audio"]
+      audioDecisions: [renderHasAudio ? (renderAudioSource === "generated" ? `Google Lyria music bed (${generatedMusicBed?.segmentCount ?? 1} clip${(generatedMusicBed?.segmentCount ?? 1) === 1 ? "" : "s"})` : "procedural cue-aware bed") : "no audio"]
     },
     validation: { schemaPassed: true, tsCompilePassed: capsule.quality.compilePassed, noCopyPassed: noCopy.noCopyPassed, warnings },
     renderMode: usedFallbackRenderer ? "fallback" : "bespoke_codegen",

@@ -51,6 +51,9 @@ export interface TemplateSlot {
   aigcPrompt?: string;
   /** Camera / motion hint (e.g. "slow push-in", "whip pan") for ken-burns or t2v. */
   motionHint?: string;
+  /** True if this block is a good candidate for a USER-SUPPLIED asset (hero product, logo, main subject
+   *  shot) — labeled so a later flow can let users drop their OWN image/video into it instead of AIGC. */
+  userAssetSlot?: boolean;
 }
 
 export interface RemotionTemplateCapsule {
@@ -168,7 +171,7 @@ export const DEFAULT_GENERATION_OPTIONS_V5: GenerationOptionsV5 = {
   aigcGapFill: {
     mode: "auto_on",
     imageFill: "aigc",
-    audioFill: "procedural",
+    audioFill: "aigc",
     textFill: "llm"
   },
   fallbackPolicy: {

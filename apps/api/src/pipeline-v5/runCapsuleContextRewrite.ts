@@ -31,10 +31,8 @@ Rewrite RULES:
 - Replace EVERY readable on-screen word (headlines, captions, CTAs, kinetic text, canvas fillText/strokeText,
   3D text, SVG <text>) with NEW copy that fits the new theme + key points. Nothing from the original ad's
   wording may remain.
-- You MAY shift ACCENT colours toward the new theme's mood, BUT you MUST PRESERVE THE SOURCE'S OVERALL
-  BACKGROUND LIGHTNESS: if the original code renders on a LIGHT / white / high-key background, keep it
-  light; if it renders dark, keep it dark. Do NOT flip a light background to dark (or dark to light).
-  Only swap accent/text colours — never invert the base background tone.
+- You MAY retheme colours (background, accents, text) to fit the new theme. Always keep STRONG contrast
+  between text and its background (never render text in a colour close to its background colour).
 - KEEP EVERYTHING ELSE IDENTICAL: component structure, layout, every Sequence, all animation/motion/3D,
   transitions, timing, image/video layers, fonts behaviour. Only CONTENT (words + colours) changes.
 - Keep the EXACT SAME exported component name and signature as the original file (do NOT rename the export,
