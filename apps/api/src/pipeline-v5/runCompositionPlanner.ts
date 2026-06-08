@@ -20,7 +20,7 @@ interface PlannerInput {
   projectId: string;
   generationId?: string;
   composition?: { width?: number; height?: number; fps?: number; aspectRatio?: v5.AspectRatioV5 };
-  beatGrid?: { bpm?: number | null; beats?: number[]; strongBeats?: number[] };
+  beatGrid?: { bpm?: number | null; beats?: number[]; strongBeats?: number[]; energyCurve?: Array<{ t: number; value: number }> };
 }
 
 const MEDIA_ROLES = new Set<v5.SectionRoleV5>(["setup", "proof", "demo", "benefit"]);
@@ -120,6 +120,10 @@ export function runCompositionPlanner(input: PlannerInput): v5.CompositionProgra
   // 6. Audio plan + cue plan (beat-synced hits).
   const audioEl = selectedElements.find((e) => e.kind === "audio_pattern");
   const strongBeats = (input.beatGrid?.strongBeats?.length ? input.beatGrid.strongBeats : input.beatGrid?.beats) ?? [];
+  const beatGridSec = readNumberList(audioEl?.payload?.beatGridSec).length
+    ? readNumberList(audioEl?.payload?.beatGridSec)
+    : input.beatGrid?.beats ?? [];
+  const energyCurve = readEnergyCurve(audioEl?.payload?.energyCurve ?? audioEl?.audioRecipe?.energyCurve ?? input.beatGrid?.energyCurve, durationSec);
   const cues = buildAudioCuePlan(sections, durationSec, audioEl, strongBeats);
   const audioPlan: v5.AudioPlan = {
     layers: [
@@ -129,7 +133,9 @@ export function runCompositionPlanner(input: PlannerInput): v5.CompositionProgra
     mood: (audioEl?.payload?.mood as string[] | undefined) ?? ["energetic", "commercial"],
     bpm: (audioEl?.payload?.bpm as number | undefined) ?? audioEl?.audioRecipe?.bpm ?? input.beatGrid?.bpm ?? undefined,
     cues,
-    strongBeatsSec: strongBeats.slice(0, 24)
+    beatGridSec: beatGridSec.slice(0, 96),
+    strongBeatsSec: strongBeats.slice(0, 48),
+    energyCurve
   };
 
   const selectedElementsField: v5.CompositionSelectedElement[] = selectedElements.map((e, i) => ({
@@ -157,6 +163,25 @@ export function runCompositionPlanner(input: PlannerInput): v5.CompositionProgra
       possibleRisks: targetProfiles.length === 0 ? ["No target assets; visual slots are filled by generated/designed material."] : []
     }
   };
+}
+
+function readNumberList(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+}
+
+function readEnergyCurve(value: unknown, durationSec: number): Array<{ t: number; value: number }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value
+    .map((item) => {
+      const rec = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      const t = typeof rec.t === "number" ? rec.t : typeof rec.timeSec === "number" ? rec.timeSec : undefined;
+      const v = typeof rec.value === "number" ? rec.value : typeof rec.energy === "number" ? rec.energy : undefined;
+      if (t === undefined || v === undefined || !Number.isFinite(t) || !Number.isFinite(v)) return undefined;
+      return { t: Number(Math.max(0, Math.min(durationSec, t)).toFixed(3)), value: Number(Math.max(0, Math.min(1, v)).toFixed(3)) };
+    })
+    .filter((p): p is { t: number; value: number } => Boolean(p));
+  return out.length ? out.slice(0, 96) : undefined;
 }
 
 /** Build a <=6 role sequence, hook-first cta-last, from a learned structure or an ad-arc archetype. */

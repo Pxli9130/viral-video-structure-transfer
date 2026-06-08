@@ -54,22 +54,6 @@ function weightsMissing(provider: ModelProviderDefinition, env: Record<string, s
   return vars.filter((key) => !env[key]?.trim() || caps[`weight:${key}`] === false);
 }
 
-function elevenLabsLiveEnabled(provider: ModelProviderDefinition, task: ModelTask, env: Record<string, string | undefined>): boolean {
-  if (!provider.id.startsWith("elevenlabs_")) return true;
-  if (envFlag(env, "ENABLE_ELEVENLABS_LIVE_TESTS") || envFlag(env, "ELEVENLABS_ENABLE_CLOUD")) return true;
-  const taskFlags: Partial<Record<ModelTask, string[]>> = {
-    asr: ["ELEVENLABS_ENABLE_SCRIBE", "ELEVENLABS_ENABLE_ASR"],
-    voiceover: ["ELEVENLABS_ENABLE_TTS", "ELEVENLABS_ENABLE_VOICEOVER"],
-    sound_effect: ["ELEVENLABS_ENABLE_SOUND_EFFECTS", "ELEVENLABS_ENABLE_SFX"],
-    music: ["ELEVENLABS_ENABLE_MUSIC"],
-    audio_cleanup: ["ELEVENLABS_ENABLE_AUDIO_ISOLATION", "ELEVENLABS_ENABLE_AUDIO_CLEANUP"],
-    forced_alignment: ["ELEVENLABS_ENABLE_FORCED_ALIGNMENT", "ELEVENLABS_ENABLE_ALIGNMENT"],
-    model_discovery: ["ELEVENLABS_ENABLE_DISCOVERY", "ELEVENLABS_ENABLE_MODELS_READ"],
-    voice_discovery: ["ELEVENLABS_ENABLE_DISCOVERY", "ELEVENLABS_ENABLE_VOICES_READ"]
-  };
-  return (taskFlags[task] ?? []).some((flag) => envFlag(env, flag));
-}
-
 function googleAudioLiveEnabled(provider: ModelProviderDefinition, task: ModelTask, env: Record<string, string | undefined>): boolean {
   if (provider.id !== "google_gemini_tts" && provider.id !== "google_lyria_music") return true;
   if (envFlag(env, "ENABLE_GOOGLE_AUDIO_LIVE_TESTS") || envFlag(env, "GOOGLE_AUDIO_ENABLE_CLOUD") || envFlag(env, "ALLOW_CLOUD_PROVIDERS")) return true;
@@ -94,9 +78,6 @@ export function normalizeProviderId(providerId: string): { providerId: string; w
 function policyFor(provider: ModelProviderDefinition, task: ModelTask, options: ModelRouterOptions): MediaAccessPolicy {
   if (provider.id === "gemini_vlm_current" && task === "video_structure_vlm" && options.allowCloud === true && options.allowSampleMediaExternal === true) {
     return EXTERNAL_VLM_SAMPLE_MEDIA_POLICY;
-  }
-  if (provider.id === "elevenlabs_scribe" && task === "asr" && options.allowCloud === true && options.allowSampleMediaExternal === true) {
-    return { ...provider.mediaAccessPolicy, sampleAudioAllowed: true };
   }
   if (provider.id === "gemini_vlm_judge" && task === "quality_judge" && options.allowCloud === true && options.allowQualityJudgeSampleFrames === true) {
     return QUALITY_JUDGE_WITH_SAMPLE_POLICY;
@@ -130,13 +111,6 @@ function providerAvailable(
   }
   if (provider.cloud && envMissingVars.length) {
     return { provider: provider.id, available: false, reason: "required provider env vars are missing", envMissing: envMissingVars };
-  }
-  if (provider.id.startsWith("elevenlabs_") && !elevenLabsLiveEnabled(provider, task, env)) {
-    return {
-      provider: provider.id,
-      available: false,
-      reason: "ElevenLabs live calls are disabled; set ENABLE_ELEVENLABS_LIVE_TESTS=1 or a task-specific ELEVENLABS_ENABLE_* flag"
-    };
   }
   if ((provider.id === "google_gemini_tts" || provider.id === "google_lyria_music") && !googleAudioLiveEnabled(provider, task, env)) {
     return {

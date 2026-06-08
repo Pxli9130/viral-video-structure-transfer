@@ -19,9 +19,13 @@ import type {
 export interface KnowledgeElement {
   id: string;
   kind: KnowledgeElementKindV5;
+  /** Stable top-level ontology remains `kind`; category/subcategory are open-ended facets. */
+  category?: string;
+  subcategory?: string;
   name: string;
   description: string;
   tags: string[];
+  facets?: Record<string, unknown>;
 
   source: {
     sourceSampleId: string;
@@ -35,6 +39,41 @@ export interface KnowledgeElement {
 
   slots: PlaceholderSlotV5[];
   payload: Record<string, unknown>;
+
+  signatures?: {
+    payloadHash: string;
+    normalizedText: string;
+    retrievalText: string;
+    slotSchemaHash?: string;
+    remotionHash?: string;
+    audioCueHash?: string;
+    audioRhythmHash?: string;
+    visualSignatureHash?: string;
+  };
+
+  embedding?: {
+    model: string;
+    version: string;
+    vectorRef?: string;
+    retrievalText: string;
+    createdAt: string;
+  };
+
+  relations?: Array<{
+    type:
+      | "uses"
+      | "requires"
+      | "compatible_with"
+      | "conflicts_with"
+      | "variant_of"
+      | "derived_from"
+      | "often_combined_with";
+    targetElementId: string;
+    confidence: number;
+    reason?: string;
+  }>;
+
+  aliases?: string[];
 
   style?: {
     palette?: string[];
@@ -76,6 +115,15 @@ export interface KnowledgeElement {
   preview?: {
     thumbnail?: string;
     previewMp4?: string;
+  };
+
+  lifecycle?: {
+    status: "active" | "archived" | "deleted" | "rejected";
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+    deletedAt?: string;
+    deleteReason?: string;
   };
 }
 

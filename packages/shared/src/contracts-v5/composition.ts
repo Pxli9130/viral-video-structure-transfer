@@ -74,10 +74,13 @@ export interface AudioPlan {
   bedRecipeId?: string;
   mood?: string[];
   bpm?: number;
+  beatGridSec?: number[];
   /** Section-aligned cue plan (impact@hook, hits on transitions, riser before cta…). */
   cues?: AudioCuePoint[];
   /** Strong beat times (seconds) from the source evidence beat grid, for hit alignment. */
   strongBeatsSec?: number[];
+  /** Normalized sample audio power curve used only to synthesize a simpler same-rhythm fallback. */
+  energyCurve?: Array<{ t: number; value: number }>;
 }
 
 export interface CompositionSelectedElement {

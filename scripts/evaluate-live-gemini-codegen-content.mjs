@@ -11,8 +11,8 @@ import path from "node:path";
 const ROOT = process.cwd();
 const CASES = ["marketing", "motion_graph_1", "motion_graph_2", "editing"];
 const ACCEPTED_AUDIO_FALLBACK_REASONS = new Set([
-  "elevenlabs_optional",
-  "elevenlabs_not_configured_or_unavailable"
+  "google_audio_optional",
+  "google_audio_not_configured_or_unavailable"
 ]);
 
 function arg(flag, fallback) {
@@ -210,7 +210,7 @@ function commonChecks(caseId, actual, expectedCase, checks) {
     "audio",
     "important",
     passFail(acceptedAudioFallback(actual)),
-    "ElevenLabs unavailable must not fail visual/codegen eval; procedural fallback is acceptable.",
+    "Google Gemini/Lyria audio unavailable must not fail visual/codegen eval; procedural fallback is acceptable.",
     JSON.stringify(actual?.audioFallback ?? null),
     []
   );
@@ -741,7 +741,7 @@ function renderMarkdown({ runDir, bundlePath, liveReport, results }) {
   lines.push(`- Live HTTP calls from run: \`${liveCalls}\``);
   lines.push("- Verdict scope: direct Gemini returned layer plans only.");
   lines.push("- Ignored for pass/fail: local motif gates, EffectRegistry selection, strict minimum layer counts, exact JSON format differences.");
-  lines.push("- ElevenLabs policy: optional; procedural audio fallback is accepted.");
+  lines.push("- Google audio policy: optional; procedural audio fallback is accepted.");
   lines.push(`- Result summary: PASS=${pass}, WEAK=${weak}, FAIL=${fail}`);
   lines.push("");
   lines.push("## Case Summary");

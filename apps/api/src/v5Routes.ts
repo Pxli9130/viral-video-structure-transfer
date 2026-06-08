@@ -16,15 +16,18 @@ import { analyzeEvidenceTimeline } from "./adapters/evidenceTimeline.js";
 import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
   buildV5RenderInputProps,
-  createGeminiModelFn,
+  createDoubaoModelFn,
   createGeminiVisionCodegenFn,
   createGeminiVisionFn,
   createTextModelFn,
+  finalProgramToGen2RemotionCapsule,
   renderFinalVideoV5,
+  renderTemplateCapsule,
   runCreateV5,
   runGen1Ai,
   runLearnSampleV5,
   runNoCopyScan,
+  runTargetAssetAnalysisMany,
   runSameTemplateGeneration,
   runScorecardV5,
   toEvidenceTimelineV5,
@@ -60,6 +63,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
       return undefined;
     }
   };
+  const generatedUrl = (ref: unknown) => {
+    if (typeof ref !== "string") return undefined;
+    return ref.startsWith("/generated/") ? ref : undefined;
+  };
 
   // ---- Assets (for the UI to pick sample/target assets) ----
   router.get("/assets", async (_req, res) => {
@@ -69,16 +76,22 @@ export function createV5Router(deps: V5RouterDeps): Router {
     });
   });
 
+  router.get("/assets/:assetId/media", async (req, res) => {
+    const asset = await findAsset(req.params.assetId);
+    if (!asset?.path) return fail(res, 404, "asset media not found");
+    return res.sendFile(path.resolve(asset.path));
+  });
+
   // ---- Learn ----
   router.post("/learn-samples", async (req: Request, res: Response) => {
     const sampleAssetIds: string[] = Array.isArray(req.body?.sampleAssetIds) ? req.body.sampleAssetIds : [];
     if (!sampleAssetIds.length) return fail(res, 400, "sampleAssetIds[] required");
     const wantAi = req.body?.options?.runGen1Ai === true;
-    const modelFn = wantAi ? createGeminiModelFn() : undefined;
+    const modelFn = wantAi ? createTextModelFn() : undefined;
     // V5.1: real AI codegen of the capsule TSX (triple-gated, apply!=promote) is now the DEFAULT
     // (opt out with options.runCapsuleCodegen=false). Falls back to deterministic when no GEMINI key.
     const wantCapsuleCodegen = req.body?.options?.runCapsuleCodegen !== false;
-    const capsuleCodegenModel = wantCapsuleCodegen ? createGeminiModelFn({ model: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
+    const capsuleCodegenModel = wantCapsuleCodegen ? createTextModelFn({ geminiModel: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
     // Multimodal codegen + VLM scene enrichment send sample FRAMES to the provider for STRUCTURE
     // analysis — gated by ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS (opt out with options.useVision=false).
     const allowVlm = String(process.env.ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS ?? "") === "1" && req.body?.options?.useVision !== false;
@@ -182,6 +195,120 @@ export function createV5Router(deps: V5RouterDeps): Router {
   });
 
   router.get("/kb/decisions", (_req, res) => ok(res, { decisions: kb.getDecisions() }));
+
+  // ---- Transfer trace: one explainable view of learn -> KB -> slot mapping -> gap fill -> render ----
+  const buildTransferTrace = async (generationId: string) => {
+    const generation = await readJsonIf(path.join(genDir(generationId), "generation-result.json")) as Record<string, unknown> | undefined;
+    if (!generation) return undefined;
+    const templateCapsuleId =
+      typeof generation.templateCapsuleId === "string"
+        ? generation.templateCapsuleId
+        : (generation.templateInstance as { templateCapsuleId?: string } | undefined)?.templateCapsuleId
+          ?? (generation.finalProgram as { sameTemplate?: { templateCapsuleId?: string } } | undefined)?.sameTemplate?.templateCapsuleId;
+    const capsule = templateCapsuleId ? kb.getTemplateCapsule(templateCapsuleId) : undefined;
+    const sampleId = capsule?.sourceSampleId
+      ?? ((generation.finalProgram as { explanation?: { usedElements?: Array<{ sourceSampleId?: string }> } } | undefined)?.explanation?.usedElements?.[0]?.sourceSampleId);
+    const sampleAsset = sampleId ? await findAsset(sampleId) : undefined;
+    const learnPath = sampleId ? learnDir(sampleId) : undefined;
+    const evidence = learnPath ? await readJsonIf(path.join(learnPath, "evidence-timeline-v5.json")) : undefined;
+    const reconstruction = learnPath ? await readJsonIf(path.join(learnPath, "neutral-reconstruction-program.json")) : undefined;
+    const knowledgeManifest = learnPath ? await readJsonIf(path.join(learnPath, "knowledge_manifest.seed.json")) : undefined;
+    const learnKbDecisions = learnPath ? await readJsonIf(path.join(learnPath, "kb-decisions.json")) : undefined;
+    const sideKbDecisions = learnPath ? await readJsonIf(path.join(learnPath, "kb-decisions-sidefiles.json")) : undefined;
+    const keyFrames = Array.isArray((evidence as { keyFrames?: unknown[] } | undefined)?.keyFrames) ? (evidence as { keyFrames: Array<{ frameRef?: string }> }).keyFrames : [];
+    const slotBindings = (generation.templateInstance as { slotBindings?: v5.TemplateSlotBinding[] } | undefined)?.slotBindings
+      ?? (generation.finalProgram as { sameTemplate?: { slotBindings?: v5.TemplateSlotBinding[] } } | undefined)?.sameTemplate?.slotBindings
+      ?? [];
+    const targetAssetIds = Array.from(new Set(slotBindings.map((b) => b.assetId).filter((id): id is string => Boolean(id))));
+    const targetAssets = (await getAssets()).filter((a) => targetAssetIds.includes(a.id));
+    const targetProfiles = runTargetAssetAnalysisMany(targetAssets);
+    const slotById = new Map((capsule?.slotSchema ?? []).map((s) => [s.id, s]));
+    const gapReport = generation.gapReport ?? await readJsonIf(path.join(genDir(generationId), "gap-report.json"));
+    const scorecard = generation.scorecard ?? await readJsonIf(path.join(genDir(generationId), "scorecard.json"));
+    const kbElements = sampleId ? kb.list({ sourceSampleId: sampleId, limit: 80 }) : [];
+    const slotMapping = slotBindings.map((binding) => {
+      const slot = slotById.get(binding.slotId);
+      const profile = binding.assetId ? targetProfiles.find((p) => p.assetId === binding.assetId) : undefined;
+      return {
+        slotId: binding.slotId,
+        slotKind: slot?.kind,
+        originalRole: slot?.originalRole,
+        required: slot?.required,
+        status: binding.status,
+        assetId: binding.assetId,
+        assetProfile: profile,
+        uri: binding.uri,
+        text: binding.text,
+        fillReason:
+          binding.status === "user_asset" ? `Matched user asset to ${slot?.originalRole ?? binding.slotId}.`
+          : binding.status === "aigc_generated" ? `Filled missing ${slot?.kind ?? "slot"} with AIGC material.`
+          : binding.status === "text_generated" ? "Generated replacement copy from the target brief."
+          : binding.status === "procedural_generated" ? "Used procedural Remotion fallback because no user/AIGC asset was bound."
+          : "Slot remains missing."
+      };
+    });
+    const fillActions = slotMapping.map((m) => ({
+      slotId: m.slotId,
+      status: m.status,
+      strategy:
+        m.status === "user_asset" ? "asset_reuse"
+        : m.status === "aigc_generated" ? "aigc_fill"
+        : m.status === "text_generated" ? "text_fill"
+        : m.status === "procedural_generated" ? "procedural_fill"
+        : "missing",
+      reason: m.fillReason
+    }));
+    return {
+      id: `trace_${generationId}`,
+      generationId,
+      sample: {
+        assetId: sampleId,
+        filename: sampleAsset?.filename,
+        videoUrl: sampleAsset?.path ? `/api/v5/assets/${sampleId}/media` : undefined,
+        duration: (evidence as { video?: { durationSec?: number } } | undefined)?.video?.durationSec,
+        thumbnail: generatedUrl(keyFrames[0]?.frameRef),
+        evidence,
+        reconstruction,
+        sceneRecipes: capsule?.sceneRecipes ?? [],
+        audioRecipes: capsule?.audioRecipes ?? []
+      },
+      template: {
+        capsuleId: capsule?.id ?? templateCapsuleId,
+        name: capsule?.name,
+        slotSchema: capsule?.slotSchema ?? [],
+        remotionCodeHash: (knowledgeManifest as { remotionCodeHash?: string } | undefined)?.remotionCodeHash,
+        validation: await (learnPath ? readJsonIf(path.join(learnPath, "template-validation.json")) : Promise.resolve(undefined)),
+        knowledgeManifest
+      },
+      transfer: {
+        targetBrief: (generation.templateInstance as { creativeBrief?: unknown } | undefined)?.creativeBrief,
+        targetAssetProfiles: targetProfiles,
+        assetPlan: capsule?.assetRecipes ?? [],
+        slotMapping,
+        gapReport,
+        fillActions,
+        kbDecisions: [...(Array.isArray(learnKbDecisions) ? learnKbDecisions : []), ...(Array.isArray(sideKbDecisions) ? sideKbDecisions : [])],
+        usedKnowledgeElements: kbElements.map((e) => ({ id: e.id, kind: e.kind, name: e.name, tags: e.tags, evidenceRefs: e.source.evidenceRefs }))
+      },
+      result: {
+        outputVideoUrl: generation.finalVideoUrl,
+        scorecard,
+        renderParams: (generation as { renderProps?: unknown }).renderProps ?? (generation.finalProgram as { renderRecipe?: unknown } | undefined)?.renderRecipe,
+        previewFrames: []
+      },
+      warnings: (generation as { warnings?: string[] }).warnings ?? []
+    };
+  };
+
+  router.get("/jobs/:jobId/transfer-trace", async (req, res) => {
+    const trace = await buildTransferTrace(req.params.jobId);
+    return trace ? ok(res, trace) : fail(res, 404, "generation trace not found");
+  });
+
+  router.get("/generations/:id/transfer-trace", async (req, res) => {
+    const trace = await buildTransferTrace(req.params.id);
+    return trace ? ok(res, trace) : fail(res, 404, "generation trace not found");
+  });
 
   // ---- Template capsules (V5.1 — the default generation object) ----
   router.get("/templates", (req, res) => {
@@ -318,15 +445,22 @@ export function createV5Router(deps: V5RouterDeps): Router {
     if (!selectedElements.length) return fail(res, 400, "no KB elements selected/available; run /learn-samples first");
 
     const outDir = genDir(generationId);
-    const gen2Model = options.runGen2Ai === true ? createGeminiModelFn() ?? undefined : undefined;
+    const gen2Model = options.runGen2Ai === true ? createTextModelFn() ?? undefined : undefined;
+    const requestedGen2RemotionCodegen = options.runGen2RemotionCodegen === true;
+    const gen2RemotionModel = requestedGen2RemotionCodegen
+      ? createDoubaoModelFn({
+          timeoutMs: Number(process.env.GEN2_REMOTION_TIMEOUT_MS ?? process.env.DOUBAO_TIMEOUT_MS ?? 180000),
+          temperature: 0.2
+        }) ?? undefined
+      : undefined;
 
-    // Beat grid (for audio-cue alignment) from the first selected element's learned evidence.
+    // Beat grid + audio power curve (for procedural fallback rhythm) from the first selected element's learned evidence.
     const sampleId = selectedElements[0]?.source.sourceSampleId;
-    let beatGrid: { bpm?: number | null; beats?: number[]; strongBeats?: number[] } | undefined;
+    let beatGrid: { bpm?: number | null; beats?: number[]; strongBeats?: number[]; energyCurve?: Array<{ t: number; value: number }> } | undefined;
     if (sampleId) {
       const ev = await readJsonIf(path.join(learnDir(sampleId), "evidence-timeline-v5.json"));
-      const ae = (ev as { audioEvidence?: { bpm?: number; beatGridSec?: number[]; onsetsSec?: number[] } } | undefined)?.audioEvidence;
-      if (ae) beatGrid = { bpm: ae.bpm ?? null, beats: ae.beatGridSec ?? [], strongBeats: ae.onsetsSec ?? [] };
+      const ae = (ev as { audioEvidence?: { bpm?: number; beatGridSec?: number[]; onsetsSec?: number[]; energyCurve?: Array<{ t: number; value: number }> } } | undefined)?.audioEvidence;
+      if (ae) beatGrid = { bpm: ae.bpm ?? null, beats: ae.beatGridSec ?? [], strongBeats: ae.onsetsSec ?? [], energyCurve: ae.energyCurve ?? [] };
     }
     const materialsPublicPrefix = `/generated/${path.relative(deps.generatedDir, path.join(outDir, "materials")).split(path.sep).join("/")}/`;
 
@@ -338,12 +472,17 @@ export function createV5Router(deps: V5RouterDeps): Router {
       selectedElements,
       outDir,
       gen2Model,
+      gen2RemotionModel,
       beatGrid,
       allowExternalProvider: options.materialFill === "aigc",
+      resolveAssetUri: (assetId) => `/api/v5/assets/${assetId}/media`,
       publicPathPrefix: materialsPublicPrefix,
       materialFillMaxGenerated: typeof options.materialFillMax === "number" ? options.materialFillMax : 4,
       env: process.env
     });
+    if (requestedGen2RemotionCodegen && !gen2RemotionModel) {
+      create.warnings.push("Gen2 Remotion codegen requested but Doubao/Ark text model is not configured.");
+    }
 
     // Only assess render gates when a render was actually attempted (plan -> undefined -> warn,
     // not fail). POST /generations renders by default; /generations/plan never renders.
@@ -358,12 +497,64 @@ export function createV5Router(deps: V5RouterDeps): Router {
       // machine) loads them over http (chrome blocks file:// "local resource" loads).
       const port = Number(process.env.APP_PORT ?? 3000);
       const assetMap: Record<string, { src: string }> = {};
+      const serveSrc = (uri: string) => uri.startsWith("http") ? uri : uri.startsWith("/") ? `http://127.0.0.1:${port}${uri}` : uri;
       for (const a of create.finalProgram.renderRecipe.assets) {
-        if (a.provenance?.source === "aigc_generated" && a.uri) {
-          assetMap[a.id] = { src: a.uri.startsWith("http") ? a.uri : `http://127.0.0.1:${port}${a.uri.startsWith("/") ? "" : "/"}${a.uri}` };
-        }
+        if (a.uri) assetMap[a.id] = { src: serveSrc(a.uri) };
       }
-      const render = await renderFinalVideoV5({ finalProgram: create.finalProgram, outPath, proceduralAudio: true, bpm: beatGrid?.bpm ?? null, assetMap });
+      let render:
+        | Awaited<ReturnType<typeof renderFinalVideoV5>>
+        | Awaited<ReturnType<typeof renderTemplateCapsule>>;
+      if (create.finalProgram.renderMode === "bespoke_codegen") {
+        const capsule = finalProgramToGen2RemotionCapsule(create.finalProgram, create.composition, selectedElements);
+        const fixture = create.finalProgram.remotionProject.fixture && typeof create.finalProgram.remotionProject.fixture === "object"
+          ? create.finalProgram.remotionProject.fixture as Record<string, unknown>
+          : {};
+        render = await renderTemplateCapsule({
+          capsule,
+          boundProps: {
+            ...fixture,
+            recipe: create.finalProgram.renderRecipe,
+            assetMap,
+            brief,
+            sections: create.composition.sections,
+            stylePlan: create.composition.stylePlan,
+            audioPlan: create.composition.audioPlan
+          },
+          outPath,
+          aspectRatio: brief.aspectRatio ?? "9:16",
+          proceduralAudio: true,
+          bpm: beatGrid?.bpm ?? null,
+          beatGridSec: beatGrid?.beats,
+          strongBeatsSec: beatGrid?.strongBeats,
+          energyCurve: beatGrid?.energyCurve,
+          hitTimes: create.finalProgram.renderRecipe.audioLayers.flatMap((a) => a.kind === "sfx" && a.id !== "sfx_riser" ? a.cueAlignSec ?? [] : []),
+          riserTime: create.finalProgram.renderRecipe.audioLayers.find((a) => a.id === "sfx_riser")?.cueAlignSec?.[0]
+        });
+        if (!render.ok) {
+          create.warnings.push(`Gen2 Remotion render failed; rendered library recipe fallback instead: ${render.error ?? "unknown error"}`);
+          render = await renderFinalVideoV5({
+            finalProgram: create.finalProgram,
+            outPath,
+            proceduralAudio: true,
+            bpm: beatGrid?.bpm ?? null,
+            beatGridSec: beatGrid?.beats,
+            strongBeatsSec: beatGrid?.strongBeats,
+            energyCurve: beatGrid?.energyCurve,
+            assetMap
+          });
+        }
+      } else {
+        render = await renderFinalVideoV5({
+          finalProgram: create.finalProgram,
+          outPath,
+          proceduralAudio: true,
+          bpm: beatGrid?.bpm ?? null,
+          beatGridSec: beatGrid?.beats,
+          strongBeatsSec: beatGrid?.strongBeats,
+          energyCurve: beatGrid?.energyCurve,
+          assetMap
+        });
+      }
       renderInfo = {
         finalMp4Exists: Boolean(render.ok && render.finalMp4),
         durationSec: render.durationSec,
@@ -400,7 +591,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
       composition: create.composition,
       gapReport: create.gapReport,
       finalProgram: create.finalProgram,
-      renderProps: buildV5RenderInputProps(create.finalProgram)
+      renderProps: buildV5RenderInputProps(create.finalProgram),
+      warnings: create.warnings
     };
     await fs.writeFile(path.join(outDir, "generation-result.json"), JSON.stringify(result, null, 2));
     return ok(res, result);
@@ -410,39 +602,130 @@ export function createV5Router(deps: V5RouterDeps): Router {
   router.post("/generations", (req, res) => buildGeneration(req, res, true));
 
   // ---- Revise (modify_template): patch-first re-theme/re-copy of a prior same_template generation ----
+  const runTemplateRevise = async (
+    res: Response,
+    baseGenerationId: string,
+    patch: v5.TemplatePatchSet,
+    extra: Record<string, unknown> = {}
+  ) => {
+    const prior = (await readJsonIf(path.join(genDir(baseGenerationId), "generation-result.json"))) as { generationMode?: string; projectId?: string; templateInstance?: v5.TemplateInstance } | undefined;
+    if (!prior?.templateInstance) return fail(res, 400, "no same_template instance for this generation id");
+    const instance = prior.templateInstance;
+    const capsule = kb.getTemplateCapsule(instance.templateCapsuleId);
+    if (!capsule) return fail(res, 404, "the template capsule for this generation no longer exists");
+    if (patch.regenerateImages) return fail(res, 400, "regenerateImages: start a fresh POST /generations with the new brief — revise is patch-first (theme/copy/palette, reuses prior visuals).");
+    const generationId = `${baseGenerationId}_rev_${Date.now().toString(36)}`;
+    const outDirST = genDir(generationId);
+    const brief: v5.CreativeBriefV5 = { ...instance.creativeBrief, ...(patch.theme ? { theme: patch.theme } : {}) };
+    const stOptions: v5.GenerationOptionsV5 = { ...v5.DEFAULT_GENERATION_OPTIONS_V5, generationMode: "modify_template" };
+    const sampleVideoPath = (await getAssets()).find((a) => a.id === capsule.sourceSampleId)?.path;
+    const port = Number(process.env.APP_PORT ?? 3000);
+    const st = await runSameTemplateGeneration({
+      projectId: String(extra.projectId ?? "proj_v5_ui"),
+      generationId,
+      capsule,
+      brief,
+      targetAssets: [],
+      options: stOptions,
+      outDir: outDirST,
+      publicPathPrefix: `/generated/${path.relative(deps.generatedDir, path.join(outDirST, "materials")).split(path.sep).join("/")}/`,
+      serveBase: `http://127.0.0.1:${port}`,
+      sampleVideoPath,
+      env: process.env,
+      doRender: true,
+      reviseFrom: { instance, patch }
+    });
+    return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, { revisedFrom: baseGenerationId, patch, ...extra });
+  };
+
+  const patchFromInstruction = async (instruction: string, instance: v5.TemplateInstance): Promise<{ patch: v5.TemplatePatchSet; patchNotes: string[]; modelUsed: boolean; warnings: string[] }> => {
+    const warnings: string[] = [];
+    const copy = (instance.boundProps as { copy?: Record<string, string> } | undefined)?.copy ?? {};
+    const headlineKey = Object.keys(copy).find((k) => /headline|hook|title/i.test(k)) ?? Object.keys(copy)[0] ?? "headline";
+    const instructionText = instruction.trim();
+    const model = createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null;
+    if (model) {
+      try {
+        const raw = await model(
+          `Convert this natural-language video revision into a safe TemplatePatchSet. Do not edit code. ` +
+          `Allowed JSON keys: theme?: string, palette?: string[], copyOverrides?: object. ` +
+          `Existing theme: ${JSON.stringify(instance.creativeBrief.theme ?? instance.creativeBrief.prompt ?? "")}. ` +
+          `Existing copy keys: ${JSON.stringify(Object.keys(copy))}. ` +
+          `Instruction: ${instructionText}. ` +
+          `Return ONLY JSON: {"patch":{...},"patchNotes":["..."]}`
+        );
+        const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+        if (s >= 0 && e > s) {
+          const parsed = JSON.parse(raw.slice(s, e + 1)) as { patch?: v5.TemplatePatchSet; patchNotes?: string[] };
+          const patch: v5.TemplatePatchSet = {
+            ...(typeof parsed.patch?.theme === "string" ? { theme: parsed.patch.theme } : {}),
+            ...(Array.isArray(parsed.patch?.palette) ? { palette: parsed.patch.palette.map(String).slice(0, 6) } : {}),
+            ...(parsed.patch?.copyOverrides && typeof parsed.patch.copyOverrides === "object" ? { copyOverrides: parsed.patch.copyOverrides } : {})
+          };
+          if (patch.theme || patch.palette || patch.copyOverrides) return { patch, patchNotes: Array.isArray(parsed.patchNotes) ? parsed.patchNotes.map(String).slice(0, 8) : ["structured TemplatePatchSet generated"], modelUsed: true, warnings };
+        }
+      } catch (err) {
+        warnings.push(`natural-language model parse failed: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);
+      }
+    }
+
+    const lower = instructionText.toLowerCase();
+    const patch: v5.TemplatePatchSet = {};
+    const patchNotes: string[] = [];
+    if (/主题|theme|换成|改成/.test(instructionText)) {
+      const themeMatch = instructionText.match(/(?:主题|theme|换成|改成)[:：]?\s*([^，,。.\n]+)/i);
+      if (themeMatch?.[1]?.trim()) {
+        patch.theme = themeMatch[1].trim().slice(0, 80);
+        patchNotes.push(`theme -> ${patch.theme}`);
+      }
+    }
+    if (/hook|开头|抓人|吸引|更强|冲击|scroll/.test(lower)) {
+      const theme = patch.theme ?? instance.creativeBrief.theme ?? instance.creativeBrief.prompt ?? "this offer";
+      patch.copyOverrides = { ...(patch.copyOverrides ?? {}), [headlineKey]: `Stop scrolling: ${theme}`.slice(0, 72) };
+      patchNotes.push(`hook copy strengthened on ${headlineKey}`);
+    }
+    if (/cta|结尾|行动|购买|转化|conversion/.test(lower)) {
+      const ctaKey = Object.keys(copy).find((k) => /cta|button|action/i.test(k)) ?? "cta";
+      patch.copyOverrides = { ...(patch.copyOverrides ?? {}), [ctaKey]: "Try it today" };
+      patchNotes.push(`CTA copy strengthened on ${ctaKey}`);
+    }
+    if (/高级|质感|克制|premium|quality|minimal/.test(lower)) {
+      patch.palette = ["#F8FAFC", "#111827", "#2563EB", "#14B8A6"];
+      patchNotes.push("palette shifted to cleaner high-quality style");
+    }
+    if (!patch.theme && !patch.palette && !patch.copyOverrides) {
+      patch.copyOverrides = { [headlineKey]: instructionText.slice(0, 72) };
+      patchNotes.push(`used instruction as replacement copy on ${headlineKey}`);
+    }
+    return { patch, patchNotes, modelUsed: false, warnings };
+  };
+
   router.post("/generations/:id/revise", async (req, res) => {
     try {
-      const prior = (await readJsonIf(path.join(genDir(req.params.id), "generation-result.json"))) as { generationMode?: string; projectId?: string; templateInstance?: v5.TemplateInstance } | undefined;
-      if (!prior?.templateInstance) return fail(res, 400, "no same_template instance for this generation id");
-      const instance = prior.templateInstance;
-      const capsule = kb.getTemplateCapsule(instance.templateCapsuleId);
-      if (!capsule) return fail(res, 404, "the template capsule for this generation no longer exists");
       const patch: v5.TemplatePatchSet = req.body?.patch ?? {};
-      if (patch.regenerateImages) return fail(res, 400, "regenerateImages: start a fresh POST /generations with the new brief — revise is patch-first (theme/copy/palette, reuses prior visuals).");
-      const generationId = `${req.params.id}_rev_${Date.now().toString(36)}`;
-      const outDirST = genDir(generationId);
-      const brief: v5.CreativeBriefV5 = { ...instance.creativeBrief, ...(patch.theme ? { theme: patch.theme } : {}) };
-      const stOptions: v5.GenerationOptionsV5 = { ...v5.DEFAULT_GENERATION_OPTIONS_V5, generationMode: "modify_template" };
-      const sampleVideoPath = (await getAssets()).find((a) => a.id === capsule.sourceSampleId)?.path;
-      const port = Number(process.env.APP_PORT ?? 3000);
-      const st = await runSameTemplateGeneration({
-        projectId: req.body?.projectId ?? "proj_v5_ui",
-        generationId,
-        capsule,
-        brief,
-        targetAssets: [],
-        options: stOptions,
-        outDir: outDirST,
-        publicPathPrefix: `/generated/${path.relative(deps.generatedDir, path.join(outDirST, "materials")).split(path.sep).join("/")}/`,
-        serveBase: `http://127.0.0.1:${port}`,
-        sampleVideoPath,
-        env: process.env,
-        doRender: true,
-        reviseFrom: { instance, patch }
-      });
-      return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, { revisedFrom: req.params.id, patch });
+      return runTemplateRevise(res, req.params.id, patch, { projectId: req.body?.projectId ?? "proj_v5_ui" });
     } catch (err) {
       return fail(res, 500, `revise failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  router.post("/generations/:id/revise-natural-language", async (req, res) => {
+    try {
+      const instruction = String(req.body?.instruction ?? "").trim();
+      if (!instruction) return fail(res, 400, "instruction required");
+      const prior = (await readJsonIf(path.join(genDir(req.params.id), "generation-result.json"))) as { templateInstance?: v5.TemplateInstance } | undefined;
+      if (!prior?.templateInstance) return fail(res, 400, "no same_template instance for this generation id");
+      const patchPlan = await patchFromInstruction(instruction, prior.templateInstance);
+      return runTemplateRevise(res, req.params.id, patchPlan.patch, {
+        projectId: req.body?.projectId ?? "proj_v5_ui",
+        naturalLanguageInstruction: instruction,
+        generatedPatch: patchPlan.patch,
+        patchNotes: patchPlan.patchNotes,
+        patchModelUsed: patchPlan.modelUsed,
+        patchWarnings: patchPlan.warnings
+      });
+    } catch (err) {
+      return fail(res, 500, `natural-language revise failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 

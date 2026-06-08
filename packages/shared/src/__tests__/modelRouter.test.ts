@@ -62,9 +62,9 @@ describe("Spec v4.2 ModelTask router", () => {
     }
   });
 
-  it("keeps ElevenLabs disabled when the key exists but live flags are off", () => {
+  it("ignores obsolete ElevenLabs env and falls back to procedural music when Google audio is unavailable", () => {
     const decision = resolveModelRoute("music", {
-      env: { ELEVENLABS_API_KEY: "test-key" },
+      env: { ELEVENLABS_API_KEY: "test-key", ENABLE_ELEVENLABS_LIVE_TESTS: "1" },
       allowCloud: true
     });
 
@@ -75,13 +75,10 @@ describe("Spec v4.2 ModelTask router", () => {
         expect.objectContaining({
           provider: "google_lyria_music",
           reason: expect.stringContaining("envMissing=GEMINI_API_KEY")
-        }),
-        expect.objectContaining({
-          provider: "elevenlabs_music",
-          reason: expect.stringContaining("ElevenLabs live calls are disabled")
         })
       ])
     );
+    expect(decision.rejectedProviders.some((item) => item.provider.startsWith("elevenlabs_"))).toBe(false);
     expect(decision.consumesSampleAudioExternally).toBe(false);
   });
 
@@ -101,8 +98,13 @@ describe("Spec v4.2 ModelTask router", () => {
     }
   });
 
-  it("selects ElevenLabs for allowed audio tasks without enabling sample audio upload", () => {
-    const env = { ELEVENLABS_API_KEY: "test-key", ENABLE_ELEVENLABS_LIVE_TESTS: "1" };
+  it("routes audio tasks through faster-whisper, Google audio, and procedural fallbacks only", () => {
+    const env = {
+      ELEVENLABS_API_KEY: "test-key",
+      ENABLE_ELEVENLABS_LIVE_TESTS: "1",
+      GEMINI_API_KEY: "test-key",
+      GOOGLE_AUDIO_ENABLE_CLOUD: "1"
+    };
     const scribe = resolveModelRoute("asr", { env, allowCloud: true });
     const tts = resolveModelRoute("voiceover", { env, allowCloud: true });
     const sfx = resolveModelRoute("sound_effect", { env, allowCloud: true });
@@ -110,48 +112,50 @@ describe("Spec v4.2 ModelTask router", () => {
     const cleanup = resolveModelRoute("audio_cleanup", { env, allowCloud: true });
     const alignment = resolveModelRoute("forced_alignment", { env, allowCloud: true });
 
-    expect(scribe.selectedProvider).toBe("elevenlabs_scribe");
-    expect(tts.selectedProvider).toBe("elevenlabs_tts");
-    expect(sfx.selectedProvider).toBe("elevenlabs_sound_effects");
-    expect(music.selectedProvider).toBe("elevenlabs_music");
-    expect(cleanup.selectedProvider).toBe("elevenlabs_audio_isolation");
-    expect(alignment.selectedProvider).toBe("elevenlabs_forced_alignment");
+    expect(scribe.selectedProvider).toBe("faster_whisper");
+    expect(tts.selectedProvider).toBe("google_gemini_tts");
+    expect(sfx.selectedProvider).toBe("procedural_synth");
+    expect(music.selectedProvider).toBe("google_lyria_music");
+    expect(cleanup.selectedProvider).toBe("skip_with_warning");
+    expect(alignment.selectedProvider).toBe("skip_with_warning");
 
-    for (const decision of [scribe, tts, sfx, music, cleanup, alignment]) {
-      expect(decision.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
+    for (const decision of [tts, sfx, music, cleanup, alignment]) {
       expect(decision.consumesSampleAudioExternally).toBe(false);
       expect(decision.mediaAccessPolicy.samplePixelsAllowed).toBe(false);
       expect(decision.mediaAccessPolicy.sampleVideoUploadAllowed).toBe(false);
       expect(decision.mediaAccessPolicy.rawPromptRenderable).toBe(false);
       expect(validateProviderDecisionSafety(decision)).toEqual([]);
     }
+    expect(scribe.consumesSampleAudioLocally).toBe(true);
+    expect(scribe.consumesSampleAudioExternally).toBe(false);
+    expect(validateProviderDecisionSafety(scribe)).toEqual([]);
     expect(tts.generatedAssetProvenanceRequired).toBe(true);
     expect(sfx.generatedAssetProvenanceRequired).toBe(true);
     expect(music.generatedAssetProvenanceRequired).toBe(true);
-    expect(cleanup.mediaAccessPolicy.userAssetsAllowed).toBe(true);
   });
 
-  it("records ElevenLabs sample-audio analysis only when external sample media is enabled", () => {
+  it("keeps ASR sample-audio analysis local even when external VLM sample media is enabled", () => {
     const env = { ELEVENLABS_API_KEY: "test-key", ENABLE_ELEVENLABS_LIVE_TESTS: "1" };
     const blocked = resolveModelRoute("asr", { env, allowCloud: true });
-    expect(blocked.selectedProvider).toBe("elevenlabs_scribe");
+    expect(blocked.selectedProvider).toBe("faster_whisper");
+    expect(blocked.consumesSampleAudioLocally).toBe(true);
     expect(blocked.consumesSampleAudioExternally).toBe(false);
-    expect(blocked.mediaAccessPolicy.sampleAudioAllowed).toBe(false);
 
     const allowed = resolveModelRoute("asr", { env, allowCloud: true, allowSampleMediaExternal: true });
-    expect(allowed.selectedProvider).toBe("elevenlabs_scribe");
-    expect(allowed.consumesSampleAudioExternally).toBe(true);
+    expect(allowed.selectedProvider).toBe("faster_whisper");
+    expect(allowed.consumesSampleAudioLocally).toBe(true);
+    expect(allowed.consumesSampleAudioExternally).toBe(false);
     expect(allowed.mediaAccessPolicy.sampleAudioAllowed).toBe(true);
     expect(validateProviderDecisionSafety(allowed)).toEqual([]);
   });
 
-  it("routes ElevenLabs model and voice discovery as read-only report tasks", () => {
+  it("routes audio capability discovery as local read-only skip tasks", () => {
     const env = { ELEVENLABS_API_KEY: "test-key", ELEVENLABS_ENABLE_DISCOVERY: "1" };
     const models = resolveModelRoute("model_discovery", { env, allowCloud: true });
     const voices = resolveModelRoute("voice_discovery", { env, allowCloud: true });
 
-    expect(models.selectedProvider).toBe("elevenlabs_models");
-    expect(voices.selectedProvider).toBe("elevenlabs_voices_read");
+    expect(models.selectedProvider).toBe("skip_with_warning");
+    expect(voices.selectedProvider).toBe("skip_with_warning");
     for (const decision of [models, voices]) {
       expect(decision.effectScope).toBe("read_only_report");
       expect(decision.canAffectFinalPixels).toBe(false);

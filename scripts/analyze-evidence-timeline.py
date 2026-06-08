@@ -275,6 +275,24 @@ def audio_metrics(video):
             os.remove(tmp_wav)
 
 
+def audio_energy_curve(y, sr, hop_length=1024, max_points=96):
+    """Normalized RMS power curve. This records rhythm/energy shape only, never sample audio."""
+    try:
+        import librosa
+        rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0]
+        if rms.size == 0:
+            return []
+        lo = float(np.percentile(rms, 5))
+        hi = float(np.percentile(rms, 95))
+        den = max(hi - lo, 1e-9)
+        norm = np.clip((rms - lo) / den, 0.0, 1.0)
+        times = librosa.frames_to_time(np.arange(norm.size), sr=sr, hop_length=hop_length)
+        points = [{"t": round(float(t), 3), "value": round(float(v), 3)} for t, v in zip(times, norm)]
+        return _resample_track(points, max_points)
+    except Exception:
+        return []
+
+
 def _resample_track(points, n=6):
     if not points:
         return []
@@ -305,7 +323,8 @@ def audio_structure(video, beat_grid):
     opt-in heavy adapter (off by default); this is the offline rule-based version."""
     am = audio_metrics(video)
     out = {**am, "bpm": beat_grid.get("bpm"), "beatGrid": (beat_grid.get("beats") or [])[:64],
-           "strongBeats": (beat_grid.get("onsets") or [])[:32]}
+           "strongBeats": (beat_grid.get("onsets") or [])[:32],
+           "energyCurve": (beat_grid.get("energyCurve") or [])[:96]}
     if not am.get("hasAudio"):
         return out
     tmp_wav = None
@@ -593,7 +612,7 @@ def beat_grid(video, has_audio):
         # keep strong onsets only (subsample if huge)
         if len(onset_times) > 400:
             onset_times = onset_times[::2]
-        return {"status": "ok", "bpm": round(bpm, 1), "beats": beat_times, "onsets": onset_times, "source": "librosa"}
+        return {"status": "ok", "bpm": round(bpm, 1), "beats": beat_times, "onsets": onset_times, "energyCurve": audio_energy_curve(y, sr), "source": "librosa"}
     except Exception as exc:
         return {"status": "unavailable", "beats": [], "onsets": [], "source": f"librosa_error:{exc!r}"}
     finally:

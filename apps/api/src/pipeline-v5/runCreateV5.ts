@@ -12,6 +12,7 @@ import { runCompositionPlanner } from "./runCompositionPlanner.js";
 import { runGapReportV5 } from "./runGapReportV5.js";
 import { runGen2ComposeFallback } from "./runGen2ComposeFallback.js";
 import { runGen2Ai } from "./runGen2Ai.js";
+import { runGen2RemotionCodegen } from "./runGen2RemotionCodegen.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 import { runMaterialFillV5 } from "./runMaterialFillV5.js";
 
@@ -33,8 +34,10 @@ export interface CreateInput {
   resolveAssetUri?: (assetId: string) => string;
   /** Optional AI Gen2: refine on-screen copy/palette over the deterministic compose recipe. */
   gen2Model?: Gen1ModelFn;
-  /** Source evidence beat grid for audio-cue alignment (threaded from learn). */
-  beatGrid?: { bpm?: number | null; beats?: number[]; strongBeats?: number[] };
+  /** Optional independent Gen2 Remotion TSX codegen. Leaves the existing library recipe as fallback. */
+  gen2RemotionModel?: Gen1ModelFn;
+  /** Source evidence beat grid + energy curve for procedural audio fallback (threaded from learn). */
+  beatGrid?: { bpm?: number | null; beats?: number[]; strongBeats?: number[]; energyCurve?: Array<{ t: number; value: number }> };
   /** Allow real external image generation (Gemini/Seedream) for visual slots. Default false. */
   allowExternalProvider?: boolean;
   materialFillMaxGenerated?: number;
@@ -112,8 +115,17 @@ export async function runCreateV5(input: CreateInput): Promise<CreateArtifacts> 
     if (g2.usedAi) finalProgram = g2.finalProgram;
     else warnings.push(...g2.warnings);
   }
-  // Honest: this is a library_composition; AI Gen2 (when used) only refines copy/palette on top.
-  gates.push(gate("V5-G20", "pass", `${finalProgram.renderMode ?? "library_composition"}${input.gen2Model ? " + ai copy" : ""}`));
+  if (input.gen2RemotionModel) {
+    const g2Code = await runGen2RemotionCodegen({
+      composition,
+      deterministic: finalProgram,
+      selectedElements: input.selectedElements,
+      model: input.gen2RemotionModel
+    });
+    if (g2Code.usedAi) finalProgram = g2Code.finalProgram;
+    warnings.push(...g2Code.warnings);
+  }
+  gates.push(gate("V5-G20", "pass", `${finalProgram.renderMode ?? "library_composition"}${input.gen2Model ? " + ai copy" : ""}${input.gen2RemotionModel ? " + remotion codegen" : ""}`));
   const finalCheck = v5.validateFinalVideoProgram(finalProgram);
   gates.push(gate("V5-G21", finalCheck.valid ? "pass" : "fail", finalCheck.valid ? undefined : finalCheck.errors.join("; ")));
   gates.push(gate("V5-G22", finalProgram.validation.tsCompilePassed ? "pass" : "warn", finalProgram.renderMode ?? "library_composition"));

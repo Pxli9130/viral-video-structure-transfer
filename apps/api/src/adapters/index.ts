@@ -18,17 +18,12 @@ import {
 import { runPython, hasCondaEnv } from "./condaPython.js";
 import { GeminiVLMAdapter } from "./gemini.js";
 import { GeminiAIAdapter } from "./geminiAi.js";
-import { ElevenLabsAdapter } from "./elevenlabs.js";
 import { GoogleAudioAdapter } from "./googleAudio.js";
 import { OpenAICompatibleAIAdapter } from "./openaiCompatible.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "../../../..");
 const pythonScripts = path.join(repoRoot, "scripts", "python");
-
-function envFlag(env: NodeJS.ProcessEnv, key: string): boolean {
-  return /^(1|true|yes|on)$/i.test(env[key]?.trim() ?? "");
-}
 
 export class FFmpegVideoToolAdapter implements VideoToolAdapter {
   readonly name = "FFmpegVideoToolAdapter";
@@ -288,22 +283,11 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
     // No mock AI adapter: require a real provider. Fail loudly on misconfiguration.
     throw new Error(`AI_PROVIDER must be one of gemini|ark_doubao|openai_compatible (got "${aiProvider}"; mock removed)`);
   }
+  const asrProvider = (env.ASR_PROVIDER ?? "faster_whisper").toLowerCase();
   const asrAdapter =
-    env.ASR_PROVIDER === "faster_whisper"
-      ? new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" })
-      : env.ASR_PROVIDER === "elevenlabs_scribe"
-        ? new FallbackASRAdapter(
-            new ElevenLabsAdapter({
-              apiKey: env.ELEVENLABS_API_KEY,
-              enabled:
-                envFlag(env, "ENABLE_ELEVENLABS_LIVE_TESTS") ||
-                envFlag(env, "ELEVENLABS_ENABLE_CLOUD") ||
-                envFlag(env, "ELEVENLABS_ENABLE_SCRIBE") ||
-                envFlag(env, "ELEVENLABS_ENABLE_ASR")
-            }),
-            new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" })
-          )
-        : new DisabledASRAdapter();
+    asrProvider === "off" || asrProvider === "none" || asrProvider === "disabled"
+      ? new DisabledASRAdapter()
+      : new FasterWhisperASRAdapter({ model: env.ASR_MODEL ?? "tiny" });
   const ocrAdapter = env.OCR_PROVIDER === "easyocr" ? new EasyOCRAdapter() : new DisabledOCRAdapter();
   const vlmAdapter =
     env.VLM_PROVIDER === "gemini"
@@ -316,7 +300,6 @@ export function buildAdapterSet(env: NodeJS.ProcessEnv, generatedDir: string): A
 
 export { GeminiVLMAdapter };
 export { GeminiAIAdapter };
-export { ElevenLabsAdapter };
 export { GoogleAudioAdapter };
 
 export const RENDERER_TARGETS_ENV: Record<string, RendererTarget> = {

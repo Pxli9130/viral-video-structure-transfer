@@ -108,9 +108,9 @@ function providerMatrix() {
   return [
     ["Seedance 2.0", "Optional video generation", "No", "SEEDANCE_API_KEY / SEEDANCE_ARK_API_KEY", "Local Remotion procedural motion", "aigc_generated_material", "Sample frames/audio never sent"],
     ["Seedream 4.0", "Optional image generation", "No", "SEEDREAM_ARK_API_KEY / AIGC_IMAGE_MODEL", "Local packaging/procedural visuals", "aigc_generated_material", "Text-only prompts; no sample frames"],
-    ["ElevenLabs Scribe", "Optional ASR", "No", "ELEVENLABS_API_KEY", "Local faster-whisper", "aigc_generated_material", "Only user-provided target audio if allowed"],
-    ["ElevenLabs TTS", "Optional voice", "No", "ELEVENLABS_API_KEY", "Local FFmpeg/procedural audio", "aigc_generated_material", "No sample audio sent"],
-    ["ElevenLabs SFX/Music/Isolation", "Optional audio generation/isolation", "No", "ELEVENLABS_API_KEY", "Local FFmpeg procedural SFX/BGM", "aigc_generated_material", "No sample audio sent"],
+    ["Google Lyria", "Optional music bed", "No", "GEMINI_API_KEY", "Local FFmpeg procedural BGM/SFX", "aigc_generated_material", "No sample audio sent"],
+    ["Gemini TTS", "Optional voiceover", "No", "GEMINI_API_KEY", "Subtitles + local procedural audio", "aigc_generated_material", "No sample audio sent"],
+    ["faster-whisper + FFmpeg/librosa", "Local ASR/audio analysis", "Yes", "None", "No ASR with warning", "read_only_report", "Sample audio analyzed locally only"],
     ["Remotion + FFmpeg", "Core renderer", "Yes", "None", "N/A", "procedural/user_uploaded/source_video", "Runs locally without paid APIs"]
   ];
 }
@@ -176,7 +176,7 @@ ${comparisons}
 - FFmpeg \`final.mp4\` 是当前 canonical 输出。
 - Remotion fresh host render 在 sandbox 中仍可能被 \`uv_interface_addresses returned Unknown system error 1\` 阻断；见 \`docs/remotion-host-verification.md\`。
 - 当前 visual QA 是本地启发式，不是外部 VLM 观感评审；提交前仍需人工打开四个 \`final.mp4\`。
-- 本地 demo 未调用 Seedance/Seedream/ElevenLabs/Gemini/OpenAI/Qwen/Deepgram/Runway/Veo/Kling。
+- 本地 demo 未调用 Seedance/Seedream/Gemini/OpenAI/Qwen/Deepgram/Runway/Veo/Kling。
 
 ## 7. How to Reproduce
 

@@ -479,7 +479,7 @@ async function main() {
       ALLOW_EXTERNAL_ASR_SAMPLE_ANALYSIS: allowExternalVlm ? "1" : "0",
       VLM_PROVIDER: allowExternalVlm ? (process.env.VLM_PROVIDER ?? "gemini") : "heuristic",
       AI_PROVIDER: process.env.AI_PROVIDER ?? (process.env.GEMINI_API_KEY ? "gemini" : process.env.ARK_API_KEY ? "ark_doubao" : "gemini"),
-      ASR_PROVIDER: process.env.ASR_PROVIDER ?? (allowCloud && process.env.ELEVENLABS_API_KEY ? "elevenlabs_scribe" : "faster_whisper"),
+      ASR_PROVIDER: process.env.ASR_PROVIDER ?? "faster_whisper",
       OCR_PROVIDER: process.env.OCR_PROVIDER ?? "easyocr",
       AIGC_IMAGE_PROVIDER: process.env.AIGC_IMAGE_PROVIDER ?? (process.env.GEMINI_API_KEY ? "google_gemini_image" : process.env.SEEDREAM_ARK_API_KEY ? "volcengine_seedream" : "deterministic_local_image_fill"),
       AIGC_IMAGE_BACKUP_PROVIDER: process.env.AIGC_IMAGE_BACKUP_PROVIDER ?? (process.env.SEEDREAM_ARK_API_KEY ? "volcengine_seedream" : ""),
@@ -495,12 +495,7 @@ async function main() {
       AIGC_ALLOW_SAMPLE_FRAMES_TO_PROVIDER: "false",
       AIGC_ALLOW_SAMPLE_AUDIO_TO_PROVIDER: "false",
       AIGC_ALLOW_SAMPLE_VIDEO_TO_PROVIDER: "false",
-      AIGC_ALLOW_TARGET_ASSETS_TO_PROVIDER: allowCloud ? "true" : "false",
-      ENABLE_ELEVENLABS_LIVE_TESTS: process.env.ENABLE_ELEVENLABS_LIVE_TESTS ?? (allowCloud && process.env.ELEVENLABS_API_KEY ? "1" : "0"),
-      ELEVENLABS_ENABLE_CLOUD: process.env.ELEVENLABS_ENABLE_CLOUD ?? (allowCloud && process.env.ELEVENLABS_API_KEY ? "1" : "0"),
-      ELEVENLABS_ENABLE_MUSIC: process.env.ELEVENLABS_ENABLE_MUSIC ?? (allowCloud && process.env.ELEVENLABS_API_KEY ? "1" : "0"),
-      ELEVENLABS_ENABLE_SFX: process.env.ELEVENLABS_ENABLE_SFX ?? (allowCloud && process.env.ELEVENLABS_API_KEY ? "1" : "0"),
-      ELEVENLABS_ENABLE_TTS: process.env.ELEVENLABS_ENABLE_TTS ?? (allowCloud && process.env.ELEVENLABS_API_KEY ? "1" : "0")
+      AIGC_ALLOW_TARGET_ASSETS_TO_PROVIDER: allowCloud ? "true" : "false"
     };
     if (args["use-all-providers"]) {
       env.ENABLE_HEAVY_LOCAL_ML = env.ENABLE_HEAVY_LOCAL_ML ?? "1";

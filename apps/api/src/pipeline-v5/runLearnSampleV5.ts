@@ -19,6 +19,7 @@ import { renderCapsuleStill } from "./renderTemplateCapsule.js";
 import { overallMeanLuma } from "./postRenderChecks.js";
 import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
 import { runSceneRecipeVlm } from "./runSceneRecipeVlm.js";
+import { buildKnowledgeManifestCandidates, buildKnowledgeManifestSeed, normalizeGeminiKnowledgeCandidates } from "./knowledgeManifest.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 import type { VisionFn } from "./runSceneRecipeVlm.js";
 import type { VisionCodegenFn } from "./gen1ModelFactory.js";
@@ -67,6 +68,8 @@ export interface LearnArtifacts {
   candidates: v5.CandidateElement[];
   decisions: v5.KbCurationDecision[];
   elements: v5.KnowledgeElement[];
+  /** Side-file manifest that turns the promoted Remotion capsule into structured KB seed evidence. */
+  knowledgeManifestSeed?: ReturnType<typeof buildKnowledgeManifestSeed>;
   /** Level-1 reusable Remotion template (the default generation object). */
   templateCapsule: v5.RemotionTemplateCapsule;
   templateValidation: v5.TemplateValidationResult;
@@ -146,7 +149,9 @@ export async function runLearnSampleV5(
   gates.push(gate("V5-G9", candidates.length ? "pass" : "fail", `${candidates.length} candidates`));
 
   // Stage 6/7 Curation + KB write.
-  const { decisions, elements } = kb.curateMany(candidates);
+  const curated = kb.curateMany(candidates);
+  const decisions = curated.decisions;
+  const elements = curated.elements;
   const allDecided = decisions.length === candidates.length;
   gates.push(gate("V5-G10", allDecided ? "pass" : "warn", `${decisions.length}/${candidates.length} decided`));
   gates.push(gate("V5-G13", elements.length ? "pass" : "warn", `${elements.length} stored/merged`));
@@ -244,9 +249,21 @@ export async function runLearnSampleV5(
   templateCapsule.quality.sourceIsLight = await detectSourceIsLight(opts.sampleVideoPath, srcDur);
   if (opts.projectId) templateCapsule.projectId = opts.projectId;
   kb.saveTemplateCapsule(templateCapsule);
+  const knowledgeManifestSeed = buildKnowledgeManifestSeed({ neutralProgram, templateCapsule });
+  const manifestCandidates = buildKnowledgeManifestCandidates({ manifest: knowledgeManifestSeed, neutralProgram, templateCapsule });
+  const geminiCandidates = normalizeGeminiKnowledgeCandidates({
+    rawElements: geminiKnowledgeElements,
+    neutralProgram,
+    templateCapsule,
+    remotionCodeHash: knowledgeManifestSeed.remotionCodeHash
+  });
+  const sideFileCandidates = [...manifestCandidates, ...geminiCandidates];
+  const sideFileCurated = sideFileCandidates.length ? kb.curateMany(sideFileCandidates) : { decisions: [], elements: [] };
+  decisions.push(...sideFileCurated.decisions);
+  elements.push(...sideFileCurated.elements);
   for (const t of templateValidation.gates.slice(0, 6)) gates.push(gate(t.id, t.status === "pass" ? "pass" : t.status === "warn" ? "warn" : "fail", t.message));
 
-  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, templateCapsule, templateValidation, capsuleCodegen, gates, warnings };
+  const artifacts: LearnArtifacts = { evidence, neutralProgram, candidates, decisions, elements, knowledgeManifestSeed, templateCapsule, templateValidation, capsuleCodegen, gates, warnings };
 
   if (opts.outDir) {
     await fs.mkdir(opts.outDir, { recursive: true });
@@ -257,6 +274,9 @@ export async function runLearnSampleV5(
       write("candidate-elements.json", candidates),
       write("kb-decisions.json", decisions),
       write("knowledge-elements.json", elements),
+      write("knowledge_manifest.seed.json", knowledgeManifestSeed),
+      write("knowledge-manifest-candidates.json", sideFileCandidates),
+      write("kb-decisions-sidefiles.json", sideFileCurated.decisions),
       write("remotion-template-capsule.json", templateCapsule),
       write("template-validation.json", templateValidation),
       write("learn-gates.json", gates),

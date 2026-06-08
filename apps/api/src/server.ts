@@ -58,7 +58,6 @@ import {
 } from "@vvst/shared";
 import { buildAdapterSet, type AdapterSet } from "./adapters/index.js";
 import { selectRenderer, type AssetPathResolver } from "./adapters/renderers.js";
-import { ElevenLabsAdapter } from "./adapters/elevenlabs.js";
 import { GoogleAudioAdapter } from "./adapters/googleAudio.js";
 import { analyzeEvidenceTimeline, bindAnalysisTextToEvidence } from "./adapters/evidenceTimeline.js";
 import { buildDatabaseStore, type Database, emptyDatabase as makeEmptyDatabase } from "./storage/index.js";
@@ -2039,15 +2038,6 @@ async function applySubtitleGeneration(generation: GenerationResult): Promise<Ge
   };
 }
 
-function elevenLabsMusicEnabled(): boolean {
-  return Boolean(
-    process.env.ELEVENLABS_API_KEY?.trim() &&
-      (envFlag("ENABLE_ELEVENLABS_LIVE_TESTS") ||
-        envFlag("ELEVENLABS_ENABLE_CLOUD") ||
-        envFlag("ELEVENLABS_ENABLE_MUSIC"))
-  );
-}
-
 function googleAudioTaskEnabled(task: "MUSIC" | "TTS"): boolean {
   const taskFlags = task === "TTS"
     ? ["GOOGLE_AUDIO_ENABLE_TTS", "GOOGLE_AUDIO_ENABLE_VOICEOVER"]
@@ -2063,24 +2053,46 @@ function googleAudioTaskEnabled(task: "MUSIC" | "TTS"): boolean {
 
 function hasGeneratedMusicBed(renderPlan: GenerationResult["timeline"]["renderPlan"]): boolean {
   const options = renderPlan?.adapterOptions as Record<string, unknown> | undefined;
-  return Boolean(renderPlan?.audioRef && (options?.googleAudioMusic || options?.elevenLabsMusic));
+  return Boolean(renderPlan?.audioRef && options?.googleAudioMusic);
 }
 
 function musicPromptForGeneration(generation: GenerationResult): string {
   const recipe = generation.timeline.renderPlan?.renderRecipe;
-  const productName = recipe?.productTheme?.name ?? parsePromptToBrief(generation.request).productName;
+  const brief = parsePromptToBrief(generation.request);
+  const theme = recipe?.productTheme;
+  const productName = theme?.name ?? theme?.productName ?? brief.productName;
+  const category = theme?.category ?? generation.request.target.vertical;
+  const sellingPoints = (theme?.sellingPoints ?? [])
+    .map((value) => sanitizeVoiceText(value ?? ""))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(", ");
+  const cta = sanitizeVoiceText(theme?.ctaText ?? theme?.cta ?? "");
   const bpm = generation.timeline.renderPlan?.audioPlan?.bpm ?? recipe?.global.bpm ?? 120;
   const palette = recipe?.global.palette?.slice(0, 4).join(", ") ?? "cool tech colors";
   const primitive = recipe?.clips?.map((clip) => clip.selectedPrimitive).filter(Boolean).slice(0, 5).join(", ") ?? "motion graphics";
+  const styleSeed = `${category} ${recipe?.videoType ?? ""} ${generation.request.target.vertical}`.toLowerCase();
+  const sonicPalette =
+    /tutorial|editing|beat_cut|剪辑|教程/.test(styleSeed)
+      ? "sharp kinetic percussion, glitch accents, short risers, tight stop-start edits"
+      : /saas|tech|motion_graph|b2b|software|dashboard|ui/.test(styleSeed)
+        ? "clean digital plucks, warm sub pulse, polished synth risers, subtle hi-hat motion"
+        : /beauty|fashion|poster|exhibition|lifestyle/.test(styleSeed)
+          ? "glossy synth pads, soft percussion, airy shimmer, elegant transition swells"
+          : "brand-specific electronic texture, evolving harmony, distinctive percussion accents";
+  const cutPattern = recipe?.global.cutPattern;
+  const editEnergy = cutPattern?.avgShotDurationSec && cutPattern.avgShotDurationSec < 1.5 ? "fast punchy edits" : "steady commercial pacing";
   return [
     `Original ${Math.round(generation.request.target.targetDurationSec)} second instrumental music bed for a vertical product ad.`,
-    `Product: ${productName}.`,
-    `Style: modern commercial electronic, clean cooling-tech mood, visual palette ${palette}.`,
+    `Product: ${productName}; category: ${category}.`,
+    sellingPoints ? `Campaign cues: ${sellingPoints}.` : "",
+    cta ? `CTA mood: build cleanly into "${cta}".` : "",
+    `Visual style: ${recipe?.videoType ?? generation.request.target.vertical}, ${editEnergy}, palette ${palette}.`,
+    `Sonic palette: ${sonicPalette}.`,
     `Tempo around ${Math.round(bpm)} BPM, synchronized to ${primitive}.`,
-    // NOTE: keep this line free of the words "watermark"/"prompt"/"sample audio" — the ElevenLabs
-    // adapter's rejectPromptPollution guard would otherwise reject the whole music request.
+    "Make each section evolve; avoid a bare metronomic click or identical drum loop.",
     "Fully original instrumental, no vocals, no copyrighted melody, no spoken words."
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 }
 
 async function applyGoogleAudioMusic(generation: GenerationResult): Promise<GenerationResult> {
@@ -2128,73 +2140,12 @@ async function applyGoogleAudioMusic(generation: GenerationResult): Promise<Gene
       ...generation,
       warnings: [
         ...generation.warnings,
-        `Google Lyria music generation failed: ${sanitizeAigcProviderError(error)}; trying ElevenLabs/procedural fallback.`
+        `Google Lyria music generation failed: ${sanitizeAigcProviderError(error)}; using procedural audio fallback.`
       ]
     };
   }
 }
 
-async function applyElevenLabsMusic(generation: GenerationResult): Promise<GenerationResult> {
-  if (!elevenLabsMusicEnabled()) return generation;
-  const renderPlan = generation.timeline.renderPlan;
-  if (!renderPlan || renderPlan.audioPolicy === "silent" || hasGeneratedMusicBed(renderPlan)) return generation;
-  try {
-    const adapter = new ElevenLabsAdapter({
-      apiKey: process.env.ELEVENLABS_API_KEY,
-      enabled: true,
-      outputDir: path.join(generatedDir, "elevenlabs-music", generation.id)
-    });
-    const audio = await adapter.generateMusic({
-      prompt: musicPromptForGeneration(generation),
-      durationSec: generation.request.target.targetDurationSec
-    });
-    return {
-      ...generation,
-      warnings: [...generation.warnings, `ElevenLabs music generated and attached: ${path.basename(audio.path)}`],
-      timeline: {
-        ...generation.timeline,
-        renderPlan: {
-          ...renderPlan,
-          audioRef: audio.path,
-          audioPolicy: renderPlan.audioPolicy ?? "synth_beat",
-          audioPlan: {
-            ...(renderPlan.audioPlan ?? { policy: "user_bgm" as const }),
-            policy: "user_bgm"
-          },
-          adapterOptions: {
-            ...(renderPlan.adapterOptions ?? {}),
-            elevenLabsMusic: {
-              provider: audio.provider,
-              materialRole: audio.materialRole,
-              path: audio.path,
-              provenance: audio.provenance
-            }
-          }
-        }
-      }
-    };
-  } catch (error) {
-    return {
-      ...generation,
-      warnings: [
-        ...generation.warnings,
-        `ElevenLabs music generation failed: ${sanitizeAigcProviderError(error)}; using procedural audio fallback.`
-      ]
-    };
-  }
-}
-
-function elevenLabsTaskEnabled(task: "TTS" | "SFX"): boolean {
-  return Boolean(
-    process.env.ELEVENLABS_API_KEY?.trim() &&
-      (envFlag("ENABLE_ELEVENLABS_LIVE_TESTS") ||
-        envFlag("ELEVENLABS_ENABLE_CLOUD") ||
-        envFlag(`ELEVENLABS_ENABLE_${task}`))
-  );
-}
-
-// Strip any guard-trigger tokens so the synthesized ad line is accepted by the ElevenLabs
-// prompt-pollution guard (it rejects text containing "prompt"/"watermark"/sample-copy phrases).
 function sanitizeVoiceText(text: string): string {
   return text
     .replace(/prompt|watermark|水印|学习样例|不要复制|不复制|sample\s+(audio|video|frame)|copy\s+the\s+sample/gi, "")
@@ -2224,7 +2175,7 @@ async function applyGoogleAudioVoiceover(generation: GenerationResult): Promise<
   const script = voiceoverScriptForGeneration(generation);
   if (!script) return generation;
   const adapterOptions: Record<string, unknown> = { ...(renderPlan.adapterOptions ?? {}) };
-  if (adapterOptions.googleAudioVoiceover || adapterOptions.elevenLabsVoiceover) return generation;
+  if (adapterOptions.googleAudioVoiceover) return generation;
   try {
     const adapter = new GoogleAudioAdapter({
       apiKey: process.env.GEMINI_API_KEY,
@@ -2258,81 +2209,10 @@ async function applyGoogleAudioVoiceover(generation: GenerationResult): Promise<
       ...generation,
       warnings: [
         ...generation.warnings,
-        `Google Gemini TTS voiceover failed: ${sanitizeAigcProviderError(error)}; trying ElevenLabs/procedural fallback.`
+        `Google Gemini TTS voiceover failed: ${sanitizeAigcProviderError(error)}; continuing with subtitles/procedural audio.`
       ]
     };
   }
-}
-
-const ELEVENLABS_SFX_PROMPT =
-  "Short clean whoosh transition swooshing into a soft UI confirmation click, modern product ad sound design, no music, no speech.";
-
-// Best-effort: exercise the ElevenLabs TTS voiceover + Sound Effects endpoints and attach the
-// generated (provenance-tagged) assets to renderPlan.adapterOptions so the renderer can layer them
-// into the music bed. Never fatal — any failure degrades to a warning and the render proceeds.
-async function applyElevenLabsVoiceAndSfx(generation: GenerationResult): Promise<GenerationResult> {
-  const existingOptions = (generation.timeline.renderPlan?.adapterOptions ?? {}) as Record<string, unknown>;
-  const wantTts = elevenLabsTaskEnabled("TTS") && !existingOptions.googleAudioVoiceover && !existingOptions.elevenLabsVoiceover;
-  const wantSfx = elevenLabsTaskEnabled("SFX");
-  if (!wantTts && !wantSfx) return generation;
-  const renderPlan = generation.timeline.renderPlan;
-  if (!renderPlan || renderPlan.audioPolicy === "silent") return generation;
-  const warnings = [...generation.warnings];
-  const adapterOptions: Record<string, unknown> = { ...(renderPlan.adapterOptions ?? {}) };
-  const adapter = new ElevenLabsAdapter({
-    apiKey: process.env.ELEVENLABS_API_KEY,
-    enabled: true,
-    outputDir: path.join(generatedDir, "elevenlabs-voice", generation.id)
-  });
-  const durationSec = generation.request.target.targetDurationSec;
-  if (wantTts) {
-    const script = voiceoverScriptForGeneration(generation);
-    if (script) {
-      try {
-        const vo = await adapter.generateVoiceover({
-          text: script,
-          style: "calm",
-          durationTargetSec: durationSec,
-          productTheme: generation.timeline.renderPlan?.renderRecipe?.productTheme
-        });
-        adapterOptions.elevenLabsVoiceover = {
-          provider: vo.provider,
-          materialRole: vo.materialRole,
-          path: vo.path,
-          provenance: vo.provenance,
-          script
-        };
-        warnings.push(`ElevenLabs voiceover generated and attached: ${path.basename(vo.path)}`);
-      } catch (error) {
-        warnings.push(`ElevenLabs voiceover generation failed: ${sanitizeAigcProviderError(error)}; continuing without voiceover.`);
-      }
-    }
-  }
-  if (wantSfx) {
-    try {
-      const sfx = await adapter.generateSoundEffect({
-        prompt: ELEVENLABS_SFX_PROMPT,
-        durationSec: Math.min(8, Math.max(2, Math.round(durationSec * 0.15)))
-      });
-      adapterOptions.elevenLabsSfx = {
-        provider: sfx.provider,
-        materialRole: sfx.materialRole,
-        path: sfx.path,
-        provenance: sfx.provenance
-      };
-      warnings.push(`ElevenLabs sound effect generated and attached: ${path.basename(sfx.path)}`);
-    } catch (error) {
-      warnings.push(`ElevenLabs sound effect generation failed: ${sanitizeAigcProviderError(error)}; continuing without SFX.`);
-    }
-  }
-  return {
-    ...generation,
-    warnings,
-    timeline: {
-      ...generation.timeline,
-      renderPlan: { ...renderPlan, adapterOptions }
-    }
-  };
 }
 
 async function runGeneration(
@@ -2422,9 +2302,7 @@ async function runGeneration(
       generationIdSalt: options.variantLabel
     });
     generation = await applyGoogleAudioMusic(generation);
-    generation = await applyElevenLabsMusic(generation);
     generation = await applyGoogleAudioVoiceover(generation);
-    generation = await applyElevenLabsVoiceAndSfx(generation);
     generation = await applySubtitleGeneration(generation);
     if (templateSelection.warning) {
       generation = { ...generation, warnings: [`template_selection: ${templateSelection.warning}`, ...generation.warnings] };

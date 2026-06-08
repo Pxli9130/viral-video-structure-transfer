@@ -42,7 +42,6 @@
     "submission:pack": "node scripts/export-submission-artifacts.mjs",
     "visual:qa": "node scripts/visual-qa-report.mjs --all-cases",
     "remotion:verify-host": "node scripts/verify-remotion-host.mjs --case marketing",
-    "elevenlabs:verify": "node scripts/verify-elevenlabs.mjs",
     "heavy:ml:audit": "node scripts/audit-heavy-model-usage.mjs --offline --json",
     "gates:final": "node scripts/evaluate-final-gates.mjs",
     "eval:render-diversity": "node -e \"const {spawnSync}=require('node:child_process');const py=process.env.CONDA_BASE?`${process.env.CONDA_BASE}/envs/${process.env.VIRAL_CONDA_ENV||'viral'}/bin/python`:'python3';process.exit(spawnSync(py,['scripts/diversity_ncc.py',...process.argv.slice(1)],{stdio:'inherit'}).status||0)\" --",

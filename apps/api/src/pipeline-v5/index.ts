@@ -12,6 +12,8 @@ export type { VisionFn } from "./runSceneRecipeVlm.js";
 export type { GeminiModelFnOptions } from "./gen1ModelFactory.js";
 export { runGen2Ai, buildGen2Prompt } from "./runGen2Ai.js";
 export type { Gen2AiResult } from "./runGen2Ai.js";
+export { runGen2RemotionCodegen, buildGen2RemotionCodegenPrompt, finalProgramToGen2RemotionCapsule } from "./runGen2RemotionCodegen.js";
+export type { Gen2RemotionCodegenResult } from "./runGen2RemotionCodegen.js";
 export { runExtractElements } from "./runExtractElements.js";
 export { runLearnSampleV5 } from "./runLearnSampleV5.js";
 export type { LearnArtifacts, LearnOptions } from "./runLearnSampleV5.js";

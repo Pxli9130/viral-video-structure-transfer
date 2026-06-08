@@ -2,8 +2,8 @@
 // Live codegen-layer eval for the expected_codegen_eval_bundle.
 //
 // This script intentionally uses real Gemini HTTP for the visual/codegen-layer inference step.
-// It does not apply generated Remotion code to production source. Optional ElevenLabs absence is
-// treated as an audio fallback signal, not a visual/codegen failure.
+// It does not apply generated Remotion code to production source. Optional Google audio absence is
+// treated as a procedural audio fallback signal, not a visual/codegen failure.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -116,7 +116,7 @@ function compactExpectedForPrompt(caseId, expected, audioSummary, visualSummary)
       samplePixelsAllowedInFinal: false,
       sampleAudioAllowedInFinal: false,
       platformChromeEvidenceOnly: true,
-      elevenLabsOptional: true
+      googleAudioOptional: true
     }
   };
 }
@@ -132,7 +132,7 @@ function buildLayerPrompt(caseId, expected, audioSummary, visualSummary) {
     "- The sample video is structure evidence only.",
     "- Do not copy raw sample frames, sample audio, logos, watermarks, platform UI, author handles, or source brand names.",
     "- Do not condition on sample filenames or paths.",
-    "- ElevenLabs audio is optional. If unavailable, produce procedural audio and providerFallbackReason='elevenlabs_optional' or 'elevenlabs_not_configured_or_unavailable'.",
+    "- Google Gemini/Lyria audio is optional. If unavailable, produce procedural audio and providerFallbackReason='google_audio_optional' or 'google_audio_not_configured_or_unavailable'.",
     "",
     "Allowed motifFamily values:",
     "- poster_ribbon_marketing",
@@ -169,7 +169,7 @@ function buildLayerPrompt(caseId, expected, audioSummary, visualSummary) {
     '  "codegenLayers": [',
     '    { "id": "", "type": "media|motion_atom|text|transition|audio", "kind": "", "startSec": 0, "durationSec": 1, "zIndex": 0, "expectedRenderer": "", "params": {} }',
     "  ],",
-    '  "audioFallback": { "policy": "procedural", "providerFallbackReason": "elevenlabs_optional" },',
+    '  "audioFallback": { "policy": "procedural", "providerFallbackReason": "google_audio_optional" },',
     '  "safety": {',
     '    "samplePixelsAllowedInFinal": false,',
     '    "sampleAudioAllowedInFinal": false,',
@@ -288,10 +288,10 @@ function evaluateCase({ caseId, expected, llmJson, localSpec, selection, validat
   add(
     "audio_fallback_optional",
     counts.audio >= 1 &&
-      /elevenlabs_optional|elevenlabs_not_configured_or_unavailable|procedural/i.test(
+      /google_audio_optional|google_audio_not_configured_or_unavailable|procedural/i.test(
         JSON.stringify([llmJson.audioFallback, layers.filter((l) => l.type === "audio")])
       ),
-    "ElevenLabs absence must be procedural/optional fallback"
+    "Google audio absence must be procedural/optional fallback"
   );
   add("safety_no_sample_pixels", llmJson.safety?.samplePixelsAllowedInFinal === false, "sample pixels not allowed");
   add("safety_no_sample_audio", llmJson.safety?.sampleAudioAllowedInFinal === false, "sample audio not allowed");
@@ -424,7 +424,7 @@ function buildMarkdownReport(report) {
     `- Gemini model: \`${report.model}\``,
     `- Live HTTP calls: ${report.liveHttpCalls}`,
     `- Passed: ${report.passed}/${report.total}`,
-    `- ElevenLabs policy: optional; procedural audio fallback accepted.`,
+    `- Google audio policy: optional; procedural audio fallback accepted.`,
     "",
     "## Cases",
     "",
@@ -448,7 +448,7 @@ function buildMarkdownReport(report) {
     "",
     "- The LLM layer-plan step uses the contact sheet image via Gemini `generateContent` HTTP.",
     "- The Remotion proposal step is dry-run only and is validated statically; no generated effect is applied or promoted.",
-    "- Audio provider failure or missing ElevenLabs key is not counted as a visual/codegen failure when procedural audio fallback is present.",
+    "- Audio provider failure or missing Google audio enablement is not counted as a visual/codegen failure when procedural audio fallback is present.",
     ""
   ].join("\n");
 }

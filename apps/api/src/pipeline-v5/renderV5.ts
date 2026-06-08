@@ -59,22 +59,101 @@ function probeHasAudio(p: string): boolean {
 
 export interface ProceduralAudioOpts {
   bpm?: number | null;
+  /** Learned beat timestamps (s) from sample rhythm, used only for synthesized fallback timing. */
+  beatGridSec?: number[];
+  /** Strong onsets (s) from sample rhythm, used only for synthesized fallback impacts. */
+  strongBeatsSec?: number[];
+  /** Normalized RMS power curve from sample rhythm, used only to shape synthesized fallback energy. */
+  energyCurve?: Array<{ t: number; value: number }>;
   /** Cue times (s) for beat-synced hits/impacts. */
   hitTimes?: number[];
   /** Riser end time (s) — a swell into the CTA. */
   riserTime?: number;
 }
 
+function cleanTimes(values: unknown, durationSec: number, limit: number): number[] {
+  if (!Array.isArray(values)) return [];
+  const out = values
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+    .map((v) => Number(Math.max(0, Math.min(durationSec, v)).toFixed(3)))
+    .sort((a, b) => a - b);
+  const deduped: number[] = [];
+  for (const t of out) {
+    if (!deduped.length || Math.abs(t - deduped[deduped.length - 1]) >= 0.08) deduped.push(t);
+  }
+  return deduped.slice(0, limit);
+}
+
+function regularBeatTimes(durationSec: number, bpm?: number | null): number[] {
+  const safeBpm = bpm && bpm > 30 && bpm < 300 ? bpm : 120;
+  const interval = 60 / safeBpm;
+  const out: number[] = [];
+  for (let t = 0; t <= durationSec + 0.001 && out.length < 96; t += interval) out.push(Number(t.toFixed(3)));
+  return out;
+}
+
+function midpointTimes(times: number[], durationSec: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < times.length - 1; i++) {
+    const t = (times[i] + times[i + 1]) / 2;
+    if (t >= 0 && t <= durationSec) out.push(Number(t.toFixed(3)));
+  }
+  return out.slice(0, 96);
+}
+
+function energyPeaks(curve: Array<{ t: number; value: number }> | undefined, durationSec: number): Array<{ t: number; value: number }> {
+  if (!curve?.length) return [];
+  const cleaned = curve
+    .map((p) => ({
+      t: Number(Math.max(0, Math.min(durationSec, p.t)).toFixed(3)),
+      value: Math.max(0, Math.min(1, p.value))
+    }))
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.value))
+    .sort((a, b) => a.t - b.t);
+  const candidates: Array<{ t: number; value: number }> = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    const prev = cleaned[i - 1]?.value ?? 0;
+    const next = cleaned[i + 1]?.value ?? 0;
+    if (cleaned[i].value >= 0.58 && cleaned[i].value >= prev && cleaned[i].value >= next) candidates.push(cleaned[i]);
+  }
+  const byPower = candidates.sort((a, b) => b.value - a.value);
+  const selected: Array<{ t: number; value: number }> = [];
+  for (const p of byPower) {
+    if (selected.every((s) => Math.abs(s.t - p.t) >= 0.35)) selected.push(p);
+    if (selected.length >= 18) break;
+  }
+  return selected.sort((a, b) => a.t - b.t);
+}
+
+function pulseExpr(times: number[], freq: number, amp: number, width: number): string {
+  if (!times.length) return "0";
+  return times
+    .map((t) => `${amp.toFixed(3)}*sin(2*PI*${freq}*t)*exp(-${width}*pow(t-${t.toFixed(3)}\\,2))`)
+    .join("+");
+}
+
 /** Build the ffmpeg args for a cue-aware procedural mix (harmonic bed + bpm kick + cue hits + riser). */
 export function buildProceduralAudioArgs(videoPath: string, outPath: string, durationSec: number, opts: ProceduralAudioOpts = {}): string[] {
   const dur = Math.max(1, durationSec);
   const sr = 44100;
-  const bi = opts.bpm && opts.bpm > 30 ? 60 / opts.bpm : 0.5;
   const ev = (expr: string) => `aevalsrc=exprs=${expr}:d=${dur}:s=${sr}`;
   // commas inside fn args must be escaped (\,) for the lavfi filtergraph parser.
-  const bed = ev("0.16*sin(2*PI*110*t)+0.09*sin(2*PI*55*t)+0.05*sin(2*PI*220*t)");
-  const kick = ev(`0.8*sin(2*PI*85*t)*exp(-15*mod(t\\,${bi.toFixed(4)}))`);
-  const hits = (opts.hitTimes ?? []).slice(0, 8).map((ti) => `0.8*sin(2*PI*1250*t)*exp(-650*pow(t-${Math.max(0, ti).toFixed(2)}\\,2))`);
+  const beats = cleanTimes(opts.beatGridSec, dur, 96);
+  const beatTimes = beats.length >= 2 ? beats : regularBeatTimes(dur, opts.bpm);
+  const hats = midpointTimes(beatTimes, dur);
+  const peaks = energyPeaks(opts.energyCurve, dur);
+  const strong = cleanTimes([...(opts.strongBeatsSec ?? []), ...(opts.hitTimes ?? []), ...peaks.map((p) => p.t)], dur, 32);
+  const avgEnergy = opts.energyCurve?.length
+    ? opts.energyCurve.reduce((sum, p) => sum + Math.max(0, Math.min(1, p.value)), 0) / opts.energyCurve.length
+    : 0.45;
+  const bedGain = 0.12 + Math.min(0.08, avgEnergy * 0.08);
+  const bed = ev(`${bedGain.toFixed(3)}*sin(2*PI*110*t)+0.08*sin(2*PI*55*t)+0.05*sin(2*PI*220*t)`);
+  const kick = ev(pulseExpr(beatTimes, 85, 0.7, 120));
+  const hat = ev(pulseExpr(hats, 1450, 0.11 + Math.min(0.08, avgEnergy * 0.08), 260));
+  const hits = strong.slice(0, 16).map((ti) => `0.7*sin(2*PI*1250*t)*exp(-650*pow(t-${Math.max(0, ti).toFixed(2)}\\,2))`);
+  for (const peak of peaks.slice(0, 12)) {
+    hits.push(`${(0.16 + peak.value * 0.28).toFixed(3)}*sin(2*PI*180*t)*exp(-70*pow(t-${peak.t.toFixed(3)}\\,2))`);
+  }
   if (typeof opts.riserTime === "number") {
     const rt = Math.max(0, opts.riserTime);
     // rising noise-ish swell ~1s before the cue
@@ -87,8 +166,9 @@ export function buildProceduralAudioArgs(videoPath: string, outPath: string, dur
     "-i", videoPath,
     "-f", "lavfi", "-i", bed,
     "-f", "lavfi", "-i", kick,
+    "-f", "lavfi", "-i", hat,
     "-f", "lavfi", "-i", hitSrc,
-    "-filter_complex", "[1:a][2:a][3:a]amix=inputs=3:duration=longest:normalize=0,volume=1.5,alimiter=limit=0.95[a]",
+    "-filter_complex", "[1:a][2:a][3:a][4:a]amix=inputs=4:duration=longest:normalize=0,volume=1.45,alimiter=limit=0.95[a]",
     "-map", "0:v", "-map", "[a]",
     "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest",
     outPath
@@ -115,6 +195,9 @@ export interface RenderV5Options {
   outPath: string;
   /** Source BPM for the procedural kick (beat-synced bed). */
   bpm?: number | null;
+  beatGridSec?: number[];
+  strongBeatsSec?: number[];
+  energyCurve?: Array<{ t: number; value: number }>;
   entryPoint?: string;
   /** Reuse a prior bundle to avoid re-bundling per render. */
   bundleLocation?: string;
@@ -170,7 +253,10 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
       const hitTimes = recipe.audioLayers.flatMap((a) => (a.kind === "sfx" && a.id !== "sfx_riser" ? a.cueAlignSec ?? [] : []));
       const riserLayer = recipe.audioLayers.find((a) => a.id === "sfx_riser");
       const mux = await muxProceduralAudio(remotionMp4, opts.outPath, durationSec, {
-        bpm: opts.bpm ?? null,
+        bpm: opts.bpm ?? recipe.rhythm?.bpm ?? null,
+        beatGridSec: opts.beatGridSec ?? recipe.rhythm?.beatGridSec,
+        strongBeatsSec: opts.strongBeatsSec ?? recipe.rhythm?.strongBeatsSec,
+        energyCurve: opts.energyCurve ?? recipe.rhythm?.energyCurve,
         hitTimes,
         riserTime: riserLayer?.cueAlignSec?.[0]
       });

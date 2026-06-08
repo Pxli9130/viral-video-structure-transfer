@@ -44,41 +44,47 @@ describe("Gap repair options and provider policy", () => {
     const env = {};
     const seedance = resolveProviderRoute("video_generation", { env }, "seedance_2_0");
     const seedream = resolveProviderRoute("image_generation", { env }, "seedream_4_0");
-    const scribe = resolveProviderRoute("speech_to_text", { env }, "elevenlabs_scribe");
-    const music = resolveProviderRoute("music_generation", { env }, "elevenlabs_music");
+    const scribe = resolveProviderRoute("speech_to_text", { env });
+    const music = resolveProviderRoute("music_generation", { env }, "google_lyria_music");
+    const sfx = resolveProviderRoute("sound_effects", { env });
 
     expect(seedance.selectedProviderId).toBe("local_remotion_procedural");
     expect(seedream.selectedProviderId).toBe("local_remotion_procedural");
     expect(scribe.selectedProviderId).toBe("local_faster_whisper");
     expect(music.selectedProviderId).toBe("local_ffmpeg_procedural");
-    for (const route of [seedance, seedream, scribe, music]) {
+    expect(sfx.selectedProviderId).toBe("local_ffmpeg_procedural");
+    for (const route of [seedance, seedream, music]) {
       expect(route.fallbackUsed).toBe(true);
       const record = buildProviderCallRecord(route);
       expect(record.sampleFramesSentExternally).toBe(false);
       expect(record.sampleAudioSentExternally).toBe(false);
       expect(["procedural", "aigc_generated_material"]).toContain(record.provenance);
     }
+    for (const route of [scribe, sfx]) {
+      expect(route.fallbackUsed).toBe(false);
+      const record = buildProviderCallRecord(route);
+      expect(record.sampleFramesSentExternally).toBe(false);
+      expect(record.sampleAudioSentExternally).toBe(false);
+      expect(record.provenance).toBe("procedural");
+    }
   });
 
-  it("does not select ElevenLabs in the legacy provider router unless a live flag is enabled", () => {
-    const env = { ELEVENLABS_API_KEY: "test-key" };
-    const disabled = resolveProviderRoute("music_generation", { env }, "elevenlabs_music");
-    const enabled = resolveProviderRoute("music_generation", { env: { ...env, ENABLE_ELEVENLABS_LIVE_TESTS: "1" } }, "elevenlabs_music");
+  it("ignores obsolete ElevenLabs env in the legacy provider router", () => {
+    const env = { ELEVENLABS_API_KEY: "test-key", ENABLE_ELEVENLABS_LIVE_TESTS: "1" };
+    const music = resolveProviderRoute("music_generation", { env });
+    const sfx = resolveProviderRoute("sound_effects", { env });
+    const scribe = resolveProviderRoute("speech_to_text", { env });
 
-    expect(disabled.selectedProviderId).toBe("local_ffmpeg_procedural");
-    expect(disabled.fallbackUsed).toBe(true);
-    expect(enabled.selectedProviderId).toBe("elevenlabs_music");
-    expect(enabled.fallbackUsed).toBe(false);
-    expect(buildProviderCallRecord(enabled).sampleAudioSentExternally).toBe(false);
+    expect(music.selectedProviderId).toBe("local_ffmpeg_procedural");
+    expect(sfx.selectedProviderId).toBe("local_ffmpeg_procedural");
+    expect(scribe.selectedProviderId).toBe("local_faster_whisper");
+    for (const route of [music, sfx, scribe]) {
+      expect(buildProviderCallRecord(route).sampleAudioSentExternally).toBe(false);
+    }
   });
 
-  it("routes Google audio to ElevenLabs and then local in the legacy provider router", () => {
+  it("routes Google audio directly to local unless Google audio is enabled", () => {
     const disabled = resolveProviderRoute("music_generation", { env: { GEMINI_API_KEY: "test-key" } }, "google_lyria_music");
-    const eleven = resolveProviderRoute(
-      "music_generation",
-      { env: { GEMINI_API_KEY: "test-key", ELEVENLABS_API_KEY: "eleven-test", ENABLE_ELEVENLABS_LIVE_TESTS: "1" } },
-      "google_lyria_music"
-    );
     const google = resolveProviderRoute(
       "music_generation",
       { env: { GEMINI_API_KEY: "test-key", GOOGLE_AUDIO_ENABLE_CLOUD: "1" } },
@@ -86,9 +92,8 @@ describe("Gap repair options and provider policy", () => {
     );
 
     expect(disabled.selectedProviderId).toBe("local_ffmpeg_procedural");
-    expect(eleven.selectedProviderId).toBe("elevenlabs_music");
     expect(google.selectedProviderId).toBe("google_lyria_music");
-    for (const route of [eleven, google]) {
+    for (const route of [disabled, google]) {
       expect(buildProviderCallRecord(route).sampleAudioSentExternally).toBe(false);
     }
   });
