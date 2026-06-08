@@ -163,6 +163,7 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
     endSec: l.endSec ?? dur,
     gainDb: l.gainDb ?? -8,
     duckUnderVoiceover: l.duckUnderVoiceover,
+    energyCurve: l.id === "audio_bed" ? comp.audioPlan.energyCurve : undefined,
     provenance: { source: "procedural", createdByStage: "gen2_compose_fallback", sampleAudioUsed: false }
   }));
   // Cue-aligned SFX layers (hits/impacts/risers) from the planner's audio cue plan -> beat-synced punch.
@@ -188,6 +189,13 @@ export function runGen2ComposeFallback(input: Gen2Input): v5.FinalVideoProgram {
     },
     layers,
     audioLayers,
+    rhythm: {
+      source: comp.audioPlan.energyCurve?.length || comp.audioPlan.beatGridSec?.length ? "learned_sample_rhythm" : "procedural_default",
+      bpm: comp.audioPlan.bpm,
+      beatGridSec: comp.audioPlan.beatGridSec,
+      strongBeatsSec: comp.audioPlan.strongBeatsSec,
+      energyCurve: comp.audioPlan.energyCurve
+    },
     assets,
     explanations: [`Animated library composition: ${comp.sections.length} sections, ${layers.length} layers (Ken Burns media, kinetic titles, beat-synced hits, section flash cuts).`]
   };

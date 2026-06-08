@@ -148,6 +148,9 @@ export interface CapsuleRenderOptions {
   /** Renderable generated/target audio bed to mux under the rendered capsule. */
   audioPath?: string;
   bpm?: number | null;
+  beatGridSec?: number[];
+  strongBeatsSec?: number[];
+  energyCurve?: Array<{ t: number; value: number }>;
   hitTimes?: number[];
   riserTime?: number;
 }
@@ -255,7 +258,14 @@ registerRoot(Root);
       warnings.push(`generated audio missing on disk: ${path.basename(opts.audioPath)}`);
     }
     if (!audioMuxed && opts.proceduralAudio) {
-      const mux = await muxProceduralAudio(remotionMp4, opts.outPath, durationSec, { bpm: opts.bpm ?? null, hitTimes: opts.hitTimes ?? [], riserTime: opts.riserTime });
+      const mux = await muxProceduralAudio(remotionMp4, opts.outPath, durationSec, {
+        bpm: opts.bpm ?? null,
+        beatGridSec: opts.beatGridSec,
+        strongBeatsSec: opts.strongBeatsSec,
+        energyCurve: opts.energyCurve,
+        hitTimes: opts.hitTimes ?? [],
+        riserTime: opts.riserTime
+      });
       if (mux.ok) {
         finalMp4 = opts.outPath;
         audioMuxed = true;

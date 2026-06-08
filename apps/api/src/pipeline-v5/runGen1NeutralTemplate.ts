@@ -135,6 +135,15 @@ function buildAudioCues(ev: v5.EvidenceTimelineV5, ctaStartSec: number): v5.Audi
   return cues;
 }
 
+function energyShapeSummary(curve: Array<{ t: number; value: number }> | undefined): string {
+  if (!curve?.length) return "steady commercial energy";
+  const sampled = curve.slice(0, 24);
+  const peak = sampled.reduce((best, p) => (p.value > best.value ? p : best), sampled[0]);
+  const avg = sampled.reduce((sum, p) => sum + p.value, 0) / sampled.length;
+  const trend = sampled[sampled.length - 1].value > sampled[0].value + 0.15 ? "rising" : sampled[sampled.length - 1].value < sampled[0].value - 0.15 ? "falling" : "steady";
+  return `${trend} energy, peak near ${peak.t.toFixed(1)}s, average power ${avg.toFixed(2)}`;
+}
+
 function buildRemotionProject(componentName: string, scenes: v5.ProgramScene[]): v5.RemotionProjectV5 {
   // A content-neutral, placeholder-driven Remotion entry. It renders solid scene backgrounds with
   // placeholder boxes/labels only — no sample media paths, no sample text, no sample audio.
@@ -255,8 +264,9 @@ export function runGen1NeutralTemplate(
           kind: ev.audioEvidence.bpm ? "music_bed" : "impact",
           bpm: ev.audioEvidence.bpm,
           mood: ["energetic", "commercial"],
+          energyCurve: ev.audioEvidence.energyCurve?.slice(0, 96),
           cuePoints: typedSpec.audioCues.map((c) => ({ t: c.t, type: (c.type === "beat" ? "hit" : c.type) as v5.AudioCueType, role: c.role ?? "cue" })),
-          generationPromptTemplate: `Generate a commercial bed around ${ev.audioEvidence.bpm ?? 120} BPM with impacts at hook and CTA. Do not imitate the source track.`,
+          generationPromptTemplate: `Generate a commercial bed around ${ev.audioEvidence.bpm ?? 120} BPM with impacts at hook and CTA. Match this simplified energy shape: ${energyShapeSummary(ev.audioEvidence.energyCurve)}. Do not imitate the source track.`,
           negativePrompt: "do not recreate the sample melody or track",
           reusablePolicy: "procedural_recreate",
           evidenceRefs: ["audio_beat_grid"]

@@ -591,6 +591,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       }
     }
     const beatTimes = (capsule.timingSignature.sections.flatMap((s) => s.internalBeats)).slice(0, 8);
+    const rhythmRecipe = capsule.audioRecipes[0];
     const res = await renderTemplateCapsule({
       capsule,
       boundProps,
@@ -598,7 +599,10 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       aspectRatio: brief.aspectRatio ?? "9:16",
       proceduralAudio: options.aigcGapFill.audioFill !== "off",
       audioPath: generatedMusicBed?.path,
-      bpm: brief && (capsule.audioRecipes[0]?.bpm ?? null),
+      bpm: brief && (rhythmRecipe?.bpm ?? null),
+      beatGridSec: rhythmRecipe?.cuePoints?.map((c) => c.t),
+      strongBeatsSec: rhythmRecipe?.cuePoints?.filter((c) => c.type === "hit" || c.type === "impact").map((c) => c.t),
+      energyCurve: rhythmRecipe?.energyCurve,
       hitTimes: beatTimes
     });
     usedTemplateCode = res.usedTemplateCode && res.ok;
@@ -633,7 +637,20 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
           const fixCapsule = { ...capsule, codeBundle: patched.bundle };
           const fixPath = `${finalMp4Path}.fix.mp4`;
           const beats2 = capsule.timingSignature.sections.flatMap((s) => s.internalBeats).slice(0, 8);
-          const res2 = await renderTemplateCapsule({ capsule: fixCapsule, boundProps, outPath: fixPath, aspectRatio: brief.aspectRatio ?? "9:16", proceduralAudio: options.aigcGapFill.audioFill !== "off", audioPath: generatedMusicBed?.path, bpm: capsule.audioRecipes[0]?.bpm ?? null, hitTimes: beats2 });
+          const rhythmRecipe2 = capsule.audioRecipes[0];
+          const res2 = await renderTemplateCapsule({
+            capsule: fixCapsule,
+            boundProps,
+            outPath: fixPath,
+            aspectRatio: brief.aspectRatio ?? "9:16",
+            proceduralAudio: options.aigcGapFill.audioFill !== "off",
+            audioPath: generatedMusicBed?.path,
+            bpm: rhythmRecipe2?.bpm ?? null,
+            beatGridSec: rhythmRecipe2?.cuePoints?.map((c) => c.t),
+            strongBeatsSec: rhythmRecipe2?.cuePoints?.filter((c) => c.type === "hit" || c.type === "impact").map((c) => c.t),
+            energyCurve: rhythmRecipe2?.energyCurve,
+            hitTimes: beats2
+          });
           const luma2 = res2.ok && existsSync(fixPath) ? await overallMeanLuma(fixPath, res2.durationSec) : null;
           if (res2.ok && existsSync(fixPath) && luma2 !== null && luma2 > Math.max(luma + 20, 100)) {
             await fs.rename(fixPath, finalMp4Path);

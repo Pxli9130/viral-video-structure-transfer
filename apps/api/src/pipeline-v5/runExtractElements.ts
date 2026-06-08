@@ -144,11 +144,11 @@ export function runExtractElements(program: v5.NeutralReconstructionProgram): v5
       proposedName: `${recipe.kind} audio pattern`,
       kind: "audio_pattern",
       evidenceRefs: recipe.evidenceRefs,
-      summary: `${recipe.bpm ?? "n/a"} BPM, ${recipe.cuePoints.length} cues.`,
+      summary: `${recipe.bpm ?? "n/a"} BPM, ${recipe.cuePoints.length} cues${recipe.energyCurve?.length ? `, ${recipe.energyCurve.length} energy points` : ""}.`,
       reusablePolicy: recipe.reusablePolicy,
       slots: [],
       audioRecipe: recipe,
-      payload: { bpm: recipe.bpm, mood: recipe.mood, cuePoints: recipe.cuePoints },
+      payload: { bpm: recipe.bpm, mood: recipe.mood, cuePoints: recipe.cuePoints, energyCurve: recipe.energyCurve },
       qualityHints: ["cue pattern only"]
     });
   }

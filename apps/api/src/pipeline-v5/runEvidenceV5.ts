@@ -37,6 +37,20 @@ function textRoleFromLayout(layoutRole: string | undefined): v5.TextEvidence["ro
   return "other";
 }
 
+function normalizeEnergyCurve(value: unknown, durationSec: number): Array<{ t: number; value: number }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const points = value
+    .map((item) => {
+      const rec = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      const t = typeof rec.t === "number" ? rec.t : typeof rec.timeSec === "number" ? rec.timeSec : undefined;
+      const v = typeof rec.value === "number" ? rec.value : typeof rec.energy === "number" ? rec.energy : undefined;
+      if (t === undefined || v === undefined || !Number.isFinite(t) || !Number.isFinite(v)) return undefined;
+      return { t: Number(Math.max(0, Math.min(durationSec, t)).toFixed(3)), value: Number(Math.max(0, Math.min(1, v)).toFixed(3)) };
+    })
+    .filter((p): p is { t: number; value: number } => Boolean(p));
+  return points.length ? points.slice(0, 96) : undefined;
+}
+
 export interface EvidenceV5WrapOptions {
   /** Override width/height/fps when not present on the asset metadata. */
   width?: number;
@@ -106,11 +120,14 @@ export function toEvidenceTimelineV5(
   };
 
   const beat = timeline.beatGrid;
+  const beatRecord = beat as unknown as Record<string, unknown> | undefined;
+  const audioStructure = timeline.audioStructure as Record<string, unknown> | undefined;
   const audioEvidence: v5.AudioEvidence = {
     hasAudio: Boolean(timeline.hasAudio),
     bpm: beat?.bpm,
     beatGridSec: beat?.beats?.length ? beat.beats : undefined,
-    onsetsSec: beat?.onsets?.length ? beat.onsets : undefined
+    onsetsSec: beat?.onsets?.length ? beat.onsets : undefined,
+    energyCurve: normalizeEnergyCurve(beatRecord?.energyCurve ?? audioStructure?.energyCurve, timeline.durationSec ?? 0)
   };
 
   const intensityCurve = (timeline.shots ?? [])

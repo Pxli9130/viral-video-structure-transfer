@@ -1133,9 +1133,8 @@ export class FFmpegRenderer implements RendererAdapter {
       const directAudioFile = audioRef && path.isAbsolute(audioRef) && existsSync(audioRef) ? audioRef : undefined;
       const resolvedAudioFile = audioRef ? this.opts.assetResolver.resolve(audioRef) : undefined;
       const audioFile = directAudioFile ?? (resolvedAudioFile && existsSync(resolvedAudioFile) ? resolvedAudioFile : undefined);
-      // Generated voiceover + SFX (best-effort) are layered over WHATEVER audio bed is used —
-      // Google/ElevenLabs music, the procedural synth bed, or sample bgm — so successful aux audio
-      // is never dropped just because the music bed fell back to procedural.
+      // Google voiceover is layered over whatever bed is used. SFX/risers are procedural in
+      // buildProceduralBedSources(), so the required audio path does not depend on external SFX APIs.
       const auxPath = (key: string): string | undefined => {
         const entry = (timeline.renderPlan?.adapterOptions as Record<string, unknown> | undefined)?.[key];
         const candidate = entry && typeof entry === "object" ? (entry as { path?: unknown }).path : undefined;
@@ -1144,29 +1143,19 @@ export class FFmpegRenderer implements RendererAdapter {
         const resolved = this.opts.assetResolver.resolve(candidate);
         return resolved && existsSync(resolved) ? resolved : undefined;
       };
-      const voiceoverFile = auxPath("googleAudioVoiceover") ?? auxPath("elevenLabsVoiceover");
-      const sfxFile = auxPath("elevenLabsSfx");
+      const voiceoverFile = auxPath("googleAudioVoiceover");
       if (audioFile) {
-        if (voiceoverFile || sfxFile) {
+        if (voiceoverFile) {
           try {
-            // Bed looped + ducked; voiceover full-volume slightly delayed; SFX at head. amix with
+            // Bed looped + ducked; voiceover full-volume slightly delayed. amix with
             // duration=longest, capped by -t (no -shortest: VO/SFX are shorter than the video).
             const inputs: string[] = ["-y", "-i", silentPath, "-stream_loop", "-1", "-i", audioFile];
             const filters: string[] = ["[1:a]volume=0.42[bed]"];
             const mixLabels: string[] = ["[bed]"];
             let inputIndex = 2;
-            if (voiceoverFile) {
-              inputs.push("-i", voiceoverFile);
-              filters.push(`[${inputIndex}:a]aresample=44100,volume=1.25,adelay=400:all=1[vo]`);
-              mixLabels.push("[vo]");
-              inputIndex += 1;
-            }
-            if (sfxFile) {
-              inputs.push("-i", sfxFile);
-              filters.push(`[${inputIndex}:a]aresample=44100,volume=0.7[sfx]`);
-              mixLabels.push("[sfx]");
-              inputIndex += 1;
-            }
+            inputs.push("-i", voiceoverFile);
+            filters.push(`[${inputIndex}:a]aresample=44100,volume=1.25,adelay=400:all=1[vo]`);
+            mixLabels.push("[vo]");
             filters.push(`${mixLabels.join("")}amix=inputs=${mixLabels.length}:duration=longest:normalize=0,highpass=f=30,alimiter=limit=0.95[a]`);
             await runFfmpeg([
               ...inputs,
@@ -1174,12 +1163,10 @@ export class FFmpegRenderer implements RendererAdapter {
               "-map", "0:v:0", "-map", "[a]", "-t", dur,
               "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", finalPath
             ]);
-            warnings.push(
-              `Generated audio layered: bed${voiceoverFile ? "+voiceover" : ""}${sfxFile ? "+sfx" : ""}.`
-            );
+            warnings.push("Generated audio layered: bed+voiceover.");
             return true;
           } catch (error) {
-            warnings.push(`Generated voice/SFX layered mux failed (${(error as Error).message}); muxing music bed only.`);
+            warnings.push(`Generated voiceover mux failed (${(error as Error).message}); muxing music bed only.`);
           }
         }
         await runFfmpeg([
@@ -1198,8 +1185,8 @@ export class FFmpegRenderer implements RendererAdapter {
       const sources = buildProceduralBedSources(timeline, durationSec);
       const lavfiInputs = sources.flatMap((source) => ["-f", "lavfi", "-i", source]);
       const labels = sources.map((_, index) => `[${index + 1}]`).join("");
-      // Layer any ElevenLabs voiceover/SFX onto the procedural bed. Inputs: 0=silent video,
-      // 1..N=lavfi beat sources, then the aux files. When aux is present we drop -shortest (aux is
+      // Layer Google voiceover onto the procedural bed. Inputs: 0=silent video,
+      // 1..N=lavfi beat sources, then the voice file. When aux is present we drop -shortest (aux is
       // shorter than the video) and rely on -t; the lavfi sources are d=dur so the mix spans the clip.
       const auxInputs: string[] = [];
       const auxFilters: string[] = [];
@@ -1209,12 +1196,6 @@ export class FFmpegRenderer implements RendererAdapter {
         auxInputs.push("-i", voiceoverFile);
         auxFilters.push(`[${auxIndex}:a]aresample=44100,volume=1.25,adelay=400:all=1[vo]`);
         auxLabels.push("[vo]");
-        auxIndex += 1;
-      }
-      if (sfxFile) {
-        auxInputs.push("-i", sfxFile);
-        auxFilters.push(`[${auxIndex}:a]aresample=44100,volume=0.7[sfx]`);
-        auxLabels.push("[sfx]");
         auxIndex += 1;
       }
       const mixCount = sources.length + auxLabels.length;
@@ -1233,7 +1214,7 @@ export class FFmpegRenderer implements RendererAdapter {
         "-movflags", "+faststart", finalPath
       ]);
       if (auxLabels.length) {
-        warnings.push(`Generated audio layered over procedural bed:${voiceoverFile ? " voiceover" : ""}${sfxFile ? " sfx" : ""}.`);
+        warnings.push("Generated voiceover layered over procedural bed.");
       }
       return true;
     } catch (error) {

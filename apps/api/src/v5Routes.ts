@@ -16,11 +16,13 @@ import { analyzeEvidenceTimeline } from "./adapters/evidenceTimeline.js";
 import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
   buildV5RenderInputProps,
-  createGeminiModelFn,
+  createDoubaoModelFn,
   createGeminiVisionCodegenFn,
   createGeminiVisionFn,
   createTextModelFn,
+  finalProgramToGen2RemotionCapsule,
   renderFinalVideoV5,
+  renderTemplateCapsule,
   runCreateV5,
   runGen1Ai,
   runLearnSampleV5,
@@ -85,11 +87,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
     const sampleAssetIds: string[] = Array.isArray(req.body?.sampleAssetIds) ? req.body.sampleAssetIds : [];
     if (!sampleAssetIds.length) return fail(res, 400, "sampleAssetIds[] required");
     const wantAi = req.body?.options?.runGen1Ai === true;
-    const modelFn = wantAi ? createGeminiModelFn() : undefined;
+    const modelFn = wantAi ? createTextModelFn() : undefined;
     // V5.1: real AI codegen of the capsule TSX (triple-gated, apply!=promote) is now the DEFAULT
     // (opt out with options.runCapsuleCodegen=false). Falls back to deterministic when no GEMINI key.
     const wantCapsuleCodegen = req.body?.options?.runCapsuleCodegen !== false;
-    const capsuleCodegenModel = wantCapsuleCodegen ? createGeminiModelFn({ model: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
+    const capsuleCodegenModel = wantCapsuleCodegen ? createTextModelFn({ geminiModel: process.env.GEMINI_CODEGEN_MODEL, timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS ?? 120000) }) ?? null : null;
     // Multimodal codegen + VLM scene enrichment send sample FRAMES to the provider for STRUCTURE
     // analysis — gated by ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS (opt out with options.useVision=false).
     const allowVlm = String(process.env.ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS ?? "") === "1" && req.body?.options?.useVision !== false;
@@ -443,15 +445,22 @@ export function createV5Router(deps: V5RouterDeps): Router {
     if (!selectedElements.length) return fail(res, 400, "no KB elements selected/available; run /learn-samples first");
 
     const outDir = genDir(generationId);
-    const gen2Model = options.runGen2Ai === true ? createGeminiModelFn() ?? undefined : undefined;
+    const gen2Model = options.runGen2Ai === true ? createTextModelFn() ?? undefined : undefined;
+    const requestedGen2RemotionCodegen = options.runGen2RemotionCodegen === true;
+    const gen2RemotionModel = requestedGen2RemotionCodegen
+      ? createDoubaoModelFn({
+          timeoutMs: Number(process.env.GEN2_REMOTION_TIMEOUT_MS ?? process.env.DOUBAO_TIMEOUT_MS ?? 180000),
+          temperature: 0.2
+        }) ?? undefined
+      : undefined;
 
-    // Beat grid (for audio-cue alignment) from the first selected element's learned evidence.
+    // Beat grid + audio power curve (for procedural fallback rhythm) from the first selected element's learned evidence.
     const sampleId = selectedElements[0]?.source.sourceSampleId;
-    let beatGrid: { bpm?: number | null; beats?: number[]; strongBeats?: number[] } | undefined;
+    let beatGrid: { bpm?: number | null; beats?: number[]; strongBeats?: number[]; energyCurve?: Array<{ t: number; value: number }> } | undefined;
     if (sampleId) {
       const ev = await readJsonIf(path.join(learnDir(sampleId), "evidence-timeline-v5.json"));
-      const ae = (ev as { audioEvidence?: { bpm?: number; beatGridSec?: number[]; onsetsSec?: number[] } } | undefined)?.audioEvidence;
-      if (ae) beatGrid = { bpm: ae.bpm ?? null, beats: ae.beatGridSec ?? [], strongBeats: ae.onsetsSec ?? [] };
+      const ae = (ev as { audioEvidence?: { bpm?: number; beatGridSec?: number[]; onsetsSec?: number[]; energyCurve?: Array<{ t: number; value: number }> } } | undefined)?.audioEvidence;
+      if (ae) beatGrid = { bpm: ae.bpm ?? null, beats: ae.beatGridSec ?? [], strongBeats: ae.onsetsSec ?? [], energyCurve: ae.energyCurve ?? [] };
     }
     const materialsPublicPrefix = `/generated/${path.relative(deps.generatedDir, path.join(outDir, "materials")).split(path.sep).join("/")}/`;
 
@@ -463,12 +472,17 @@ export function createV5Router(deps: V5RouterDeps): Router {
       selectedElements,
       outDir,
       gen2Model,
+      gen2RemotionModel,
       beatGrid,
       allowExternalProvider: options.materialFill === "aigc",
+      resolveAssetUri: (assetId) => `/api/v5/assets/${assetId}/media`,
       publicPathPrefix: materialsPublicPrefix,
       materialFillMaxGenerated: typeof options.materialFillMax === "number" ? options.materialFillMax : 4,
       env: process.env
     });
+    if (requestedGen2RemotionCodegen && !gen2RemotionModel) {
+      create.warnings.push("Gen2 Remotion codegen requested but Doubao/Ark text model is not configured.");
+    }
 
     // Only assess render gates when a render was actually attempted (plan -> undefined -> warn,
     // not fail). POST /generations renders by default; /generations/plan never renders.
@@ -483,12 +497,64 @@ export function createV5Router(deps: V5RouterDeps): Router {
       // machine) loads them over http (chrome blocks file:// "local resource" loads).
       const port = Number(process.env.APP_PORT ?? 3000);
       const assetMap: Record<string, { src: string }> = {};
+      const serveSrc = (uri: string) => uri.startsWith("http") ? uri : uri.startsWith("/") ? `http://127.0.0.1:${port}${uri}` : uri;
       for (const a of create.finalProgram.renderRecipe.assets) {
-        if (a.provenance?.source === "aigc_generated" && a.uri) {
-          assetMap[a.id] = { src: a.uri.startsWith("http") ? a.uri : `http://127.0.0.1:${port}${a.uri.startsWith("/") ? "" : "/"}${a.uri}` };
-        }
+        if (a.uri) assetMap[a.id] = { src: serveSrc(a.uri) };
       }
-      const render = await renderFinalVideoV5({ finalProgram: create.finalProgram, outPath, proceduralAudio: true, bpm: beatGrid?.bpm ?? null, assetMap });
+      let render:
+        | Awaited<ReturnType<typeof renderFinalVideoV5>>
+        | Awaited<ReturnType<typeof renderTemplateCapsule>>;
+      if (create.finalProgram.renderMode === "bespoke_codegen") {
+        const capsule = finalProgramToGen2RemotionCapsule(create.finalProgram, create.composition, selectedElements);
+        const fixture = create.finalProgram.remotionProject.fixture && typeof create.finalProgram.remotionProject.fixture === "object"
+          ? create.finalProgram.remotionProject.fixture as Record<string, unknown>
+          : {};
+        render = await renderTemplateCapsule({
+          capsule,
+          boundProps: {
+            ...fixture,
+            recipe: create.finalProgram.renderRecipe,
+            assetMap,
+            brief,
+            sections: create.composition.sections,
+            stylePlan: create.composition.stylePlan,
+            audioPlan: create.composition.audioPlan
+          },
+          outPath,
+          aspectRatio: brief.aspectRatio ?? "9:16",
+          proceduralAudio: true,
+          bpm: beatGrid?.bpm ?? null,
+          beatGridSec: beatGrid?.beats,
+          strongBeatsSec: beatGrid?.strongBeats,
+          energyCurve: beatGrid?.energyCurve,
+          hitTimes: create.finalProgram.renderRecipe.audioLayers.flatMap((a) => a.kind === "sfx" && a.id !== "sfx_riser" ? a.cueAlignSec ?? [] : []),
+          riserTime: create.finalProgram.renderRecipe.audioLayers.find((a) => a.id === "sfx_riser")?.cueAlignSec?.[0]
+        });
+        if (!render.ok) {
+          create.warnings.push(`Gen2 Remotion render failed; rendered library recipe fallback instead: ${render.error ?? "unknown error"}`);
+          render = await renderFinalVideoV5({
+            finalProgram: create.finalProgram,
+            outPath,
+            proceduralAudio: true,
+            bpm: beatGrid?.bpm ?? null,
+            beatGridSec: beatGrid?.beats,
+            strongBeatsSec: beatGrid?.strongBeats,
+            energyCurve: beatGrid?.energyCurve,
+            assetMap
+          });
+        }
+      } else {
+        render = await renderFinalVideoV5({
+          finalProgram: create.finalProgram,
+          outPath,
+          proceduralAudio: true,
+          bpm: beatGrid?.bpm ?? null,
+          beatGridSec: beatGrid?.beats,
+          strongBeatsSec: beatGrid?.strongBeats,
+          energyCurve: beatGrid?.energyCurve,
+          assetMap
+        });
+      }
       renderInfo = {
         finalMp4Exists: Boolean(render.ok && render.finalMp4),
         durationSec: render.durationSec,
@@ -525,7 +591,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
       composition: create.composition,
       gapReport: create.gapReport,
       finalProgram: create.finalProgram,
-      renderProps: buildV5RenderInputProps(create.finalProgram)
+      renderProps: buildV5RenderInputProps(create.finalProgram),
+      warnings: create.warnings
     };
     await fs.writeFile(path.join(outDir, "generation-result.json"), JSON.stringify(result, null, 2));
     return ok(res, result);
