@@ -122,14 +122,12 @@ export function compileProviderPromptPlan(input: ProviderPromptCompilerInput): P
   if (
     provider === "google_gemini_tts" ||
     provider === "google_lyria_music" ||
-    provider === "elevenlabs_tts" ||
-    provider === "elevenlabs_sound_effects" ||
-    provider === "elevenlabs_music"
+    provider === "procedural_synth"
   ) {
     const task: ModelTask =
-      provider === "google_gemini_tts" || provider === "elevenlabs_tts"
+      provider === "google_gemini_tts"
         ? "voiceover"
-        : provider === "google_lyria_music" || provider === "elevenlabs_music" || /music|bgm/i.test(input.gap.gapType ?? input.gap.slotId)
+        : provider === "google_lyria_music" || /music|bgm/i.test(input.gap.gapType ?? input.gap.slotId)
           ? "music"
           : "sound_effect";
     return {

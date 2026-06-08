@@ -147,9 +147,12 @@ export const knowledgeElementSchema = {
   properties: {
     id: { type: "string" },
     kind: { enum: KE_KINDS },
+    category: { type: "string" },
+    subcategory: { type: "string" },
     name: { type: "string" },
     description: { type: "string" },
     tags: { type: "array", items: { type: "string" } },
+    facets: { type: "object" },
     source: {
       type: "object",
       required: ["sourceSampleId", "reconstructionProgramId", "evidenceRefs"],
@@ -158,6 +161,32 @@ export const knowledgeElementSchema = {
     reusablePolicy: { enum: REUSABLE_POLICY },
     slots: { type: "array", items: { type: "object" } },
     payload: { type: "object" },
+    signatures: {
+      type: "object",
+      required: ["payloadHash", "normalizedText", "retrievalText"],
+      properties: {
+        payloadHash: { type: "string" },
+        normalizedText: { type: "string" },
+        retrievalText: { type: "string" },
+        slotSchemaHash: { type: "string" },
+        remotionHash: { type: "string" },
+        audioCueHash: { type: "string" },
+        visualSignatureHash: { type: "string" }
+      }
+    },
+    embedding: {
+      type: "object",
+      required: ["model", "version", "retrievalText", "createdAt"],
+      properties: {
+        model: { type: "string" },
+        version: { type: "string" },
+        vectorRef: { type: "string" },
+        retrievalText: { type: "string" },
+        createdAt: { type: "string" }
+      }
+    },
+    relations: { type: "array", items: { type: "object", required: ["type", "targetElementId", "confidence"] } },
+    aliases: { type: "array", items: { type: "string" } },
     compatibility: {
       type: "object",
       required: ["aspectRatios", "verticals", "canCombineWith", "conflictsWith"]
@@ -169,7 +198,8 @@ export const knowledgeElementSchema = {
     quality: {
       type: "object",
       required: ["confidence", "usefulness"]
-    }
+    },
+    lifecycle: { type: "object", required: ["status", "version", "createdAt", "updatedAt"] }
   },
   additionalProperties: true
 } as const;
@@ -402,7 +432,8 @@ export const generationRequestV5Schema = {
         finalCodegen: { enum: ["on", "off"] },
         fallbackRender: { type: "boolean" },
         runGen1Ai: { type: "boolean" },
-        runGen2Ai: { type: "boolean" }
+        runGen2Ai: { type: "boolean" },
+        runGen2RemotionCodegen: { type: "boolean" }
       }
     }
   },

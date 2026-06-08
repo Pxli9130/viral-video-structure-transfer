@@ -374,98 +374,6 @@ export const MODEL_PROVIDER_REGISTRY: Record<string, ModelProviderDefinition> = 
     implemented: true,
     mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY
   },
-  elevenlabs_scribe: {
-    id: "elevenlabs_scribe",
-    displayName: "ElevenLabs Scribe",
-    providerClass: "asr",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalPixels: true,
-    canAffectFinalAudio: false,
-    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true },
-    notes: "Optional ASR upgrade for authorized user/source audio only; sample audio upload is blocked."
-  },
-  elevenlabs_tts: {
-    id: "elevenlabs_tts",
-    displayName: "ElevenLabs TTS",
-    providerClass: "audio_generation",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalAudio: true,
-    mediaAccessPolicy: AIGC_GENERATION_POLICY,
-    notes: "Optional generated voiceover; output must carry AIGC audio provenance."
-  },
-  elevenlabs_sound_effects: {
-    id: "elevenlabs_sound_effects",
-    displayName: "ElevenLabs Sound Effects",
-    providerClass: "audio_generation",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalAudio: true,
-    mediaAccessPolicy: AIGC_GENERATION_POLICY,
-    notes: "Optional generated SFX; never receives sample audio."
-  },
-  elevenlabs_music: {
-    id: "elevenlabs_music",
-    displayName: "ElevenLabs Music",
-    providerClass: "audio_generation",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalAudio: true,
-    mediaAccessPolicy: AIGC_GENERATION_POLICY,
-    notes: "Optional generated music bed; never receives or imitates sample audio."
-  },
-  elevenlabs_audio_isolation: {
-    id: "elevenlabs_audio_isolation",
-    displayName: "ElevenLabs Audio Isolation",
-    providerClass: "audio_cleanup",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalAudio: true,
-    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true, generatedAssetProvenanceRequired: true },
-    notes: "Optional cleanup for authorized user/source audio; sample audio upload is blocked."
-  },
-  elevenlabs_forced_alignment: {
-    id: "elevenlabs_forced_alignment",
-    displayName: "ElevenLabs Forced Alignment",
-    providerClass: "audio_analysis",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalPixels: true,
-    canAffectFinalAudio: false,
-    mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true },
-    notes: "Optional subtitle/voice timing for generated voiceover or authorized user/source audio only."
-  },
-  elevenlabs_models: {
-    id: "elevenlabs_models",
-    displayName: "ElevenLabs Models Read",
-    providerClass: "capability_discovery",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalPixels: false,
-    canAffectFinalAudio: false,
-    mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
-    notes: "Read-only model capability discovery."
-  },
-  elevenlabs_voices_read: {
-    id: "elevenlabs_voices_read",
-    displayName: "ElevenLabs Voices Read",
-    providerClass: "capability_discovery",
-    cloud: true,
-    implemented: true,
-    envVars: ["ELEVENLABS_API_KEY"],
-    canAffectFinalPixels: false,
-    canAffectFinalAudio: false,
-    mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
-    notes: "Read-only voice catalog discovery; no voice write/create permissions."
-  },
   keyword_filter: {
     id: "keyword_filter",
     displayName: "Keyword TechniqueAtom filter",
@@ -639,8 +547,8 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   },
   asr: {
     task: "asr",
-    primary: "elevenlabs_scribe",
-    fallbacks: ["faster_whisper", "no_asr_with_warning"],
+    primary: "faster_whisper",
+    fallbacks: ["no_asr_with_warning"],
     requiredForCoreDemo: true,
     featureGate: "analysis",
     localFallback: "no_asr_with_warning",
@@ -723,7 +631,7 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
   voiceover: {
     task: "voiceover",
     primary: "google_gemini_tts",
-    fallbacks: ["elevenlabs_tts", "skip_with_warning"],
+    fallbacks: ["skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
     featureGate: "aigc_fill",
@@ -733,11 +641,27 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    candidateProviders: ["google_gemini_tts", "elevenlabs_tts"]
+    candidateProviders: ["google_gemini_tts"]
   },
   sound_effect: {
     task: "sound_effect",
-    primary: "elevenlabs_sound_effects",
+    primary: "procedural_synth",
+    fallbacks: ["skip_with_warning"],
+    requiredForCoreDemo: false,
+    requiredWhenFeatureEnabled: true,
+    featureGate: "aigc_fill",
+    localFallback: "procedural_synth",
+    providerClass: "audio_generation",
+    effectScope: "generation_affects_assets",
+    mediaAccessPolicy: AIGC_GENERATION_POLICY,
+    canAffectFinalPixels: false,
+    canAffectFinalAudio: true,
+    notes: "Rubric-required SFX uses local procedural hit/riser layers.",
+    candidateProviders: ["procedural_synth"]
+  },
+  music: {
+    task: "music",
+    primary: "google_lyria_music",
     fallbacks: ["procedural_synth", "skip_with_warning"],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: true,
@@ -748,45 +672,29 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: AIGC_GENERATION_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: true,
-    notes: "No Google SFX runtime adapter is implemented; ElevenLabs is the real SFX provider, then local procedural audio.",
-    candidateProviders: ["elevenlabs_sound_effects"]
-  },
-  music: {
-    task: "music",
-    primary: "google_lyria_music",
-    fallbacks: ["elevenlabs_music", "procedural_synth", "skip_with_warning"],
-    requiredForCoreDemo: false,
-    requiredWhenFeatureEnabled: true,
-    featureGate: "aigc_fill",
-    localFallback: "procedural_synth",
-    providerClass: "audio_generation",
-    effectScope: "generation_affects_assets",
-    mediaAccessPolicy: AIGC_GENERATION_POLICY,
-    canAffectFinalPixels: false,
-    canAffectFinalAudio: true,
-    candidateProviders: ["google_lyria_music", "elevenlabs_music"]
+    candidateProviders: ["google_lyria_music"]
   },
   audio_cleanup: {
     task: "audio_cleanup",
-    primary: "elevenlabs_audio_isolation",
-    fallbacks: ["skip_with_warning"],
+    primary: "skip_with_warning",
+    fallbacks: [],
     requiredForCoreDemo: false,
-    requiredWhenFeatureEnabled: true,
+    requiredWhenFeatureEnabled: false,
     featureGate: "aigc_fill",
     localFallback: "skip_with_warning",
     providerClass: "audio_cleanup",
     effectScope: "audio_affects_final_mix",
     mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true, generatedAssetProvenanceRequired: true },
     canAffectFinalPixels: false,
-    canAffectFinalAudio: true,
-    candidateProviders: ["elevenlabs_audio_isolation"]
+    canAffectFinalAudio: false,
+    notes: "Audio isolation is outside the rubric-required audio path."
   },
   forced_alignment: {
     task: "forced_alignment",
-    primary: "elevenlabs_forced_alignment",
-    fallbacks: ["skip_with_warning"],
+    primary: "skip_with_warning",
+    fallbacks: [],
     requiredForCoreDemo: false,
-    requiredWhenFeatureEnabled: true,
+    requiredWhenFeatureEnabled: false,
     featureGate: "aigc_fill",
     localFallback: "skip_with_warning",
     providerClass: "audio_analysis",
@@ -794,12 +702,12 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: { ...BLOCK_SAMPLE_MEDIA_POLICY, userAssetsAllowed: true },
     canAffectFinalPixels: true,
     canAffectFinalAudio: false,
-    candidateProviders: ["elevenlabs_forced_alignment"]
+    notes: "Forced alignment is optional and not required by the assets rubric."
   },
   model_discovery: {
     task: "model_discovery",
-    primary: "elevenlabs_models",
-    fallbacks: ["skip_with_warning"],
+    primary: "skip_with_warning",
+    fallbacks: [],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: false,
     featureGate: "demo_report",
@@ -809,12 +717,12 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: false,
-    candidateProviders: ["elevenlabs_models"]
+    candidateProviders: []
   },
   voice_discovery: {
     task: "voice_discovery",
-    primary: "elevenlabs_voices_read",
-    fallbacks: ["skip_with_warning"],
+    primary: "skip_with_warning",
+    fallbacks: [],
     requiredForCoreDemo: false,
     requiredWhenFeatureEnabled: false,
     featureGate: "demo_report",
@@ -824,7 +732,7 @@ export const MODEL_ROUTE_TABLE: Record<ModelTask, ModelRouteConfig> = {
     mediaAccessPolicy: BLOCK_SAMPLE_MEDIA_POLICY,
     canAffectFinalPixels: false,
     canAffectFinalAudio: false,
-    candidateProviders: ["elevenlabs_voices_read"]
+    candidateProviders: []
   },
   dubbing: {
     task: "dubbing",

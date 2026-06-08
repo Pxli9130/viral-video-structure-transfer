@@ -32,7 +32,7 @@ function optionTypesForGap(gap: GapReportItem): string[] {
   const existing = (gap.repairOptions ?? []).map((option) => option.strategy);
   if (existing.length) return existing;
   const haystack = [gap.gapType, gap.visualFormFamily, gap.visualForm, gap.slotId].join(" ").toLowerCase();
-  if (/audio|bgm|music|sound/.test(haystack)) return ["procedural_audio", "elevenlabs_audio"];
+  if (/audio|bgm|music|sound/.test(haystack)) return ["google_lyria_music", "procedural_audio"];
   if (/motion|moving|hero|ribbon|video/.test(haystack)) return ["procedural_motion", "aigc_video_fill", "packaging_fill"];
   if (/cta|brand|poster|image|card|background/.test(haystack)) return ["packaging_fill", "aigc_image_fill", "procedural_motion"];
   return ["packaging_fill", "procedural_motion"];
@@ -42,7 +42,7 @@ function unsafe(optionType: string, decision: ProviderDecision | undefined): boo
   if (!decision) return false;
   if (decision.mediaAccessPolicy.rawPromptRenderable) return true;
   if (decision.consumesSamplePixelsExternally || decision.consumesSampleAudioExternally || decision.consumesSampleVideoExternally) {
-    return /aigc|seedance|seedream|elevenlabs/i.test(optionType);
+    return /aigc|seedance|seedream|google_lyria/i.test(optionType);
   }
   return false;
 }
@@ -50,7 +50,7 @@ function unsafe(optionType: string, decision: ProviderDecision | undefined): boo
 function baseScore(optionType: string, decision: ProviderDecision | undefined, gap: GapReportItem): number {
   let score = 50;
   if (/procedural|packaging|remotion|local/i.test(optionType)) score += 24;
-  if (/aigc|seedance|seedream|elevenlabs/i.test(optionType)) score += decision && !decision.fallbackUsed && decision.selectedProvider !== "unavailable" ? 12 : -24;
+  if (/aigc|seedance|seedream|google_lyria/i.test(optionType)) score += decision && !decision.fallbackUsed && decision.selectedProvider !== "unavailable" ? 12 : -24;
   if (decision?.fallbackUsed) score -= 6;
   if (gap.severity === "high") score += /motion|video|aigc_video/.test(optionType) ? 8 : 4;
   if (gap.status === "missing") score += 4;

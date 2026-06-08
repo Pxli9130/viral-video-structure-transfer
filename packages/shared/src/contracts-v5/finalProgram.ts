@@ -18,6 +18,8 @@ export interface AudioLayer {
   duckUnderVoiceover?: boolean;
   /** Beat/cue alignment hints (seconds) for hit synchronization. */
   cueAlignSec?: number[];
+  /** Optional rhythm metadata for procedural fallback only; never raw sample audio. */
+  energyCurve?: Array<{ t: number; value: number }>;
   provenance?: ProvenanceV5;
 }
 
@@ -61,6 +63,13 @@ export interface RenderRecipeV5 {
   };
   layers: RenderLayer[];
   audioLayers: AudioLayer[];
+  rhythm?: {
+    source: "learned_sample_rhythm" | "procedural_default";
+    bpm?: number;
+    beatGridSec?: number[];
+    strongBeatsSec?: number[];
+    energyCurve?: Array<{ t: number; value: number }>;
+  };
   assets: Array<{ id: string; uri: string; provenance: ProvenanceV5 }>;
   provenance?: ProvenanceV5[];
   explanations?: string[];
