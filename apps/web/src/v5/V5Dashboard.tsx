@@ -9,14 +9,66 @@ const API = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ||
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData;
   const headers = isForm ? init?.headers : { "content-type": "application/json", ...(init?.headers ?? {}) };
-  const res = await fetch(`${API}${path}`, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, { ...init, headers });
+  } catch (error) {
+    throw new Error(`Failed to fetch ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => res.statusText)}`);
   return (await res.json()) as T;
 }
 
 type AssetRow = { id: string; role: string; type: string; filename: string; hasPath: boolean; tags: string[] };
 type ProjectRow = { id: string; name: string };
-type KbElement = { id: string; kind: string; name: string; description: string; tags: string[]; source: { sourceSampleId: string; evidenceRefs?: string[] }; reusablePolicy: string };
+type ApiEnvelope<T> = { ok: true; data: T } | { ok: false; error?: { message?: string; code?: string; details?: unknown } };
+type ServiceStatus = {
+  health?: { ok: boolean; detail?: string; adapters?: Record<string, string>; mode?: string };
+  ready?: { ok: boolean; detail?: string };
+  checkedAt?: string;
+};
+type EvidenceV5 = {
+  video?: { durationSec?: number; width?: number; height?: number; fps?: number; aspectRatio?: string; hasAudio?: boolean };
+  shots?: Array<{ id: string; startSec: number; endSec: number; confidence?: number; summary?: string }>;
+  keyFrames?: Array<{ id: string; timeSec: number; frameRef?: string }>;
+  textEvidence?: Array<{ id: string; timeSec: number; text: string; role?: string }>;
+  speechEvidence?: { hasSpeech?: boolean; transcript?: string; segments?: Array<{ startSec: number; endSec: number; text: string }> };
+  audioEvidence?: { hasAudio?: boolean; bpm?: number; beatGridSec?: number[]; onsetsSec?: number[]; energyCurve?: Array<{ t: number; value: number }> };
+  motionEvidence?: { cutDensity?: string; intensityCurve?: Array<{ t: number; value: number }>; peakMomentsSec?: number[] };
+  contactSheetRef?: string;
+  recommendedVideoInputPolicy?: { mode?: string; globalPass?: { fps?: number; useWholeVideo?: boolean }; detailPass?: { enabled?: boolean; chunkMode?: string; fps?: number } };
+  warnings?: string[];
+};
+type ReconstructionV5 = {
+  typedSpec?: {
+    composition?: { durationSec?: number; fps?: number; width?: number; height?: number; aspectRatio?: string };
+    scenes?: Array<{ id: string; role: string; startSec: number; endSec: number; intent?: string; layers?: unknown[]; evidenceRefs?: string[] }>;
+    rhythm?: { cutDensity?: string; beatAlignedCuts?: boolean; peakMomentsSec?: number[] };
+    packaging?: { typographySystem?: string; palette?: string[] };
+  };
+  placeholders?: Array<{ id: string; kind: string; required?: boolean; role?: string; replacementPolicy?: string }>;
+  reconstructionQuality?: { structureCoverage?: number; timingCoverage?: number; placeholderCoverage?: number; warnings?: string[] };
+  safety?: { samplePixelsRemoved?: boolean; sampleTextSanitized?: boolean; sampleAudioRemoved?: boolean };
+  fallbackUsed?: boolean;
+  fallbackReason?: string;
+};
+type SampleElementBundle = {
+  candidates?: Array<{ id: string; proposedName?: string; kind?: string; summary?: string; reusablePolicy?: string; evidenceRefs?: string[] }>;
+  decisions?: Array<{ id?: string; action?: string; assignedKind?: string; assignedName?: string; reason?: string; createdElementId?: string; targetElementId?: string }>;
+};
+type SampleReport = { assetId: string; evidence?: EvidenceV5; reconstruction?: ReconstructionV5; elements?: SampleElementBundle; error?: string };
+type KbElement = {
+  id: string;
+  kind: string;
+  category?: string;
+  subcategory?: string;
+  name: string;
+  description: string;
+  tags: string[];
+  source: { sourceSampleId: string; evidenceRefs?: string[] };
+  reusablePolicy: string;
+  lifecycle?: { status?: string; version?: number; updatedAt?: string };
+};
 type Gate = { id: string; name: string; status: "pass" | "fail" | "warn"; priority?: string; message?: string };
 type Scorecard = { gates: Gate[]; rubricCoverage: Array<{ rubricItem: string; status: string }>; demoReady?: boolean; warnings: string[]; readinessLevel?: string };
 type TemplateSlot = { id: string; kind: string; required: boolean; originalRole: string; replacementPolicy: string; propPath?: string };
@@ -47,6 +99,7 @@ type GenResult = {
   // mix_elements (advanced)
   composition?: { sections: Array<{ id: string; role: string; startSec: number; endSec: number; plannedText?: string }>; stylePlan: { palette: string[] } };
   gapReport?: { gaps: Array<{ slotId: string; status: string; selectedRepair: string; impact: string }> };
+  finalProgram?: { renderMode?: string; fallbackUsed?: boolean; validation?: { warnings?: string[] } };
   generatedPatch?: Record<string, unknown>;
   patchNotes?: string[];
   naturalLanguageInstruction?: string;
@@ -91,12 +144,95 @@ type TransferTrace = {
   };
   warnings?: string[];
 };
+type CreativeVariant = "high_click" | "high_conversion" | "high_quality";
+type ProgressState = { label: string; step: number; total: number; detail: string };
+type KbView = "structure" | "scene" | "source";
 
 const card: React.CSSProperties = { background: "#13151a", border: "1px solid #262a33", borderRadius: 10, padding: 16, marginBottom: 16 };
 const btn: React.CSSProperties = { background: "#2b6cff", color: "#fff", border: 0, borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontWeight: 600 };
 const tag: React.CSSProperties = { display: "inline-block", fontSize: 11, padding: "2px 8px", borderRadius: 99, background: "#1d2430", color: "#9fb3d1", marginRight: 6 };
+const muted = "#7c8aa0";
+const panel: React.CSSProperties = { border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117" };
+const miniPanel: React.CSSProperties = { border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#11151d" };
 const gateColor = (s: string) => (s === "pass" ? "#1f9d55" : s === "fail" ? "#d6324a" : "#b78a14");
 const short = (value: string | undefined, n = 96) => (value && value.length > n ? `${value.slice(0, n)}…` : value ?? "");
+const fixed = (value: unknown, digits = 1) => (typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "n/a");
+const percent = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)}%` : "n/a");
+const publicRef = (ref: string | undefined) => {
+  if (!ref) return undefined;
+  if (/^https?:\/\//.test(ref)) return ref;
+  if (ref.startsWith("/generated/") || ref.startsWith("/api/")) return `${API}${ref}`;
+  if (ref.startsWith("generated/")) return `${API}/${ref}`;
+  return undefined;
+};
+const creativeVariants: Array<{ value: CreativeVariant; label: string; description: string }> = [
+  { value: "high_click", label: "high_click", description: "更强开头钩子，优先提升停留和点击。" },
+  { value: "high_conversion", label: "high_conversion", description: "更清晰卖点和 CTA，优先推动转化。" },
+  { value: "high_quality", label: "high_quality", description: "更稳的质感、节奏和信息密度。" }
+];
+const variantStrategy = (variant: string | undefined) => ({
+  high_click: "开头更强、前三秒节奏更快，适合拉点击和停留。",
+  high_conversion: "卖点更靠前、CTA 更明确，适合投放转化。",
+  high_quality: "画面更克制、转场更少，适合展示质感。"
+}[variant ?? ""] ?? "沿用当前模板策略。");
+const kbKindOptions = [
+  "structure_pattern",
+  "hook_pattern",
+  "segment_template",
+  "rhythm_pattern",
+  "motion_pattern",
+  "transition_pattern",
+  "typography_pattern",
+  "layout_pattern",
+  "palette_pattern",
+  "visual_asset_pattern",
+  "image_prompt_recipe",
+  "audio_pattern",
+  "sfx_pattern",
+  "voiceover_pattern",
+  "cta_pattern",
+  "remotion_snippet"
+];
+const kbCategoryFor = (element: KbElement) => element.category || element.kind.replace(/_pattern$/, "").replace(/_/g, " ");
+const kbSceneFor = (element: KbElement) => {
+  const text = [element.category, element.subcategory, element.kind, element.name, element.description, ...element.tags].join(" ").toLowerCase();
+  if (/motion|mg|graph|ribbon|poster/.test(text)) return "Motion Graph / 包装";
+  if (/audio|rhythm|beat|sfx|voice/.test(text)) return "节奏 / 音频";
+  if (/hook|cta|conversion|marketing|ad/.test(text)) return "营销结构";
+  if (/transition|motion|layout|typography|palette/.test(text)) return "剪辑与版式";
+  return "通用结构";
+};
+const kbGroupFor = (element: KbElement, view: KbView) => (
+  view === "source" ? `source ${element.source.sourceSampleId.slice(0, 10)}` : view === "scene" ? kbSceneFor(element) : kbCategoryFor(element)
+);
+const kbStatusFor = (element: KbElement) => element.lifecycle?.status ?? "active";
+const progressLabelFor = (label: string) => ({
+  upload: "上传素材",
+  learn: "学习样本",
+  generate: "生成视频",
+  variants: "生成多版本",
+  revise: "改写视频",
+  "revise-nl": "自然语言改片"
+}[label] ?? label);
+const statusColor = (status: string | undefined) => status === "pass" || status === "done" || status === "matched" || status === "user_asset" ? "#1f9d55" : status === "fail" || status === "missing" ? "#d6324a" : "#b78a14";
+const gateGroups = (scorecard: Scorecard | undefined) => {
+  const gates = scorecard?.gates ?? [];
+  const defs = [
+    { name: "结构迁移", ids: ["V5-G15", "V5-G17", "V5-G18", "V5-G20"] },
+    { name: "素材适配", ids: ["V5-G16", "V5-G18", "V5-G19", "V5-G32"] },
+    { name: "画面包装", ids: ["V5-G21", "V5-G22", "V5-G26", "V5-G28"] },
+    { name: "最终效果", ids: ["V5-G23", "V5-G24", "V5-G25", "V5-G27"] },
+    { name: "安全合规", ids: ["V5-G29", "V5-G30", "V5-G31", "V5-G33"] }
+  ];
+  return defs.map((def) => {
+    const picked = gates.filter((g) => def.ids.includes(g.id));
+    const pass = picked.filter((g) => g.status === "pass").length;
+    const fail = picked.filter((g) => g.status === "fail").length;
+    const warn = picked.filter((g) => g.status === "warn").length;
+    const status = fail ? "fail" : warn ? "warn" : pass === picked.length && picked.length ? "pass" : "warn";
+    return { ...def, picked, pass, fail, warn, status };
+  });
+};
 
 export function V5Dashboard() {
   const [assets, setAssets] = useState<AssetRow[]>([]);
@@ -108,8 +244,15 @@ export function V5Dashboard() {
   const [sellingPoints, setSellingPoints] = useState("small, quiet, long battery");
   const [useAi, setUseAi] = useState(false);
   const [aiCapsule, setAiCapsule] = useState(true); // V5.1: real AI capsule codegen + render validation (default ON)
+  const [gen2RemotionCodegen, setGen2RemotionCodegen] = useState(false);
   const [autoRender, setAutoRender] = useState(true);
+  const [selectedVariant, setSelectedVariant] = useState<CreativeVariant>("high_click");
+  const [generateAllVariants, setGenerateAllVariants] = useState(false);
+  const [reviewMode, setReviewMode] = useState(true);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ProgressState | null>(null);
+  const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [result, setResult] = useState<GenResult | null>(null);
@@ -126,15 +269,45 @@ export function V5Dashboard() {
   const [reviseHeadline, setReviseHeadline] = useState("");
   const [nlInstruction, setNlInstruction] = useState("开头更抓人一些");
   const [kbQuery, setKbQuery] = useState("");
+  const [kbKind, setKbKind] = useState("all");
+  const [kbCategory, setKbCategory] = useState("all");
+  const [kbView, setKbView] = useState<KbView>("structure");
+  const [sampleReports, setSampleReports] = useState<Record<string, SampleReport>>({});
+  const [sampleReportsLoading, setSampleReportsLoading] = useState(false);
   const [trace, setTrace] = useState<TransferTrace | null>(null);
   const [variants, setVariants] = useState<GenResult[]>([]);
   const [uploadProjectId, setUploadProjectId] = useState<string>("");
 
+  const checkServiceStatus = useCallback(async () => {
+    const checkedAt = new Date().toLocaleTimeString();
+    const ping = async (path: "/healthz" | "/readyz") => {
+      try {
+        const response = await fetch(`${API}${path}`);
+        if (!response.ok) return { ok: false, detail: `${path} ${response.status}` };
+        const payload = (await response.json().catch(() => null)) as ApiEnvelope<{ mode?: string; adapters?: Record<string, string>; storageRoot?: string }> | null;
+        if (payload?.ok === true) {
+          return { ok: true, detail: path === "/readyz" ? payload.data.storageRoot : "ok", adapters: payload.data.adapters, mode: payload.data.mode };
+        }
+        return { ok: true, detail: "ok" };
+      } catch (error) {
+        return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    const [health, ready] = await Promise.all([ping("/healthz"), ping("/readyz")]);
+    const next = { health, ready, checkedAt };
+    setServiceStatus(next);
+    return next;
+  }, []);
+
   const refreshKb = useCallback(async () => {
+    const params = new URLSearchParams();
     const q = kbQuery.trim();
-    const r = await api<{ elements: KbElement[] }>(`/api/v5/kb/elements${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+    if (q) params.set("q", q);
+    if (kbKind !== "all") params.set("kind", kbKind);
+    const query = params.toString();
+    const r = await api<{ elements: KbElement[] }>(`/api/v5/kb/elements${query ? `?${query}` : ""}`);
     setKb(r.elements);
-  }, [kbQuery]);
+  }, [kbKind, kbQuery]);
 
   const refreshTemplates = useCallback(async () => {
     const r = await api<{ templates: TemplateMeta[] }>("/api/v5/templates");
@@ -146,11 +319,33 @@ export function V5Dashboard() {
     setAssets(r.assets);
   }, []);
 
+  const loadSampleReports = useCallback(async (ids: string[] = sampleIds) => {
+    if (!ids.length) return;
+    setSampleReportsLoading(true);
+    try {
+      const entries = await Promise.all(ids.map(async (assetId) => {
+        const [evidence, reconstruction, elements] = await Promise.all([
+          api<EvidenceV5>(`/api/v5/samples/${assetId}/evidence`).catch(() => undefined),
+          api<ReconstructionV5>(`/api/v5/samples/${assetId}/reconstruction`).catch(() => undefined),
+          api<SampleElementBundle>(`/api/v5/samples/${assetId}/elements`).catch(() => undefined)
+        ]);
+        const report: SampleReport = evidence || reconstruction || elements
+          ? { assetId, evidence, reconstruction, elements }
+          : { assetId, error: "尚未找到学习产物；先点击 Learn 生成 evidence/reconstruction/elements。" };
+        return [assetId, report] as const;
+      }));
+      setSampleReports((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+    } finally {
+      setSampleReportsLoading(false);
+    }
+  }, [sampleIds]);
+
   useEffect(() => {
+    checkServiceStatus().catch(() => undefined);
     refreshAssets().catch((e) => setErr(String(e)));
     refreshKb().catch(() => undefined);
     refreshTemplates().catch(() => undefined);
-  }, [refreshAssets, refreshKb, refreshTemplates]);
+  }, [checkServiceStatus, refreshAssets, refreshKb, refreshTemplates]);
 
   const fetchTrace = useCallback(async (generationId: string) => {
     const next = await api<TransferTrace>(`/api/v5/jobs/${generationId}/transfer-trace`).catch(() => null);
@@ -168,20 +363,92 @@ export function V5Dashboard() {
   // How many required slots the user can cover from their own target assets (rough: count provided assets).
   const providedCount = targetIds.length;
   const missingRequired = Math.max(0, requiredSlots.length - providedCount);
+  const kbCategoryOptions = useMemo(() => Array.from(new Set(kb.map(kbCategoryFor))).sort(), [kb]);
+  const kbFiltered = useMemo(() => (
+    kb.filter((element) => kbCategory === "all" || kbCategoryFor(element) === kbCategory)
+  ), [kb, kbCategory]);
+  const kbGroups = useMemo(() => {
+    const groups = new Map<string, KbElement[]>();
+    for (const element of kbFiltered) {
+      const category = kbGroupFor(element, kbView);
+      groups.set(category, [...(groups.get(category) ?? []), element]);
+    }
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([category, elements]) => ({ category, elements }));
+  }, [kbFiltered, kbView]);
+  const selectedVariantMeta = creativeVariants.find((variant) => variant.value === selectedVariant) ?? creativeVariants[0];
+  const progressPercent = progress ? Math.max(8, Math.min(100, Math.round((progress.step / progress.total) * 100))) : 0;
+  const selectedReports = sampleIds.map((id) => sampleReports[id]).filter((r): r is SampleReport => Boolean(r));
+  const traceEvidence = trace?.sample.evidence as EvidenceV5 | undefined;
+  const latestEvidence = selectedReports.find((r) => r.evidence)?.evidence ?? traceEvidence;
+  const timelineSections = useMemo(() => {
+    const phases = trace?.template.knowledgeManifest?.structureHypothesis?.phases ?? [];
+    if (phases.length) return phases.map((p) => ({ id: p.id, role: p.role, startSec: p.startSec, endSec: p.endSec, detail: p.intent ?? p.visualMethod }));
+    const sections = result?.composition?.sections ?? [];
+    return sections.map((s) => ({ id: s.id, role: s.role, startSec: s.startSec, endSec: s.endSec, detail: s.plannedText }));
+  }, [result?.composition?.sections, trace?.template.knowledgeManifest?.structureHypothesis?.phases]);
+  const slotRadarRows = useMemo(() => {
+    const mappings = new Map((trace?.transfer.slotMapping ?? []).map((m) => [m.slotId, m]));
+    const gaps = new Map([...(trace?.transfer.gapReport?.gaps ?? []), ...(result?.gapReport?.gaps ?? [])].map((g) => [g.slotId, g]));
+    return (activeTemplate?.slotSchema ?? []).map((slot, index) => {
+      const mapping = mappings.get(slot.id);
+      const gap = gaps.get(slot.id);
+      const status = mapping?.status ?? gap?.status ?? (targetIds.length > index ? "待生成时匹配" : slot.required ? "待补全" : "可选");
+      const isAudio = /audio|voice|sfx/.test(slot.kind);
+      const isText = /text|title|subtitle|cta/.test(slot.kind);
+      const fill = gap?.selectedRepair
+        ?? (mapping?.status === "user_asset" ? "asset_reuse" : mapping?.status?.includes("generated") ? mapping.status : isAudio ? audioFill : isText ? textFill : imageFill);
+      return {
+        slot,
+        status,
+        asset: mapping?.assetId ?? (targetIds.length > index ? "候选素材已选择" : "none"),
+        impact: gap?.impact ?? (slot.required ? "medium" : "low"),
+        fill,
+        reason: mapping?.fillReason ?? gap?.reason ?? slot.replacementPolicy
+      };
+    });
+  }, [activeTemplate?.slotSchema, audioFill, imageFill, result?.gapReport?.gaps, targetIds.length, textFill, trace?.transfer.gapReport?.gaps, trace?.transfer.slotMapping]);
+  const qualityGroups = useMemo(() => gateGroups(result?.scorecard), [result?.scorecard]);
+  const flowSteps = useMemo(() => [
+    { label: "上传样例", detail: `${videoAssets.length} 个视频样例 · ${targetAssets.length} 个目标素材`, status: videoAssets.length ? "done" : "todo" },
+    { label: "结构学习", detail: `${templates.length} 个模板 · ${kb.length} 条 KB`, status: templates.length || kb.length ? "done" : sampleIds.length ? "active" : "todo" },
+    { label: "素材适配/缺口补全", detail: `${slotRadarRows.length} 个槽位 · ${slotRadarRows.filter((r) => r.status === "missing" || r.status === "待补全").length} 个缺口`, status: result || trace ? "done" : activeTemplate ? "active" : "todo" },
+    { label: "生成与对比", detail: result?.finalVideoUrl ? "final.mp4 ready" : variants.length ? `${variants.length} 个版本` : "等待生成", status: result ? "done" : "todo" }
+  ], [activeTemplate, kb.length, result, sampleIds.length, slotRadarRows, targetAssets.length, templates.length, trace, variants.length, videoAssets.length]);
+  const serviceOk = serviceStatus?.health?.ok === true && serviceStatus.ready?.ok === true;
 
   const toggle = (arr: string[], set: (v: string[]) => void, id: string) =>
     set(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
 
+  const setStage = (label: string, step: number, total: number, detail: string) => {
+    setProgress({ label, step, total, detail });
+  };
+
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
     setErr(null);
+    setStage(label, 1, 1, "准备中");
     try {
       await fn();
     } catch (e) {
       setErr(String(e));
     } finally {
       setBusy(null);
+      setProgress(null);
     }
+  };
+
+  const retryDashboard = async () => {
+    setErr(null);
+    setDiagnosticsOpen(true);
+    await checkServiceStatus();
+    await Promise.allSettled([
+      refreshAssets(),
+      refreshKb(),
+      refreshTemplates(),
+      sampleIds.length ? loadSampleReports(sampleIds) : Promise.resolve()
+    ]);
   };
 
   const ensureUploadProject = async () => {
@@ -203,8 +470,11 @@ export function V5Dashboard() {
   const uploadAssets = (files: FileList | null, role: "example_video" | "source_video" | "user_image") =>
     run("upload", async () => {
       if (!files?.length) return;
+      const list = Array.from(files);
+      setStage("upload", 1, list.length + 2, "准备上传项目");
       const projectId = await ensureUploadProject();
-      for (const file of Array.from(files)) {
+      for (const [index, file] of list.entries()) {
+        setStage("upload", index + 2, list.length + 2, `上传 ${short(file.name, 34)}`);
         const body = new FormData();
         body.append("file", file);
         body.append("role", role);
@@ -212,17 +482,22 @@ export function V5Dashboard() {
         body.append("tags", role === "example_video" ? "sample_video,v5" : "target_material,v5");
         await api<AssetRow>(`/api/projects/${projectId}/assets`, { method: "POST", body });
       }
+      setStage("upload", list.length + 2, list.length + 2, "刷新素材列表");
       await refreshAssets();
     });
 
   const learn = () =>
     run("learn", async () => {
+      setStage("learn", 1, 3, "提交样本学习任务");
       const r = await api<{ learned: Array<{ sampleId: string; storedElements?: number; gen1?: string; error?: string }>; kbSize: number }>(
         "/api/v5/learn-samples",
         { method: "POST", body: JSON.stringify({ sampleAssetIds: sampleIds, options: { runGen1Ai: useAi, runCapsuleCodegen: aiCapsule } }) }
       );
       setLog(r.learned.map((l) => (l.error ? `✗ ${l.sampleId}: ${l.error}` : `✓ ${l.sampleId}: ${l.storedElements} elements (gen1=${l.gen1})`)));
+      setStage("learn", 2, 3, "刷新 KB 和模板库");
       await Promise.all([refreshKb(), refreshTemplates()]);
+      await loadSampleReports(sampleIds);
+      setStage("learn", 3, 3, "学习结果已更新");
     });
 
   const generate = () =>
@@ -239,19 +514,24 @@ export function V5Dashboard() {
                 : { mode: "off", imageFill: "off", audioFill: "off", textFill: "off" }
             }
           : { generationMode: "mix_elements", autoRender, runGen1Ai: useAi, runGen2Ai: useAi };
+      if (genMode === "mix_elements" && gen2RemotionCodegen) options.runGen2RemotionCodegen = true;
+      setStage("generate", 1, 4, autoRender ? "生成 recipe / 补全素材 / 渲染 final.mp4" : "生成 recipe / 补全素材");
       const res = await api<GenResult>("/api/v5/generations", {
         method: "POST",
         body: JSON.stringify({
           projectId: "proj_v5_ui",
-          brief: { theme, variant: "high_click", targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
+          brief: { theme, variant: selectedVariant, targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
           targetAssetIds: targetIds,
           selectedElementIds: genMode === "mix_elements" && selectedEls.length ? selectedEls : undefined,
           options
         })
       });
+      setStage("generate", 2, 4, "写入生成结果");
       setResult(res);
       setVariants([]);
+      setStage("generate", 3, 4, "读取 transfer trace");
       await fetchTrace(res.generationId);
+      setStage("generate", 4, 4, "生成完成");
     });
 
   const generateVariants = () =>
@@ -268,7 +548,8 @@ export function V5Dashboard() {
       };
       const labels: Array<"high_click" | "high_conversion" | "high_quality"> = ["high_click", "high_conversion", "high_quality"];
       const next: GenResult[] = [];
-      for (const variant of labels) {
+      for (const [index, variant] of labels.entries()) {
+        setStage("variants", index + 1, labels.length + 1, `生成 ${variant}`);
         const res = await api<GenResult>("/api/v5/generations", {
           method: "POST",
           body: JSON.stringify({
@@ -284,6 +565,7 @@ export function V5Dashboard() {
       }
       if (next[0]) {
         setResult(next[0]);
+        setStage("variants", labels.length + 1, labels.length + 1, "读取首个版本 trace");
         await fetchTrace(next[0].generationId);
       }
     });
@@ -294,21 +576,27 @@ export function V5Dashboard() {
       const patch: Record<string, unknown> = {};
       if (reviseTheme.trim()) patch.theme = reviseTheme.trim();
       if (reviseHeadline.trim()) patch.copyOverrides = { headline: reviseHeadline.trim() };
+      setStage("revise", 1, 3, "提交模板 patch");
       const res = await api<GenResult>(`/api/v5/generations/${gen.generationId}/revise`, {
         method: "POST",
         body: JSON.stringify({ projectId: "proj_v5_ui", patch })
       });
+      setStage("revise", 2, 3, "写入改写结果");
       setResult(res);
+      setStage("revise", 3, 3, "读取 transfer trace");
       await fetchTrace(res.generationId);
     });
 
   const reviseNatural = (gen: GenResult) =>
     run("revise-nl", async () => {
+      setStage("revise-nl", 1, 3, "解析自然语言改片请求");
       const res = await api<GenResult>(`/api/v5/generations/${gen.generationId}/revise-natural-language`, {
         method: "POST",
         body: JSON.stringify({ projectId: "proj_v5_ui", instruction: nlInstruction })
       });
+      setStage("revise-nl", 2, 3, "写入改写结果");
       setResult(res);
+      setStage("revise-nl", 3, 3, "读取 transfer trace");
       await fetchTrace(res.generationId);
     });
 
@@ -322,23 +610,43 @@ export function V5Dashboard() {
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24, color: "#e6edf6", fontFamily: "Inter, system-ui, sans-serif" }}>
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>V5.1 — Same-Template Reconstruction</h1>
-        <div>
-          <label style={{ marginRight: 12, fontSize: 13 }} title="学习时用真 Gemini 重写模板 TSX（三重门）+ 学习期渲染验证；关掉则用确定性胶囊">
-            <input type="checkbox" checked={aiCapsule} onChange={(e) => setAiCapsule(e.target.checked)} /> AI 代码胶囊
+        <div style={{ display: "flex", alignItems: "stretch", gap: 8, flex: "1 1 680px", justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <label style={{ flex: "1 1 190px", maxWidth: 240, border: "1px solid #262a33", borderRadius: 8, padding: "8px 10px", background: "#0f1117", fontSize: 12 }} title="学习时用真 Gemini 重写模板 TSX（三重门）+ 学习期渲染验证；关掉则用确定性胶囊">
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 650 }}>
+              <input type="checkbox" checked={aiCapsule} onChange={(e) => setAiCapsule(e.target.checked)} /> AI 代码胶囊
+            </span>
+            <span style={{ display: "block", marginTop: 4, color: "#7c8aa0", lineHeight: 1.35 }}>学习期生成可复用 Remotion 模板代码。</span>
           </label>
-          <label style={{ marginRight: 12, fontSize: 13 }}>
-            <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} /> AI Gen1/Gen2
+          <label style={{ flex: "1 1 190px", maxWidth: 250, border: "1px solid #262a33", borderRadius: 8, padding: "8px 10px", background: "#0f1117", fontSize: 12 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 650 }}>
+              <input type="checkbox" checked={useAi} onChange={(e) => setUseAi(e.target.checked)} /> AI Gen1/Gen2
+            </span>
+            <span style={{ display: "block", marginTop: 4, color: "#7c8aa0", lineHeight: 1.35 }}>Gen1 理解样本结构；Gen2 改写 recipe/文案。</span>
           </label>
-          <label style={{ fontSize: 13 }}>
-            <input type="checkbox" checked={autoRender} onChange={(e) => setAutoRender(e.target.checked)} /> render final.mp4
+          <label style={{ flex: "1 1 180px", maxWidth: 230, border: "1px solid #262a33", borderRadius: 8, padding: "8px 10px", background: "#0f1117", fontSize: 12 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 650 }}>
+              <input type="checkbox" checked={autoRender} onChange={(e) => setAutoRender(e.target.checked)} /> render final.mp4
+            </span>
+            <span style={{ display: "block", marginTop: 4, color: "#7c8aa0", lineHeight: 1.35 }}>生成后立即渲染成可播放 MP4。</span>
           </label>
           <a href="#v4" style={{ marginLeft: 14, fontSize: 12, color: "#7c8aa0" }}>→ V4</a>
         </div>
       </header>
 
       {err && <div style={{ ...card, borderColor: "#d6324a", color: "#ffb3bf" }}>错误: {err}</div>}
+      {busy && progress && (
+        <div style={{ ...card, padding: 12, borderColor: "#2b6cff", background: "#101725" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, marginBottom: 8 }}>
+            <strong>{progressLabelFor(progress.label)}</strong>
+            <span style={{ color: "#9fb3d1" }}>{progress.step}/{progress.total} · {progress.detail}</span>
+          </div>
+          <div style={{ height: 7, borderRadius: 99, background: "#1d2430", overflow: "hidden" }}>
+            <div style={{ width: `${progressPercent}%`, height: "100%", borderRadius: 99, background: "#2b6cff", transition: "width 180ms ease" }} />
+          </div>
+        </div>
+      )}
 
       <section style={card}>
         <h2 style={{ marginTop: 0, fontSize: 16 }}>0 · Upload — 样本与目标素材</h2>
@@ -398,21 +706,50 @@ export function V5Dashboard() {
       )}
 
       <section style={card}>
-        <h2 style={{ marginTop: 0, fontSize: 16 }}>Knowledge Base — {kb.length} 条可复用知识</h2>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Knowledge Base — {kbFiltered.length}/{kb.length} 条可复用知识</h2>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <input value={kbQuery} onChange={(e) => setKbQuery(e.target.value)} placeholder="搜索 hook / rhythm / slot / audio / remotion" style={{ flex: 1, padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} />
+          <select
+            value={kbKind}
+            onChange={(e) => { setKbKind(e.target.value); setKbCategory("all"); }}
+            style={{ minWidth: 170, padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }}
+          >
+            <option value="all">全部 kind</option>
+            {kbKindOptions.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+          </select>
+          <select
+            value={kbCategory}
+            onChange={(e) => setKbCategory(e.target.value)}
+            style={{ minWidth: 150, padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }}
+          >
+            <option value="all">全部 category</option>
+            {kbCategoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
+          </select>
           <button style={btn} disabled={!!busy} onClick={() => refreshKb()}>搜索</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
-          {kb.slice(0, 12).map((e) => (
-            <div key={e.id} style={{ border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#0f1117" }}>
-              <div style={{ fontSize: 13, fontWeight: 650 }}>{e.name}</div>
-              <div style={{ marginTop: 5 }}><span style={tag}>{e.kind}</span><span style={tag}>{e.reusablePolicy}</span></div>
-              <div style={{ fontSize: 11, color: "#9fb3d1", marginTop: 7 }}>{short(e.description, 110)}</div>
-              <div style={{ fontSize: 10, color: "#54607a", marginTop: 7 }}>src={e.source.sourceSampleId.slice(0, 10)} · evidence={(e.source.evidenceRefs ?? []).slice(0, 2).join(", ") || "n/a"}</div>
+        <div style={{ display: "grid", gap: 14 }}>
+          {kbGroups.map((group) => (
+            <div key={group.category}>
+              <div style={{ fontSize: 12, color: "#9fb3d1", marginBottom: 8, fontWeight: 650 }}>{group.category} · {group.elements.length}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
+                {group.elements.map((e) => (
+                  <div key={e.id} style={{ border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#0f1117" }}>
+                    <div style={{ fontSize: 13, fontWeight: 650 }}>{e.name}</div>
+                    <div style={{ marginTop: 5 }}>
+                      <span style={tag}>{e.kind}</span>
+                      {e.subcategory && <span style={tag}>{e.subcategory}</span>}
+                      <span style={tag}>{e.reusablePolicy}</span>
+                      <span style={tag}>{kbStatusFor(e)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#9fb3d1", marginTop: 7 }}>{short(e.description, 110)}</div>
+                    <div style={{ fontSize: 10, color: "#54607a", marginTop: 7 }}>src={e.source.sourceSampleId.slice(0, 10)} · evidence={(e.source.evidenceRefs ?? []).slice(0, 2).join(", ") || "n/a"}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
           {kb.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>还没有 KB 元素 — 先 Learn 一个样本。</span>}
+          {kb.length > 0 && kbFiltered.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>当前过滤条件下没有 KB 元素。</span>}
         </div>
       </section>
 
@@ -512,11 +849,42 @@ export function V5Dashboard() {
               )}
             </div>
 
-            <button style={{ ...btn, opacity: (templates.length || templateId) && !busy ? 1 : 0.5 }} disabled={(!templates.length && !templateId) || !!busy} onClick={generate}>
-              {busy === "generate" ? "生成中…（含渲染可能数十秒）" : "用此模板生成视频"}
-            </button>
-            <button style={{ ...btn, background: "#1d2430", opacity: (templates.length || templateId) && !busy ? 1 : 0.5 }} disabled={(!templates.length && !templateId) || !!busy} onClick={generateVariants}>
-              {busy === "variants" ? "生成三版本中…" : "生成 high_click / high_conversion / high_quality"}
+            <div style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117" }}>
+              <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 8 }}>生成版本</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {creativeVariants.map((variant) => (
+                  <button
+                    key={variant.value}
+                    disabled={!!busy || generateAllVariants}
+                    onClick={() => setSelectedVariant(variant.value)}
+                    style={{
+                      ...btn,
+                      background: selectedVariant === variant.value && !generateAllVariants ? "#2b6cff" : "#1d2430",
+                      color: selectedVariant === variant.value && !generateAllVariants ? "#fff" : "#9fb3d1",
+                      opacity: generateAllVariants ? 0.55 : 1
+                    }}
+                  >
+                    {variant.label}
+                  </button>
+                ))}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 12, color: "#9fb3d1" }}>
+                <input type="checkbox" checked={generateAllVariants} disabled={!!busy} onChange={(e) => setGenerateAllVariants(e.target.checked)} />
+                一次生成 high_click / high_conversion / high_quality
+              </label>
+              <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>
+                {generateAllVariants ? "会连续生成 3 个版本，并在 Variant Gallery 中对比。" : selectedVariantMeta.description}
+              </div>
+            </div>
+
+            <button style={{ ...btn, opacity: (templates.length || templateId) && !busy ? 1 : 0.5 }} disabled={(!templates.length && !templateId) || !!busy} onClick={generateAllVariants ? generateVariants : generate}>
+              {busy === "generate"
+                ? "生成中…（含渲染可能数十秒）"
+                : busy === "variants"
+                  ? "生成三版本中…"
+                  : generateAllVariants
+                    ? "用此模板生成 3 个版本"
+                    : `用此模板生成视频 · ${selectedVariantMeta.label}`}
             </button>
           </div>
         )}
@@ -524,16 +892,22 @@ export function V5Dashboard() {
         {genMode === "mix_elements" && (
           <div style={{ display: "grid", gap: 12, maxWidth: 720 }}>
             <div style={{ fontSize: 12, color: "#7c8aa0" }}>高级模式：从知识库挑选原子元素（hook / 节奏 / 排版 / 转场 / CTA …）组合成新结构。</div>
+            <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8, border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#0f1117" }}>
+              <input type="checkbox" checked={gen2RemotionCodegen} onChange={(e) => setGen2RemotionCodegen(e.target.checked)} />
+              Gen2 Remotion codegen（Doubao text LLM）
+              <span style={{ ...tag, background: gen2RemotionCodegen ? "#16321f" : "#1d2430", color: gen2RemotionCodegen ? "#7fdca0" : "#9fb3d1" }}>{gen2RemotionCodegen ? "ON" : "OFF"}</span>
+            </label>
             <div>
-              <div style={{ fontSize: 13, marginBottom: 6 }}>Knowledge Base — {kb.length} elements（点选用于合成）</div>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>Knowledge Base — {kbFiltered.length}/{kb.length} elements（点选用于合成）</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
-                {kb.map((e) => (
+                {kbFiltered.map((e) => (
                   <div key={e.id} onClick={() => toggle(selectedEls, setSelectedEls, e.id)} style={{ border: `1px solid ${selectedEls.includes(e.id) ? "#2b6cff" : "#262a33"}`, borderRadius: 8, padding: 10, cursor: "pointer", background: selectedEls.includes(e.id) ? "#16243f" : "#0f1117" }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>{e.name}</div>
-                    <div style={{ marginTop: 4 }}><span style={tag}>{e.kind}</span><span style={tag}>{e.reusablePolicy}</span></div>
+                    <div style={{ marginTop: 4 }}><span style={tag}>{kbCategoryFor(e)}</span><span style={tag}>{e.kind}</span><span style={tag}>{e.reusablePolicy}</span></div>
                     <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>{e.description.slice(0, 80)}</div>
                   </div>
                 ))}
+                {kbFiltered.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>当前过滤条件下没有 KB 元素。</span>}
               </div>
             </div>
             <label style={{ fontSize: 13 }}>主题<input value={theme} onChange={(e) => setTheme(e.target.value)} style={{ width: "100%", marginTop: 4, padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} /></label>
@@ -580,6 +954,8 @@ export function V5Dashboard() {
             3 · Result · {result.generationId} · {result.scorecard.demoReady ? <span style={{ color: "#1f9d55" }}>demoReady ✓</span> : <span style={{ color: "#b78a14" }}>not demoReady</span>}
             {result.scorecard.readinessLevel && <span style={{ ...tag, marginLeft: 8 }}>{result.scorecard.readinessLevel}</span>}
             {result.generationMode && <span style={{ ...tag, marginLeft: 4 }}>{result.generationMode}</span>}
+            {result.finalProgram?.renderMode && <span style={{ ...tag, marginLeft: 4 }}>{result.finalProgram.renderMode}</span>}
+            {result.finalProgram?.fallbackUsed && <span style={{ ...tag, marginLeft: 4, background: "#3a2f12", color: "#ffce7a" }}>fallback</span>}
           </h2>
 
           {/* same_template provenance badges */}
@@ -701,6 +1077,11 @@ export function V5Dashboard() {
                   </div>
                 </>
               )}
+              {result.finalProgram?.validation?.warnings?.length ? (
+                <div style={{ fontSize: 12, color: "#ffce7a", marginBottom: 12 }}>
+                  {result.finalProgram.validation.warnings.slice(0, 4).map((w, i) => <div key={i}>{w}</div>)}
+                </div>
+              ) : null}
 
               <h3 style={{ fontSize: 14, margin: "0 0 8px" }}>Scorecard ({result.scorecard.gates.filter((g) => g.status === "pass").length}/{result.scorecard.gates.length} pass)</h3>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
