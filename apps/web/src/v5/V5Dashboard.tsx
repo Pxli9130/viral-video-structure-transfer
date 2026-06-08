@@ -7,13 +7,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 const API = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, { headers: { "content-type": "application/json" }, ...init });
+  const isForm = init?.body instanceof FormData;
+  const headers = isForm ? init?.headers : { "content-type": "application/json", ...(init?.headers ?? {}) };
+  const res = await fetch(`${API}${path}`, { ...init, headers });
   if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => res.statusText)}`);
   return (await res.json()) as T;
 }
 
 type AssetRow = { id: string; role: string; type: string; filename: string; hasPath: boolean; tags: string[] };
-type KbElement = { id: string; kind: string; name: string; description: string; tags: string[]; source: { sourceSampleId: string }; reusablePolicy: string };
+type ProjectRow = { id: string; name: string };
+type KbElement = { id: string; kind: string; name: string; description: string; tags: string[]; source: { sourceSampleId: string; evidenceRefs?: string[] }; reusablePolicy: string };
 type Gate = { id: string; name: string; status: "pass" | "fail" | "warn"; priority?: string; message?: string };
 type Scorecard = { gates: Gate[]; rubricCoverage: Array<{ rubricItem: string; status: string }>; demoReady?: boolean; warnings: string[]; readinessLevel?: string };
 type TemplateSlot = { id: string; kind: string; required: boolean; originalRole: string; replacementPolicy: string; propPath?: string };
@@ -39,17 +42,61 @@ type GenResult = {
   scorecard: Scorecard;
   warnings?: string[];
   // same_template
-  templateInstance?: { slotBindings: SlotBinding[]; readinessImpact: { missingRequiredSlotCount: number; usedFallbackCount: number; readinessLevel: string; warnings: string[] } };
+  templateInstance?: { creativeBrief?: { variant?: string; theme?: string }; slotBindings: SlotBinding[]; readinessImpact: { missingRequiredSlotCount: number; usedFallbackCount: number; readinessLevel: string; warnings: string[] } };
   generatedAssets?: Array<{ slotId?: string; uri?: string; kind?: string }>;
   // mix_elements (advanced)
   composition?: { sections: Array<{ id: string; role: string; startSec: number; endSec: number; plannedText?: string }>; stylePlan: { palette: string[] } };
   gapReport?: { gaps: Array<{ slotId: string; status: string; selectedRepair: string; impact: string }> };
+  generatedPatch?: Record<string, unknown>;
+  patchNotes?: string[];
+  naturalLanguageInstruction?: string;
+};
+type TransferTrace = {
+  sample: {
+    assetId?: string;
+    filename?: string;
+    videoUrl?: string;
+    duration?: number;
+    thumbnail?: string;
+    evidence?: unknown;
+    sceneRecipes?: Array<{ sectionId?: string; role?: string; transitionIn?: string; textAnim?: string; confidence?: number }>;
+    audioRecipes?: Array<{ kind?: string; bpm?: number; mood?: string[]; cuePoints?: Array<{ t: number; type: string; role?: string }> }>;
+  };
+  template: {
+    capsuleId?: string;
+    name?: string;
+    slotSchema: TemplateSlot[];
+    remotionCodeHash?: string;
+    knowledgeManifest?: {
+      structureHypothesis?: {
+        phases?: Array<{ id: string; role: string; startSec: number; endSec: number; durationSec: number; visualMethod?: string; intent?: string; beatCount?: number }>;
+        motionMotifs?: string[];
+        transitions?: string[];
+      };
+      assetSlots?: Array<{ id: string; kind: string; required: boolean; role: string; replacementPolicy: string; mediaKind?: string; promptAvailable?: boolean }>;
+    };
+  };
+  transfer: {
+    targetBrief?: { theme?: string; variant?: string; sellingPoints?: string[] };
+    targetAssetProfiles?: Array<{ assetId: string; kind: string; labels: string[]; qualityScore: number; bestSection: string; motionSummary?: string }>;
+    slotMapping: Array<{ slotId: string; slotKind?: string; originalRole?: string; required?: boolean; status: string; assetId?: string; text?: string; fillReason?: string; assetProfile?: { bestSection?: string; labels?: string[]; qualityScore?: number } }>;
+    gapReport?: { gaps?: Array<{ slotId: string; status: string; selectedRepair: string; impact: string; reason?: string }> };
+    fillActions: Array<{ slotId: string; status: string; strategy: string; reason: string }>;
+    usedKnowledgeElements: Array<{ id: string; kind: string; name: string; tags: string[]; evidenceRefs?: string[] }>;
+  };
+  result: {
+    outputVideoUrl?: string;
+    scorecard?: Scorecard;
+    renderParams?: unknown;
+  };
+  warnings?: string[];
 };
 
 const card: React.CSSProperties = { background: "#13151a", border: "1px solid #262a33", borderRadius: 10, padding: 16, marginBottom: 16 };
 const btn: React.CSSProperties = { background: "#2b6cff", color: "#fff", border: 0, borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontWeight: 600 };
 const tag: React.CSSProperties = { display: "inline-block", fontSize: 11, padding: "2px 8px", borderRadius: 99, background: "#1d2430", color: "#9fb3d1", marginRight: 6 };
 const gateColor = (s: string) => (s === "pass" ? "#1f9d55" : s === "fail" ? "#d6324a" : "#b78a14");
+const short = (value: string | undefined, n = 96) => (value && value.length > n ? `${value.slice(0, n)}…` : value ?? "");
 
 export function V5Dashboard() {
   const [assets, setAssets] = useState<AssetRow[]>([]);
@@ -77,11 +124,17 @@ export function V5Dashboard() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [reviseTheme, setReviseTheme] = useState("");
   const [reviseHeadline, setReviseHeadline] = useState("");
+  const [nlInstruction, setNlInstruction] = useState("开头更抓人一些");
+  const [kbQuery, setKbQuery] = useState("");
+  const [trace, setTrace] = useState<TransferTrace | null>(null);
+  const [variants, setVariants] = useState<GenResult[]>([]);
+  const [uploadProjectId, setUploadProjectId] = useState<string>("");
 
   const refreshKb = useCallback(async () => {
-    const r = await api<{ elements: KbElement[] }>("/api/v5/kb/elements");
+    const q = kbQuery.trim();
+    const r = await api<{ elements: KbElement[] }>(`/api/v5/kb/elements${q ? `?q=${encodeURIComponent(q)}` : ""}`);
     setKb(r.elements);
-  }, []);
+  }, [kbQuery]);
 
   const refreshTemplates = useCallback(async () => {
     const r = await api<{ templates: TemplateMeta[] }>("/api/v5/templates");
@@ -98,6 +151,11 @@ export function V5Dashboard() {
     refreshKb().catch(() => undefined);
     refreshTemplates().catch(() => undefined);
   }, [refreshAssets, refreshKb, refreshTemplates]);
+
+  const fetchTrace = useCallback(async (generationId: string) => {
+    const next = await api<TransferTrace>(`/api/v5/jobs/${generationId}/transfer-trace`).catch(() => null);
+    setTrace(next);
+  }, []);
 
   const videoAssets = useMemo(() => assets.filter((a) => a.type === "video" && a.hasPath), [assets]);
   const targetAssets = useMemo(() => assets.filter((a) => a.type === "image" || a.type === "video"), [assets]);
@@ -125,6 +183,37 @@ export function V5Dashboard() {
       setBusy(null);
     }
   };
+
+  const ensureUploadProject = async () => {
+    if (uploadProjectId) return uploadProjectId;
+    const projects = await api<ProjectRow[]>("/api/projects").catch(() => []);
+    const existing = projects.find((p) => p.name === "V5 Structure Transfer Demo") ?? projects[0];
+    if (existing) {
+      setUploadProjectId(existing.id);
+      return existing.id;
+    }
+    const created = await api<ProjectRow>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: "V5 Structure Transfer Demo", vertical: "b2b_marketing_mg", aspectRatio: "9:16", targetDurationSec: 16 })
+    });
+    setUploadProjectId(created.id);
+    return created.id;
+  };
+
+  const uploadAssets = (files: FileList | null, role: "example_video" | "source_video" | "user_image") =>
+    run("upload", async () => {
+      if (!files?.length) return;
+      const projectId = await ensureUploadProject();
+      for (const file of Array.from(files)) {
+        const body = new FormData();
+        body.append("file", file);
+        body.append("role", role);
+        body.append("sourcePolicy", "user_authorized");
+        body.append("tags", role === "example_video" ? "sample_video,v5" : "target_material,v5");
+        await api<AssetRow>(`/api/projects/${projectId}/assets`, { method: "POST", body });
+      }
+      await refreshAssets();
+    });
 
   const learn = () =>
     run("learn", async () => {
@@ -161,6 +250,42 @@ export function V5Dashboard() {
         })
       });
       setResult(res);
+      setVariants([]);
+      await fetchTrace(res.generationId);
+    });
+
+  const generateVariants = () =>
+    run("variants", async () => {
+      const sellingArr = sellingPoints.split(",").map((s) => s.trim()).filter(Boolean);
+      const selectedTemplate = templateId || activeTemplate?.id;
+      const baseOptions = {
+        generationMode: "same_template",
+        autoRender,
+        ...(selectedTemplate ? { templateCapsuleId: selectedTemplate } : {}),
+        aigcGapFill: aigcOn
+          ? { mode: "auto_on", imageFill, audioFill, textFill }
+          : { mode: "off", imageFill: "off", audioFill: "off", textFill: "off" }
+      };
+      const labels: Array<"high_click" | "high_conversion" | "high_quality"> = ["high_click", "high_conversion", "high_quality"];
+      const next: GenResult[] = [];
+      for (const variant of labels) {
+        const res = await api<GenResult>("/api/v5/generations", {
+          method: "POST",
+          body: JSON.stringify({
+            projectId: "proj_v5_ui",
+            generationId: `gen_${variant}_${Date.now().toString(36)}`,
+            brief: { theme, variant, targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
+            targetAssetIds: targetIds,
+            options: baseOptions
+          })
+        });
+        next.push(res);
+        setVariants([...next]);
+      }
+      if (next[0]) {
+        setResult(next[0]);
+        await fetchTrace(next[0].generationId);
+      }
     });
 
   // Patch-first revise (modify_template) of the current result.
@@ -174,6 +299,17 @@ export function V5Dashboard() {
         body: JSON.stringify({ projectId: "proj_v5_ui", patch })
       });
       setResult(res);
+      await fetchTrace(res.generationId);
+    });
+
+  const reviseNatural = (gen: GenResult) =>
+    run("revise-nl", async () => {
+      const res = await api<GenResult>(`/api/v5/generations/${gen.generationId}/revise-natural-language`, {
+        method: "POST",
+        body: JSON.stringify({ projectId: "proj_v5_ui", instruction: nlInstruction })
+      });
+      setResult(res);
+      await fetchTrace(res.generationId);
     });
 
   // "Start from this template" CTA — pick a learned capsule and jump to same_template generate.
@@ -203,6 +339,21 @@ export function V5Dashboard() {
       </header>
 
       {err && <div style={{ ...card, borderColor: "#d6324a", color: "#ffb3bf" }}>错误: {err}</div>}
+
+      <section style={card}>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>0 · Upload — 样本与目标素材</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+          <label style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117", fontSize: 13 }}>
+            上传样本视频
+            <input style={{ display: "block", marginTop: 8, width: "100%" }} type="file" accept="video/mp4,video/quicktime,video/*" disabled={!!busy} onChange={(event) => uploadAssets(event.target.files, "example_video")} />
+          </label>
+          <label style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117", fontSize: 13 }}>
+            上传目标图片 / 视频素材
+            <input style={{ display: "block", marginTop: 8, width: "100%" }} type="file" multiple accept="image/*,video/*,.gif" disabled={!!busy} onChange={(event) => uploadAssets(event.target.files, "user_image")} />
+          </label>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "#7c8aa0" }}>{assets.length} 个素材已登记{busy === "upload" ? " · 上传中…" : ""}</div>
+      </section>
 
       {/* 1. Learn */}
       <section style={card}>
@@ -245,6 +396,25 @@ export function V5Dashboard() {
           </div>
         </section>
       )}
+
+      <section style={card}>
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Knowledge Base — {kb.length} 条可复用知识</h2>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input value={kbQuery} onChange={(e) => setKbQuery(e.target.value)} placeholder="搜索 hook / rhythm / slot / audio / remotion" style={{ flex: 1, padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} />
+          <button style={btn} disabled={!!busy} onClick={() => refreshKb()}>搜索</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
+          {kb.slice(0, 12).map((e) => (
+            <div key={e.id} style={{ border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#0f1117" }}>
+              <div style={{ fontSize: 13, fontWeight: 650 }}>{e.name}</div>
+              <div style={{ marginTop: 5 }}><span style={tag}>{e.kind}</span><span style={tag}>{e.reusablePolicy}</span></div>
+              <div style={{ fontSize: 11, color: "#9fb3d1", marginTop: 7 }}>{short(e.description, 110)}</div>
+              <div style={{ fontSize: 10, color: "#54607a", marginTop: 7 }}>src={e.source.sourceSampleId.slice(0, 10)} · evidence={(e.source.evidenceRefs ?? []).slice(0, 2).join(", ") || "n/a"}</div>
+            </div>
+          ))}
+          {kb.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>还没有 KB 元素 — 先 Learn 一个样本。</span>}
+        </div>
+      </section>
 
       {/* 2. Template + theme + AIGC gap fill (the DEFAULT same-template flow) */}
       <section id="v5-generate" style={card}>
@@ -345,6 +515,9 @@ export function V5Dashboard() {
             <button style={{ ...btn, opacity: (templates.length || templateId) && !busy ? 1 : 0.5 }} disabled={(!templates.length && !templateId) || !!busy} onClick={generate}>
               {busy === "generate" ? "生成中…（含渲染可能数十秒）" : "用此模板生成视频"}
             </button>
+            <button style={{ ...btn, background: "#1d2430", opacity: (templates.length || templateId) && !busy ? 1 : 0.5 }} disabled={(!templates.length && !templateId) || !!busy} onClick={generateVariants}>
+              {busy === "variants" ? "生成三版本中…" : "生成 high_click / high_conversion / high_quality"}
+            </button>
           </div>
         )}
 
@@ -379,6 +552,27 @@ export function V5Dashboard() {
         )}
       </section>
 
+      {variants.length > 0 && (
+        <section style={card}>
+          <h2 style={{ marginTop: 0, fontSize: 16 }}>Variant Gallery — {variants.length}/3</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            {variants.map((v) => (
+              <div key={v.generationId} style={{ border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#0f1117" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                  <strong style={{ fontSize: 13 }}>{v.templateInstance?.creativeBrief?.variant ?? v.generationId}</strong>
+                  <span style={{ ...tag, marginRight: 0 }}>{v.scorecard.readinessLevel ?? "score"}</span>
+                </div>
+                {v.finalVideoUrl && <video src={`${API}${v.finalVideoUrl}`} controls style={{ width: "100%", borderRadius: 8, background: "#000" }} />}
+                <div style={{ fontSize: 11, color: "#9fb3d1", marginTop: 8 }}>
+                  {v.scorecard.gates.filter((g) => g.status === "pass").length}/{v.scorecard.gates.length} gates · {v.usedTemplateCode ? "template code" : "fallback/plan"}
+                </div>
+                <button style={{ ...btn, width: "100%", marginTop: 8, background: "#1d2430" }} onClick={() => { setResult(v); fetchTrace(v.generationId).catch(() => undefined); }}>打开此版本</button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* 3. Result */}
       {result && (
         <section style={card}>
@@ -396,6 +590,69 @@ export function V5Dashboard() {
               </span>
               {result.usedFallbackRenderer && <span style={{ ...tag, background: "#3a2f12", color: "#ffce7a" }}>fallback renderer</span>}
               {result.templateCapsuleId && <span style={{ ...tag }}>capsule={result.templateCapsuleId.slice(0, 12)}</span>}
+            </div>
+          )}
+
+          {trace && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 18 }}>
+              <div style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117" }}>
+                <h3 style={{ fontSize: 14, margin: "0 0 10px" }}>Sample Structure</h3>
+                {trace.sample.videoUrl && <video src={`${API}${trace.sample.videoUrl}`} controls style={{ width: "100%", maxHeight: 240, borderRadius: 8, background: "#000", marginBottom: 10 }} />}
+                <div style={{ fontSize: 12, color: "#9fb3d1", marginBottom: 8 }}>
+                  {trace.sample.filename ?? trace.sample.assetId ?? "sample"} · {trace.sample.duration ? `${trace.sample.duration.toFixed(1)}s` : "duration n/a"}
+                </div>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {(trace.template.knowledgeManifest?.structureHypothesis?.phases ?? []).slice(0, 8).map((p) => (
+                    <div key={p.id} style={{ borderLeft: "3px solid #2b6cff", paddingLeft: 8, fontSize: 12 }}>
+                      <b>{p.role}</b> {p.startSec.toFixed(1)}-{p.endSec.toFixed(1)}s · {p.beatCount ?? 0} beats
+                      <div style={{ color: "#7c8aa0" }}>{short(p.visualMethod || p.intent, 88)}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  {(trace.template.knowledgeManifest?.structureHypothesis?.motionMotifs ?? []).slice(0, 5).map((m) => <span key={m} style={tag}>{m}</span>)}
+                  {(trace.template.knowledgeManifest?.structureHypothesis?.transitions ?? []).slice(0, 4).map((m) => <span key={m} style={tag}>{m}</span>)}
+                </div>
+              </div>
+
+              <div style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117" }}>
+                <h3 style={{ fontSize: 14, margin: "0 0 10px" }}>Transfer Mapping</h3>
+                <div style={{ display: "grid", gap: 7 }}>
+                  {trace.transfer.slotMapping.slice(0, 14).map((m) => (
+                    <div key={m.slotId} style={{ border: "1px solid #262a33", borderRadius: 6, padding: 8, fontSize: 12, background: "#11151d" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <b>{m.originalRole ?? m.slotId}</b>
+                        <span style={{ ...tag, marginRight: 0, background: m.status === "missing" ? "#3a2030" : m.status === "user_asset" ? "#16321f" : "#16243f" }}>{m.status}</span>
+                      </div>
+                      <div style={{ color: "#7c8aa0", marginTop: 4 }}>{m.slotKind} · {m.assetId ?? "no asset"}{m.assetProfile?.bestSection ? ` · fit=${m.assetProfile.bestSection}` : ""}</div>
+                      <div style={{ color: "#9fb3d1", marginTop: 4 }}>{short(m.fillReason, 120)}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  {trace.transfer.usedKnowledgeElements.slice(0, 8).map((e) => <span key={e.id} title={(e.evidenceRefs ?? []).join(", ")} style={tag}>{e.kind}</span>)}
+                </div>
+              </div>
+
+              <div style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117" }}>
+                <h3 style={{ fontSize: 14, margin: "0 0 10px" }}>Generated Result</h3>
+                {trace.result.outputVideoUrl && <video src={`${API}${trace.result.outputVideoUrl}`} controls style={{ width: "100%", maxHeight: 240, borderRadius: 8, background: "#000", marginBottom: 10 }} />}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                  <span style={tag}>{trace.template.name ?? trace.template.capsuleId}</span>
+                  {trace.template.remotionCodeHash && <span style={tag}>code={trace.template.remotionCodeHash.slice(0, 10)}</span>}
+                  <span style={tag}>{trace.transfer.targetBrief?.variant ?? "variant"}</span>
+                </div>
+                <div style={{ fontSize: 12, color: "#9fb3d1" }}>
+                  {(trace.transfer.gapReport?.gaps ?? []).slice(0, 8).map((g) => (
+                    <div key={g.slotId}>{g.slotId}: {g.status} → {g.selectedRepair} · impact={g.impact}</div>
+                  ))}
+                </div>
+                {trace.result.scorecard && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#7c8aa0" }}>
+                    scorecard: {trace.result.scorecard.gates.filter((g) => g.status === "pass").length}/{trace.result.scorecard.gates.length} pass · {trace.result.scorecard.readinessLevel ?? "readiness n/a"}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -470,6 +727,19 @@ export function V5Dashboard() {
                 </button>
               </div>
               <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>patch-first：只换主题/文案/配色，复用已生成的画面与音频；要换画面请重新生成。</div>
+              <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+                <textarea value={nlInstruction} onChange={(e) => setNlInstruction(e.target.value)} rows={2} placeholder="例如：开头更抓人一些，减少字幕，增强节奏感，把商品信息提前" style={{ width: "100%", padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6", resize: "vertical" }} />
+                <button style={{ ...btn, width: "fit-content", opacity: nlInstruction.trim() && !busy ? 1 : 0.5 }} disabled={!nlInstruction.trim() || !!busy} onClick={() => reviseNatural(result)}>
+                  {busy === "revise-nl" ? "解析并改写中…" : "自然语言改片"}
+                </button>
+                {(result.generatedPatch || result.patchNotes?.length || result.naturalLanguageInstruction) && (
+                  <div style={{ border: "1px solid #262a33", borderRadius: 8, padding: 10, background: "#0f1117", fontSize: 12, color: "#9fb3d1" }}>
+                    {result.naturalLanguageInstruction && <div>request: {result.naturalLanguageInstruction}</div>}
+                    {result.patchNotes?.map((note, i) => <div key={i}>patch: {note}</div>)}
+                    {result.generatedPatch && <pre style={{ margin: "8px 0 0", whiteSpace: "pre-wrap", color: "#7c8aa0" }}>{JSON.stringify(result.generatedPatch, null, 2)}</pre>}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </section>
