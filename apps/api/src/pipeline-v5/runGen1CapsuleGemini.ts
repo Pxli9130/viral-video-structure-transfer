@@ -503,7 +503,21 @@ function mergeCapsule(det: v5.RemotionTemplateCapsule, g: Record<string, unknown
     slotSchema: ensureSlotsCoverCode(assetSlots ?? validSlots ?? det.slotSchema ?? [], code),
     propsSchema: asObject(gc.propsSchema) ?? det.propsSchema,
     timingSignature,
-    motionSignature: (asObject(gc.motionSignature) as unknown as v5.RemotionTemplateCapsule["motionSignature"]) ?? det.motionSignature,
+    // Merge the AI motionSignature onto the deterministic one field-by-field: Gemini sometimes returns a
+    // PARTIAL object (e.g. missing `motifs`), and a blind cast then leaves required arrays undefined ->
+    // downstream `.motifs.join(...)` crashes the whole learn. Coerce each field, falling back to det.
+    motionSignature: ((): v5.RemotionTemplateCapsule["motionSignature"] => {
+      const ai = asObject(gc.motionSignature) as Partial<v5.RemotionTemplateCapsule["motionSignature"]> | undefined;
+      const d = det.motionSignature;
+      if (!ai) return d;
+      return {
+        motifs: Array.isArray(ai.motifs) ? ai.motifs : d.motifs,
+        transitionTypes: Array.isArray(ai.transitionTypes) ? ai.transitionTypes : d.transitionTypes,
+        typographyAnimationTypes: Array.isArray(ai.typographyAnimationTypes) ? ai.typographyAnimationTypes : d.typographyAnimationTypes,
+        beatSyncedCueCount: typeof ai.beatSyncedCueCount === "number" ? ai.beatSyncedCueCount : d.beatSyncedCueCount,
+        activeMotionCoverage: typeof ai.activeMotionCoverage === "number" ? ai.activeMotionCoverage : d.activeMotionCoverage
+      };
+    })(),
     assetRecipes: (asArray(gc.assetRecipes) as v5.AssetRecipeV5[]) ?? det.assetRecipes,
     audioRecipes: (asArray(gc.audioRecipes) as v5.AudioRecipeV5[]) ?? det.audioRecipes,
     fixtures: (asObject(gc.fixtures) as unknown as v5.RemotionTemplateCapsule["fixtures"]) ?? det.fixtures,

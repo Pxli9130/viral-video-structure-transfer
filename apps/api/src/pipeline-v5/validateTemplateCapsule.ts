@@ -50,10 +50,23 @@ export function validateTemplateCapsule(capsule: v5.RemotionTemplateCapsule): v5
   g("T1", "Template capsule exists", hasCode ? "pass" : "fail", hasCode ? `${capsule.codeBundle.files.length} file(s)` : "no code bundle");
 
   const entry = capsule.codeBundle?.files?.find((f) => f.path === capsule.codeBundle.entryFile) ?? capsule.codeBundle?.files?.[0];
-  const code = capsule.codeBundle?.files?.map((f) => f.content).join("\n") ?? "";
+  const allFiles = capsule.codeBundle?.files ?? [];
+  const code = allFiles.map((f) => f.content).join("\n") ?? "";
 
-  // T2 template code compiles (syntax)
-  const compile = entry ? parseCompiles(entry.content) : { ok: false, error: "no entry file" };
+  // T2 template code compiles (syntax) — parse EVERY file, not just the entry. A chunked capsule carries its
+  // on-screen text in the chunk modules; a context-rewrite that breaks a chunk's syntax must fail T2 here so
+  // the rewrite's repair round fires, rather than slipping through (entry still valid) to fail at render.
+  let compile: { ok: boolean; error?: string } = entry ? { ok: true } : { ok: false, error: "no entry file" };
+  if (entry) {
+    for (const f of allFiles) {
+      if (typeof f.content !== "string" || !f.content.length) continue;
+      const r = parseCompiles(f.content);
+      if (!r.ok) {
+        compile = { ok: false, error: allFiles.length > 1 ? `${f.path}: ${r.error}` : r.error };
+        break;
+      }
+    }
+  }
   g("T2", "Template code compiles", compile.ok ? "pass" : "fail", compile.ok ? "syntax OK" : `parse error: ${compile.error}`);
 
   // T3 props schema exists

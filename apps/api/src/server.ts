@@ -2977,6 +2977,8 @@ app.get(
 app.use((error: Error & { status?: number; code?: string; details?: unknown }, _req: Request, res: Response, _next: NextFunction) => {
   const status = (error as HttpError).status ?? error.status ?? 500;
   const code = (error as HttpError).code ?? error.code ?? "INTERNAL_ERROR";
+  // Server faults (5xx) were previously silent — log the stack so failures are diagnosable.
+  if (status >= 500) console.error(`[error] ${code} ${error.message}\n${error.stack ?? ""}`);
   fail(res, status, code, error.message, (error as HttpError).details ?? error.details);
 });
 
