@@ -8,9 +8,9 @@ import { spawn } from "node:child_process";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import type { Asset } from "@vvst/shared";
-import { getAigcMaterialProvider, v5 } from "@vvst/shared";
+import { getAigcMaterialProvider, resolveCreativeKnobs, knobsToRewriteDirective, knobsToAudioMood, paletteMoodOverride, v5 } from "@vvst/shared";
 import { GoogleAudioAdapter, type GoogleGeneratedAudioAsset } from "../adapters/googleAudio.js";
-import { runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
+import { runTargetAssetAnalysisMany, enrichProfilesWithVlm } from "./runTargetAssetAnalysis.js";
 import { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
 import { resolveBin } from "./renderV5.js";
 import { mapLimit, aigcSemaphore } from "./concurrency.js";
@@ -189,6 +189,12 @@ export interface SameTemplateInput {
   /** Context-modification: a Pro model fn that rewrites an AI-clone capsule's text/colour for the new
    *  theme before rendering (so "same template, new theme" actually changes the on-screen content). */
   rewriteModel?: Gen1ModelFn | null;
+  /** Vision fn (createGeminiVisionFn) that LOOKS at the user assets' pixels to enrich TargetAssetProfiles
+   *  (shot/scene/subjects/highlight/bestSection). Null/undefined = heuristic-only (graceful). */
+  assetVisionFn?: ((imageBase64: string, mimeType: string, prompt: string) => Promise<string>) | null;
+  /** Explicit per-slot asset binding from the UI (slotId -> target assetId): the user uploaded an asset for
+   *  THAT slot, so bind it directly instead of leaving it to the kind/section heuristic. */
+  slotAssignments?: Record<string, string>;
 }
 
 export interface SameTemplateResult {
@@ -197,6 +203,8 @@ export interface SameTemplateResult {
   gates: v5.ScorecardGate[];
   generatedAssets: v5.GeneratedVisualAsset[];
   finalVideoUrl?: string;
+  /** A rendered cover/封面 still (frame of the final video), served under /generated. */
+  coverUrl?: string;
   warnings: string[];
   /** Real no-copy scan evidence (fed to the scorecard so V5-G29/G30 are earned, not assumed). */
   noCopy: NoCopyResult;
@@ -322,8 +330,9 @@ async function generateGoogleMusicBed(input: SameTemplateInput, capsule: v5.Remo
   const segments: GoogleGeneratedAudioAsset[] = [];
   let previousSummary: string | undefined;
   let previousSectionBrief: string | undefined;
+  const audioMood = knobsToAudioMood(resolveCreativeKnobs(input.brief.variant, input.reviseFrom?.patch));
   for (let i = 0; i < segmentCount; i++) {
-    const prompt = audioRecipePrompt(capsule, input.brief, durationSec, i, segmentCount, previousSummary, previousSectionBrief);
+    const prompt = `${audioRecipePrompt(capsule, input.brief, durationSec, i, segmentCount, previousSummary, previousSectionBrief)} Overall energy/mood: ${audioMood}.`;
     // Lyria intermittently returns no inline audio ("did not include inline audio data") — retry a few
     // times before letting the whole bed fall back to procedural.
     let audio: GoogleGeneratedAudioAsset | undefined;
@@ -364,7 +373,11 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   const lightDirective = capsule.quality?.sourceIsLight
     ? `The SOURCE video has a LIGHT / high-key background (dominant ${capsule.quality.sourceDominantHex ?? "near-white"}). The rewritten video MUST keep a LIGHT (white/off-white) background with dark text — do NOT render on a dark/black background.`
     : undefined;
-  if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length)) {
+  // Creative knobs (multi-version brief.variant + manual/NL patch) — turn into a rewrite directive so the
+  // on-screen text / emphasis / packaging actually differ per version, without re-running visual codegen.
+  const knobs = resolveCreativeKnobs(brief.variant, input.reviseFrom?.patch);
+  const knobDirective = knobsToRewriteDirective(knobs);
+  if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length || knobDirective)) {
     const rw = await runCapsuleContextRewrite({
       capsule,
       theme: brief.theme ?? brief.prompt ?? "",
@@ -372,16 +385,18 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       model: input.rewriteModel,
       renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
       maxAttempts: 2,
-      extraDirective: lightDirective
+      extraDirective: [lightDirective, knobDirective].filter(Boolean).join(" ") || undefined
     });
     warnings.push(...rw.warnings.slice(0, 2));
     if (rw.usedAi) capsule = { ...capsule, codeBundle: rw.codeBundle };
   }
 
   const aigcOn = options.aigcGapFill.mode === "auto_on";
-  const palette = choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"], capsule.quality);
+  // Palette: theme-driven base, optionally nudged to a premium/clean mood by the knobs (multi-version).
+  const palette = paletteMoodOverride(knobs, capsule.quality?.sourceIsLight)
+    ?? choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"], capsule.quality);
 
-  const targetProfiles = runTargetAssetAnalysisMany(input.targetAssets);
+  const targetProfiles = await enrichProfilesWithVlm(runTargetAssetAnalysisMany(input.targetAssets), input.targetAssets, input.assetVisionFn);
   const provider = aigcOn && options.aigcGapFill.imageFill === "aigc" ? getAigcMaterialProvider((input.env?.AIGC_IMAGE_PROVIDER as never) ?? "google_gemini_image") : undefined;
   // Real moving-footage provider (Seedance text-to-video) for mediaKind="video" slots — the "missing 素材"
   // the code marked <OffthreadVideo>. Generated footage is fresh/original (samplePixelsUsed=false), so it
@@ -436,9 +451,24 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   let videoBudget = videoProvider ? maxVideos : 0;
   let imageBudget = provider ? maxGenerated : 0;
   let imageIdxSeq = 0;
+  // Assets the user explicitly pinned to a slot — reserve them so the kind/section heuristic for OTHER slots
+  // can't greedily consume them before the loop reaches their assigned slot.
+  const reservedAssetIds = new Set(Object.values(input.slotAssignments ?? {}));
   for (let i = 0; i < capsule.slotSchema.length; i++) {
     const slot = capsule.slotSchema[i];
     const propKey = slot.propPath?.split(".")[1] ?? slot.id;
+
+    // Explicit per-slot assignment — the user uploaded an asset for THIS slot in the gap radar. Hard-bind it
+    // ahead of the text/audio/image defaults, for ANY slot kind (so every row's upload is honoured).
+    const assignedId = input.slotAssignments?.[slot.id];
+    const assignedFile = assignedId && !usedTargetAssetIds.has(assignedId) ? input.targetAssets.find((x) => x.id === assignedId) : undefined;
+    if (assignedFile?.path) {
+      const url = `${input.serveBase}/generated/${assignedFile.id}`;
+      boundProps.assets[propKey] = { src: url };
+      slotBindings.push({ slotId: slot.id, status: "user_asset", assetId: assignedId, uri: url, warnings: ["user-assigned to this slot"] });
+      usedTargetAssetIds.add(assignedId as string);
+      continue;
+    }
 
     if (TEXT_SLOTS.has(slot.kind)) {
       const text = options.aigcGapFill.textFill === "off" ? "" : copyForSlot(slot, brief, i);
@@ -453,7 +483,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     if (IMAGE_SLOTS.has(slot.kind)) {
       // 1) user asset — match profile kind to the slot, and never bind the same asset to two slots.
       const userAsset = targetProfiles.find(
-        (p) => !usedTargetAssetIds.has(p.assetId) && (slot.kind === "logo" ? p.kind === "logo" : p.kind === "image" || p.kind === "video")
+        (p) => !usedTargetAssetIds.has(p.assetId) && !reservedAssetIds.has(p.assetId) && (slot.kind === "logo" ? p.kind === "logo" : p.kind === "image" || p.kind === "video")
       );
       const userAssetFile = userAsset ? input.targetAssets.find((x) => x.id === userAsset.assetId) : undefined;
       if (userAsset && userAssetFile?.path) {
@@ -835,5 +865,22 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     }
   };
 
-  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur };
+  // Cover / 封面: render one representative frame (~0.5s in) of the FINAL bound capsule as a PNG thumbnail.
+  // Served under /generated like the other materials. Best-effort — never blocks the result.
+  let coverUrl: string | undefined;
+  if (finalMp4Exists) {
+    try {
+      const coverFps = capsule.timingSignature.fps || 30;
+      const still = await renderCapsuleStill({
+        capsule,
+        boundProps,
+        aspectRatio: brief.aspectRatio ?? "9:16",
+        frame: Math.round(0.5 * coverFps),
+        outPng: path.join(materialsDir, "cover.png")
+      });
+      if (still.ok) coverUrl = `${input.publicPathPrefix}cover.png`;
+    } catch (err) { warnings.push(`cover render skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
+  }
+
+  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur };
 }

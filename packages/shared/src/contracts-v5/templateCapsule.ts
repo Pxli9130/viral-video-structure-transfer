@@ -256,6 +256,16 @@ export interface TemplatePatchSet {
   copyOverrides?: Record<string, string>;
   /** When true, the route runs a FRESH generation (new visuals) instead of a copy/theme-only revise. */
   regenerateImages?: boolean;
+  // ---- Creative knobs (manual edit / multi-version) — change rhythm/packaging/colour WITHOUT re-codegen.
+  //      Drive the (Doubao) context-rewrite directive + deterministic palette/audio. See engine/creativeKnobs. ----
+  rhythm?: "aggressive" | "balanced" | "slow";
+  /** Scale the hook emphasis/length (0.5 shorter & punchier .. 1.2 longer). */
+  hookRatio?: number;
+  textDensity?: "dense" | "medium" | "minimal";
+  motionIntensity?: "high" | "medium" | "low";
+  /** Bring the CTA forward by N seconds. */
+  ctaAdvanceSec?: number;
+  paletteMood?: "bold" | "premium" | "clean" | "energetic";
 }
 
 export interface TemplateInstance {

@@ -17,7 +17,7 @@ export type { Gen2RemotionCodegenResult } from "./runGen2RemotionCodegen.js";
 export { runExtractElements } from "./runExtractElements.js";
 export { runLearnSampleV5 } from "./runLearnSampleV5.js";
 export type { LearnArtifacts, LearnOptions } from "./runLearnSampleV5.js";
-export { runTargetAssetAnalysis, runTargetAssetAnalysisMany } from "./runTargetAssetAnalysis.js";
+export { runTargetAssetAnalysis, runTargetAssetAnalysisMany, enrichProfilesWithVlm } from "./runTargetAssetAnalysis.js";
 export { runCompositionPlanner } from "./runCompositionPlanner.js";
 export { runGapReportV5 } from "./runGapReportV5.js";
 export { runGen2ComposeFallback } from "./runGen2ComposeFallback.js";

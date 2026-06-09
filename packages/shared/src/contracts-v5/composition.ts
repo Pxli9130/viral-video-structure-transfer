@@ -25,6 +25,20 @@ export interface TargetAssetProfile {
   extractedText?: string;
   motionSummary?: string;
   hasAudio?: boolean;
+  // ---- VLM (vision) enrichment — set when ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS is on + a key exists;
+  //      absent (heuristic-only) otherwise. The pipeline degrades gracefully when these are missing. ----
+  /** Shot type the VLM saw (e.g. "product close-up", "talking head", "wide lifestyle"). */
+  shotType?: string;
+  /** Coarse scene category the VLM classified. */
+  sceneType?: "product" | "person" | "lifestyle" | "testimonial" | "text" | "scene" | "other";
+  /** Subjects the VLM recognised (e.g. ["sneaker", "hand"], ["woman", "office"]). */
+  detectedSubjects?: string[];
+  /** VLM judged this a highlight-worthy clip/frame. */
+  isHighlight?: boolean;
+  /** True once a VLM actually looked at the pixels (vs filename/tag heuristics). */
+  vlmAnalyzed?: boolean;
+  /** One-line VLM summary of what the asset shows. */
+  vlmSummary?: string;
 }
 
 export interface CompositionSection {
