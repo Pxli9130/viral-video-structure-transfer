@@ -17,7 +17,20 @@ import { resolveBin } from "./renderV5.js";
 import { runPython } from "../adapters/condaPython.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const ASR_SCRIPT = path.join(path.resolve(moduleDir, "../../../.."), "scripts", "python", "asr_faster_whisper.py");
+const PY_DIR = path.join(path.resolve(moduleDir, "../../../.."), "scripts", "python");
+const ASR_SCRIPT = path.join(PY_DIR, "asr_faster_whisper.py");
+const HIGHLIGHT_SCRIPT = path.join(PY_DIR, "highlight_segments.py");
+
+/** Local CV (cv2 + PySceneDetect) segment-level highlight scoring of a long user video (no paid API). */
+export async function selectHighlightSegments(videoPath: string, top = 5): Promise<Array<Record<string, unknown>>> {
+  try {
+    const r = await runPython(HIGHLIGHT_SCRIPT, [videoPath, "--top", String(top)], { timeoutMs: 150000 });
+    const parsed = JSON.parse(r.stdout || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Local faster-whisper transcription of a video's audio (conda `viral` env, no paid API). [] on failure/silence. */
 export async function transcribeVideo(videoPath: string, model = "tiny"): Promise<TranscriptSegment[]> {

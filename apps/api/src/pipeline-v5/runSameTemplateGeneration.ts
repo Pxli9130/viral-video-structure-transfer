@@ -17,7 +17,7 @@ import { mapLimit, aigcSemaphore } from "./concurrency.js";
 import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
-import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan, transcribeVideo } from "./v2Reports.js";
+import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan, transcribeVideo, selectHighlightSegments } from "./v2Reports.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
@@ -416,6 +416,13 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // kept OUT of the hero/main shots below (TC-04) — they still appear in the report with a reason.
   const material = buildMaterialAnalysis(targetProfiles, input.targetAssets, { targetAspect: brief.aspectRatio ?? "9:16" });
   if (material.rejectedAssetIds.size) warnings.push(`material analysis rejected ${material.rejectedAssetIds.size} asset(s) (low-quality/duplicate) from main shots`);
+  // Segment-level highlight selection for LONG user videos (TC-03): attach candidate highlight windows + slots.
+  for (const m of material.records) {
+    if (m.type === "video" && typeof m.duration_sec === "number" && m.duration_sec > 8 && typeof m.path === "string") {
+      const segs = await selectHighlightSegments(m.path);
+      if (segs.length) m.selected_segments = segs;
+    }
+  }
   const provider = aigcOn && options.aigcGapFill.imageFill === "aigc" ? getAigcMaterialProvider((input.env?.AIGC_IMAGE_PROVIDER as never) ?? "google_gemini_image") : undefined;
   // Real moving-footage provider (Seedance text-to-video) for mediaKind="video" slots — the "missing 素材"
   // the code marked <OffthreadVideo>. Generated footage is fresh/original (samplePixelsUsed=false), so it
