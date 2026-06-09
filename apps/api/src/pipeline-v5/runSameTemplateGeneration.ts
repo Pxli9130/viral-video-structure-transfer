@@ -17,7 +17,7 @@ import { mapLimit, aigcSemaphore } from "./concurrency.js";
 import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
-import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2 } from "./v2Reports.js";
+import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan } from "./v2Reports.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
@@ -221,6 +221,9 @@ export interface SameTemplateResult {
   materialAnalysis: Array<Record<string, unknown>>;
   timelineV2: Record<string, unknown>;
   mappingV2: Array<Record<string, unknown>>;
+  /** v2 explainability artifacts (no-copy similarity check + packaging/subtitle-safe-zone plan). */
+  similarityReport: Record<string, unknown>;
+  packagingPlan: Record<string, unknown>;
 }
 
 interface GeneratedMusicBed {
@@ -908,6 +911,8 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     knowledgeAtomIds: [capsule.sourceSampleId]
   });
   const mappingV2 = buildMappingV2({ capsule, slotBindings, referenceVideoName, copyRisk });
+  const similarityReport = buildSimilarityReport({ copyRisk, noCopyPassed: noCopy?.noCopyPassed ?? null, mappingV2 });
+  const packagingPlan = buildPackagingPlan({ timelineV2, palette, theme: brief.theme ?? brief.prompt ?? "" });
 
-  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2 };
+  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2, similarityReport, packagingPlan };
 }

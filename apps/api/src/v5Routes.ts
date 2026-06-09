@@ -16,6 +16,7 @@ import { analyzeEvidenceTimeline } from "./adapters/evidenceTimeline.js";
 import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
   buildV5RenderInputProps,
+  buildEditTrace,
   createDoubaoModelFn,
   createGeminiModelFn,
   createGeminiVisionCodegenFn,
@@ -296,10 +297,13 @@ export function createV5Router(deps: V5RouterDeps): Router {
         fillActions,
         kbDecisions: [...(Array.isArray(learnKbDecisions) ? learnKbDecisions : []), ...(Array.isArray(sideKbDecisions) ? sideKbDecisions : [])],
         usedKnowledgeElements: kbElements.map((e) => ({ id: e.id, kind: e.kind, name: e.name, tags: e.tags, evidenceRefs: e.source.evidenceRefs })),
-        // v2 schema-conformant evidence (material_analysis / timeline / mapping).
+        // v2 schema-conformant evidence (material_analysis / timeline / mapping / similarity / packaging / edit_trace).
         materialAnalysis: generation.materialAnalysis ?? (await readJsonIf(path.join(genDir(generationId), "material-analysis.json"))) ?? [],
         timeline: generation.timelineV2 ?? (await readJsonIf(path.join(genDir(generationId), "timeline-v2.json"))),
-        mapping: generation.mappingV2 ?? (await readJsonIf(path.join(genDir(generationId), "mapping-v2.json"))) ?? []
+        mapping: generation.mappingV2 ?? (await readJsonIf(path.join(genDir(generationId), "mapping-v2.json"))) ?? [],
+        similarityReport: generation.similarityReport ?? (await readJsonIf(path.join(genDir(generationId), "similarity-report.json"))),
+        packagingPlan: generation.packagingPlan ?? (await readJsonIf(path.join(genDir(generationId), "packaging-plan.json"))),
+        editTrace: generation.editTrace ?? (await readJsonIf(path.join(genDir(generationId), "edit-trace.json")))
       },
       result: {
         outputVideoUrl: generation.finalVideoUrl,
@@ -372,6 +376,14 @@ export function createV5Router(deps: V5RouterDeps): Router {
     st.instance.readinessImpact.readinessLevel = toInstanceReadiness(sc.readinessLevel);
     if (st.instance.readinessImpact.warnings.length) sc.readinessReasons = [...(sc.readinessReasons ?? []), ...st.instance.readinessImpact.warnings];
     await fs.mkdir(outDirST, { recursive: true });
+    // edit_trace (TC-08): when this generation is a revise of a prior one, diff the prior timeline against the
+    // new one so the change is explainable (which segments/captions moved/replaced, before/after hashes).
+    let editTrace: Record<string, unknown> | undefined;
+    if (typeof extra.revisedFrom === "string") {
+      const baseTimeline = await readJsonIf(path.join(genDir(extra.revisedFrom), "timeline-v2.json"));
+      const command = typeof extra.naturalLanguageInstruction === "string" ? extra.naturalLanguageInstruction : JSON.stringify(extra.patch ?? {});
+      editTrace = buildEditTrace(command, baseTimeline as Parameters<typeof buildEditTrace>[1], st.timelineV2 as Parameters<typeof buildEditTrace>[2], (extra.generatedPatch ?? extra.patch) as Record<string, unknown> | null);
+    }
     const result = {
       generationId,
       generationMode: stOptions.generationMode,
@@ -390,6 +402,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
       materialAnalysis: st.materialAnalysis,
       timelineV2: st.timelineV2,
       mappingV2: st.mappingV2,
+      similarityReport: st.similarityReport,
+      packagingPlan: st.packagingPlan,
+      ...(editTrace ? { editTrace } : {}),
       warnings: st.warnings,
       ...extra
     };
@@ -401,6 +416,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
       fs.writeFile(path.join(outDirST, "material-analysis.json"), JSON.stringify(st.materialAnalysis, null, 2)),
       fs.writeFile(path.join(outDirST, "timeline-v2.json"), JSON.stringify(st.timelineV2, null, 2)),
       fs.writeFile(path.join(outDirST, "mapping-v2.json"), JSON.stringify(st.mappingV2, null, 2)),
+      fs.writeFile(path.join(outDirST, "similarity-report.json"), JSON.stringify(st.similarityReport, null, 2)),
+      fs.writeFile(path.join(outDirST, "packaging-plan.json"), JSON.stringify(st.packagingPlan, null, 2)),
+      ...(editTrace ? [fs.writeFile(path.join(outDirST, "edit-trace.json"), JSON.stringify(editTrace, null, 2))] : []),
       fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
     ]);
     return ok(res, result);

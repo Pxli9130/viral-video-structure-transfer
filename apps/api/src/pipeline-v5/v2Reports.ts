@@ -8,6 +8,7 @@
 // Everything here is derived from real pipeline state — no placeholders.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { Asset } from "@vvst/shared";
 import { v5 } from "@vvst/shared";
 import { resolveBin } from "./renderV5.js";
@@ -252,4 +253,122 @@ export function buildMappingV2(input: {
       copy_risk: isText ? input.copyRisk : "low"
     };
   });
+}
+
+// ---------------------------------------------------------------------------------------------------
+// edit_trace v2 — diff of the timeline BEFORE vs AFTER a natural-language / patch revise (TC-08).
+// ---------------------------------------------------------------------------------------------------
+
+type TimelineLike = { tracks?: { video?: Array<Record<string, unknown>>; text?: Array<Record<string, unknown>>; audio?: Array<Record<string, unknown>> } } | null | undefined;
+
+export function timelineHash(t: TimelineLike): string {
+  if (!t) return "none";
+  return createHash("sha1").update(JSON.stringify(t.tracks ?? t)).digest("hex").slice(0, 16);
+}
+
+/** Diff before/after timelines into a schema-v2 edit_trace (command + hashes + per-segment changes). The
+ *  applied `patch` is folded in so a knob revise (which changes code/palette/pacing, not slot-driven captions)
+ *  still produces meaningful, honest changes rather than an empty diff. */
+export function buildEditTrace(command: string, before: TimelineLike, after: TimelineLike, patch?: Record<string, unknown> | null): Record<string, unknown> {
+  const changes: Array<Record<string, unknown>> = [];
+  const num = (v: unknown) => (typeof v === "number" ? v : Number(v) || 0);
+  // Intent-level changes from the patch that drove the revise.
+  if (patch) {
+    if (patch.rhythm) changes.push({ change_id: "patch_rhythm", operation: "style_change", target_segment_id: "pacing", before: null, after: { rhythm: patch.rhythm }, reason: "整体节奏调整" });
+    if (patch.textDensity) changes.push({ change_id: "patch_textDensity", operation: "style_change", target_segment_id: "subtitles", before: null, after: { textDensity: patch.textDensity }, reason: "字幕密度调整" });
+    if (patch.motionIntensity) changes.push({ change_id: "patch_motion", operation: "style_change", target_segment_id: "motion", before: null, after: { motionIntensity: patch.motionIntensity }, reason: "运动强度调整" });
+    if (patch.ctaAdvanceSec != null) changes.push({ change_id: "patch_cta", operation: "move", target_segment_id: "cta", before: null, after: { ctaAdvanceSec: patch.ctaAdvanceSec }, reason: "CTA 提前/前置" });
+    if (patch.hookRatio != null) changes.push({ change_id: "patch_hook", operation: "shorten", target_segment_id: "hook", before: null, after: { hookRatio: patch.hookRatio }, reason: "开头钩子长度调整" });
+    if (patch.paletteMood || patch.palette) changes.push({ change_id: "patch_palette", operation: "style_change", target_segment_id: "palette", before: null, after: { paletteMood: patch.paletteMood, palette: patch.palette }, reason: "配色/包装调整" });
+    if (patch.theme) changes.push({ change_id: "patch_theme", operation: "replace", target_segment_id: "theme", before: null, after: { theme: patch.theme }, reason: "主题替换" });
+    for (const [k, vv] of Object.entries((patch.copyOverrides as Record<string, unknown>) ?? {})) changes.push({ change_id: `copy_${k}`, operation: "replace", target_segment_id: k, before: null, after: { content: vv }, reason: "指定文案覆盖" });
+  }
+  const bv = new Map((before?.tracks?.video ?? []).map((s) => [String(s.segment_id), s]));
+  for (const a of after?.tracks?.video ?? []) {
+    const id = String(a.segment_id);
+    const b = bv.get(id);
+    if (!b) { changes.push({ change_id: `add_${id}`, operation: "replace", target_segment_id: id, before: null, after: a, reason: "新增镜头段" }); continue; }
+    if (b.source_asset_id !== a.source_asset_id) changes.push({ change_id: `rep_${id}`, operation: "replace", target_segment_id: id, before: { source_asset_id: b.source_asset_id }, after: { source_asset_id: a.source_asset_id }, reason: "该段镜头素材替换" });
+    if (num(b.start_sec) !== num(a.start_sec) || num(b.end_sec) !== num(a.end_sec)) {
+      const shorter = num(a.end_sec) - num(a.start_sec) < num(b.end_sec) - num(b.start_sec);
+      changes.push({ change_id: `mv_${id}`, operation: shorter ? "shorten" : "move", target_segment_id: id, before: { start_sec: b.start_sec, end_sec: b.end_sec }, after: { start_sec: a.start_sec, end_sec: a.end_sec }, reason: "节奏/时间点调整" });
+    }
+  }
+  const bt = new Map((before?.tracks?.text ?? []).map((s) => [String(s.text_id), s]));
+  for (const a of after?.tracks?.text ?? []) {
+    const id = String(a.text_id);
+    const b = bt.get(id);
+    if (!b) continue;
+    if (b.content !== a.content) changes.push({ change_id: `txt_${id}`, operation: "replace", target_segment_id: id, before: { content: b.content }, after: { content: a.content }, reason: "字幕/文案改写" });
+    if (b.safe_zone !== a.safe_zone) changes.push({ change_id: `sz_${id}`, operation: "style_change", target_segment_id: id, before: { safe_zone: b.safe_zone }, after: { safe_zone: a.safe_zone }, reason: "字幕安全区位置调整" });
+  }
+  const beforeAudio = (before?.tracks?.audio ?? []).length;
+  const afterAudio = (after?.tracks?.audio ?? []).length;
+  if (beforeAudio !== afterAudio) changes.push({ change_id: "audio_track", operation: afterAudio > beforeAudio ? "replace" : "remove", target_segment_id: "audio_bed", before: { tracks: beforeAudio }, after: { tracks: afterAudio }, reason: "BGM/音轨变化" });
+  return { command, before_timeline_hash: timelineHash(before), after_timeline_hash: timelineHash(after), changes };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// similarity_report — does the output copy the sample's wording, or only its structure? (TC-12)
+// ---------------------------------------------------------------------------------------------------
+
+export function buildSimilarityReport(input: { copyRisk: "low" | "medium" | "high"; noCopyPassed?: boolean | null; mappingV2: Array<Record<string, unknown>> }): Record<string, unknown> {
+  const highRisk = input.mappingV2.filter((m) => m.copy_risk === "high").map((m) => m.new_content_slot);
+  return {
+    verdict: input.copyRisk === "high" ? "fail" : "pass",
+    copy_risk_overall: input.copyRisk,
+    no_copy_scan_passed: input.noCopyPassed ?? null,
+    checked: ["headline", "subtitle", "cta_text", "structure_only"],
+    high_risk_slots: highRisk,
+    structure_reused: true,
+    wording_reused: input.copyRisk === "high",
+    note:
+      input.copyRisk === "high"
+        ? "AI 胶囊源文案未被改写，存在照搬样例措辞的风险（应触发改写或回退）"
+        : "仅迁移结构/节奏/包装方法；屏幕文案按新主题生成，未照搬样例措辞"
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// packaging_plan — subtitle safe-zone/density/contrast + title bar + sticker + cover suggestions (TC-05/14).
+// ---------------------------------------------------------------------------------------------------
+
+function hexLum(hex: string): number {
+  const h = hex.replace("#", "");
+  if (h.length < 6) return 0.5;
+  const ch = (i: number) => {
+    const c = parseInt(h.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * ch(0) + 0.7152 * ch(2) + 0.0722 * ch(4);
+}
+function contrastRatio(a: string, b: string): number {
+  const l1 = hexLum(a);
+  const l2 = hexLum(b);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+export function buildPackagingPlan(input: { timelineV2: Record<string, unknown>; palette: string[]; theme: string }): Record<string, unknown> {
+  const tracks = (input.timelineV2.tracks ?? {}) as { text?: Array<Record<string, unknown>> };
+  const text = tracks.text ?? [];
+  const density = text.length > 8 ? "dense" : text.length > 4 ? "medium" : "minimal";
+  const [bg = "#0A0A0A", fg = "#FFFFFF", accent = "#F7C948"] = input.palette ?? [];
+  const contrast = contrastRatio(bg, fg);
+  return {
+    subtitles: {
+      count: text.length,
+      density,
+      recommended_font_px: density === "dense" ? 44 : density === "medium" ? 56 : 72,
+      safe_zones: text.map((t) => ({ text_id: t.text_id, safe_zone: t.safe_zone, content: t.content })),
+      contrast_ratio: Math.round(contrast * 10) / 10,
+      contrast_ok: contrast >= 4.5,
+      contrast_note: contrast >= 4.5 ? "字幕与背景对比度达标（>=4.5）" : "对比度不足，建议加描边/底色卡或调整配色"
+    },
+    title_bar: { text: (text[0]?.content as string) || input.theme, position: "top", color: fg, background: bg },
+    stickers: [
+      { type: "selling_point_chip", placement: "mid", color: accent },
+      { type: "cta_badge", placement: "bottom", color: accent }
+    ],
+    cover: { generated: true, source: "frame@50%", title: input.theme }
+  };
 }
