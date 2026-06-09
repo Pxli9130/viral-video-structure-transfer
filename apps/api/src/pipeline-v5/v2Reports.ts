@@ -9,9 +9,26 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Asset } from "@vvst/shared";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Asset, TranscriptSegment } from "@vvst/shared";
 import { v5 } from "@vvst/shared";
 import { resolveBin } from "./renderV5.js";
+import { runPython } from "../adapters/condaPython.js";
+
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const ASR_SCRIPT = path.join(path.resolve(moduleDir, "../../../.."), "scripts", "python", "asr_faster_whisper.py");
+
+/** Local faster-whisper transcription of a video's audio (conda `viral` env, no paid API). [] on failure/silence. */
+export async function transcribeVideo(videoPath: string, model = "tiny"): Promise<TranscriptSegment[]> {
+  try {
+    const r = await runPython(ASR_SCRIPT, [videoPath, "--model", model], { timeoutMs: 120000 });
+    const parsed = JSON.parse(r.stdout || "[]");
+    return Array.isArray(parsed) ? (parsed as TranscriptSegment[]).filter((s) => typeof s?.startSec === "number" && typeof s?.endSec === "number") : [];
+  } catch {
+    return [];
+  }
+}
 
 export interface MediaProbe {
   durationSec: number | null;
@@ -405,18 +422,43 @@ export function buildBeatAlignment(capsule: v5.RemotionTemplateCapsule): Record<
 // (ffprobe) + the section structure: real voiceover -> cut on silence/sentence boundaries; none -> Q&A cards.
 // ---------------------------------------------------------------------------------------------------
 
-export function buildDialoguePlan(input: { capsule: v5.RemotionTemplateCapsule; materialAnalysis: Array<Record<string, unknown>> }): Record<string, unknown> {
-  const videoWithAudio = input.materialAnalysis.filter((m) => m.type === "video" && m.has_audio === true);
+export function buildDialoguePlan(input: { capsule: v5.RemotionTemplateCapsule; materialAnalysis: Array<Record<string, unknown>>; transcripts?: Array<{ assetId: string; segments: TranscriptSegment[] }> }): Record<string, unknown> {
   const sections = input.capsule.timingSignature.sections ?? [];
-  const safeCutPoints = sections.slice(1).map((s) => ({ at_sec: s.startSec, section: s.id, safe: true, reason: "结构 section 边界，不会打断字幕句子" }));
-  const hasVoiceover = videoWithAudio.length > 0;
+  const transcripts = (input.transcripts ?? []).filter((t) => t.segments.length > 0);
+  const hasVoiceover = transcripts.length > 0;
+
+  // With REAL transcripts: speech segments + cut-safe points in the SILENCE gaps between sentences; flag any
+  // section boundary that lands inside a spoken sentence (would cut mid-sentence).
+  const speechSegments = transcripts.flatMap((t) => t.segments.map((s) => ({ asset_id: t.assetId, start_sec: Math.round(s.startSec * 100) / 100, end_sec: Math.round(s.endSec * 100) / 100, text: s.text.trim() })));
+  const safeCutPoints: Array<Record<string, unknown>> = [];
+  const unsafeCuts: Array<Record<string, unknown>> = [];
+  if (hasVoiceover) {
+    for (const t of transcripts) {
+      const segs = [...t.segments].sort((a, b) => a.startSec - b.startSec);
+      for (let i = 0; i < segs.length - 1; i++) {
+        const gap = segs[i + 1].startSec - segs[i].endSec;
+        if (gap > 0.15) safeCutPoints.push({ at_sec: Math.round((segs[i].endSec + gap / 2) * 100) / 100, asset_id: t.assetId, safe: true, reason: `两句之间的静音间隙（${Math.round(gap * 1000)}ms），不打断句子` });
+      }
+      // section boundaries that fall inside a sentence are unsafe.
+      for (const sec of sections.slice(1)) {
+        const inside = segs.find((g) => sec.startSec > g.startSec + 0.1 && sec.startSec < g.endSec - 0.1);
+        if (inside) unsafeCuts.push({ at_sec: sec.startSec, section: sec.id, reason: `会切断正在说的一句话「${inside.text.trim().slice(0, 16)}…」，应移到句子边界` });
+      }
+    }
+  } else {
+    for (const s of sections.slice(1)) safeCutPoints.push({ at_sec: s.startSec, section: s.id, safe: true, reason: "结构 section 边界，不会打断字幕句子" });
+  }
+
   return {
     has_real_voiceover: hasVoiceover,
-    voiceover_assets: videoWithAudio.map((m) => m.asset_id),
+    asr: hasVoiceover ? "faster-whisper (local)" : "none (no audio/speech detected)",
+    voiceover_assets: transcripts.map((t) => t.assetId),
+    speech_segments: speechSegments,
     strategy: hasVoiceover
-      ? "检测到真人音轨：切点应落在静音间隙/句子边界（对音轨做 ASR 取句界），不可在一句话中间切"
+      ? "检测到真人口播：切点落在句子之间的静音间隙，绝不在一句话中间切；下面 unsafe_cuts 标出会切断句子的边界"
       : "未检测到真人口播：用问/答对话卡（Q&A 字幕卡）模拟对话结构，切点落在结构 section 边界",
     safe_cut_points: safeCutPoints,
+    unsafe_cuts: unsafeCuts,
     dialogue_cards: hasVoiceover ? [] : sections.map((s) => ({ section: s.id, role: s.role, suggestion: `${s.role} 段：以对话/字幕卡承接（问→答）` }))
   };
 }

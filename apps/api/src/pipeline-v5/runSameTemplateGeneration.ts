@@ -17,7 +17,7 @@ import { mapLimit, aigcSemaphore } from "./concurrency.js";
 import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
-import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan } from "./v2Reports.js";
+import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan, transcribeVideo } from "./v2Reports.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
@@ -917,7 +917,16 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   const similarityReport = buildSimilarityReport({ copyRisk, noCopyPassed: noCopy?.noCopyPassed ?? null, mappingV2 });
   const packagingPlan = buildPackagingPlan({ timelineV2, palette, theme: brief.theme ?? brief.prompt ?? "" });
   const beatAlignment = buildBeatAlignment(capsule);
-  const dialoguePlan = buildDialoguePlan({ capsule, materialAnalysis: material.records });
+  // Real local ASR (faster-whisper) on user videos that actually have an audio stream — gated on ffprobe
+  // has_audio so silent clips skip it. Feeds dialogue-safe cut points (don't cut mid-sentence).
+  const transcripts: Array<{ assetId: string; segments: Awaited<ReturnType<typeof transcribeVideo>> }> = [];
+  for (const m of material.records) {
+    if (m.type === "video" && m.has_audio === true && typeof m.path === "string") {
+      const segments = await transcribeVideo(m.path);
+      if (segments.length) transcripts.push({ assetId: String(m.asset_id), segments });
+    }
+  }
+  const dialoguePlan = buildDialoguePlan({ capsule, materialAnalysis: material.records, transcripts });
 
   return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2, similarityReport, packagingPlan, beatAlignment, dialoguePlan };
 }
