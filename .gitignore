@@ -50,3 +50,8 @@ marking/
 marking.zip
 # Generated effect outputs from `generate-effect-from-sample --apply` (the empty manifest stub IS committed).
 apps/api/remotion/effects/generated/*/
+baokuan_manual_test_assets/
+verify_submission/
+.tmp-verify/
+baokuan_manual_test_assets_v2/
+verify_submission.zip

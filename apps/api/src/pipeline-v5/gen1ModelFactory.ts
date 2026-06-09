@@ -11,6 +11,13 @@ export interface GeminiModelFnOptions {
   model?: string;
   timeoutMs?: number;
   temperature?: number;
+  /**
+   * Output contract. "json" (default) forces/expects raw JSON — the right shape for codegen + NL→patch.
+   * "text" asks for a raw assistant reply (no JSON mode), which is what the context-rewrite stage wants so
+   * the model can return the rewritten module as a plain fenced ```tsx block instead of having to escape a
+   * large TSX into a JSON string (a lite model frequently botches that escaping — the main rewrite failure).
+   */
+  responseFormat?: "json" | "text";
 }
 
 /**
@@ -72,6 +79,9 @@ export function createGeminiModelFn(opts: GeminiModelFnOptions = {}): Gen1ModelF
   const client = new GoogleGenAI({ apiKey });
   const model = opts.model ?? process.env.AI_GEMINI_MODEL ?? process.env.VLM_MODEL ?? "gemini-flash-latest";
   const timeoutMs = opts.timeoutMs ?? 45_000;
+  // In "text" mode we must NOT force JSON output — otherwise a prompt asking for a fenced ```tsx block
+  // conflicts with the JSON response mode and the reply becomes an unusable JSON-wrapped string.
+  const jsonMode = (opts.responseFormat ?? "json") === "json";
   return async (prompt: string): Promise<string> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -79,7 +89,7 @@ export function createGeminiModelFn(opts: GeminiModelFnOptions = {}): Gen1ModelF
       const response = await client.models.generateContent({
         model,
         contents: prompt,
-        config: { temperature: opts.temperature ?? 0.3, responseMimeType: "application/json", abortSignal: controller.signal }
+        config: { temperature: opts.temperature ?? 0.3, ...(jsonMode ? { responseMimeType: "application/json" } : {}), abortSignal: controller.signal }
       });
       return response.text ?? "";
     } finally {
@@ -95,6 +105,8 @@ export interface DoubaoModelFnOptions {
   baseUrl?: string;
   timeoutMs?: number;
   temperature?: number;
+  /** See GeminiModelFnOptions.responseFormat. "text" drops the JSON-priming system message so a fenced code-block reply isn't discouraged. */
+  responseFormat?: "json" | "text";
 }
 
 /**
@@ -110,6 +122,10 @@ export function createDoubaoModelFn(opts: DoubaoModelFnOptions = {}): Gen1ModelF
   if (!apiKey || !model) return undefined;
   const baseUrl = (opts.baseUrl ?? process.env.DOUBAO_ARK_BASE_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
   const timeoutMs = opts.timeoutMs ?? Number(process.env.DOUBAO_TIMEOUT_MS ?? 120_000);
+  const systemContent =
+    (opts.responseFormat ?? "json") === "text"
+      ? "You are a precise senior front-end engineer. Follow the user's instructions exactly, including the EXACT output format they request."
+      : "You are a precise senior front-end engineer. Follow the user's instructions exactly. When asked to return JSON, output raw valid JSON only — no markdown code fences, no commentary.";
   return async (prompt: string): Promise<string> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -120,7 +136,7 @@ export function createDoubaoModelFn(opts: DoubaoModelFnOptions = {}): Gen1ModelF
         body: JSON.stringify({
           model,
           messages: [
-            { role: "system", content: "You are a precise senior front-end engineer. Follow the user's instructions exactly. When asked to return JSON, output raw valid JSON only — no markdown code fences, no commentary." },
+            { role: "system", content: systemContent },
             { role: "user", content: prompt }
           ],
           temperature: opts.temperature ?? 0.3
@@ -141,9 +157,9 @@ export function createDoubaoModelFn(opts: DoubaoModelFnOptions = {}): Gen1ModelF
  * Ark) when DOUBAO_ARK_API_KEY + DOUBAO_ARK_MODEL are set, else falls back to Gemini. Multimodal video
  * codegen stays on Gemini (createGeminiVisionCodegenFn) — only text-to-text routes through here.
  */
-export function createTextModelFn(opts: { geminiModel?: string; timeoutMs?: number; temperature?: number } = {}): Gen1ModelFn | undefined {
+export function createTextModelFn(opts: { geminiModel?: string; timeoutMs?: number; temperature?: number; responseFormat?: "json" | "text" } = {}): Gen1ModelFn | undefined {
   return (
-    createDoubaoModelFn({ timeoutMs: opts.timeoutMs, temperature: opts.temperature }) ??
-    createGeminiModelFn({ model: opts.geminiModel, timeoutMs: opts.timeoutMs, temperature: opts.temperature })
+    createDoubaoModelFn({ timeoutMs: opts.timeoutMs, temperature: opts.temperature, responseFormat: opts.responseFormat }) ??
+    createGeminiModelFn({ model: opts.geminiModel, timeoutMs: opts.timeoutMs, temperature: opts.temperature, responseFormat: opts.responseFormat })
   );
 }

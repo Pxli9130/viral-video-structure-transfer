@@ -48,7 +48,8 @@ Sample video → deterministic evidence → deterministic RemotionTemplateCapsul
 ```
 
 **Gen1-Pro vision capsule (primary, `runGen1CapsuleGemini`).** A single best-Pro Gemini call
-(`GEMINI_GEN1_MODEL`, default `gemini-3.1-pro-preview`) watches the entire source video and returns a
+(HYBRID by source length: short → `GEMINI_GEN1_MODEL`=`gemini-3-flash-preview`, long/chunked →
+`GEMINI_GEN1_MODEL_LONG`=`gemini-3.1-pro-preview`, threshold `GEMINI_GEN1_PRO_MIN_SEC=34`) watches the entire source video and returns a
 complete props-driven `RemotionTemplateCapsule` that re-creates the source's structure/timing/layout/
 motion/transitions/typography (react + remotion + @remotion/three for real 3D). **The returned code is
 canonical** — `mergeCapsule` keeps `codeBundle` byte-for-byte and only fills genuinely-missing metadata,
@@ -87,7 +88,8 @@ type GenerationMode = "same_template" | "modify_template" | "mix_elements";
 
 ```
 load RemotionTemplateCapsule (options.templateCapsuleId or latest)
-  → CONTEXT-REWRITE (AI capsules): a Pro call re-themes on-screen text + accent colours to the new theme,
+  → CONTEXT-REWRITE (AI capsules): a TEXT-TO-TEXT call (Doubao-Seed-2.0-lite via `createTextModelFn`)
+       re-themes on-screen text + accent colours to the new theme,
        STRUCTURE-PRESERVING (per chunk file for stitched capsules). Honours source background lightness
        (sourceIsLight) so a light/white source never re-themes to a dark background.
   → read slotSchema → match user target assets → gap report
@@ -119,7 +121,9 @@ compositor `frame_cache` panics under load; renders + render-probes retry once o
 global `aigcSemaphore` (`AIGC_GLOBAL_CONCURRENCY=8`) bounds in-flight Seedance/Gemini calls (anti-429).
 Per-chunk asset keys are namespaced `c{i}__<key>` (parent `chunkAssets()` strips the prefix); long ffmpeg
 splits/audio-mux are async `spawn` (never block the event loop while a concurrent render fetches assets).
-**Required deps:** `@remotion/three@4.0.341` + `@react-three/fiber@8.15.19` + `three@0.176.0` — if
+**Required deps:** `@remotion/three@4.0.341` + `@react-three/fiber@^9.6.1` + `three@0.176.0` — fiber MUST
+match the React version the render bundle resolves (this repo's web uses React 19 → fiber 9.x; fiber 8 +
+React 19 throws `ReactCurrentBatchConfig` and the 3D capsule falls back to deterministic) — if
 `@remotion/three` is missing, any AI capsule that builds real 3D fails to render → deterministic fallback.
 
 If `aigcGapFill.mode = "off"` and required slots remain missing → **readiness is downgraded to
@@ -148,10 +152,28 @@ GET  /api/v5/templates/:id        → full capsule
 POST /api/v5/generations          → default generationMode=same_template; returns
    { generationMode, templateCapsuleId, usedTemplateCode, usedFallbackRenderer, finalVideoUrl,
      templateInstance, finalProgram, generatedAssets, gapReport, noCopy, scorecard }
+POST /api/v5/generations/plan     → same as /generations but NEVER renders (dry-run plan only)
 POST /api/v5/generations/:id/revise  → modify_template: patch-first re-theme/re-copy of a prior
    same_template generation. body { patch: { theme?, palette?, copyOverrides? } } → a new
    modify_template generation (reuses the prior visuals; re-renders the same template code).
+POST /api/v5/generations/:id/revise-natural-language  → one-line instruction ("开头更抓人") →
+   Doubao structured-output → TemplatePatchSet → revise (NL never edits code directly).
+GET  /api/v5/generations/:id[/scorecard]   → stored result / scorecard
+GET  /api/v5/generations/:id/transfer-trace  → ONE-STOP 迁移可视化 trace: source structure
+   (sceneRecipes/phases/keyFrames) + knowledge-manifest + targetBrief + targetAssetProfiles +
+   slotMapping (per-slot source/fill-strategy/reason) + gapReport + fillActions + scorecard + outputVideoUrl
+GET  /api/v5/jobs/:jobId/transfer-trace      → same trace keyed by learn job
+GET  /api/v5/samples/:id/{evidence,reconstruction,elements}  → stored learn artifacts
+GET  /api/v5/assets/:id/media               → serve an asset's media (for upload preview/analysis)
+GET  /api/v5/kb/elements[?kind&tag&q]  ·  POST /api/v5/kb/search  ·  GET /api/v5/kb/decisions
+   → two-level KB: Level-1 template capsules + Level-2 atomic elements (16 kinds) browse/search/decisions
 ```
+
+**Multi-version** (多版本): the dashboard fans out several `/generations` over the SAME capsule with
+different `brief.variant` presets (high_click / high_conversion / high_rhythm / high_quality) so versions
+differ by an explicit strategy. **Knowledge-manifest** (`knowledge_manifest.seed.json`, per learned sample):
+a structured seed — `structureHypothesis` (phases: role/intent/visualMethod/beats), motionMotifs,
+transitions, typographyAnimations, and `assetSlots` — written next to the capsule for KB curation + trace.
 
 **Scorecard honesty (same_template).** The scorecard is fed the real render facts + a real cv2/librosa
 **no-copy scan** (`runNoCopyScan` → `no-copy-scan.json`), and emits same_template-mapped canonical gates
@@ -178,8 +200,17 @@ apps/api/src/pipeline-v5/postRenderChecks.ts               — colour-fidelity (
 apps/api/src/pipeline-v5/concurrency.ts                     — mapLimit + Semaphore + shared render/aigc semaphores + RENDER_TIMEOUT_MS
 apps/api/src/pipeline-v5/runSameTemplateGeneration.ts       — same_template + modify_template orchestrator (context-rewrite, AIGC fill chain, post-render passes)
 packages/shared/src/engine/aigcMaterialProviders.ts        — seedance_2_0 (primary video) + happyhorse_r2v (DashScope backup) + google_gemini_image
-apps/api/src/services/knowledgeBaseV5.ts                    — Level-1 capsule storage
+apps/api/src/adapters/googleAudio.ts                        — Google Lyria music bed (lyria-3-clip-preview; segmented + crossfade)
+apps/api/src/pipeline-v5/gen1ModelFactory.ts                — model factories: createTextModelFn (text→Doubao), createGeminiVisionCodegenFn (vision→Gemini)
+apps/api/src/pipeline-v5/knowledgeManifest.ts               — per-sample knowledge-manifest seed (structureHypothesis / assetSlots)
+apps/api/src/pipeline-v5/runExtractElements.ts              — Level-2 atomic elements (16 kinds) extracted + curated into the KB
+apps/api/src/pipeline-v5/runGen2RemotionCodegen.ts          — Gen2 (mix_elements) compose → Remotion capsule codegen
+apps/api/src/services/knowledgeBaseV5.ts                    — two-level KB: Level-1 capsules + Level-2 elements (browse/search/curate)
 ```
+
+> Text-to-text routing: every text-to-text LLM task (context-rewrite, video-description, NL→patch,
+> text-codegen fallback, Gen1/Gen2 text) goes through **Doubao-Seed-2.0-lite** via `createTextModelFn`
+> (Volcengine Ark, `ARK_API_KEY`/`ARK_MODEL`). Only the multimodal Gen1 vision codegen stays on Gemini.
 
 **Web entry.** The spec_v5.1 dashboard (`apps/web/src/v5/V5Dashboard.tsx`) is now the **default** web
 entry; the V4 app stays reachable at `#v4`. The dashboard has a template library with a "用此模板生成"

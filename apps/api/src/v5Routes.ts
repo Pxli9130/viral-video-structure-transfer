@@ -7,7 +7,7 @@
 //   POST /api/v5/generations              { brief, targetAssetIds, selectedElementIds?, options }
 //   GET  /api/v5/generations/:id          -> stored generation result (+ scorecard)
 
-import { promises as fs } from "node:fs";
+import { promises as fs, statSync } from "node:fs";
 import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import type { Asset } from "@vvst/shared";
@@ -28,6 +28,7 @@ import {
   runLearnSampleV5,
   runNoCopyScan,
   runTargetAssetAnalysisMany,
+  enrichProfilesWithVlm,
   runSameTemplateGeneration,
   runScorecardV5,
   toEvidenceTimelineV5,
@@ -50,6 +51,11 @@ const fail = (res: Response, code: number, message: string) => res.status(code).
 export function createV5Router(deps: V5RouterDeps): Router {
   const router = Router();
   const kb = new KnowledgeBaseV5(deps.storageRoot);
+  // VLM (vision) over USER-uploaded assets — opt-in (ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1) + needs a
+  // GEMINI key. Null => heuristic-only profiles (graceful). Doubao is text-only so can't do this.
+  const userAssetVisionFn = String(process.env.ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS ?? "") === "1"
+    ? createGeminiVisionFn({ model: process.env.VLM_MODEL }) ?? null
+    : null;
   const v5Dir = path.join(deps.generatedDir, "v5");
   const learnDir = (assetId: string) => path.join(v5Dir, "learn", assetId);
   const genDir = (genId: string) => path.join(v5Dir, "generations", genId);
@@ -221,7 +227,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       ?? [];
     const targetAssetIds = Array.from(new Set(slotBindings.map((b) => b.assetId).filter((id): id is string => Boolean(id))));
     const targetAssets = (await getAssets()).filter((a) => targetAssetIds.includes(a.id));
-    const targetProfiles = runTargetAssetAnalysisMany(targetAssets);
+    const targetProfiles = await enrichProfilesWithVlm(runTargetAssetAnalysisMany(targetAssets), targetAssets, userAssetVisionFn);
     const slotById = new Map((capsule?.slotSchema ?? []).map((s) => [s.id, s]));
     const gapReport = generation.gapReport ?? await readJsonIf(path.join(genDir(generationId), "gap-report.json"));
     const scorecard = generation.scorecard ?? await readJsonIf(path.join(genDir(generationId), "scorecard.json"));
@@ -292,9 +298,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
       },
       result: {
         outputVideoUrl: generation.finalVideoUrl,
+        coverUrl: (generation as { coverUrl?: string }).coverUrl,
         scorecard,
         renderParams: (generation as { renderProps?: unknown }).renderProps ?? (generation.finalProgram as { renderRecipe?: unknown } | undefined)?.renderRecipe,
-        previewFrames: []
+        previewFrames: (generation as { coverUrl?: string }).coverUrl ? [{ label: "cover", url: (generation as { coverUrl?: string }).coverUrl }] : []
       },
       warnings: (generation as { warnings?: string[] }).warnings ?? []
     };
@@ -313,9 +320,17 @@ export function createV5Router(deps: V5RouterDeps): Router {
   // ---- Template capsules (V5.1 — the default generation object) ----
   router.get("/templates", (req, res) => {
     const list = kb.listTemplateCapsules({ sourceSampleId: req.query.sourceSampleId as string | undefined, projectId: req.query.projectId as string | undefined, tag: req.query.tag as string | undefined, q: req.query.q as string | undefined });
-    // metadata only (omit code bundle for the list)
+    // metadata only (omit code bundle for the list). createdAt = mtime of the learned capsule file on disk
+    // (works for old + new capsules without a stored timestamp), so the UI can label by source video + time.
+    const capsuleMtime = (sourceSampleId: string): string | undefined => {
+      try {
+        return statSync(path.join(learnDir(sourceSampleId), "remotion-template-capsule.json")).mtime.toISOString();
+      } catch {
+        return undefined;
+      }
+    };
     return ok(res, {
-      templates: list.map((c) => ({ id: c.id, sourceSampleId: c.sourceSampleId, projectId: c.projectId, name: c.name, description: c.description, tags: c.tags, slotSchema: c.slotSchema, timingSignature: c.timingSignature, motionSignature: c.motionSignature, quality: c.quality }))
+      templates: list.map((c) => ({ id: c.id, sourceSampleId: c.sourceSampleId, projectId: c.projectId, name: c.name, description: c.description, tags: c.tags, slotSchema: c.slotSchema, timingSignature: c.timingSignature, motionSignature: c.motionSignature, quality: c.quality, createdAt: capsuleMtime(c.sourceSampleId) }))
     });
   });
 
@@ -359,6 +374,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       usedTemplateCode: st.finalProgram.renderMode === "bespoke_codegen",
       usedFallbackRenderer: st.finalProgram.fallbackUsed === true,
       finalVideoUrl: st.finalVideoUrl,
+      coverUrl: st.coverUrl,
       templateInstance: st.instance,
       finalProgram: st.finalProgram,
       generatedAssets: st.generatedAssets,
@@ -392,6 +408,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
     const projectId: string = body.projectId ?? "proj_v5";
     const generationId: string = body.generationId ?? `gen_${Date.now().toString(36)}`;
     const targetAssetIds: string[] = Array.isArray(body.targetAssetIds) ? body.targetAssetIds : [];
+    // Explicit per-slot asset binding from the gap radar (slotId -> assetId).
+    const slotAssignments: Record<string, string> | undefined =
+      body.slotAssignments && typeof body.slotAssignments === "object" && !Array.isArray(body.slotAssignments)
+        ? (Object.fromEntries(Object.entries(body.slotAssignments as Record<string, unknown>).filter(([, v]) => typeof v === "string")) as Record<string, string>)
+        : undefined;
     const selectedElementIds: string[] | undefined = Array.isArray(body.selectedElementIds) ? body.selectedElementIds : undefined;
     const options = body.options ?? {};
 
@@ -419,7 +440,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       const sampleVideoPath = allAssets.find((a) => a.id === capsule.sourceSampleId)?.path;
       // Context-modification is a TEXT-TO-TEXT task -> Doubao (Volcengine Ark) when configured, else
       // Gemini. Opt out with options.rewriteContext=false.
-      const rewriteModel = reqOpts.rewriteContext === false ? null : createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000) }) ?? null;
+      const rewriteModel = reqOpts.rewriteContext === false ? null : createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000), responseFormat: "text" }) ?? null;
       const st = await runSameTemplateGeneration({
         projectId,
         generationId,
@@ -433,7 +454,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
         sampleVideoPath,
         env: process.env,
         doRender: doRender && (reqOpts.autoRender ?? true) !== false,
-        rewriteModel
+        rewriteModel,
+        assetVisionFn: userAssetVisionFn,
+        slotAssignments
       });
       return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST);
     }
@@ -620,6 +643,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
     const stOptions: v5.GenerationOptionsV5 = { ...v5.DEFAULT_GENERATION_OPTIONS_V5, generationMode: "modify_template" };
     const sampleVideoPath = (await getAssets()).find((a) => a.id === capsule.sourceSampleId)?.path;
     const port = Number(process.env.APP_PORT ?? 3000);
+    // Re-rewrite the capsule code (Doubao) only when the patch carries creative knobs (rhythm/text/packaging)
+    // — a pure theme/copy/palette revise stays fast (prop-only reuse of prior visuals).
+    const patchHasKnobs = Boolean(patch.rhythm || patch.textDensity || patch.motionIntensity || patch.paletteMood || patch.hookRatio != null || patch.ctaAdvanceSec != null);
+    const reviseRewriteModel = patchHasKnobs ? createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000), responseFormat: "text" }) ?? null : null;
     const st = await runSameTemplateGeneration({
       projectId: String(extra.projectId ?? "proj_v5_ui"),
       generationId,
@@ -633,7 +660,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
       sampleVideoPath,
       env: process.env,
       doRender: true,
-      reviseFrom: { instance, patch }
+      reviseFrom: { instance, patch },
+      rewriteModel: reviseRewriteModel
     });
     return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, { revisedFrom: baseGenerationId, patch, ...extra });
   };
@@ -648,7 +676,12 @@ export function createV5Router(deps: V5RouterDeps): Router {
       try {
         const raw = await model(
           `Convert this natural-language video revision into a safe TemplatePatchSet. Do not edit code. ` +
-          `Allowed JSON keys: theme?: string, palette?: string[], copyOverrides?: object. ` +
+          `Allowed JSON keys: theme?: string, palette?: string[], copyOverrides?: object, ` +
+          `rhythm?: "aggressive"|"balanced"|"slow", textDensity?: "dense"|"medium"|"minimal", ` +
+          `motionIntensity?: "high"|"medium"|"low", hookRatio?: number(0.5-1.2), ctaAdvanceSec?: number(0-2), ` +
+          `paletteMood?: "bold"|"premium"|"clean"|"energetic". ` +
+          `Map intent: "更抓人/开头更冲/hook"->{rhythm:"aggressive",hookRatio:0.6}; "减少字幕/精简"->{textDensity:"minimal"}; ` +
+          `"更高级/更质感/premium"->{paletteMood:"premium",motionIntensity:"low",rhythm:"slow"}; "节奏更快/更燃"->{rhythm:"aggressive",motionIntensity:"high"}; "CTA提前/把购买信息提前"->{ctaAdvanceSec:1}. ` +
           `Existing theme: ${JSON.stringify(instance.creativeBrief.theme ?? instance.creativeBrief.prompt ?? "")}. ` +
           `Existing copy keys: ${JSON.stringify(Object.keys(copy))}. ` +
           `Instruction: ${instructionText}. ` +
@@ -657,12 +690,20 @@ export function createV5Router(deps: V5RouterDeps): Router {
         const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
         if (s >= 0 && e > s) {
           const parsed = JSON.parse(raw.slice(s, e + 1)) as { patch?: v5.TemplatePatchSet; patchNotes?: string[] };
+          const pp = parsed.patch ?? {};
+          const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | undefined => (typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : undefined);
           const patch: v5.TemplatePatchSet = {
-            ...(typeof parsed.patch?.theme === "string" ? { theme: parsed.patch.theme } : {}),
-            ...(Array.isArray(parsed.patch?.palette) ? { palette: parsed.patch.palette.map(String).slice(0, 6) } : {}),
-            ...(parsed.patch?.copyOverrides && typeof parsed.patch.copyOverrides === "object" ? { copyOverrides: parsed.patch.copyOverrides } : {})
+            ...(typeof pp.theme === "string" ? { theme: pp.theme } : {}),
+            ...(Array.isArray(pp.palette) ? { palette: pp.palette.map(String).slice(0, 6) } : {}),
+            ...(pp.copyOverrides && typeof pp.copyOverrides === "object" ? { copyOverrides: pp.copyOverrides } : {}),
+            ...(oneOf(pp.rhythm, ["aggressive", "balanced", "slow"] as const) ? { rhythm: pp.rhythm } : {}),
+            ...(oneOf(pp.textDensity, ["dense", "medium", "minimal"] as const) ? { textDensity: pp.textDensity } : {}),
+            ...(oneOf(pp.motionIntensity, ["high", "medium", "low"] as const) ? { motionIntensity: pp.motionIntensity } : {}),
+            ...(oneOf(pp.paletteMood, ["bold", "premium", "clean", "energetic"] as const) ? { paletteMood: pp.paletteMood } : {}),
+            ...(typeof pp.hookRatio === "number" ? { hookRatio: Math.max(0.5, Math.min(1.2, pp.hookRatio)) } : {}),
+            ...(typeof pp.ctaAdvanceSec === "number" ? { ctaAdvanceSec: Math.max(0, Math.min(2, pp.ctaAdvanceSec)) } : {})
           };
-          if (patch.theme || patch.palette || patch.copyOverrides) return { patch, patchNotes: Array.isArray(parsed.patchNotes) ? parsed.patchNotes.map(String).slice(0, 8) : ["structured TemplatePatchSet generated"], modelUsed: true, warnings };
+          if (Object.keys(patch).length) return { patch, patchNotes: Array.isArray(parsed.patchNotes) ? parsed.patchNotes.map(String).slice(0, 8) : ["structured TemplatePatchSet generated"], modelUsed: true, warnings };
         }
       } catch (err) {
         warnings.push(`natural-language model parse failed: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`);

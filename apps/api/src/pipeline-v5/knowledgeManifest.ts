@@ -222,7 +222,7 @@ export function buildKnowledgeManifestCandidates(input: {
     entryFile: templateCapsule.codeBundle.entryFile,
     modules: manifest.remotionModules,
     remotionCodeHash: manifest.remotionCodeHash,
-    retrievalText: `${templateCapsule.name} ${templateCapsule.description ?? ""} ${templateCapsule.motionSignature.motifs.join(" ")}`
+    retrievalText: `${templateCapsule.name} ${templateCapsule.description ?? ""} ${(templateCapsule.motionSignature?.motifs ?? []).join(" ")}`
   };
   out.push({
     id: candidateId("manifest_remotion", manifest.sourceSampleId, snippetPayload),
@@ -299,7 +299,7 @@ export function buildKnowledgeManifestCandidates(input: {
       recipe,
       capsuleId: manifest.templateCapsuleId,
       remotionCodeHash: manifest.remotionCodeHash,
-      retrievalText: `${recipe.kind} bpm ${recipe.bpm ?? "n/a"} ${recipe.mood.join(" ")} ${(recipe.cuePoints ?? []).map((c) => `${c.type}@${c.t}`).join(" ")} energy_points ${(recipe.energyCurve ?? []).length}`
+      retrievalText: `${recipe.kind} bpm ${recipe.bpm ?? "n/a"} ${(recipe.mood ?? []).join(" ")} ${(recipe.cuePoints ?? []).map((c) => `${c.type}@${c.t}`).join(" ")} energy_points ${(recipe.energyCurve ?? []).length}`
     };
     out.push({
       id: candidateId("manifest_audio", manifest.sourceSampleId, payload),

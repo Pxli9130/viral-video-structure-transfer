@@ -19,6 +19,7 @@ export * from "./creativeEffectAttach.js";
 export * from "./generatedEffectProposal.js";
 export * from "./providerPolicy.js";
 export * from "./versionStrategies.js";
+export * from "./creativeKnobs.js";
 export * from "./recipeLint.js";
 export * from "./providerPromptCompiler.js";
 export * from "./gapRepairRanker.js";
