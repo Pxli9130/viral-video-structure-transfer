@@ -372,3 +372,102 @@ export function buildPackagingPlan(input: { timelineV2: Record<string, unknown>;
     cover: { generated: true, source: "frame@50%", title: input.theme }
   };
 }
+
+// ---------------------------------------------------------------------------------------------------
+// beat_alignment_report — are the structure transitions near the (learned) beat grid? (TC-10)
+// ---------------------------------------------------------------------------------------------------
+
+export function buildBeatAlignment(capsule: v5.RemotionTemplateCapsule): Record<string, unknown> {
+  const sections = capsule.timingSignature.sections ?? [];
+  const allBeats = [...new Set(sections.flatMap((s) => s.internalBeats ?? []))].sort((a, b) => a - b);
+  const bpm = (capsule.audioRecipes ?? [])[0]?.bpm ?? null;
+  const transitions = sections.slice(1).map((s) => ({ section: s.id, at_sec: s.startSec }));
+  const TOL = 0.12;
+  const aligned = transitions.map((t) => {
+    if (!allBeats.length) return { section: t.section, at_sec: t.at_sec, nearest_beat_sec: null, offset_ms: null, aligned: false };
+    const nearest = allBeats.reduce((best, b) => (Math.abs(b - t.at_sec) < Math.abs(best - t.at_sec) ? b : best), allBeats[0]);
+    const offsetMs = Math.round((t.at_sec - nearest) * 1000);
+    return { section: t.section, at_sec: t.at_sec, nearest_beat_sec: nearest, offset_ms: offsetMs, aligned: Math.abs(t.at_sec - nearest) <= TOL };
+  });
+  return {
+    bpm,
+    beat_count: allBeats.length,
+    transition_count: transitions.length,
+    aligned_count: aligned.filter((a) => a.aligned).length,
+    tolerance_ms: TOL * 1000,
+    transitions: aligned,
+    note: "结构转场与学习到的节拍栅格的对齐情况；|offset| <= 120ms 视为对齐，其余为（可有意的）偏移"
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// dialogue_plan — cut-safe plan for dialogue/voiceover material (TC-06). Grounded in real has_audio facts
+// (ffprobe) + the section structure: real voiceover -> cut on silence/sentence boundaries; none -> Q&A cards.
+// ---------------------------------------------------------------------------------------------------
+
+export function buildDialoguePlan(input: { capsule: v5.RemotionTemplateCapsule; materialAnalysis: Array<Record<string, unknown>> }): Record<string, unknown> {
+  const videoWithAudio = input.materialAnalysis.filter((m) => m.type === "video" && m.has_audio === true);
+  const sections = input.capsule.timingSignature.sections ?? [];
+  const safeCutPoints = sections.slice(1).map((s) => ({ at_sec: s.startSec, section: s.id, safe: true, reason: "结构 section 边界，不会打断字幕句子" }));
+  const hasVoiceover = videoWithAudio.length > 0;
+  return {
+    has_real_voiceover: hasVoiceover,
+    voiceover_assets: videoWithAudio.map((m) => m.asset_id),
+    strategy: hasVoiceover
+      ? "检测到真人音轨：切点应落在静音间隙/句子边界（对音轨做 ASR 取句界），不可在一句话中间切"
+      : "未检测到真人口播：用问/答对话卡（Q&A 字幕卡）模拟对话结构，切点落在结构 section 边界",
+    safe_cut_points: safeCutPoints,
+    dialogue_cards: hasVoiceover ? [] : sections.map((s) => ({ section: s.id, role: s.role, suggestion: `${s.role} 段：以对话/字幕卡承接（问→答）` }))
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// structure arbitration — choose ONE base structure among several reference capsules + explain the choice
+// (selected vs rejected, and which pacing/audio is borrowed from a runner-up). (TC-01/02/11)
+// ---------------------------------------------------------------------------------------------------
+
+const ROLES = ["hook", "benefit", "proof", "cta"];
+
+function scoreCapsule(c: v5.RemotionTemplateCapsule, brief: { theme?: string; sellingPoints?: string[] }): { score: number; roleCoverage: string[]; slotCount: number; motifs: number } {
+  const roles = new Set((c.timingSignature.sections ?? []).map((s) => String(s.role)));
+  const roleCoverage = ROLES.filter((r) => roles.has(r));
+  const slotCount = c.slotSchema?.length ?? 0;
+  const motifs = c.motionSignature?.motifs?.length ?? 0;
+  const briefText = `${brief.theme ?? ""} ${(brief.sellingPoints ?? []).join(" ")}`.toLowerCase();
+  const tagHit = (c.tags ?? []).filter((t) => briefText.includes(String(t).toLowerCase())).length;
+  const score = roleCoverage.length * 3 + Math.min(slotCount, 12) * 0.5 + motifs * 0.5 + tagHit * 2 + (c.quality?.renderPreviewPassed ? 2 : 0);
+  return { score: Math.round(score * 10) / 10, roleCoverage, slotCount, motifs };
+}
+
+function avgSectionSec(c: v5.RemotionTemplateCapsule): number {
+  const s = c.timingSignature.sections ?? [];
+  return s.length ? (c.timingSignature.durationSec ?? 0) / s.length : 0;
+}
+
+export interface ArbitrationResult {
+  selectedCapsuleId: string;
+  report: Record<string, unknown>;
+}
+
+export function arbitrateStructure(capsules: v5.RemotionTemplateCapsule[], brief: { theme?: string; sellingPoints?: string[]; variant?: string }): ArbitrationResult {
+  const scored = capsules.map((c) => ({ capsule: c, ...scoreCapsule(c, brief) })).sort((a, b) => b.score - a.score);
+  const winner = scored[0];
+  // borrow pacing from a runner-up when the brief wants a slower/premium feel and a runner-up is meaningfully slower.
+  const wantSlow = brief.variant === "high_quality";
+  let borrowed: Record<string, unknown> | null = null;
+  if (wantSlow && scored.length > 1) {
+    const slower = scored.slice(1).find((s) => avgSectionSec(s.capsule) > avgSectionSec(winner.capsule) * 1.15);
+    if (slower) borrowed = { from: slower.capsule.id, what: "pacing/slow empty-shot timing", reason: "目标偏高质感/慢节奏，借用该样例更慢的段落时长作为开头/结尾留白参考" };
+  }
+  return {
+    selectedCapsuleId: winner.capsule.id,
+    report: {
+      candidates: scored.map((s) => ({ capsuleId: s.capsule.id, name: s.capsule.name, sourceSampleId: s.capsule.sourceSampleId, score: s.score, role_coverage: s.roleCoverage, slot_count: s.slotCount, motifs: s.motifs })),
+      selected: winner.capsule.id,
+      selection_reason: `选中结构最完整、与新主题最契合的样例（role 覆盖 ${winner.roleCoverage.join("/")}，槽位 ${winner.slotCount}，综合分 ${winner.score}）`,
+      rejected: scored.slice(1).map((s) => ({ capsuleId: s.capsule.id, reason: `综合分 ${s.score} 低于选中项；结构/契合度较弱` })),
+      borrowed: borrowed ? [borrowed] : [],
+      note: "多参考结构仲裁：以单一最佳结构为基底，必要时借用次优样例的节奏/留白；不机械拼接每个样例"
+    }
+  };
+}

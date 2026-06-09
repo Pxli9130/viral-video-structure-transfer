@@ -15,6 +15,7 @@ import { v5 } from "@vvst/shared";
 import { analyzeEvidenceTimeline } from "./adapters/evidenceTimeline.js";
 import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
+  arbitrateStructure,
   buildV5RenderInputProps,
   buildEditTrace,
   createDoubaoModelFn,
@@ -303,6 +304,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
         mapping: generation.mappingV2 ?? (await readJsonIf(path.join(genDir(generationId), "mapping-v2.json"))) ?? [],
         similarityReport: generation.similarityReport ?? (await readJsonIf(path.join(genDir(generationId), "similarity-report.json"))),
         packagingPlan: generation.packagingPlan ?? (await readJsonIf(path.join(genDir(generationId), "packaging-plan.json"))),
+        beatAlignment: generation.beatAlignment ?? (await readJsonIf(path.join(genDir(generationId), "beat-alignment.json"))),
+        dialoguePlan: generation.dialoguePlan ?? (await readJsonIf(path.join(genDir(generationId), "dialogue-plan.json"))),
         editTrace: generation.editTrace ?? (await readJsonIf(path.join(genDir(generationId), "edit-trace.json")))
       },
       result: {
@@ -404,6 +407,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
       mappingV2: st.mappingV2,
       similarityReport: st.similarityReport,
       packagingPlan: st.packagingPlan,
+      beatAlignment: st.beatAlignment,
+      dialoguePlan: st.dialoguePlan,
       ...(editTrace ? { editTrace } : {}),
       warnings: st.warnings,
       ...extra
@@ -418,6 +423,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
       fs.writeFile(path.join(outDirST, "mapping-v2.json"), JSON.stringify(st.mappingV2, null, 2)),
       fs.writeFile(path.join(outDirST, "similarity-report.json"), JSON.stringify(st.similarityReport, null, 2)),
       fs.writeFile(path.join(outDirST, "packaging-plan.json"), JSON.stringify(st.packagingPlan, null, 2)),
+      fs.writeFile(path.join(outDirST, "beat-alignment.json"), JSON.stringify(st.beatAlignment, null, 2)),
+      fs.writeFile(path.join(outDirST, "dialogue-plan.json"), JSON.stringify(st.dialoguePlan, null, 2)),
       ...(editTrace ? [fs.writeFile(path.join(outDirST, "edit-trace.json"), JSON.stringify(editTrace, null, 2))] : []),
       fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
     ]);
@@ -464,8 +471,24 @@ export function createV5Router(deps: V5RouterDeps): Router {
         aigcGapFill: { ...v5.DEFAULT_GENERATION_OPTIONS_V5.aigcGapFill, ...(reqOpts.aigcGapFill ?? {}) },
         fallbackPolicy: { ...v5.DEFAULT_GENERATION_OPTIONS_V5.fallbackPolicy, ...(reqOpts.fallbackPolicy ?? {}) }
       };
-      const capsule = stOptions.templateCapsuleId ? kb.getTemplateCapsule(stOptions.templateCapsuleId) : kb.latestTemplateCapsule();
+      // Multi-reference structure arbitration (TC-01/02/11): when several reference capsules are supplied,
+      // pick the single best base structure and explain selected-vs-rejected + any borrowed pacing.
+      const referenceCapsuleIds: string[] = Array.isArray(reqOpts.referenceCapsuleIds) ? reqOpts.referenceCapsuleIds.filter((x: unknown): x is string => typeof x === "string") : [];
+      let structureArbitration: Record<string, unknown> | undefined;
+      let capsule: v5.RemotionTemplateCapsule | undefined;
+      if (referenceCapsuleIds.length > 1) {
+        const refCapsules = referenceCapsuleIds.map((id) => kb.getTemplateCapsule(id)).filter((c): c is v5.RemotionTemplateCapsule => Boolean(c));
+        if (refCapsules.length > 1) {
+          const arb = arbitrateStructure(refCapsules, { theme: brief.theme, sellingPoints: brief.sellingPoints, variant: brief.variant });
+          structureArbitration = arb.report;
+          capsule = refCapsules.find((c) => c.id === arb.selectedCapsuleId) ?? refCapsules[0];
+        } else {
+          capsule = refCapsules[0];
+        }
+      }
+      capsule ??= stOptions.templateCapsuleId ? kb.getTemplateCapsule(stOptions.templateCapsuleId) : kb.latestTemplateCapsule();
       if (!capsule) return fail(res, 400, "no template capsule available; run /learn-samples first (or pass options.templateCapsuleId)");
+      if (structureArbitration) { await fs.mkdir(outDirST, { recursive: true }); await fs.writeFile(path.join(outDirST, "structure-arbitration.json"), JSON.stringify(structureArbitration, null, 2)).catch(() => {}); }
       const port = Number(process.env.APP_PORT ?? 3000);
       const sampleVideoPath = allAssets.find((a) => a.id === capsule.sourceSampleId)?.path;
       // Context-modification is a TEXT-TO-TEXT task -> Doubao (Volcengine Ark) when configured, else
@@ -492,7 +515,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         assetVisionFn: userAssetVisionFn,
         slotAssignments
       });
-      return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST);
+      return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, structureArbitration ? { structureArbitration } : {});
     }
 
     const allElements = kb.list();

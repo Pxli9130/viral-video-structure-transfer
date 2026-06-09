@@ -37,6 +37,6 @@ export { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsu
 export type { CapsuleStillResult } from "./renderTemplateCapsule.js";
 export { runSameTemplateGeneration } from "./runSameTemplateGeneration.js";
 export type { SameTemplateInput, SameTemplateResult } from "./runSameTemplateGeneration.js";
-export { buildEditTrace, timelineHash } from "./v2Reports.js";
+export { buildEditTrace, timelineHash, arbitrateStructure } from "./v2Reports.js";
 export { runNoCopyScan } from "./runNoCopyScan.js";
 export type { NoCopyScanOptions } from "./runNoCopyScan.js";

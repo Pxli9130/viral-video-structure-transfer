@@ -17,7 +17,7 @@ import { mapLimit, aigcSemaphore } from "./concurrency.js";
 import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
-import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan } from "./v2Reports.js";
+import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan } from "./v2Reports.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
@@ -224,6 +224,9 @@ export interface SameTemplateResult {
   /** v2 explainability artifacts (no-copy similarity check + packaging/subtitle-safe-zone plan). */
   similarityReport: Record<string, unknown>;
   packagingPlan: Record<string, unknown>;
+  /** v2 audio/dialogue artifacts (beat-alignment of transitions + dialogue-safe cut plan). */
+  beatAlignment: Record<string, unknown>;
+  dialoguePlan: Record<string, unknown>;
 }
 
 interface GeneratedMusicBed {
@@ -913,6 +916,8 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   const mappingV2 = buildMappingV2({ capsule, slotBindings, referenceVideoName, copyRisk });
   const similarityReport = buildSimilarityReport({ copyRisk, noCopyPassed: noCopy?.noCopyPassed ?? null, mappingV2 });
   const packagingPlan = buildPackagingPlan({ timelineV2, palette, theme: brief.theme ?? brief.prompt ?? "" });
+  const beatAlignment = buildBeatAlignment(capsule);
+  const dialoguePlan = buildDialoguePlan({ capsule, materialAnalysis: material.records });
 
-  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2, similarityReport, packagingPlan };
+  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2, similarityReport, packagingPlan, beatAlignment, dialoguePlan };
 }
