@@ -135,11 +135,25 @@ export function extractRewrittenTsx(raw: string, expectExport?: string | null): 
 
 const PARSE_REPAIR_HINT = "Your previous reply was not a single ```tsx fenced code block — reply with ONLY the complete component inside one ```tsx ... ``` block, keeping the SAME export name, no prose, no JSON, no extra code blocks.";
 
+/** Readable on-screen strings baked into the ORIGINAL ad code (CJK runs + ALL-CAPS latin phrases), comments
+ *  stripped. Used to VERIFY a rewrite actually replaced the source's words instead of echoing them back — a
+ *  rewrite that compiles+renders but still carries the source headlines is NOT a real theme transfer. */
+export function sourceReadableStrings(code: string): string[] {
+  const noComments = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const set = new Set<string>();
+  for (const m of noComments.matchAll(/[一-鿿]{2,}/g)) set.add(m[0]);
+  for (const m of noComments.matchAll(/\b[A-Z][A-Z0-9]{2,}(?:\s+[A-Z0-9]{2,})*\b/g)) set.add(m[0]);
+  return [...set].filter((s) => s.length >= 2);
+}
+
 export async function runCapsuleContextRewrite(input: {
   capsule: v5.RemotionTemplateCapsule;
   theme: string;
   sellingPoints: string[];
   model: Gen1ModelFn;
+  /** Optional second model tried when `model` (e.g. a lite Doubao) can't produce a usable rewrite — typically
+   *  Gemini, which is far more reliable at faithfully re-theming a whole single-file capsule. */
+  fallbackModel?: Gen1ModelFn | null;
   renderProbe: (codeBundle: v5.RemotionTemplateCapsule["codeBundle"], neutralFixture: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
   maxAttempts?: number;
   /** Extra hard requirement injected into the prompt (e.g. a colour-fidelity correction or creative-knob directive). */
@@ -159,17 +173,32 @@ export async function runCapsuleContextRewrite(input: {
 
   // One model call for one file, retrying that file independently up to `attempts` times. A parse failure
   // feeds a format-repair hint; on final failure returns content:null so the caller keeps the ORIGINAL chunk.
+  // Try the primary model first, then (if it can't produce a usable, actually-rethemed rewrite) the fallback
+  // model — each for `attempts` tries. A rewrite is rejected (and retried with a pointed directive) when it
+  // still carries >=half of the source's on-screen words, so "applied" really means the theme was transferred.
+  const models = [input.model, input.fallbackModel].filter((m): m is Gen1ModelFn => Boolean(m));
   const rewriteOneFile = async (f: { path: string; content: string }, attempts: number, seedErrors?: string[]): Promise<{ path: string; content: string | null; error?: string }> => {
     let lastErrors = seedErrors;
     const expectExport = firstExportName(f.content);
-    for (let a = 0; a < attempts; a++) {
-      try {
-        const raw = await input.model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, lastErrors, input.extraDirective));
-        const tsx = extractRewrittenTsx(raw, expectExport);
-        if (tsx) return { path: f.path, content: tsx };
-        lastErrors = [PARSE_REPAIR_HINT + (expectExport ? ` The exported symbol MUST stay named "${expectExport}".` : "")];
-      } catch (err) {
-        lastErrors = [`model error: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`];
+    const sourceWords = sourceReadableStrings(f.content);
+    const residualLimit = Math.ceil(sourceWords.length * 0.5);
+    for (const model of models) {
+      for (let a = 0; a < attempts; a++) {
+        try {
+          const raw = await model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, lastErrors, input.extraDirective));
+          const tsx = extractRewrittenTsx(raw, expectExport);
+          if (tsx) {
+            const survived = sourceWords.filter((w) => tsx.includes(w));
+            if (sourceWords.length >= 2 && survived.length >= residualLimit) {
+              lastErrors = [`Your rewrite STILL contains the original ad's words — replace EVERY one with new ${input.theme || "theme"} copy, none may remain: ${survived.slice(0, 10).join(" / ")}`];
+              continue;
+            }
+            return { path: f.path, content: tsx };
+          }
+          lastErrors = [PARSE_REPAIR_HINT + (expectExport ? ` The exported symbol MUST stay named "${expectExport}".` : "")];
+        } catch (err) {
+          lastErrors = [`model error: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`];
+        }
       }
     }
     return { path: f.path, content: null, error: lastErrors?.[0] ?? `rewrite failed (${f.path})` };

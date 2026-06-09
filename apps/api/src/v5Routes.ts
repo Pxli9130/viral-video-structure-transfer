@@ -17,6 +17,7 @@ import { KnowledgeBaseV5 } from "./services/knowledgeBaseV5.js";
 import {
   buildV5RenderInputProps,
   createDoubaoModelFn,
+  createGeminiModelFn,
   createGeminiVisionCodegenFn,
   createGeminiVisionFn,
   createTextModelFn,
@@ -294,7 +295,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
         gapReport,
         fillActions,
         kbDecisions: [...(Array.isArray(learnKbDecisions) ? learnKbDecisions : []), ...(Array.isArray(sideKbDecisions) ? sideKbDecisions : [])],
-        usedKnowledgeElements: kbElements.map((e) => ({ id: e.id, kind: e.kind, name: e.name, tags: e.tags, evidenceRefs: e.source.evidenceRefs }))
+        usedKnowledgeElements: kbElements.map((e) => ({ id: e.id, kind: e.kind, name: e.name, tags: e.tags, evidenceRefs: e.source.evidenceRefs })),
+        // v2 schema-conformant evidence (material_analysis / timeline / mapping).
+        materialAnalysis: generation.materialAnalysis ?? (await readJsonIf(path.join(genDir(generationId), "material-analysis.json"))) ?? [],
+        timeline: generation.timelineV2 ?? (await readJsonIf(path.join(genDir(generationId), "timeline-v2.json"))),
+        mapping: generation.mappingV2 ?? (await readJsonIf(path.join(genDir(generationId), "mapping-v2.json"))) ?? []
       },
       result: {
         outputVideoUrl: generation.finalVideoUrl,
@@ -381,6 +386,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
       gapReport: st.gapReport,
       noCopy: st.noCopy,
       scorecard: sc,
+      // v2 schema-conformant evidence artifacts.
+      materialAnalysis: st.materialAnalysis,
+      timelineV2: st.timelineV2,
+      mappingV2: st.mappingV2,
       warnings: st.warnings,
       ...extra
     };
@@ -389,6 +398,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
       fs.writeFile(path.join(outDirST, "final-video-program.json"), JSON.stringify(st.finalProgram, null, 2)),
       fs.writeFile(path.join(outDirST, "gap-report.json"), JSON.stringify(st.gapReport, null, 2)),
       fs.writeFile(path.join(outDirST, "scorecard.json"), JSON.stringify(sc, null, 2)),
+      fs.writeFile(path.join(outDirST, "material-analysis.json"), JSON.stringify(st.materialAnalysis, null, 2)),
+      fs.writeFile(path.join(outDirST, "timeline-v2.json"), JSON.stringify(st.timelineV2, null, 2)),
+      fs.writeFile(path.join(outDirST, "mapping-v2.json"), JSON.stringify(st.mappingV2, null, 2)),
       fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
     ]);
     return ok(res, result);
@@ -441,6 +453,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
       // Context-modification is a TEXT-TO-TEXT task -> Doubao (Volcengine Ark) when configured, else
       // Gemini. Opt out with options.rewriteContext=false.
       const rewriteModel = reqOpts.rewriteContext === false ? null : createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000), responseFormat: "text" }) ?? null;
+      // When Doubao is the primary text model, add a Gemini fallback for the rewrite — a lite model is flaky at
+      // faithfully re-theming a whole single-file capsule, and a failed rewrite would otherwise ship SOURCE copy.
+      const rewriteFallbackModel = rewriteModel && createDoubaoModelFn({ responseFormat: "text" }) ? createGeminiModelFn({ model: process.env.GEMINI_GEN1_MODEL ?? "gemini-3.1-pro-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000), responseFormat: "text" }) ?? null : null;
       const st = await runSameTemplateGeneration({
         projectId,
         generationId,
@@ -455,6 +470,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         env: process.env,
         doRender: doRender && (reqOpts.autoRender ?? true) !== false,
         rewriteModel,
+        rewriteFallbackModel,
         assetVisionFn: userAssetVisionFn,
         slotAssignments
       });
@@ -647,6 +663,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
     // — a pure theme/copy/palette revise stays fast (prop-only reuse of prior visuals).
     const patchHasKnobs = Boolean(patch.rhythm || patch.textDensity || patch.motionIntensity || patch.paletteMood || patch.hookRatio != null || patch.ctaAdvanceSec != null);
     const reviseRewriteModel = patchHasKnobs ? createTextModelFn({ geminiModel: process.env.GEMINI_GEN1_MODEL ?? "gemini-3-flash-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000), responseFormat: "text" }) ?? null : null;
+    const reviseFallbackModel = reviseRewriteModel && createDoubaoModelFn({ responseFormat: "text" }) ? createGeminiModelFn({ model: process.env.GEMINI_GEN1_MODEL ?? "gemini-3.1-pro-preview", timeoutMs: Number(process.env.GEMINI_GEN1_TIMEOUT_MS ?? 600000), responseFormat: "text" }) ?? null : null;
     const st = await runSameTemplateGeneration({
       projectId: String(extra.projectId ?? "proj_v5_ui"),
       generationId,
@@ -661,7 +678,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
       env: process.env,
       doRender: true,
       reviseFrom: { instance, patch },
-      rewriteModel: reviseRewriteModel
+      rewriteModel: reviseRewriteModel,
+      rewriteFallbackModel: reviseFallbackModel
     });
     return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, { revisedFrom: baseGenerationId, patch, ...extra });
   };

@@ -17,6 +17,7 @@ import { mapLimit, aigcSemaphore } from "./concurrency.js";
 import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
+import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2 } from "./v2Reports.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
@@ -189,6 +190,8 @@ export interface SameTemplateInput {
   /** Context-modification: a Pro model fn that rewrites an AI-clone capsule's text/colour for the new
    *  theme before rendering (so "same template, new theme" actually changes the on-screen content). */
   rewriteModel?: Gen1ModelFn | null;
+  /** Fallback model for context-rewrite when the primary (Doubao) can't produce a real re-theme — e.g. Gemini. */
+  rewriteFallbackModel?: Gen1ModelFn | null;
   /** Vision fn (createGeminiVisionFn) that LOOKS at the user assets' pixels to enrich TargetAssetProfiles
    *  (shot/scene/subjects/highlight/bestSection). Null/undefined = heuristic-only (graceful). */
   assetVisionFn?: ((imageBase64: string, mimeType: string, prompt: string) => Promise<string>) | null;
@@ -214,6 +217,10 @@ export interface SameTemplateResult {
   finalMp4Exists: boolean;
   renderHasAudio: boolean;
   renderDurationSec: number;
+  /** v2 schema-conformant evidence artifacts (written as material-analysis / timeline-v2 / mapping-v2 .json). */
+  materialAnalysis: Array<Record<string, unknown>>;
+  timelineV2: Record<string, unknown>;
+  mappingV2: Array<Record<string, unknown>>;
 }
 
 interface GeneratedMusicBed {
@@ -377,18 +384,20 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // on-screen text / emphasis / packaging actually differ per version, without re-running visual codegen.
   const knobs = resolveCreativeKnobs(brief.variant, input.reviseFrom?.patch);
   const knobDirective = knobsToRewriteDirective(knobs);
+  let contextRewriteApplied = false;
   if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length || knobDirective)) {
     const rw = await runCapsuleContextRewrite({
       capsule,
       theme: brief.theme ?? brief.prompt ?? "",
       sellingPoints: brief.sellingPoints ?? [],
       model: input.rewriteModel,
+      fallbackModel: input.rewriteFallbackModel,
       renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
       maxAttempts: 2,
       extraDirective: [lightDirective, knobDirective].filter(Boolean).join(" ") || undefined
     });
     warnings.push(...rw.warnings.slice(0, 2));
-    if (rw.usedAi) capsule = { ...capsule, codeBundle: rw.codeBundle };
+    if (rw.usedAi) { capsule = { ...capsule, codeBundle: rw.codeBundle }; contextRewriteApplied = true; }
   }
 
   const aigcOn = options.aigcGapFill.mode === "auto_on";
@@ -397,6 +406,10 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     ?? choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"], capsule.quality);
 
   const targetProfiles = await enrichProfilesWithVlm(runTargetAssetAnalysisMany(input.targetAssets), input.targetAssets, input.assetVisionFn);
+  // Material analysis (real ffprobe facts + quality/duplicate rejection + crop suggestions). Rejected assets are
+  // kept OUT of the hero/main shots below (TC-04) — they still appear in the report with a reason.
+  const material = buildMaterialAnalysis(targetProfiles, input.targetAssets, { targetAspect: brief.aspectRatio ?? "9:16" });
+  if (material.rejectedAssetIds.size) warnings.push(`material analysis rejected ${material.rejectedAssetIds.size} asset(s) (low-quality/duplicate) from main shots`);
   const provider = aigcOn && options.aigcGapFill.imageFill === "aigc" ? getAigcMaterialProvider((input.env?.AIGC_IMAGE_PROVIDER as never) ?? "google_gemini_image") : undefined;
   // Real moving-footage provider (Seedance text-to-video) for mediaKind="video" slots — the "missing 素材"
   // the code marked <OffthreadVideo>. Generated footage is fresh/original (samplePixelsUsed=false), so it
@@ -483,7 +496,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     if (IMAGE_SLOTS.has(slot.kind)) {
       // 1) user asset — match profile kind to the slot, and never bind the same asset to two slots.
       const userAsset = targetProfiles.find(
-        (p) => !usedTargetAssetIds.has(p.assetId) && !reservedAssetIds.has(p.assetId) && (slot.kind === "logo" ? p.kind === "logo" : p.kind === "image" || p.kind === "video")
+        (p) => !usedTargetAssetIds.has(p.assetId) && !reservedAssetIds.has(p.assetId) && !material.rejectedAssetIds.has(p.assetId) && (slot.kind === "logo" ? p.kind === "logo" : p.kind === "image" || p.kind === "video")
       );
       const userAssetFile = userAsset ? input.targetAssets.find((x) => x.id === userAsset.assetId) : undefined;
       if (userAsset && userAssetFile?.path) {
@@ -882,5 +895,19 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     } catch (err) { warnings.push(`cover render skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
   }
 
-  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur };
+  // v2 evidence: real-timed timeline (with lineage) + reference->new-content mapping (with copy risk).
+  const referenceVideoName = input.sampleVideoPath ? path.basename(input.sampleVideoPath) : capsule.sourceSampleId;
+  // copy_risk is high only when this is an AI capsule whose baked source text was NOT rethemed (rewrite failed).
+  const copyRisk: "low" | "medium" | "high" = capsule.quality?.codeOrigin === "ai" && !contextRewriteApplied && input.doRender !== false ? "high" : "low";
+  const timelineV2 = buildTimelineV2({
+    projectId: input.projectId,
+    capsule,
+    slotBindings,
+    aspectRatio: brief.aspectRatio ?? "9:16",
+    audioBed: renderHasAudio ? { beatLocked: false } : null,
+    knowledgeAtomIds: [capsule.sourceSampleId]
+  });
+  const mappingV2 = buildMappingV2({ capsule, slotBindings, referenceVideoName, copyRisk });
+
+  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2 };
 }
