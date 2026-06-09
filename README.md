@@ -8,13 +8,19 @@
 >
 > 安全边界：可复用「模板代码 / 时间线 / 布局 / 动画曲线 / 排版行为 / 转场编排 / 音频 cue 位置 / props & slot schema」；**不可复用**样例的「原图像素 / 视频帧 / 音频 / 字幕文本 / logo / 人物 / 商品素材」。
 >
-> 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
+> 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；**评分表逐项对照见 [`spec_v5/rubric-alignment.md`](spec_v5/rubric-alignment.md)**；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
 >
-> **Gen1-Pro 视觉胶囊（主路径）**：一次最强 Gemini Pro 调用（`GEMINI_GEN1_MODEL`，默认 `gemini-3.1-pro-preview`）**看完整段视频** + 确定性证据 → 一份忠实、props 驱动的 `RemotionTemplateCapsule`（react + remotion + `@remotion/three` 真 3D）。**返回的代码即圣经**：`mergeCapsule` 逐字节保留代码、只补缺失元数据,并合并 `timingSignature`（durationSec/fps 回退确定性，杜绝「31s 只渲 16s」）。只用「**编译 + 真渲染**」两道门(其余只记录不拦)。长视频(>34s)按 scene-cut 切 ≤30s 块并发重建后拼成一个多文件胶囊。Gemini 还返回 `assetPlan`（每个「代码画不出的 missing 素材」一条,带 key/mediaKind/AIGC prompt）。**运动/覆盖保真自修**：代码若违背它自己的 sceneRecipe（该滚动的字幕静止、该 3D 单轴的 ribbon 双轴翻滚、覆盖不足)触发一次 repair；**AI 优先**：能编译+渲染的 AI 胶囊永不因保真瑕疵被丢回确定性。
+> **模型分工**：**所有「文生文」任务走 Doubao-Seed-2.0-lite**（火山 Ark，`createTextModelFn` 读 `.env` 的 `ARK_API_KEY`/`ARK_MODEL`(EP)）——换主题 context-rewrite、镜头描述、自然语言改片、文本代码兜底、Gen1/Gen2 文本。**「看视频/帧」的多模态重建留 Gemini**（Doubao 纯文本做不了）；图/音乐等外部 provider 均有确定性兜底。
+>
+> **Gen1 视觉胶囊（主路径）**：一次 Gemini 调用**看完整段视频** + 确定性证据 → 一份忠实、props 驱动的 `RemotionTemplateCapsule`（react + remotion + `@remotion/three` 真 3D）。**混合按时长选模型**（短→`gemini-3-flash-preview`，长/切块→`gemini-3.1-pro-preview`，阈值 `GEMINI_GEN1_PRO_MIN_SEC=34`）。**返回的代码即圣经**：`mergeCapsule` 逐字节保留代码、只补缺失元数据,并合并 `timingSignature`（durationSec/fps 回退确定性，杜绝「31s 只渲 16s」）。只用「**编译 + 真渲染**」两道门(其余只记录不拦)。长视频(>34s)按 scene-cut 切 ≤30s 块并发重建后拼成一个多文件胶囊。Gemini 还返回 `assetPlan`（每个「代码画不出的 missing 素材」一条,带 key/mediaKind/AIGC prompt）。**运动/覆盖保真自修**：代码若违背它自己的 sceneRecipe（该滚动的字幕静止、该 3D 单轴的 ribbon 双轴翻滚、覆盖不足)触发一次 repair；**AI 优先**：能编译+渲染的 AI 胶囊永不因保真瑕疵被丢回确定性。
 >
 > **生成：换主题 + AIGC 补「动态素材」**。context-rewrite 用一次 Pro 调用换文案/配色(保结构、保源明暗)。footage 槽(`mediaKind=video`)填**真实视频**：**Seedance 2.0**(火山 Ark 文生视频)为主 → **happyhorse r2v**(阿里 DashScope 参考生视频,用 Gemini 静图作 `reference_image`,Seedance 欠费/403 时自动顶上)为备份 → AIGC 静图兜底；图片槽用 Gemini 图。渲染后:**色彩守卫**(源浅底却渲成暗→重写重渲一次) + **裁掉结尾纯色冗余镜头**。并发与稳定:全局渲染信号量(`RENDER_CONCURRENCY=2`×`RENDER_TABS_PER_JOB=2`)+ `RENDER_TIMEOUT_MS=120000` + 渲染/探针崩溃重试 + 全局 AIGC 信号量(`AIGC_GLOBAL_CONCURRENCY=8` 防 429)。**改写**:`POST /api/v5/generations/:id/revise`。
 >
-> API：`POST /api/v5/learn-samples`（`templateCapsuleId`/`templateCode`/`templateRenders`）· `GET /api/v5/templates[/:id]` · `POST /api/v5/generations`（默认 same_template）· `POST /api/v5/generations/:id/revise`。Web 默认入口已切到 spec_v5.1 看板（V4 仍可在 `#v4` 访问）。
+> 音频默认 **Google Lyria 音乐床**（`lyria-3-clip-preview`，>30s 分段 + crossfade，失败重试后退程序化）。
+>
+> **更多能力（已实现，贴合评分表，见 rubric-alignment.md）**：素材**上传 + 画像分析**（`POST/GET /api/v5/assets/:id/media` + `runTargetAssetAnalysis`）· **迁移过程可视化**一站式 trace（`GET /api/v5/generations/:id/transfer-trace`：源结构→knowledge-manifest→slot 映射→缺口/补全→scorecard→成片）· **多版本生成**（看板对同模板 fan-out 高点击/高转化/高节奏/高质感）· **自然语言改片**（`POST /api/v5/generations/:id/revise-natural-language`：一句话→Doubao→`TemplatePatchSet`→重渲）· **两级知识库**（Level-1 模板胶囊 + Level-2 16 类原子元素；`GET /api/v5/kb/elements?kind&tag&q`、`POST /api/v5/kb/search`、`GET /api/v5/templates`）· **knowledge-manifest 种子**（每样例结构假设/原子模块/槽位）。
+>
+> 核心 API：`POST /learn-samples` · `GET /templates[/:id]` · `POST /generations`（默认 same_template）· `POST /generations/plan`（只规划不渲染）· `POST /generations/:id/revise` · `POST /generations/:id/revise-natural-language` · `GET /generations/:id[/scorecard|/transfer-trace]` · `GET /samples/:id/{evidence,reconstruction,elements}` · `GET/POST /kb/*`（均挂 `/api/v5`）。Web 默认入口已切到 spec_v5.1 看板（V4 仍可在 `#v4` 访问）。
 >
 > **四视频并行 demo**（需 conda env `viral` + 真实 key；输出 `storage/demo-runs-*/`）：
 > ```bash
@@ -22,7 +28,7 @@
 > npm run build && node apps/api/dist/server.js   # 或 npm run dev
 > VIDEO_CONCURRENCY=4 OUT_DIR=demo-runs python scripts/run-v5-four-aigc.py   # 四条样例：各自 learn(切块)+generate(换随机主题+AIGC 视频/静图)
 > ```
-> 视频 provider env：`AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`（主）；`AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1`（备份）。**依赖必须装好** `@remotion/three@4.0.341` + `@react-three/fiber@8.15.19` + `three@0.176.0`（缺 `@remotion/three` → AI 真 3D 渲染失败 → 退回确定性）。
+> 视频 provider env：`AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`（主）；`AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1`（备份）。**依赖必须装好** `@remotion/three@4.0.341` + `@react-three/fiber@^9.6.1` + `three@0.176.0`（**fiber 必须匹配 React 版本**：本仓库 web 用 React 19，fiber 须为 9.x；用 fiber 8 会触发 `ReactCurrentBatchConfig` 渲染崩 → 3D 胶囊退回确定性）。
 
 ## Spec v4.2 Submission Entry
 

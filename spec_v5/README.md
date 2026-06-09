@@ -47,6 +47,7 @@ Learn music patterns, not raw sample audio.
 - `api.md` — HTTP API endpoints.
 - `renderer-spec.md` — Remotion / FFmpeg render contracts.
 - `ui-demo-spec.md` — demo UI and what to display for rubric.
+- `rubric-alignment.md` — **每项评分 → 已实现功能/端点/代码位置的逐项对照**（答辩 + 说明文档用）。
 - `acceptance-gates.md` — V5 quality/safety gates.
 - `provider-policy.md` — model/provider policy and fallbacks.
 - `model-stack.md` — recommended local/cloud model stack.
