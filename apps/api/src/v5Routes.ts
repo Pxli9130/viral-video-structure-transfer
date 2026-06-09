@@ -306,7 +306,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
         packagingPlan: generation.packagingPlan ?? (await readJsonIf(path.join(genDir(generationId), "packaging-plan.json"))),
         beatAlignment: generation.beatAlignment ?? (await readJsonIf(path.join(genDir(generationId), "beat-alignment.json"))),
         dialoguePlan: generation.dialoguePlan ?? (await readJsonIf(path.join(genDir(generationId), "dialogue-plan.json"))),
-        editTrace: generation.editTrace ?? (await readJsonIf(path.join(genDir(generationId), "edit-trace.json")))
+        editTrace: generation.editTrace ?? (await readJsonIf(path.join(genDir(generationId), "edit-trace.json"))),
+        structureArbitration: generation.structureArbitration ?? (await readJsonIf(path.join(genDir(generationId), "structure-arbitration.json")))
       },
       result: {
         outputVideoUrl: generation.finalVideoUrl,

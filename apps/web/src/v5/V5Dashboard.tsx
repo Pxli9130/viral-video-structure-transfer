@@ -138,6 +138,16 @@ type TransferTrace = {
     gapReport?: { gaps?: Array<{ slotId: string; status: string; selectedRepair: string; impact: string; reason?: string }> };
     fillActions: Array<{ slotId: string; status: string; strategy: string; reason: string }>;
     usedKnowledgeElements: Array<{ id: string; kind: string; name: string; tags: string[]; evidenceRefs?: string[] }>;
+    // v2 evidence artifacts
+    materialAnalysis?: Array<{ asset_id: string; type: string; resolution?: string | null; duration_sec?: number | null; has_audio?: boolean; quality_score?: number; detected_scene?: string; recommended_slots?: string[]; reject_reason?: string | null; crop_suggestions?: Array<{ aspect: string; safe_box: string; risk: string }>; selected_segments?: Array<{ start_sec: number; end_sec: number; score: number; recommended_slot: string }> }>;
+    timeline?: { duration_sec?: number; tracks?: { video?: Array<{ segment_id: string; start_sec: number; end_sec: number; structure_slot?: string; transform?: string }>; text?: Array<{ text_id: string; content?: string; safe_zone?: string }> } };
+    mapping?: Array<{ reference_slot: string; new_content_slot: string; adaptation_reason: string; copy_risk: string }>;
+    similarityReport?: { verdict?: string; copy_risk_overall?: string; structure_reused?: boolean; wording_reused?: boolean; note?: string };
+    packagingPlan?: { subtitles?: { count?: number; density?: string; recommended_font_px?: number; contrast_ratio?: number; contrast_ok?: boolean }; title_bar?: { text?: string } };
+    beatAlignment?: { bpm?: number | null; transition_count?: number; aligned_count?: number; transitions?: Array<{ section: string; at_sec: number; offset_ms?: number | null; aligned: boolean }> };
+    dialoguePlan?: { has_real_voiceover?: boolean; asr?: string; speech_segments?: Array<{ text: string; start_sec: number; end_sec: number }>; safe_cut_points?: unknown[]; unsafe_cuts?: Array<{ at_sec: number; reason: string }> };
+    editTrace?: { command?: string; changes?: Array<{ operation: string; target_segment_id: string; reason: string }> };
+    structureArbitration?: { selected?: string; selection_reason?: string; candidates?: Array<{ capsuleId: string; score: number; role_coverage?: string[] }>; borrowed?: Array<{ from: string; what: string }> };
   };
   result: {
     outputVideoUrl?: string;
@@ -183,6 +193,9 @@ const creativeVariants: Array<{ value: CreativeVariant; label: string; en: strin
 ];
 /** A clearer, larger collapse triangle (the small inline one was hard to hit). */
 const triangleBtn: React.CSSProperties = { fontSize: 15, lineHeight: 1, color: "#cfe0f5", background: "rgba(17,24,39,0.85)", borderRadius: 6, padding: "3px 9px", border: "1px solid rgba(148,163,184,0.28)", display: "inline-flex", alignItems: "center" };
+/** Compact card for a v2 evidence artifact. */
+const evCard: React.CSSProperties = { border: "1px solid rgba(148,163,184,0.16)", borderRadius: 8, padding: "8px 10px", background: "rgba(11,18,32,0.6)", minWidth: 0, overflow: "hidden", lineHeight: 1.5 };
+const evHead: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: "#cfe0f5", marginBottom: 4 };
 /** What each KB view groups by + why it matters (shown under the view selector after selection). */
 const KB_VIEW_INFO: Record<string, string> = {
   structure: "结构视图：按「结构 / 节奏 / 排版 / 转场 / CTA」等创作维度归类，看这套模板由哪些可复用的方法构成。影响：混合元素时按维度挑选要复用的「创作方法」。",
@@ -1416,6 +1429,71 @@ export function V5Dashboard() {
                     scorecard: {trace.result.scorecard.gates.filter((g) => g.status === "pass").length}/{trace.result.scorecard.gates.length} pass · {trace.result.scorecard.readinessLevel ?? "readiness n/a"}
                   </div>
                 )}
+
+                {/* v2 evidence artifacts */}
+                <div style={{ marginTop: 12, borderTop: "1px solid rgba(148,163,184,0.14)", paddingTop: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>结构迁移证据 (v2)</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px,1fr))", gap: 10, fontSize: 11, color: "#9fb3d1" }}>
+                    {trace.transfer.structureArbitration && (
+                      <div style={evCard}>
+                        <div style={evHead}>多参考结构仲裁</div>
+                        <div>选中: <b style={{ color: "#cfe0f5" }}>{trace.transfer.structureArbitration.selected}</b></div>
+                        <div style={{ opacity: 0.85 }}>{trace.transfer.structureArbitration.selection_reason}</div>
+                        {(trace.transfer.structureArbitration.borrowed ?? []).map((b, i) => <div key={i}>借用 {b.from}: {b.what}</div>)}
+                      </div>
+                    )}
+                    {trace.transfer.similarityReport && (
+                      <div style={evCard}>
+                        <div style={evHead}>不复制检查 (similarity)</div>
+                        <div>判定 <b style={{ color: trace.transfer.similarityReport.verdict === "pass" ? "#7fdca0" : "#ffb3bf" }}>{trace.transfer.similarityReport.verdict}</b> · copy_risk={trace.transfer.similarityReport.copy_risk_overall}</div>
+                        <div style={{ opacity: 0.85 }}>结构复用={String(trace.transfer.similarityReport.structure_reused)} · 文案照搬={String(trace.transfer.similarityReport.wording_reused)}</div>
+                      </div>
+                    )}
+                    {trace.transfer.timeline && (
+                      <div style={evCard}>
+                        <div style={evHead}>时间线 ({trace.transfer.timeline.duration_sec}s)</div>
+                        {(trace.transfer.timeline.tracks?.video ?? []).slice(0, 6).map((v) => <div key={v.segment_id}>{v.start_sec}-{v.end_sec}s · {v.structure_slot} · {v.transform}</div>)}
+                      </div>
+                    )}
+                    {trace.transfer.beatAlignment && (
+                      <div style={evCard}>
+                        <div style={evHead}>节拍对齐 (bpm {trace.transfer.beatAlignment.bpm ?? "?"})</div>
+                        <div>{trace.transfer.beatAlignment.aligned_count}/{trace.transfer.beatAlignment.transition_count} 转场对齐</div>
+                        {(trace.transfer.beatAlignment.transitions ?? []).map((tr, i) => <div key={i}>{tr.section}@{tr.at_sec}s off={tr.offset_ms}ms {tr.aligned ? "✓" : "✗"}</div>)}
+                      </div>
+                    )}
+                    {trace.transfer.packagingPlan && (
+                      <div style={evCard}>
+                        <div style={evHead}>包装 / 字幕安全区</div>
+                        <div>字幕 {trace.transfer.packagingPlan.subtitles?.count} 条 · 密度 {trace.transfer.packagingPlan.subtitles?.density} · {trace.transfer.packagingPlan.subtitles?.recommended_font_px}px</div>
+                        <div>对比度 {trace.transfer.packagingPlan.subtitles?.contrast_ratio} {trace.transfer.packagingPlan.subtitles?.contrast_ok ? "✓达标" : "⚠不足"}</div>
+                      </div>
+                    )}
+                    {trace.transfer.dialoguePlan && (
+                      <div style={evCard}>
+                        <div style={evHead}>对话/切点 {trace.transfer.dialoguePlan.has_real_voiceover ? `· ${trace.transfer.dialoguePlan.asr}` : ""}</div>
+                        <div>口播={String(trace.transfer.dialoguePlan.has_real_voiceover)} · 安全切点 {(trace.transfer.dialoguePlan.safe_cut_points ?? []).length}</div>
+                        {(trace.transfer.dialoguePlan.unsafe_cuts ?? []).slice(0, 2).map((u, i) => <div key={i} style={{ color: "#ffb3bf" }}>⚠ {u.at_sec}s: {u.reason}</div>)}
+                      </div>
+                    )}
+                    {trace.transfer.editTrace && (
+                      <div style={evCard}>
+                        <div style={evHead}>自然语言改片 diff</div>
+                        <div style={{ opacity: 0.85 }}>“{trace.transfer.editTrace.command}”</div>
+                        {(trace.transfer.editTrace.changes ?? []).slice(0, 5).map((c, i) => <div key={i}>[{c.operation}] {c.target_segment_id}: {c.reason}</div>)}
+                      </div>
+                    )}
+                    {(trace.transfer.materialAnalysis ?? []).map((ma) => (
+                      <div key={ma.asset_id} style={evCard}>
+                        <div style={evHead}>素材分析 {ma.asset_id.slice(0, 12)}</div>
+                        <div>{ma.type} · {ma.resolution ?? "?"} {ma.duration_sec ? `· ${ma.duration_sec}s` : ""} · audio={String(ma.has_audio)} · q={ma.quality_score}</div>
+                        {ma.reject_reason && <div style={{ color: "#ffb3bf" }}>剔除: {ma.reject_reason}</div>}
+                        {(ma.crop_suggestions ?? []).map((c, i) => <div key={i}>裁切 {c.aspect}: {c.safe_box}</div>)}
+                        {(ma.selected_segments ?? []).map((s, i) => <div key={i}>高光 {s.start_sec}-{s.end_sec}s → {s.recommended_slot} ({s.score})</div>)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
