@@ -115,15 +115,19 @@ export function buildMaterialAnalysis(
   for (const p of profiles) {
     const asset = byId.get(p.assetId);
     const isMedia = p.kind === "image" || p.kind === "video" || p.kind === "logo";
-    const probe = asset?.path && isMedia ? probeMedia(asset.path) : { durationSec: null, width: null, height: null, hasAudio: false };
+    const probeable = isMedia || p.kind === "audio";
+    const probe = asset?.path && probeable ? probeMedia(asset.path) : { durationSec: null, width: null, height: null, hasAudio: false };
     const resolution = probe.width && probe.height ? `${probe.width}x${probe.height}` : null;
     const quality = Math.round(Math.max(0, Math.min(1, p.qualityScore ?? 0.6)) * 100);
     const subjects = (p.detectedSubjects ?? []).map((s) => String(s).toLowerCase()).sort();
     const sig = `${p.sceneType ?? p.kind}|${subjects.join(",")}`;
 
-    // reject reasons: low quality, or near-duplicate of an earlier (kept) asset of the same scene+subjects.
+    // reject reasons: BAD INPUT (TC-13: empty/corrupt or extension-content mismatch) first, then low quality / duplicate.
     let reject: string | null = null;
-    if (isMedia && quality < floor) reject = `低质量（清晰度/亮度评分 ${quality}/100，低于阈值 ${floor}）`;
+    if (probeable && probe.width == null && probe.height == null && probe.durationSec == null) reject = "空文件 / 无法解析（损坏或 0 字节）";
+    else if (p.kind === "video" && probe.durationSec == null && probe.width != null) reject = "扩展名与内容不符：实为静态图（无视频流/时长），不应作为视频镜头";
+    else if (p.kind === "audio" && probe.durationSec == null) reject = "空 / 损坏音频（无时长）";
+    if (!reject && isMedia && quality < floor) reject = `低质量（清晰度/亮度评分 ${quality}/100，低于阈值 ${floor}）`;
     if (!reject && subjects.length) {
       const dup = seen.find((s) => s.sig === sig);
       if (dup) reject = `与 ${dup.assetId} 角度/内容高度重复（场景+主体一致），保留质量更高的一条`;
