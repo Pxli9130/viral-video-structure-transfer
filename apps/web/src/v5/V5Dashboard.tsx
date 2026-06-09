@@ -82,6 +82,7 @@ type TemplateMeta = {
   timingSignature?: { durationSec?: number };
   motionSignature?: { activeMotionCoverage?: number };
   quality?: { compilePassed?: boolean; renderPreviewPassed?: boolean; noCopyTemplatePassed?: boolean; warnings?: string[] };
+  createdAt?: string;
 };
 type SlotBinding = { slotId: string; status: string; assetId?: string; uri?: string; text?: string; warnings: string[] };
 type GenResult = {
@@ -91,6 +92,7 @@ type GenResult = {
   usedTemplateCode?: boolean;
   usedFallbackRenderer?: boolean;
   finalVideoUrl?: string;
+  coverUrl?: string;
   scorecard: Scorecard;
   warnings?: string[];
   // same_template
@@ -131,7 +133,7 @@ type TransferTrace = {
   };
   transfer: {
     targetBrief?: { theme?: string; variant?: string; sellingPoints?: string[] };
-    targetAssetProfiles?: Array<{ assetId: string; kind: string; labels: string[]; qualityScore: number; bestSection: string; motionSummary?: string }>;
+    targetAssetProfiles?: Array<{ assetId: string; kind: string; labels: string[]; qualityScore: number; bestSection: string; motionSummary?: string; shotType?: string; sceneType?: string; detectedSubjects?: string[]; isHighlight?: boolean; vlmAnalyzed?: boolean }>;
     slotMapping: Array<{ slotId: string; slotKind?: string; originalRole?: string; required?: boolean; status: string; assetId?: string; text?: string; fillReason?: string; assetProfile?: { bestSection?: string; labels?: string[]; qualityScore?: number } }>;
     gapReport?: { gaps?: Array<{ slotId: string; status: string; selectedRepair: string; impact: string; reason?: string }> };
     fillActions: Array<{ slotId: string; status: string; strategy: string; reason: string }>;
@@ -139,6 +141,8 @@ type TransferTrace = {
   };
   result: {
     outputVideoUrl?: string;
+    coverUrl?: string;
+    previewFrames?: Array<{ label?: string; url?: string }>;
     scorecard?: Scorecard;
     renderParams?: unknown;
   };
@@ -172,11 +176,27 @@ const publicRef = (ref: string | undefined) => {
   if (ref.startsWith("generated/")) return `${API}/${ref}`;
   return undefined;
 };
-const creativeVariants: Array<{ value: CreativeVariant; label: string; description: string }> = [
-  { value: "high_click", label: "high_click", description: "更强开头钩子，优先提升停留和点击。" },
-  { value: "high_conversion", label: "high_conversion", description: "更清晰卖点和 CTA，优先推动转化。" },
-  { value: "high_quality", label: "high_quality", description: "更稳的质感、节奏和信息密度。" }
+const creativeVariants: Array<{ value: CreativeVariant; label: string; en: string; description: string }> = [
+  { value: "high_click", label: "高点击", en: "high_click", description: "更强开头钩子，前三秒节奏更快，优先提升停留和点击。" },
+  { value: "high_conversion", label: "高转化", en: "high_conversion", description: "卖点更靠前、CTA 更明确，优先推动转化。" },
+  { value: "high_quality", label: "高质感", en: "high_quality", description: "画面更克制、留白更多、配色更高级，优先展示质感。" }
 ];
+/** A clearer, larger collapse triangle (the small inline one was hard to hit). */
+const triangleBtn: React.CSSProperties = { fontSize: 15, lineHeight: 1, color: "#cfe0f5", background: "rgba(17,24,39,0.85)", borderRadius: 6, padding: "3px 9px", border: "1px solid rgba(148,163,184,0.28)", display: "inline-flex", alignItems: "center" };
+/** What each KB view groups by + why it matters (shown under the view selector after selection). */
+const KB_VIEW_INFO: Record<string, string> = {
+  structure: "结构视图：按「结构 / 节奏 / 排版 / 转场 / CTA」等创作维度归类，看这套模板由哪些可复用的方法构成。影响：混合元素时按维度挑选要复用的「创作方法」。",
+  scene: "场景视图：按镜头/场景段落归类（hook / 商品特写 / 使用 / 对比 / 结尾 CTA 等），看每个画面段落可复用的处理。影响：按画面顺序拼接镜头级元素。",
+  source: "来源视图：按来源样例归类，看每条知识来自哪个学习过的视频，便于追溯与对比不同样例的贡献。影响：可按样例筛选/混搭多个视频的元素。"
+};
+/** ISO -> "MM-DD HH:mm" (local), for labelling templates by learn time. */
+const fmtTime = (iso?: string): string => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 const variantStrategy = (variant: string | undefined) => ({
   high_click: "开头更强、前三秒节奏更快，适合拉点击和停留。",
   high_conversion: "卖点更靠前、CTA 更明确，适合投放转化。",
@@ -253,7 +273,7 @@ export function V5Dashboard() {
   const [aiCapsule, setAiCapsule] = useState(true); // V5.1: real AI capsule codegen + render validation (default ON)
   const [gen2RemotionCodegen, setGen2RemotionCodegen] = useState(false);
   const [autoRender, setAutoRender] = useState(true);
-  const [selectedVariant, setSelectedVariant] = useState<CreativeVariant>("high_click");
+  const [selectedVariant, setSelectedVariant] = useState<CreativeVariant | null>("high_click");
   const [generateAllVariants, setGenerateAllVariants] = useState(false);
   const reviewMode = true;
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -274,7 +294,16 @@ export function V5Dashboard() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [reviseTheme, setReviseTheme] = useState("");
   const [reviseHeadline, setReviseHeadline] = useState("");
+  // #11 creative knobs (manual adjust beyond theme/copy): rhythm / text-density / palette-mood.
+  const [reviseRhythm, setReviseRhythm] = useState<"" | "aggressive" | "balanced" | "slow">("");
+  const [reviseTextDensity, setReviseTextDensity] = useState<"" | "dense" | "medium" | "minimal">("");
+  const [revisePaletteMood, setRevisePaletteMood] = useState<"" | "bold" | "premium" | "clean" | "energetic">("");
   const [nlInstruction, setNlInstruction] = useState("开头更抓人一些");
+  // Per-slot user uploads from the gap radar (slotId -> assetId) + a free-text custom-version request.
+  const [slotAssignments, setSlotAssignments] = useState<Record<string, string>>({});
+  const [customRequest, setCustomRequest] = useState("");
+  const [kbCollapsed, setKbCollapsed] = useState(false);
+  const [kbExplorerCollapsed, setKbExplorerCollapsed] = useState(false);
   const [kbQuery, setKbQuery] = useState("");
   const [kbKind, setKbKind] = useState("all");
   const [kbView, setKbView] = useState<KbView>("structure");
@@ -366,6 +395,13 @@ export function V5Dashboard() {
     [templates, templateId]
   );
   const requiredSlots = useMemo(() => activeTemplate?.slotSchema.filter((s) => s.required) ?? [], [activeTemplate]);
+  // Label a template by its INPUT VIDEO name + learn time (falls back to the source id when the asset is gone).
+  const tplLabel = (t: TemplateMeta): string => {
+    const src = assets.find((a) => a.id === t.sourceSampleId)?.filename;
+    const base = (src ?? t.sourceSampleId).replace(/\.[^.]+$/, "");
+    const ts = fmtTime(t.createdAt);
+    return ts ? `${base} · ${ts}` : base;
+  };
   // How many required slots the user can cover from their own target assets (rough: count provided assets).
   const providedCount = targetIds.length;
   const missingRequired = Math.max(0, requiredSlots.length - providedCount);
@@ -380,7 +416,7 @@ export function V5Dashboard() {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([category, elements]) => ({ category, elements }));
   }, [kbFiltered, kbView]);
-  const selectedVariantMeta = creativeVariants.find((variant) => variant.value === selectedVariant) ?? creativeVariants[0];
+  const selectedVariantMeta = creativeVariants.find((variant) => variant.value === selectedVariant) ?? null;
   const progressPercent = progress ? Math.max(8, Math.min(100, Math.round((progress.step / progress.total) * 100))) : 0;
   const selectedReports = sampleIds.map((id) => sampleReports[id]).filter((r): r is SampleReport => Boolean(r));
   const traceEvidence = trace?.sample.evidence as EvidenceV5 | undefined;
@@ -490,6 +526,38 @@ export function V5Dashboard() {
       await refreshAssets();
     });
 
+  // Upload ONE file and return the created asset row (used by per-slot gap-radar uploads).
+  const uploadOneAsset = async (file: File, role: "source_video" | "user_image"): Promise<AssetRow> => {
+    const projectId = await ensureUploadProject();
+    const body = new FormData();
+    body.append("file", file);
+    body.append("role", role);
+    body.append("sourcePolicy", "user_authorized");
+    body.append("tags", "target_material,v5,slot_assign");
+    const created = await api<AssetRow>(`/api/projects/${projectId}/assets`, { method: "POST", body });
+    await refreshAssets();
+    return created;
+  };
+
+  // The user uploaded an asset FOR a specific slot in the gap radar -> bind it to that slot at generation.
+  const assignSlotAsset = (slotId: string, files: FileList | null) =>
+    run("upload", async () => {
+      const file = files?.[0];
+      if (!file) return;
+      setStage("upload", 1, 2, `上传到槽位 ${slotId}`);
+      const created = await uploadOneAsset(file, file.type.startsWith("video") ? "source_video" : "user_image");
+      setSlotAssignments((m) => ({ ...m, [slotId]: created.id }));
+      setTargetIds((ids) => Array.from(new Set([...ids, created.id])));
+      setStage("upload", 2, 2, "已绑定到该槽位");
+    });
+
+  const clearSlotAsset = (slotId: string) =>
+    setSlotAssignments((m) => {
+      const next = { ...m };
+      delete next[slotId];
+      return next;
+    });
+
   const learn = () =>
     run("learn", async () => {
       setStage("learn", 1, 3, "提交样本学习任务");
@@ -524,8 +592,9 @@ export function V5Dashboard() {
         method: "POST",
         body: JSON.stringify({
           projectId: "proj_v5_ui",
-          brief: { theme, variant: selectedVariant, targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
+          brief: { theme, variant: selectedVariant ?? undefined, targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
           targetAssetIds: targetIds,
+          ...(Object.keys(slotAssignments).length ? { slotAssignments } : {}),
           selectedElementIds: genMode === "mix_elements" && selectedEls.length ? selectedEls : undefined,
           options
         })
@@ -561,6 +630,7 @@ export function V5Dashboard() {
             generationId: `gen_${variant}_${Date.now().toString(36)}`,
             brief: { theme, variant, targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
             targetAssetIds: targetIds,
+            ...(Object.keys(slotAssignments).length ? { slotAssignments } : {}),
             options: baseOptions
           })
         });
@@ -580,6 +650,9 @@ export function V5Dashboard() {
       const patch: Record<string, unknown> = {};
       if (reviseTheme.trim()) patch.theme = reviseTheme.trim();
       if (reviseHeadline.trim()) patch.copyOverrides = { headline: reviseHeadline.trim() };
+      if (reviseRhythm) patch.rhythm = reviseRhythm;
+      if (reviseTextDensity) patch.textDensity = reviseTextDensity;
+      if (revisePaletteMood) patch.paletteMood = revisePaletteMood;
       setStage("revise", 1, 3, "提交模板 patch");
       const res = await api<GenResult>(`/api/v5/generations/${gen.generationId}/revise`, {
         method: "POST",
@@ -591,16 +664,52 @@ export function V5Dashboard() {
       await fetchTrace(res.generationId);
     });
 
-  const reviseNatural = (gen: GenResult) =>
+  const reviseNatural = (gen: GenResult, instruction?: string) =>
     run("revise-nl", async () => {
+      const instr = (instruction ?? nlInstruction).trim();
       setStage("revise-nl", 1, 3, "解析自然语言改片请求");
       const res = await api<GenResult>(`/api/v5/generations/${gen.generationId}/revise-natural-language`, {
         method: "POST",
-        body: JSON.stringify({ projectId: "proj_v5_ui", instruction: nlInstruction })
+        body: JSON.stringify({ projectId: "proj_v5_ui", instruction: instr })
       });
       setStage("revise-nl", 2, 3, "写入改写结果");
       setResult(res);
       setStage("revise-nl", 3, 3, "读取 transfer trace");
+      await fetchTrace(res.generationId);
+    });
+
+  // Custom version from a free-text request: build a base scaffold (no render) then re-theme it via the
+  // natural-language revise (which parses the request into creative knobs + re-renders the visible version).
+  const generateCustom = () =>
+    run("generate", async () => {
+      const instr = customRequest.trim();
+      if (!instr) return;
+      const sellingArr = sellingPoints.split(",").map((s) => s.trim()).filter(Boolean);
+      const baseOptions: Record<string, unknown> = {
+        generationMode: "same_template",
+        autoRender: false,
+        ...(templateId ? { templateCapsuleId: templateId } : {}),
+        aigcGapFill: aigcOn ? { mode: "auto_on", imageFill, audioFill, textFill } : { mode: "off", imageFill: "off", audioFill: "off", textFill: "off" }
+      };
+      setStage("generate", 1, 3, "生成基础版本");
+      const base = await api<GenResult>("/api/v5/generations", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: "proj_v5_ui",
+          brief: { theme, targetDurationSec: 16, aspectRatio: "9:16", sellingPoints: sellingArr },
+          targetAssetIds: targetIds,
+          ...(Object.keys(slotAssignments).length ? { slotAssignments } : {}),
+          options: baseOptions
+        })
+      });
+      setStage("generate", 2, 3, "按自定义需求改写并渲染");
+      const res = await api<GenResult>(`/api/v5/generations/${base.generationId}/revise-natural-language`, {
+        method: "POST",
+        body: JSON.stringify({ projectId: "proj_v5_ui", instruction: instr })
+      });
+      setResult(res);
+      setVariants([]);
+      setStage("generate", 3, 3, "读取 transfer trace");
       await fetchTrace(res.generationId);
     });
 
@@ -673,7 +782,7 @@ export function V5Dashboard() {
         <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", fontSize: 11, color: muted }}>
           <span>模型: {serviceStatus?.health?.mode ?? "unknown"}</span>
           <span>当前模板: {activeTemplate?.name ?? "未选择"}</span>
-          <span>版本: {generateAllVariants ? "3 variants" : selectedVariantMeta.label}</span>
+          <span>版本: {generateAllVariants ? "3 variants" : selectedVariantMeta?.label ?? "默认"}</span>
           <span>检查: {serviceStatus?.checkedAt ?? "not yet"}</span>
         </div>
       </section>
@@ -805,7 +914,7 @@ export function V5Dashboard() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
             {templates.map((t) => (
               <div key={t.id} style={{ border: `1px solid ${templateId === t.id ? accent : "rgba(148, 163, 184, 0.16)"}`, borderRadius: 8, padding: 12, background: templateId === t.id ? accentSoft : "rgba(11, 18, 32, 0.62)" }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{tplLabel(t)}</div>
                 <div style={{ fontSize: 11, color: "#7c8aa0", margin: "4px 0 8px" }}>
                   {t.slotSchema.length} 槽位 · {t.slotSchema.filter((s) => s.required).length} 必填 · {Math.round((t.timingSignature?.durationSec ?? 0))}s · src={t.sourceSampleId.slice(0, 8)}
                 </div>
@@ -822,8 +931,13 @@ export function V5Dashboard() {
       )}
 
       <section style={card}>
-        <h2 style={sectionTitle}>Knowledge Base — {kbFiltered.length}/{kb.length} 条可复用知识</h2>
-        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <h2 style={{ ...sectionTitle, display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none" }} onClick={() => setKbExplorerCollapsed((v) => !v)} title={kbExplorerCollapsed ? "展开知识库" : "收起知识库"}>
+          <span style={triangleBtn}>{kbExplorerCollapsed ? "▸" : "▾"}</span>
+          Knowledge Base — {kbFiltered.length}/{kb.length} 条可复用知识
+        </h2>
+        {kbExplorerCollapsed ? null : (
+        <>
+        <div style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
           {[
             ["structure", "结构视图"],
             ["scene", "场景视图"],
@@ -838,6 +952,7 @@ export function V5Dashboard() {
             </button>
           ))}
         </div>
+        <div style={{ fontSize: 11, color: "#7c8aa0", marginBottom: 12, lineHeight: 1.4 }}>{KB_VIEW_INFO[kbView] ?? ""}</div>
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <input value={kbQuery} onChange={(e) => setKbQuery(e.target.value)} placeholder="搜索 hook / rhythm / slot / audio / remotion" style={{ flex: 1, padding: 8, background: "rgba(11, 18, 32, 0.76)", border: "1px solid rgba(148, 163, 184, 0.18)", borderRadius: 6, color: "#e6edf6" }} />
           <select
@@ -874,6 +989,8 @@ export function V5Dashboard() {
           {kb.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>还没有 KB 元素 — 先 Learn 一个样本。</span>}
           {kb.length > 0 && kbFiltered.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>当前过滤条件下没有 KB 元素。</span>}
         </div>
+        </>
+        )}
       </section>
 
       {/* 2. Template + theme + AIGC gap fill (the DEFAULT same-template flow) */}
@@ -892,7 +1009,7 @@ export function V5Dashboard() {
             onClick={() => setGenMode("mix_elements")}
             style={{ ...btn, background: genMode === "mix_elements" ? accentGradient : darkControl, color: genMode === "mix_elements" ? "#fff" : "#9fb3d1", flex: 1, textAlign: "left" }}
           >
-            ▸ 混合多视频元素 <span style={{ fontWeight: 400, fontSize: 12, opacity: 0.85 }}>（高级）</span>
+            ▸ 混合多视频元素 <span style={{ fontWeight: 400, fontSize: 12, opacity: 0.85 }}>（进阶：跨多个样例拆解 hook / 节奏 / 转场 / CTA 等元素，重组成全新结构，而非照搬单个模板）</span>
           </button>
         </div>
 
@@ -905,9 +1022,9 @@ export function V5Dashboard() {
                 onChange={(e) => setTemplateId(e.target.value)}
                 style={{ width: "100%", marginTop: 4, padding: 8, background: "rgba(11, 18, 32, 0.76)", border: "1px solid rgba(148, 163, 184, 0.18)", borderRadius: 6, color: "#e6edf6" }}
               >
-                <option value="">最新学习的模板{activeTemplate ? `（${activeTemplate.name}）` : ""}</option>
+                <option value="">最新学习的模板{activeTemplate ? `（${tplLabel(activeTemplate)}）` : ""}</option>
                 {templates.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name} · {t.slotSchema.length} slots · src={t.sourceSampleId.slice(0, 8)}</option>
+                  <option key={t.id} value={t.id}>{tplLabel(t)} · {t.slotSchema.length} slots</option>
                 ))}
               </select>
             </label>
@@ -947,12 +1064,12 @@ export function V5Dashboard() {
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 8 }}>
                   <div>
                     <strong style={{ fontSize: 13 }}>素材缺口雷达</strong>
-                    <div style={{ color: muted, fontSize: 11, marginTop: 3 }}>生成前显示槽位需求；生成后用真实 slot mapping / gap report 更新。</div>
+                    <div style={{ color: muted, fontSize: 11, marginTop: 3 }}>生成前显示槽位需求；生成后用真实 slot mapping / gap report 更新。每行可直接上传你自己的素材，绑定到该槽位。</div>
                   </div>
                   <span style={{ ...tag, marginRight: 0 }}>{slotRadarRows.filter((r) => r.status === "missing" || r.status === "待补全").length} gaps</span>
                 </div>
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 680 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 800 }}>
                     <thead>
                       <tr style={{ color: muted, textAlign: "left" }}>
                         <th style={{ padding: "6px 8px", borderBottom: "1px solid #262a33" }}>结构槽位</th>
@@ -960,20 +1077,38 @@ export function V5Dashboard() {
                         <th style={{ padding: "6px 8px", borderBottom: "1px solid #262a33" }}>当前素材匹配</th>
                         <th style={{ padding: "6px 8px", borderBottom: "1px solid #262a33" }}>缺口判断</th>
                         <th style={{ padding: "6px 8px", borderBottom: "1px solid #262a33" }}>补全策略</th>
+                        <th style={{ padding: "6px 8px", borderBottom: "1px solid #262a33" }}>上传素材</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {slotRadarRows.map((row) => (
-                        <tr key={row.slot.id}>
-                          <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", fontWeight: 650 }}>{row.slot.originalRole || row.slot.id}</td>
-                          <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", color: "#9fb3d1" }}>{row.slot.kind}{row.slot.required ? " · required" : " · optional"}</td>
-                          <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", color: "#9fb3d1" }}>{row.asset}</td>
-                          <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430" }}>
-                            <span style={{ ...tag, background: statusColor(row.status), color: "#fff", marginRight: 0 }}>{row.status}</span>
-                          </td>
-                          <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", color: "#9fb3d1" }}>{row.fill}</td>
-                        </tr>
-                      ))}
+                      {slotRadarRows.map((row) => {
+                        const assignedId = slotAssignments[row.slot.id];
+                        const assignedName = assignedId ? assets.find((a) => a.id === assignedId)?.filename ?? "已上传" : null;
+                        return (
+                          <tr key={row.slot.id}>
+                            <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", fontWeight: 650 }}>{row.slot.originalRole || row.slot.id}</td>
+                            <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", color: "#9fb3d1" }}>{row.slot.kind}{row.slot.required ? " · required" : " · optional"}</td>
+                            <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", color: assignedName ? "#7fdca0" : "#9fb3d1", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{assignedName ?? row.asset}</td>
+                            <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430" }}>
+                              <span style={{ ...tag, background: assignedName ? "#16321f" : statusColor(row.status), color: assignedName ? "#7fdca0" : "#fff", marginRight: 0 }}>{assignedName ? "已上传素材" : row.status}</span>
+                            </td>
+                            <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430", color: "#9fb3d1" }}>{assignedName ? "user_asset" : row.fill}</td>
+                            <td style={{ padding: "7px 8px", borderBottom: "1px solid #1d2430" }}>
+                              {assignedName ? (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                  <span style={{ color: "#7fdca0", maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{assignedName}</span>
+                                  <button onClick={() => clearSlotAsset(row.slot.id)} disabled={!!busy} title="移除" style={{ background: "none", border: 0, color: "#ff9bb0", cursor: busy ? "default" : "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
+                                </span>
+                              ) : (
+                                <label style={{ ...tag, marginRight: 0, cursor: busy ? "default" : "pointer", background: darkControl, color: "#9fb3d1", opacity: busy ? 0.5 : 1 }}>
+                                  ＋ 上传
+                                  <input type="file" accept="image/*,video/*" disabled={!!busy} style={{ display: "none" }} onChange={(e) => assignSlotAsset(row.slot.id, e.target.files)} />
+                                </label>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1014,29 +1149,56 @@ export function V5Dashboard() {
 
             <div style={{ border: "1px solid rgba(148, 163, 184, 0.16)", borderRadius: 8, padding: 12, background: "rgba(11, 18, 32, 0.62)" }}>
               <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 8 }}>生成版本</div>
+
+              <div style={{ fontSize: 12, color: "#9fb3d1", fontWeight: 600, marginBottom: 6 }}>预设调整模板</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {creativeVariants.map((variant) => (
                   <button
                     key={variant.value}
                     disabled={!!busy || generateAllVariants}
-                    onClick={() => setSelectedVariant(variant.value)}
+                    title="再次点击可取消选择（使用中性默认）"
+                    onClick={() => setSelectedVariant((cur) => (cur === variant.value ? null : variant.value))}
                     style={{
                       ...btn,
+                      gap: 8,
+                      alignItems: "baseline",
+                      lineHeight: 1.2,
                       background: selectedVariant === variant.value && !generateAllVariants ? accentGradient : darkControl,
                       color: selectedVariant === variant.value && !generateAllVariants ? "#fff" : "#9fb3d1",
                       opacity: generateAllVariants ? 0.55 : 1
                     }}
                   >
-                    {variant.label}
+                    <span style={{ fontWeight: 650 }}>{variant.label}</span>
+                    <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.7 }}>{variant.en}</span>
                   </button>
                 ))}
               </div>
               <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 10, width: "fit-content", fontSize: 12, color: "#9fb3d1", border: "1px solid rgba(148, 163, 184, 0.16)", borderRadius: 6, padding: "6px 8px", background: "rgba(17, 24, 39, 0.72)" }}>
                 <input type="checkbox" className="v5-checkbox" style={checkboxStyle} checked={generateAllVariants} disabled={!!busy} onChange={(e) => setGenerateAllVariants(e.target.checked)} />
-                一次生成 high_click / high_conversion / high_quality
+                一次生成三个预设版本（高点击 / 高转化 / 高质感）
               </label>
               <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>
-                {generateAllVariants ? "会连续生成 3 个版本，并在 Variant Gallery 中对比。" : selectedVariantMeta.description}
+                {generateAllVariants ? "会连续生成 3 个版本，并在 Variant Gallery 中对比。" : selectedVariantMeta?.description ?? "未选预设：使用中性默认（不套用预设旋钮）。再次点击已选按钮可取消选择。"}
+              </div>
+
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(148, 163, 184, 0.14)" }}>
+                <div style={{ fontSize: 12, color: "#9fb3d1", fontWeight: 600, marginBottom: 4 }}>自定义需求（自然语言）</div>
+                <div style={{ fontSize: 11, color: "#7c8aa0", marginBottom: 6 }}>不想用预设？直接描述你想要的版本，AI 会解析成节奏 / 文案密度 / 配色 / CTA 等调整后生成。</div>
+                <textarea
+                  value={customRequest}
+                  onChange={(e) => setCustomRequest(e.target.value)}
+                  disabled={!!busy}
+                  rows={2}
+                  placeholder="例如：开头三秒更抓人，字幕更少，配色更高级，把 CTA 提前"
+                  style={{ width: "100%", boxSizing: "border-box", background: "rgba(17, 24, 39, 0.72)", color: "#e6edf6", border: "1px solid rgba(148, 163, 184, 0.2)", borderRadius: 6, padding: 8, fontSize: 12, resize: "vertical" }}
+                />
+                <button
+                  onClick={generateCustom}
+                  disabled={!customRequest.trim() || (!templates.length && !templateId) || !!busy}
+                  style={{ ...btn, marginTop: 8, width: "fit-content", opacity: customRequest.trim() && (templates.length || templateId) && !busy ? 1 : 0.5 }}
+                >
+                  {busy === "generate" ? "生成中…" : "按自定义需求生成"}
+                </button>
               </div>
             </div>
 
@@ -1047,7 +1209,7 @@ export function V5Dashboard() {
                   ? "生成三版本中…"
                   : generateAllVariants
                     ? "用此模板生成 3 个版本"
-                    : `用此模板生成视频 · ${selectedVariantMeta.label}`}
+                    : `用此模板生成视频 · ${selectedVariantMeta?.label ?? "默认"}`}
             </button>
           </div>
         )}
@@ -1057,21 +1219,27 @@ export function V5Dashboard() {
             <div style={{ fontSize: 12, color: "#7c8aa0" }}>高级模式：从知识库挑选原子元素（hook / 节奏 / 排版 / 转场 / CTA …）组合成新结构。</div>
             <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8, border: "1px solid rgba(148, 163, 184, 0.16)", borderRadius: 8, padding: 10, background: "rgba(11, 18, 32, 0.62)" }}>
               <input type="checkbox" className="v5-checkbox" style={checkboxStyle} checked={gen2RemotionCodegen} onChange={(e) => setGen2RemotionCodegen(e.target.checked)} />
-              Gen2 Remotion codegen（Doubao text LLM）
+              <span>让 AI 现场编写动画代码 <span style={{ fontWeight: 400, fontSize: 11, color: "#7c8aa0" }}>（实验性：更灵活但更慢；关闭则用现成模板拼装）</span></span>
               <span style={{ ...tag, background: gen2RemotionCodegen ? "#16321f" : darkControl, color: gen2RemotionCodegen ? "#7fdca0" : "#9fb3d1" }}>{gen2RemotionCodegen ? "ON" : "OFF"}</span>
             </label>
             <div>
-              <div style={{ fontSize: 13, marginBottom: 6 }}>Knowledge Base — {kbFiltered.length}/{kb.length} elements（点选用于合成）</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
-                {kbFiltered.map((e) => (
-                  <div key={e.id} onClick={() => toggle(selectedEls, setSelectedEls, e.id)} style={{ border: `1px solid ${selectedEls.includes(e.id) ? accent : "rgba(148, 163, 184, 0.16)"}`, borderRadius: 8, padding: 10, cursor: "pointer", background: selectedEls.includes(e.id) ? accentSoft : "rgba(11, 18, 32, 0.62)", minWidth: 0, overflow: "hidden" }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.25, ...wrapText }}>{e.name}</div>
-                    <div style={{ marginTop: 4 }}><span style={tag}>{kbCategoryFor(e)}</span><span style={tag}>{e.kind}</span><span style={tag}>{e.reusablePolicy}</span></div>
-                    <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6, lineHeight: 1.35, ...wrapText }}>{e.description.slice(0, 80)}</div>
-                  </div>
-                ))}
-                {kbFiltered.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>当前过滤条件下没有 KB 元素。</span>}
+              <div onClick={() => setKbCollapsed((v) => !v)} title={kbCollapsed ? "展开" : "收起"} style={{ fontSize: 13, marginBottom: 6, cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={triangleBtn}>{kbCollapsed ? "▸" : "▾"}</span>
+                <span>Knowledge Base — {kbFiltered.length}/{kb.length} elements（点选用于合成）</span>
+                {kbCollapsed && selectedEls.length > 0 && <span style={{ ...tag, marginRight: 0 }}>已选 {selectedEls.length}</span>}
               </div>
+              {!kbCollapsed && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+                  {kbFiltered.map((e) => (
+                    <div key={e.id} onClick={() => toggle(selectedEls, setSelectedEls, e.id)} style={{ border: `1px solid ${selectedEls.includes(e.id) ? accent : "rgba(148, 163, 184, 0.16)"}`, borderRadius: 8, padding: 10, cursor: "pointer", background: selectedEls.includes(e.id) ? accentSoft : "rgba(11, 18, 32, 0.62)", minWidth: 0, overflow: "hidden" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.25, ...wrapText }}>{e.name}</div>
+                      <div style={{ marginTop: 4 }}><span style={tag}>{kbCategoryFor(e)}</span><span style={tag}>{e.kind}</span><span style={tag}>{e.reusablePolicy}</span></div>
+                      <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6, lineHeight: 1.35, ...wrapText }}>{e.description.slice(0, 80)}</div>
+                    </div>
+                  ))}
+                  {kbFiltered.length === 0 && <span style={{ color: "#7c8aa0", fontSize: 12 }}>当前过滤条件下没有 KB 元素。</span>}
+                </div>
+              )}
             </div>
             <label style={{ fontSize: 13 }}>主题<input value={theme} onChange={(e) => setTheme(e.target.value)} style={{ width: "100%", marginTop: 4, padding: 8, background: "rgba(11, 18, 32, 0.76)", border: "1px solid rgba(148, 163, 184, 0.18)", borderRadius: 6, color: "#e6edf6" }} /></label>
             <label style={{ fontSize: 13 }}>卖点（逗号分隔）<input value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} style={{ width: "100%", marginTop: 4, padding: 8, background: "rgba(11, 18, 32, 0.76)", border: "1px solid rgba(148, 163, 184, 0.18)", borderRadius: 6, color: "#e6edf6" }} /></label>
@@ -1210,6 +1378,24 @@ export function V5Dashboard() {
                 <div style={{ marginTop: 10 }}>
                   {trace.transfer.usedKnowledgeElements.slice(0, 8).map((e) => <span key={e.id} title={(e.evidenceRefs ?? []).join(", ")} style={tag}>{e.kind}</span>)}
                 </div>
+                {(trace.transfer.targetAssetProfiles ?? []).length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>用户素材理解 {trace.transfer.targetAssetProfiles?.some((p) => p.vlmAnalyzed) ? "（VLM 看像素）" : "（启发式）"}</div>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {(trace.transfer.targetAssetProfiles ?? []).slice(0, 8).map((p) => (
+                        <div key={p.assetId} style={{ border: "1px solid #262a33", borderRadius: 6, padding: 7, fontSize: 11, background: "#11151d" }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                            <b>{p.shotType ?? p.kind}</b>
+                            {p.sceneType && <span style={tag}>{p.sceneType}</span>}
+                            {p.isHighlight && <span style={{ ...tag, background: "#16321f" }}>高光</span>}
+                            <span style={{ ...tag, marginRight: 0 }}>→ {p.bestSection}</span>
+                          </div>
+                          {(p.detectedSubjects?.length ?? 0) > 0 && <div style={{ color: "#7c8aa0", marginTop: 3 }}>{p.detectedSubjects?.slice(0, 6).join(" · ")}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div style={{ border: "1px solid #262a33", borderRadius: 8, padding: 12, background: "#0f1117" }}>
@@ -1234,9 +1420,26 @@ export function V5Dashboard() {
             </div>
           )}
 
+          {/* #7 Before / After — sample original ↔ same-template output, side by side */}
+          {result.finalVideoUrl && trace?.sample.videoUrl && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>样例原片 ↔ 同模板生成（前后对比）</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "#7c8aa0", marginBottom: 4 }}>① 样例原片（学的对象）</div>
+                  <video src={`${API}${trace.sample.videoUrl}`} controls style={{ width: "100%", borderRadius: 10, background: "#000" }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#7c8aa0", marginBottom: 4 }}>② 新主题成片（同动效模板）</div>
+                  <video src={`${API}${result.finalVideoUrl}`} poster={result.coverUrl ? `${API}${result.coverUrl}` : undefined} controls style={{ width: "100%", borderRadius: 10, background: "#000" }} />
+                </div>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: result.finalVideoUrl ? "320px 1fr" : "1fr", gap: 20 }}>
             {result.finalVideoUrl && (
-              <video src={`${API}${result.finalVideoUrl}`} controls style={{ width: 320, borderRadius: 10, background: "#000" }} />
+              <video src={`${API}${result.finalVideoUrl}`} poster={result.coverUrl ? `${API}${result.coverUrl}` : undefined} controls style={{ width: 320, borderRadius: 10, background: "#000" }} />
             )}
             <div>
               {/* same_template: slot bindings + readiness */}
@@ -1327,15 +1530,24 @@ export function V5Dashboard() {
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                 <input value={reviseTheme} onChange={(e) => setReviseTheme(e.target.value)} placeholder="新主题（可选）" style={{ flex: "1 1 220px", padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} />
                 <input value={reviseHeadline} onChange={(e) => setReviseHeadline(e.target.value)} placeholder="新主标题文案（可选）" style={{ flex: "1 1 220px", padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }} />
+                <select value={reviseRhythm} onChange={(e) => setReviseRhythm(e.target.value as typeof reviseRhythm)} title="节奏" style={{ padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }}>
+                  <option value="">节奏…</option><option value="aggressive">快·冲</option><option value="balanced">均衡</option><option value="slow">慢·高级</option>
+                </select>
+                <select value={reviseTextDensity} onChange={(e) => setReviseTextDensity(e.target.value as typeof reviseTextDensity)} title="字幕密度" style={{ padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }}>
+                  <option value="">字幕…</option><option value="dense">密集</option><option value="medium">适中</option><option value="minimal">精简</option>
+                </select>
+                <select value={revisePaletteMood} onChange={(e) => setRevisePaletteMood(e.target.value as typeof revisePaletteMood)} title="配色风格" style={{ padding: 8, background: "#0f1117", border: "1px solid #262a33", borderRadius: 6, color: "#e6edf6" }}>
+                  <option value="">配色…</option><option value="bold">大胆</option><option value="energetic">活力</option><option value="premium">高级</option><option value="clean">干净</option>
+                </select>
                 <button
-                  style={{ ...btn, opacity: (reviseTheme.trim() || reviseHeadline.trim()) && !busy ? 1 : 0.5 }}
-                  disabled={(!reviseTheme.trim() && !reviseHeadline.trim()) || !!busy}
+                  style={{ ...btn, opacity: (reviseTheme.trim() || reviseHeadline.trim() || reviseRhythm || reviseTextDensity || revisePaletteMood) && !busy ? 1 : 0.5 }}
+                  disabled={(!reviseTheme.trim() && !reviseHeadline.trim() && !reviseRhythm && !reviseTextDensity && !revisePaletteMood) || !!busy}
                   onClick={() => revise(result)}
                 >
                   {busy === "revise" ? "改写中…" : "改写并重渲染"}
                 </button>
               </div>
-              <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>patch-first：只换主题/文案/配色，复用已生成的画面与音频；要换画面请重新生成。</div>
+              <div style={{ fontSize: 11, color: "#7c8aa0", marginTop: 6 }}>theme/文案/配色为 patch-first（复用画面）；节奏/字幕/配色风格会重写文案与包装（同模板、不换画面）。换画面请重新生成。</div>
               <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {["开头更抓人一些", "字幕更少，节奏更快", "CTA 更强，把购买理由提前", "更像原模板的节奏", "画面更干净更高级"].map((instruction) => (
