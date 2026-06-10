@@ -25,8 +25,9 @@ test_videos/corpus/*/.frames_tmp/
 
 assets/
 spec_v2/implementation-status.md
-# Ignore local/generated docs.
-docs/
+# Ignore local/generated docs, but keep the required submission summary.
+docs/*
+!docs/项目说明.md
 storage/
 test_videos/manual/
 marketing_demo/
@@ -55,3 +56,6 @@ verify_submission/
 .tmp-verify/
 baokuan_manual_test_assets_v2/
 verify_submission.zip
+test_runs/
+test_assets/
+demo_upload_assets/

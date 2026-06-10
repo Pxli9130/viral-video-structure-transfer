@@ -18,6 +18,8 @@ export interface CreativeKnobs {
   motionIntensity: IntensityKnob;
   /** Bring the CTA forward by N seconds (0..2). */
   ctaAdvanceSec: number;
+  /** Frontload the feature/benefit section to start before this second (0 = off; NL "把功能信息提前到第N秒前"). */
+  frontloadBeforeSec: number;
   paletteMood: PaletteMoodKnob;
   audioMood: AudioMoodKnob;
 }
@@ -28,15 +30,16 @@ export const DEFAULT_KNOBS: CreativeKnobs = {
   textDensity: "medium",
   motionIntensity: "medium",
   ctaAdvanceSec: 0,
+  frontloadBeforeSec: 0,
   paletteMood: "bold",
   audioMood: "balanced"
 };
 
 /** brief.variant -> a distinct knob preset (the 3 multi-version strategies). */
 export const VARIANT_KNOBS: Record<string, CreativeKnobs> = {
-  high_click: { rhythm: "aggressive", hookRatio: 0.6, textDensity: "dense", motionIntensity: "high", ctaAdvanceSec: 0.8, paletteMood: "bold", audioMood: "energetic" },
-  high_conversion: { rhythm: "balanced", hookRatio: 0.9, textDensity: "dense", motionIntensity: "medium", ctaAdvanceSec: 1.2, paletteMood: "energetic", audioMood: "balanced" },
-  high_quality: { rhythm: "slow", hookRatio: 1.0, textDensity: "minimal", motionIntensity: "low", ctaAdvanceSec: 0, paletteMood: "premium", audioMood: "soft" }
+  high_click: { rhythm: "aggressive", hookRatio: 0.6, textDensity: "dense", motionIntensity: "high", ctaAdvanceSec: 0.8, frontloadBeforeSec: 0, paletteMood: "bold", audioMood: "energetic" },
+  high_conversion: { rhythm: "balanced", hookRatio: 0.9, textDensity: "dense", motionIntensity: "medium", ctaAdvanceSec: 1.2, frontloadBeforeSec: 0, paletteMood: "energetic", audioMood: "balanced" },
+  high_quality: { rhythm: "slow", hookRatio: 1.0, textDensity: "minimal", motionIntensity: "low", ctaAdvanceSec: 0, frontloadBeforeSec: 0, paletteMood: "premium", audioMood: "soft" }
 };
 
 export type CreativeKnobPatch = Partial<CreativeKnobs>;
@@ -50,6 +53,7 @@ export function resolveCreativeKnobs(variant?: string, patch?: CreativeKnobPatch
     textDensity: patch?.textDensity ?? base.textDensity,
     motionIntensity: patch?.motionIntensity ?? base.motionIntensity,
     ctaAdvanceSec: patch?.ctaAdvanceSec ?? base.ctaAdvanceSec,
+    frontloadBeforeSec: patch?.frontloadBeforeSec ?? base.frontloadBeforeSec,
     paletteMood: patch?.paletteMood ?? base.paletteMood,
     audioMood: patch?.audioMood ?? base.audioMood
   };

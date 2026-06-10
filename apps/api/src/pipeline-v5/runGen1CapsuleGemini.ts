@@ -290,6 +290,10 @@ RECONSTRUCT EVERY VISUAL LAYER — do NOT reduce a footage/photo-heavy video to 
 DRAW IN CODE BY DEFAULT (it is FREE): all on-screen text, shapes, gradients, masks, kinetic typography,
 abstract motion graphics, particles, UI/data-viz, and any 3D you can build with @remotion/three — render
 these IN CODE. Do NOT create an asset / assetPlan entry for anything code can plausibly draw.
+CONSISTENCY (enforced): every assetPlan key MUST be rendered by a real <Img src={assets.<key>?.src}/> or
+<OffthreadVideo src={assets.<key>?.src}/> layer in the code, and every such layer MUST have an assetPlan entry —
+they must match 1:1. NEVER declare an asset key you don't render (it leaves the user's uploaded photo invisible).
+If the source is pure text / motion-graphics with no real photos or footage, return an EMPTY "assetPlan": [].
 Only the real PIXEL CONTENT you canNOT draw — live-action footage, movie clips, photos, b-roll, real
 product shots — are "MISSING 素材" (assets to fill later). For EACH of those, render an asset-backed layer
 with a STABLE asset key, and MINIMISE generated VIDEO (it is the most expensive step):

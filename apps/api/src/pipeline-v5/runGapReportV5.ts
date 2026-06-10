@@ -14,6 +14,17 @@ function sectionRole(comp: v5.CompositionProgram, sectionId?: string): v5.Sectio
 
 export function runGapReportV5(comp: v5.CompositionProgram, targetProfiles: v5.TargetAssetProfile[]): v5.GapReportV5 {
   const mediaAssets = targetProfiles.filter((p) => p.kind === "image" || p.kind === "video" || p.kind === "logo");
+  const usedOrderedMedia = new Set<string>();
+  const takeOrderedMedia = (kind: v5.PlaceholderKindV5) => {
+    const compatible = (p: v5.TargetAssetProfile) => {
+      if (usedOrderedMedia.has(p.assetId)) return false;
+      if (kind === "logo") return p.kind === "logo" || p.kind === "image";
+      return p.kind === "image" || p.kind === "video";
+    };
+    const picked = mediaAssets.find(compatible);
+    if (picked) usedOrderedMedia.add(picked.assetId);
+    return picked;
+  };
   const gaps: v5.GapV5[] = [];
 
   comp.slotPlan.forEach((slot, i) => {
@@ -57,33 +68,19 @@ export function runGapReportV5(comp: v5.CompositionProgram, targetProfiles: v5.T
 
     // Media slots: need a compatible target asset.
     if (MEDIA_KINDS.has(kind)) {
-      const exact = mediaAssets.find((p) => p.bestSection === role && (p.kind === "image" || p.kind === "video"));
-      const any = exact ?? mediaAssets.find((p) => p.kind === "image" || p.kind === "video");
-      if (exact) {
+      const ordered = takeOrderedMedia(kind);
+      if (ordered) {
         gaps.push({
           id: `gap_${i + 1}`,
           slotId: slot.id,
           sourceElementId: slot.sourceElementId,
           status: "matched",
           required: kind,
-          matchedAssetIds: [exact.assetId],
-          reason: `Target asset matched by section (${role}).`,
+          matchedAssetIds: [ordered.assetId],
+          reason: `Target asset matched by user-selected order (${role ?? "section"} slot gets next ordered asset).`,
           impact: "low",
           selectedRepair: "asset_reuse",
           expectedVisualOrAudioResult: "Target media placed in slot."
-        });
-      } else if (any) {
-        gaps.push({
-          id: `gap_${i + 1}`,
-          slotId: slot.id,
-          sourceElementId: slot.sourceElementId,
-          status: "weak_match",
-          required: kind,
-          matchedAssetIds: [any.assetId],
-          reason: "Reusing a target asset from another section (section mismatch).",
-          impact: "medium",
-          selectedRepair: "asset_reuse",
-          expectedVisualOrAudioResult: "Cropped/zoomed target media."
         });
       } else {
         gaps.push({

@@ -373,7 +373,10 @@ async function createAssetFromRequest(req: Request, projectId: string, file?: Ex
     ASSET_ROLES,
     "user_text"
   );
-  const filename = file?.originalname ?? String(req.body.originalName ?? req.body.filename ?? `${role}.${type === "video" ? "mp4" : "txt"}`);
+  // multer decodes multipart filenames as latin1, so non-ASCII (e.g. Chinese) names arrive mojibake'd
+  // ("book_fair_01_éã¥…"). Re-decode to UTF-8 so the original filename displays correctly in the UI/reports.
+  const rawName = file?.originalname ?? String(req.body.originalName ?? req.body.filename ?? `${role}.${type === "video" ? "mp4" : "txt"}`);
+  const filename = file?.originalname ? Buffer.from(rawName, "latin1").toString("utf8") : rawName;
   const id = stableId("asset", projectId, role, filename, req.body.text ?? nowIso());
   let savedPath: string | undefined;
 

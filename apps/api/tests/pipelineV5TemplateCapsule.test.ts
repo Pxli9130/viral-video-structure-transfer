@@ -9,7 +9,8 @@ import {
   runGen1NeutralTemplate,
   toEvidenceTimelineV5,
   validateTemplateCapsule,
-  runSameTemplateGeneration
+  runSameTemplateGeneration,
+  isAssetCompatibleWithTemplateSlot
 } from "../src/pipeline-v5/index.js";
 import { KnowledgeBaseV5 } from "../src/services/knowledgeBaseV5.js";
 
@@ -53,6 +54,41 @@ describe("V5.1 RemotionTemplateCapsule (Gen1 reconstruction + validation + KB + 
     storageDir = mkdtempSync(path.join(tmpdir(), "vvst-cap-"));
   });
   afterAll(() => rmSync(storageDir, { recursive: true, force: true }));
+
+  it("same_template asset compatibility keeps videos out of image-only slots", () => {
+    const imageAsset: Asset = { ...asset, id: "img_1", role: "user_image", type: "image", filename: "charger_hero.png" };
+    const videoAsset: Asset = { ...asset, id: "vid_1", role: "source_video", type: "video", filename: "charger_demo.mp4" };
+    const imageSlot: v5.TemplateSlot = {
+      id: "hero_image",
+      kind: "product_image",
+      required: true,
+      originalRole: "hero product still",
+      replacementPolicy: "user_asset",
+      propPath: "assets.hero",
+      mediaKind: "image"
+    };
+    const videoSlot: v5.TemplateSlot = {
+      ...imageSlot,
+      id: "demo_clip",
+      originalRole: "moving demo footage",
+      propPath: "assets.demoClip",
+      mediaKind: "video"
+    };
+    const textSlot: v5.TemplateSlot = {
+      id: "headline",
+      kind: "headline",
+      required: true,
+      originalRole: "opening copy",
+      replacementPolicy: "text_generate",
+      propPath: "copy.headline"
+    };
+
+    expect(isAssetCompatibleWithTemplateSlot(imageSlot, imageAsset)).toBe(true);
+    expect(isAssetCompatibleWithTemplateSlot(imageSlot, videoAsset)).toBe(false);
+    expect(isAssetCompatibleWithTemplateSlot(videoSlot, videoAsset)).toBe(true);
+    expect(isAssetCompatibleWithTemplateSlot(videoSlot, imageAsset)).toBe(false);
+    expect(isAssetCompatibleWithTemplateSlot(textSlot, imageAsset)).toBe(false);
+  });
 
   it("Gen1 produces a props-driven capsule that validates (no sample paths, compiles, slots listed)", () => {
     const evidence = ev();

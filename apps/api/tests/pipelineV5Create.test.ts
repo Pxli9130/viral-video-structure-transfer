@@ -54,6 +54,20 @@ const targetImage: Asset = {
   metadata: { width: 1080, height: 1080 }
 };
 
+const targetImageProofFirst: Asset = {
+  ...targetImage,
+  id: "asset_target_order_first",
+  filename: "proof_detail_first.jpg",
+  tags: ["proof", "detail"]
+};
+
+const targetImageHeroSecond: Asset = {
+  ...targetImage,
+  id: "asset_target_order_second",
+  filename: "hero_second.jpg",
+  tags: ["hero"]
+};
+
 describe("pipeline-v5 CREATE (deterministic, no external APIs)", () => {
   let storageDir: string;
   let elements: v5.KnowledgeElement[];
@@ -125,6 +139,20 @@ describe("pipeline-v5 CREATE (deterministic, no external APIs)", () => {
     });
     expect(out.gates.filter((g) => g.status === "fail")).toEqual([]);
     expect(out.gates.find((g) => g.id === "V5-G29")?.status).toBe("pass");
+  });
+
+  it("honors user target asset order for the first visible media slots", async () => {
+    const out = await runCreateV5({
+      projectId: "proj_create",
+      generationId: "gen_order",
+      brief: { theme: "ordered asset demo", targetDurationSec: 12, aspectRatio: "9:16" },
+      targetAssets: [targetImageProofFirst, targetImageHeroSecond],
+      selectedElements: elements
+    });
+    const firstTargetMedia = out.finalProgram.renderRecipe.layers.find((layer) =>
+      layer.type === "media" && typeof layer.assetId === "string" && layer.assetId.startsWith("asset_target_order")
+    );
+    expect(firstTargetMedia?.assetId).toBe("asset_target_order_first");
   });
 
   it("degrades gracefully with ZERO target assets (procedural fills, still valid + no missing-unresolved)", async () => {

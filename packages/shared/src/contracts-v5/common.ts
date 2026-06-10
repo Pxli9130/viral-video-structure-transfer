@@ -264,6 +264,13 @@ export interface CreativeBriefV5 {
   targetDurationSec?: number;
   aspectRatio?: AspectRatioV5;
   sellingPoints?: string[];
+  /** Freeform natural-language requirement fed DIRECTLY into the LLM code-rewrite (one pass modifies the
+   *  Remotion code to satisfy it) — e.g. "把卖点提前，开头三秒更抓人，清掉残留的运动鞋文案". */
+  customNL?: string;
+  /** Generation strategy. "llm" = the LLM rewrites the template code from theme+sellingPoints+customNL+preset
+   *  and is authoritative (deterministic text/layout rules become fallback for chunks the LLM can't rewrite).
+   *  "preset" = deterministic knob-driven rewrite (the legacy always-on hard-rule path). Default "preset". */
+  promptMode?: "llm" | "preset";
 }
 
 /** Cross-element compatibility metadata used by the planner to avoid incoherent combinations. */

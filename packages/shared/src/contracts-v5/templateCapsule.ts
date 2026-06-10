@@ -265,6 +265,8 @@ export interface TemplatePatchSet {
   motionIntensity?: "high" | "medium" | "low";
   /** Bring the CTA forward by N seconds. */
   ctaAdvanceSec?: number;
+  /** Frontload key info: pull the feature/benefit section to start before this second (NL: "把功能信息提前到第N秒前"). */
+  frontloadBeforeSec?: number;
   paletteMood?: "bold" | "premium" | "clean" | "energetic";
 }
 
