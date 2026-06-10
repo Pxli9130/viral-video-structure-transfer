@@ -264,7 +264,7 @@ async function exerciseUploadButtons(page) {
     await clickAndShow(upload.getByRole("button", { name: "Upload" }).nth(1), "Upload：上传目标素材", 3000, VIEW_PAUSE_MS * 1.4);
     await waitForUiIdle(page, "上传目标素材");
   } else {
-    skip("Upload：未提供 DEMO_TARGET_FILES，目标素材上传按钮可由 scripts/tmp-mix-ui-generate.mjs 覆盖");
+    skip("Upload：未提供 DEMO_TARGET_FILES；如需录制目标素材上传，请通过 DEMO_TARGET_FILES 传入本地素材路径。");
   }
 }
 
