@@ -22,12 +22,21 @@ export interface ContextRewriteResult {
   codeBundle: v5.RemotionTemplateCapsule["codeBundle"];
   usedAi: boolean;
   warnings: string[];
+  /** True if ANY target chunk could NOT be cleanly rewritten by the LLM (fell back to a targeted text-swap or
+   *  kept the original). The caller uses this to decide whether the deterministic layout safety net (de-overlap)
+   *  is needed: in LLM-primary mode a fully-clean rewrite is trusted and the hard rules are skipped. */
+  hadFallback: boolean;
 }
 
-export function buildContextRewritePrompt(code: string, theme: string, sellingPoints: string[], repairErrors?: string[], extraDirective?: string): string {
+export function buildContextRewritePrompt(code: string, theme: string, sellingPoints: string[], repairErrors?: string[], extraDirective?: string, customNL?: string): string {
   const points = sellingPoints.filter(Boolean);
   const repair = repairErrors?.length ? `\n\nYour previous reply had a problem. Fix exactly and resend the WHOLE component:\n- ${repairErrors.slice(0, 6).join("\n- ")}` : "";
   const extra = extraDirective ? `\n\nIMPORTANT EXTRA DIRECTIVE (must satisfy this):\n${extraDirective}` : "";
+  // The user's freeform instruction is the HIGHEST-priority directive — the LLM should modify the code to
+  // satisfy it (it overrides the generic rules where they conflict, e.g. "字幕更少" / "把卖点提前" / "清掉残留英文").
+  const userReq = customNL && customNL.trim()
+    ? `\n\n========== USER REQUIREMENT (HIGHEST PRIORITY — satisfy this exactly, it overrides the generic rules where they conflict) ==========\n${customNL.trim()}\n========== end user requirement ==========`
+    : "";
   return `You are given a complete Remotion v4 component that renders one specific ad video. Rewrite it for a
 NEW campaign.
 
@@ -39,6 +48,10 @@ Rewrite RULES:
 - Replace EVERY readable on-screen word (headlines, captions, CTAs, kinetic text, canvas fillText/strokeText,
   3D text, SVG <text>) with NEW copy that fits the new theme + key points. Nothing from the original ad's
   wording may remain.
+- FIT THE FRAME (9:16 portrait): the big animated HEADLINE must stay SHORT — at most ~6 Chinese characters or
+  ~14 latin characters — so it renders on ONE line WITHOUT overflowing the screen width. If a large headline
+  text node has no width-fit/wrap style, ALSO add maxWidth 92% + word-wrap and reduce its fontSize so it never
+  gets clipped at the edges. Keep secondary captions short too.
 - You MAY retheme colours (background, accents, text) to fit the new theme. Always keep STRONG contrast
   between text and its background (never render text in a colour close to its background colour).
 - KEEP EVERYTHING ELSE IDENTICAL: component structure, layout, every Sequence, all animation/motion/3D,
@@ -58,7 +71,7 @@ example, or commented-out triple-backtick fence inside the module — emit exact
 COMPONENT TO REWRITE:
 \`\`\`tsx
 ${code.slice(0, 16000)}
-\`\`\`${repair}${extra}`;
+\`\`\`${repair}${extra}${userReq}`;
 }
 
 const MIN_MODULE_LEN = 24; // a bare `export const X = () => null;` is ~28 chars — don't reject tiny-but-valid chunks.
@@ -146,6 +159,164 @@ export function sourceReadableStrings(code: string): string[] {
   return [...set].filter((s) => s.length >= 2);
 }
 
+/**
+ * TARGETED fallback for a chunk whose FULL rewrite failed (a large chunk makes a lite model truncate/garble the
+ * whole-module reply → unparseable → the chunk would otherwise keep the SOURCE's baked words, e.g. hardcoded
+ * sneaker product titles "NMD R1 Speed"). Instead of re-emitting the whole module, ask ONLY for a small
+ * {original->replacement} map for the readable source strings (tiny output = reliable, no truncation), then
+ * DETERMINISTICALLY swap those string literals / JSX text in the code. Returns the re-texted code or null.
+ */
+/** Human-readable DISPLAY string literals in the code (headlines, captions, product names like "NMD R1 Speed",
+ *  prices like "$180", CJK) — excludes css values, paths/urls, and bare code identifiers. Broader than
+ *  sourceReadableStrings (which is CJK + ALL-CAPS only) so it also catches mixed-case product titles. */
+export function displayStrings(code: string): string[] {
+  const noComments = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const set = new Set<string>();
+  // Only ' and " delimiters — NOT backtick. A template literal `a${x}b` next to another one makes a naive
+  // backtick-pair span the CODE between them (e.g. `, color: textCol, … textShadow:`), which the sweep would
+  // then splice into and corrupt → the whole rewrite gets reverted. Dynamic backtick text can't be swapped anyway.
+  for (const m of noComments.matchAll(/(['"])((?:\\.|(?!\1)[^\\]){2,64})\1/g)) {
+    const s = m[2];
+    if (!/[A-Za-z一-鿿]/.test(s)) continue;                                            // must contain a letter / CJK
+    if (/[<>{}=]/.test(s)) continue;                                                   // JSX / SVG-attribute fragment, not display text
+    if (/[`]|\$\{|^\s*,|[A-Za-z-]\s*:\s*['"]/.test(s)) continue;                       // mis-captured CODE (style object / between-literals span), not display text
+    if (/^[./]|\/\/|\\|\.(tsx?|jsx?|png|jpe?g|mp4|mov|svg|css|woff2?)\b|^https?:/i.test(s)) continue;   // real paths / files / urls (keeps "$100k/mo", "24/7")
+    if (/(?:^|[^a-z])(?:px|em|rem|vh|vw|deg|fr)\b|%|rgba?\(|hsla?\(|#[0-9a-fA-F]{3,8}\b|linear-gradient|solid|dashed|center|space-between|flex-|absolute|relative|sticky|hidden|cover|contain|sans-serif|monospace|inherit|translate|rotate|scale|ease|cubic-bezier|bold|italic|uppercase|lowercase|pointer/i.test(s)) continue; // css-ish
+    if (/^[a-z][a-zA-Z0-9_]*$/.test(s)) continue;                                              // single camelCase identifier (prop key)
+    if (/\s/.test(s) || /[一-鿿]/.test(s) || /^\$?\d/.test(s) || /^[A-Z][A-Za-z0-9]/.test(s)) set.add(s.trim()); // display-like
+  }
+  return [...set].filter((s) => s.length >= 2);
+}
+
+export async function retextChunk(code: string, theme: string, sellingPoints: string[], models: Gen1ModelFn[]): Promise<string | null> {
+  const words = displayStrings(code).slice(0, 40);
+  if (!words.length) return null;
+  const prompt =
+    `You are re-theming an ad video to a NEW product. Below is a JSON array of the ORIGINAL on-screen text ` +
+    `strings (headlines, captions, product names, prices). For the NEW theme "${theme || "the product"}"` +
+    `${sellingPoints.filter(Boolean).length ? ` (key selling points: ${sellingPoints.filter(Boolean).join(", ")})` : ""}, ` +
+    `give a SHORT, punchy replacement for EACH string IN THE THEME'S LANGUAGE — big headlines <= 6 Chinese / 14 latin ` +
+    `chars; keep numbers/prices realistic for the NEW product; NOTHING from the original product may remain. ` +
+    `Return ONLY a JSON object mapping each original string to its replacement, no prose:\n${JSON.stringify(words)}`;
+  for (const model of models) {
+    let raw: string;
+    try { raw = await model(prompt); } catch { continue; }
+    let map: Record<string, unknown>;
+    try {
+      const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+      if (s < 0 || e <= s) continue;
+      map = JSON.parse(raw.slice(s, e + 1)) as Record<string, unknown>;
+    } catch { continue; }
+    let out = code, changed = 0;
+    // Replace longest-first so a substring word doesn't partially clobber a longer one.
+    for (const w of [...words].sort((a, b) => b.length - a.length)) {
+      const repl = map[w];
+      if (typeof repl !== "string" || !repl.trim() || repl === w) continue;
+      const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const quoted = new RegExp(`(['"\`])${esc}\\1`, "g");
+      const before = out;
+      out = out.replace(quoted, (_m, q) => `${q}${repl}${q}`);        // string literals
+      if (out === before) out = out.split(w).join(repl);              // bare JSX text fallback
+      if (out !== before) changed++;
+    }
+    if (changed) return out;
+  }
+  return null;
+}
+
+/** JSX text nodes (`>Layout.dev<`, `>$100k/mo<`) — display text that lives BETWEEN tags, not in a quoted
+ *  literal, so displayStrings (quoted-only) misses it. These are exactly the brand/metric leftovers a
+ *  succeeded-but-unchanged rewrite keeps. */
+export function jsxTextNodes(code: string): string[] {
+  const noComments = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const set = new Set<string>();
+  for (const m of noComments.matchAll(/>([^<>{}\n]{2,50})</g)) {
+    const s = m[1].trim();
+    if (!/[A-Za-z一-鿿]/.test(s)) continue;                                  // must read as text
+    if (/[=]/.test(s) || /^https?:/i.test(s)) continue;
+    if (/\.(tsx?|jsx?|png|jpe?g|mp4|mov|svg|css|woff2?)\b/i.test(s)) continue;
+    if (/^[a-z][a-zA-Z0-9_]*$/.test(s)) continue;                            // bare identifier
+    set.add(s);
+  }
+  // Display-prop ATTRIBUTE values (`text="$100k/mo"`, `label="built"`, `title="…"`) — display copy passed to a
+  // component, missed by both the >text< node scan and the quoted-literal scan's css/path filters.
+  for (const m of noComments.matchAll(/\b(?:text|label|title|caption|heading|headline|subtitle|placeholder)\s*=\s*(['"])((?:\\.|(?!\1)[^\\]){2,50})\1/g)) {
+    const s = m[2].trim();
+    if (/[一-鿿]/.test(s) || /[A-Za-z]/.test(s) || /\d/.test(s)) set.add(s);
+  }
+  return [...set].filter((s) => s.length >= 2);
+}
+
+/**
+ * GLOBAL theme-sweep (Phase 1.7) — the safety net that runs on EVERY chunk regardless of whether its full
+ * rewrite "succeeded". A lite model often returns a chunk that PARSES (so it's accepted) yet leaves English
+ * source copy untouched — e.g. "Create a high-end online sneaker marketplace", the brand "Layout.dev", the
+ * metric "$100k/mo". Those never hit the fellBack-only retext. Here we collect ALL on-screen text (quoted
+ * literals + JSX text nodes), ask the model for replacements ONLY for the strings that DON'T fit the new
+ * theme, and deterministically swap them. Returns swept code or null if nothing was off-theme/changed.
+ */
+async function askSweepMap(model: Gen1ModelFn, words: string[], theme: string, sellingPoints: string[]): Promise<Record<string, string> | null> {
+  const prompt =
+    `You are auditing the on-screen text of an ad video that was re-themed to the NEW product "${theme || "the product"}"` +
+    `${sellingPoints.filter(Boolean).length ? ` (selling points: ${sellingPoints.filter(Boolean).join(", ")})` : ""}. ` +
+    `Below is a JSON array of on-screen text strings still in the code. Any string that does NOT clearly belong to the ` +
+    `new product MUST be replaced — that includes leftover English source copy, other brand names, off-topic feature ` +
+    `names (e.g. "Clip Editor", "Lip Sync", "sneaker", "marketplace"), and stale metrics/prices. Return a JSON object ` +
+    `mapping EACH such string to a SHORT replacement in the theme's language that fits "${theme || "the product"}" — big ` +
+    `headlines <= 6 Chinese / 14 latin chars, feature names short, numbers realistic for the new product. Strings that ` +
+    `ALREADY fit the new product: leave them OUT. If every string already fits, return {}. Return ONLY the JSON object:\n` +
+    JSON.stringify(words);
+  let raw: string;
+  try { raw = await model(prompt); } catch { return null; }
+  try {
+    const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+    if (s < 0 || e <= s) return null;
+    const obj = JSON.parse(raw.slice(s, e + 1)) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v !== "string") continue;
+      // Sanitize: a replacement carrying a quote / backtick / newline would UNTERMINATE the string literal it is
+      // spliced into (parse error -> the whole rewrite gets reverted to the original). Strip those + clamp length.
+      const clean = v.replace(/[\r\n]+/g, " ").replace(/['"`\\]/g, "").trim().slice(0, 48);
+      if (clean && clean !== k) out[k] = clean;
+    }
+    return out;
+  } catch { return null; }
+}
+
+export async function themeSweepText(code: string, theme: string, sellingPoints: string[], models: Gen1ModelFn[]): Promise<string | null> {
+  const all = [...new Set([...displayStrings(code), ...jsxTextNodes(code)])].slice(0, 80);
+  if (!all.length) return null;
+  const themeCJK = /[一-鿿]/.test(theme);
+  const applyMap = (src: string, words: string[], map: Record<string, string>): { out: string; changed: number } => {
+    let out = src, changed = 0;
+    for (const w of [...words].sort((a, b) => b.length - a.length)) {
+      const repl = map[w];
+      if (!repl) continue;
+      const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const before = out;
+      out = out.replace(new RegExp(`(['"\`])${esc}\\1`, "g"), (_m, q) => `${q}${repl}${q}`);   // quoted literal
+      if (out === before) out = out.split(w).join(repl);                                         // JSX text node / bare
+      if (out !== before) changed++;
+    }
+    return { out, changed };
+  };
+  let out = code, total = 0, pending = all;
+  // Run each model in turn; after the first pass, only RESIDUAL off-theme strings (still present, and — for a CJK
+  // theme — still pure-latin, i.e. un-rethemed) are handed to the next (typically more reliable) model. This stops a
+  // lite model that maps only the headlines and returns from leaving a whole marquee of English feature names behind.
+  for (const model of models) {
+    if (!pending.length) break;
+    const map = await askSweepMap(model, pending, theme, sellingPoints);
+    if (map && Object.keys(map).length) {
+      const r = applyMap(out, pending, map);
+      out = r.out; total += r.changed;
+    }
+    pending = pending.filter((w) => out.includes(w) && (!themeCJK || (!/[一-鿿]/.test(w) && /[A-Za-z]/.test(w))));
+  }
+  return total ? out : null;
+}
+
 export async function runCapsuleContextRewrite(input: {
   capsule: v5.RemotionTemplateCapsule;
   theme: string;
@@ -158,6 +329,12 @@ export async function runCapsuleContextRewrite(input: {
   maxAttempts?: number;
   /** Extra hard requirement injected into the prompt (e.g. a colour-fidelity correction or creative-knob directive). */
   extraDirective?: string;
+  /** Freeform user instruction injected as the HIGHEST-priority directive of the rewrite prompt (LLM-primary mode). */
+  customNL?: string;
+  /** Where the deterministic theme-sweep (Phase 1.7) runs. "all" (default) sweeps every chunk — the legacy
+   *  always-on hard rule. "fallback" sweeps ONLY chunks the LLM could not cleanly rewrite (fell back), so a
+   *  successful LLM rewrite is trusted and never post-processed by the deterministic text rule. */
+  sweepScope?: "all" | "fallback";
 }): Promise<ContextRewriteResult> {
   const warnings: string[] = [];
   const original = input.capsule.codeBundle;
@@ -166,7 +343,7 @@ export async function runCapsuleContextRewrite(input: {
   const isMulti = original.files.length > 1;
   const targets = (isMulti ? original.files.filter((f) => f.path !== original.entryFile) : original.files.filter((f) => f.path === original.entryFile))
     .filter((f) => typeof f.content === "string" && f.content.length);
-  if (!targets.length) return { codeBundle: original, usedAi: false, warnings: ["no text-bearing code to rewrite"] };
+  if (!targets.length) return { codeBundle: original, usedAi: false, warnings: ["no text-bearing code to rewrite"], hadFallback: true };
   const fixture = (input.capsule.fixtures?.neutralFixture ?? {}) as Record<string, unknown>;
   const maxAttempts = Math.max(1, input.maxAttempts ?? 2);
   const concurrency = Number(process.env.REWRITE_CONCURRENCY ?? 4);
@@ -185,7 +362,7 @@ export async function runCapsuleContextRewrite(input: {
     for (const model of models) {
       for (let a = 0; a < attempts; a++) {
         try {
-          const raw = await model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, lastErrors, input.extraDirective));
+          const raw = await model(buildContextRewritePrompt(f.content, input.theme, input.sellingPoints, lastErrors, input.extraDirective, input.customNL));
           const tsx = extractRewrittenTsx(raw, expectExport);
           if (tsx) {
             const survived = sourceWords.filter((w) => tsx.includes(w));
@@ -218,10 +395,59 @@ export async function runCapsuleContextRewrite(input: {
     if (r.content) rewritten.set(r.path, r.content);
     else fellBack.push({ path: r.path, error: r.error });
   }
+  // Chunks the LLM rewrote cleanly in Phase 1 — in "fallback" sweep mode these are TRUSTED (the deterministic
+  // theme-sweep never touches them; only chunks that fall back below get the hard-rule cleanup).
+  const phase1Clean = new Set(rewritten.keys());
+  const hadAnyFallback = () => fellBack.length > 0 || targets.some((t) => !phase1Clean.has(t.path));
+  // Phase 1.5 — for chunks whose FULL rewrite failed (large chunk → model truncates/garbles the whole module),
+  // try a TARGETED text swap so the source's baked words (e.g. hardcoded sneaker titles "NMD R1 Speed") don't
+  // leak into the new-theme video. Re-texted chunks move out of fellBack; the bundle is still compile/render-gated.
+  if (fellBack.length) {
+    const retexted = await mapLimit(fellBack, concurrency, async (fb) => {
+      const f = targets.find((t) => t.path === fb.path);
+      const swapped = f ? await retextChunk(f.content, input.theme, input.sellingPoints, models).catch(() => null) : null;
+      return { path: fb.path, content: swapped };
+    });
+    const stillFailed: typeof fellBack = [];
+    for (const fb of fellBack) {
+      const rt = retexted.find((x) => x.path === fb.path);
+      if (rt?.content) { rewritten.set(fb.path, rt.content); warnings.push(`chunk ${fb.path}: full rewrite failed -> targeted text swap applied (source words replaced for new theme)`); }
+      else stillFailed.push(fb);
+    }
+    fellBack.length = 0;
+    fellBack.push(...stillFailed);
+  }
   for (const fb of fellBack) warnings.push(`chunk ${fb.path}: ${fb.error ?? "unparseable"} -> kept original chunk code`);
   if (!rewritten.size) {
     warnings.push("context rewrite failed (no chunk produced usable output); using the original (un-rethemed) capsule code.");
-    return { codeBundle: original, usedAi: false, warnings };
+    return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
+  }
+
+  // Phase 1.7 — GLOBAL theme-sweep over EVERY target (rewritten OR kept-original). A chunk whose full rewrite
+  // parsed but left English source copy/brands/metrics ("Create a high-end online sneaker marketplace",
+  // "Layout.dev", "$100k/mo") never reaches the fellBack-only retext above; this final pass catches those by
+  // collecting all on-screen text (quoted + JSX text nodes) and swapping just the off-theme ones. Best-effort.
+  {
+    // In LLM-primary mode (sweepScope "fallback") the deterministic sweep is a FALLBACK: it only cleans chunks the
+    // LLM could NOT rewrite cleanly (phase1Clean excluded). A clean LLM rewrite is trusted as-is. Default "all"
+    // keeps the legacy behaviour (sweep every chunk).
+    const sweepTargets = input.sweepScope === "fallback" ? targets.filter((t) => !phase1Clean.has(t.path)) : targets;
+    const preSweep = new Map(rewritten);                                  // snapshot to revert to if the sweep breaks compile
+    let sweptCount = 0;
+    const swept = await mapLimit(sweepTargets, concurrency, async (t) => {
+      const cur = rewritten.get(t.path) ?? t.content;
+      const out = await themeSweepText(cur, input.theme, input.sellingPoints, models).catch(() => null);
+      return { path: t.path, content: out };
+    });
+    for (const s of swept) if (s.content) { rewritten.set(s.path, s.content); sweptCount++; }
+    if (sweptCount) {
+      // A sweep that breaks compile must NOT fall through to the Phase-2 repair round (which re-rewrites from the
+      // ORIGINAL chunk and would throw away the GOOD rewrite, reverting on-screen text to the source language).
+      // So validate here: keep the swept code only if it still compiles, else revert to the pre-sweep rewrite.
+      const sweptOk = validateTemplateCapsule({ ...input.capsule, codeBundle: assemble(rewritten) }).gates.find((g) => g.id === "T2")?.status === "pass";
+      if (sweptOk) warnings.push(`theme-sweep: removed leftover off-theme on-screen text in ${sweptCount} chunk(s).`);
+      else { for (const [k, v] of preSweep) rewritten.set(k, v); for (const k of [...rewritten.keys()]) if (!preSweep.has(k)) rewritten.delete(k); warnings.push(`theme-sweep reverted (would not compile; kept the rethemed-but-unswept code).`); }
+    }
   }
 
   // Phase 2 — assemble (rewritten chunks swapped in, failed ones kept original) and hard-gate on compile.
@@ -239,7 +465,7 @@ export async function runCapsuleContextRewrite(input: {
     gate = validateTemplateCapsule({ ...input.capsule, codeBundle: candidate });
     if (gate.gates.find((g) => g.id === "T2")?.status !== "pass") {
       warnings.push("context rewrite produced non-compiling code after repair; using the original (un-rethemed) capsule code.");
-      return { codeBundle: original, usedAi: false, warnings };
+      return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
     }
   }
 
@@ -265,7 +491,7 @@ export async function runCapsuleContextRewrite(input: {
     probe = reGate.gates.find((g) => g.id === "T2")?.status === "pass" ? await probeOnce(candidate) : { ok: false, error: "repair did not compile" };
     if (!probe.ok) {
       warnings.push(`context rewrite render failed after repair (${probe.error ?? "unknown"}); using the original (un-rethemed) capsule code.`);
-      return { codeBundle: original, usedAi: false, warnings };
+      return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
     }
   }
 
@@ -274,5 +500,5 @@ export async function runCapsuleContextRewrite(input: {
   } else {
     warnings.push(`context rewrite applied (new theme/copy; structure kept; ${rewritten.size} file(s)).`);
   }
-  return { codeBundle: candidate, usedAi: true, warnings };
+  return { codeBundle: candidate, usedAi: true, warnings, hadFallback: hadAnyFallback() };
 }

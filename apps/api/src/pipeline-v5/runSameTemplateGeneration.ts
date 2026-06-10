@@ -12,18 +12,65 @@ import { getAigcMaterialProvider, resolveCreativeKnobs, knobsToRewriteDirective,
 import { GoogleAudioAdapter, type GoogleGeneratedAudioAsset } from "../adapters/googleAudio.js";
 import { runTargetAssetAnalysisMany, enrichProfilesWithVlm } from "./runTargetAssetAnalysis.js";
 import { renderTemplateCapsule, renderCapsuleStill } from "./renderTemplateCapsule.js";
+import { ensureTimedMediaLayers } from "./injectMediaBaseLayer.js";
+import { setJobProgress } from "./jobProgress.js";
+import { ensureSlotsCoverCode } from "./runGen1CapsuleGemini.js";
+import { repairCapsuleCodeWithLlm, repairCapsuleCode, buildFallbackCapsule, deOverlapCapsuleMarquees, patchCapsuleCaptions } from "./capsuleRenderSafety.js";
 import { resolveBin } from "./renderV5.js";
 import { mapLimit, aigcSemaphore } from "./concurrency.js";
-import { overallMeanLuma, detectUniformTailSec, trimTo } from "./postRenderChecks.js";
+import { overallMeanLuma, detectUniformTailSec, trimTo, runRenderQualityGate, type RenderQualityReport } from "./postRenderChecks.js";
 import { runNoCopyScan } from "./runNoCopyScan.js";
 import { runCapsuleContextRewrite } from "./runCapsuleContextRewrite.js";
-import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan, transcribeVideo, selectHighlightSegments } from "./v2Reports.js";
+import { buildMaterialAnalysis, buildTimelineV2, buildMappingV2, buildSimilarityReport, buildPackagingPlan, buildBeatAlignment, buildDialoguePlan, transcribeVideo, selectHighlightSegments, retimeSections } from "./v2Reports.js";
 import type { NoCopyResult } from "./runScorecardV5.js";
 import type { Gen1ModelFn } from "./runGen1Ai.js";
 
 const IMAGE_SLOTS = new Set<v5.TemplateSlotKind>(["hero_image", "product_image", "background_image", "logo", "ui_mockup"]);
 const TEXT_SLOTS = new Set<v5.TemplateSlotKind>(["headline", "subtitle", "cta_text", "data_value"]);
 const AUDIO_SLOTS = new Set<v5.TemplateSlotKind>(["music", "sfx", "voiceover"]);
+
+/** A copy/caption slot the binding loop should fill with generated text. Besides the canonical TEXT_SLOTS, AI
+ *  codegen frequently emits a loose `kind: "text"` (not in the enum) or a `copy.*` propPath — those are real
+ *  text slots too; missing them here leaves a REQUIRED slot unbound and wrongly caps readiness. */
+const isTextSlot = (s: v5.TemplateSlot): boolean =>
+  TEXT_SLOTS.has(s.kind) || String(s.kind) === "text" || Boolean(s.propPath && s.propPath.startsWith("copy."));
+
+type BindableAssetType = Extract<Asset["type"], "image" | "video" | "audio" | "text">;
+
+function expectedAssetTypeForSlot(slot: v5.TemplateSlot): BindableAssetType | undefined {
+  if (isTextSlot(slot)) return "text";
+  if (AUDIO_SLOTS.has(slot.kind)) return "audio";
+  if (IMAGE_SLOTS.has(slot.kind)) return slot.mediaKind === "video" ? "video" : "image";
+  return undefined;
+}
+
+function expectedAssetLabelForSlot(slot: v5.TemplateSlot): string {
+  const expected = expectedAssetTypeForSlot(slot);
+  if (expected === "image") return slot.kind === "logo" ? "logo/image" : "image";
+  if (expected) return expected;
+  return "generated/text";
+}
+
+export function isAssetCompatibleWithTemplateSlot(slot: v5.TemplateSlot, asset: Asset): boolean {
+  const expected = expectedAssetTypeForSlot(slot);
+  if (!expected) return false;
+  if (slot.kind === "logo") return asset.type === "image";
+  return asset.type === expected;
+}
+
+function isProfileCompatibleWithTemplateSlot(slot: v5.TemplateSlot, profile: v5.TargetAssetProfile, asset: Asset): boolean {
+  if (!isAssetCompatibleWithTemplateSlot(slot, asset)) return false;
+  if (slot.kind === "logo") return profile.kind === "logo" || /logo/i.test(asset.filename);
+  if (slot.mediaKind === "video") return profile.kind === "video";
+  if (IMAGE_SLOTS.has(slot.kind)) return profile.kind === "image";
+  if (AUDIO_SLOTS.has(slot.kind)) return profile.kind === "audio";
+  if (isTextSlot(slot)) return profile.kind === "text";
+  return false;
+}
+
+function boundAssetMediaKind(asset: Asset): "image" | "video" | undefined {
+  return asset.type === "image" || asset.type === "video" ? asset.type : undefined;
+}
 
 function gate(id: string, name: string, status: v5.GateStatus, message?: string): v5.ScorecardGate {
   return { id, name, status, message };
@@ -103,15 +150,18 @@ function sceneRoleOf(slot: v5.TemplateSlot): "hook" | "benefit" | "proof" | "cta
  */
 function imagePromptFor(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, imageIdx: number): string {
   const theme = brief.theme ?? brief.prompt ?? "the product";
-  // If the Gen1 model described THIS footage slot (the "missing 素材" it couldn't draw), use its
-  // ready-made AIGC prompt — recreates the source's footage type, adapted to the new theme.
-  if (slot.aigcPrompt && slot.aigcPrompt.trim()) {
-    const motion = slot.motionHint ? ` Camera: ${slot.motionHint}.` : "";
-    return `${slot.aigcPrompt.trim()} Adapt for the theme "${theme}".${motion} 9:16 vertical, no on-image text, no watermark.`;
-  }
   const points = (brief.sellingPoints ?? []).filter(Boolean);
   const point = points.length ? points[imageIdx % points.length] : "";
   const role = sceneRoleOf(slot);
+  const motion = slot.motionHint ? ` Camera: ${slot.motionHint}.` : "";
+  // CRITICAL: slot.aigcPrompt was LEARNED from the SOURCE video's subject (e.g. "Product photography of a
+  // sneaker"). Using it as the prompt for a NEW theme makes AIGC regenerate the SOURCE's product (sneakers)
+  // instead of the new one (energy drink) — an off-theme bug where most of the video shows the wrong product.
+  // So only fall back to the learned subject when there is NO new theme (faithful reconstruction); otherwise the
+  // NEW THEME drives the subject (below) and we keep only the slot's motion/composition hint.
+  if (!brief.theme && !brief.prompt && slot.aigcPrompt && slot.aigcPrompt.trim()) {
+    return `${slot.aigcPrompt.trim()}${motion} 9:16 vertical, no on-image text, no watermark.`;
+  }
   const scene =
     slot.kind === "logo"
       ? `a clean modern brand logo mark for "${theme}", vector style, solid flat background`
@@ -124,7 +174,7 @@ function imagePromptFor(slot: v5.TemplateSlot, brief: v5.CreativeBriefV5, imageI
             : role === "cta"
               ? `a polished centered hero product shot for "${theme}", premium, ready for a call-to-action`
               : `a vibrant lifestyle advertising shot for "${theme}"${point ? ` showcasing ${point}` : ""}, on-brand`;
-  return `${scene}. 9:16 vertical, photographic, no on-image text, no watermark.`;
+  return `${scene}.${motion} 9:16 vertical, photographic, no on-image text, no watermark.`;
 }
 
 /** Pull a {"prompt": "..."} string out of a model reply (raw JSON, fenced, or plain prose). */
@@ -198,6 +248,8 @@ export interface SameTemplateInput {
   /** Explicit per-slot asset binding from the UI (slotId -> target assetId): the user uploaded an asset for
    *  THAT slot, so bind it directly instead of leaving it to the kind/section heuristic. */
   slotAssignments?: Record<string, string>;
+  /** Progress key — when set, the pipeline reports its coarse stage (rewrite / AIGC / render) so the UI can poll. */
+  jobId?: string;
 }
 
 export interface SameTemplateResult {
@@ -227,6 +279,8 @@ export interface SameTemplateResult {
   /** v2 audio/dialogue artifacts (beat-alignment of transitions + dialogue-safe cut plan). */
   beatAlignment: Record<string, unknown>;
   dialoguePlan: Record<string, unknown>;
+  /** Automated post-render quality scan (blank/dark segments + audio) — written as quality-report.json. */
+  qualityReport?: RenderQualityReport;
 }
 
 interface GeneratedMusicBed {
@@ -390,8 +444,17 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // on-screen text / emphasis / packaging actually differ per version, without re-running visual codegen.
   const knobs = resolveCreativeKnobs(brief.variant, input.reviseFrom?.patch);
   const knobDirective = knobsToRewriteDirective(knobs);
+  // LLM-primary mode: the LLM rewrites the code from theme+sellingPoints+customNL+preset and is authoritative —
+  // the deterministic text-sweep only fixes chunks the LLM couldn't rewrite (sweepScope "fallback") and the
+  // de-overlap layout rule runs only if the rewrite wasn't fully clean. Default ("preset") keeps the legacy
+  // always-on hard-rule behaviour. The user's freeform instruction (brief.customNL) is fed straight into the
+  // rewrite prompt as the highest-priority directive — one LLM pass modifies the Remotion code to satisfy it.
+  const llmMode = brief.promptMode === "llm";
+  const customNL = brief.customNL?.trim() || undefined;
   let contextRewriteApplied = false;
-  if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length || knobDirective)) {
+  let rewriteHadFallback = true; // default: non-LLM / no-rewrite path keeps the deterministic safety nets on
+  if (input.rewriteModel && capsule.quality?.codeOrigin === "ai" && input.doRender !== false && (brief.theme || (brief.sellingPoints ?? []).length || knobDirective || customNL)) {
+    setJobProgress(input.jobId, { step: 1, total: 4, detail: llmMode ? "LLM 改写模板代码（主题 + 卖点 + 自定义需求 + 预设）…" : "改写模板文案 / 配色（预设旋钮）…" });
     const rw = await runCapsuleContextRewrite({
       capsule,
       theme: brief.theme ?? brief.prompt ?? "",
@@ -400,13 +463,71 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       fallbackModel: input.rewriteFallbackModel,
       renderProbe: (cb, fixture) => renderCapsuleStill({ capsule: { ...capsule, codeBundle: cb }, boundProps: fixture, aspectRatio: brief.aspectRatio ?? "9:16" }).then((r) => ({ ok: r.ok, error: r.error })),
       maxAttempts: 2,
-      extraDirective: [lightDirective, knobDirective].filter(Boolean).join(" ") || undefined
+      extraDirective: [lightDirective, knobDirective].filter(Boolean).join(" ") || undefined,
+      customNL,
+      sweepScope: llmMode ? "fallback" : "all"
     });
     warnings.push(...rw.warnings.slice(0, 2));
+    rewriteHadFallback = rw.hadFallback;
     if (rw.usedAi) { capsule = { ...capsule, codeBundle: rw.codeBundle }; contextRewriteApplied = true; }
   }
 
+  // NL-edit / patch TIMING changes (cta/frontload/hook) are applied at the SOURCE here so they actually reach the
+  // RENDER: the injected media track, renderRecipe.layers, AND timeline-v2 all read capsule.timingSignature.
+  // sections — re-timing them ONCE keeps all three consistent and makes "把功能提前" move the on-screen media, not
+  // just annotate a JSON. (Base-variant knobs are NOT applied to timing — only an explicit revise patch is.)
+  const timingPatch = input.reviseFrom?.patch;
+  if (timingPatch && (timingPatch.ctaAdvanceSec != null || timingPatch.frontloadBeforeSec != null || timingPatch.hookRatio != null) && (capsule.timingSignature.sections?.length ?? 0) >= 2) {
+    const retimed = retimeSections(capsule.timingSignature.sections, { ctaAdvanceSec: timingPatch.ctaAdvanceSec, frontloadBeforeSec: timingPatch.frontloadBeforeSec, hookRatio: timingPatch.hookRatio });
+    capsule = { ...capsule, timingSignature: { ...capsule.timingSignature, sections: retimed } };
+    warnings.push("NL-edit timing applied at source: media track + renderRecipe + timeline re-timed together");
+  }
+
+  // Ensure the RENDERED program paints EACH structure slot's bound asset in its OWN time window (a timed media
+  // track), not one hero image stretched over the whole video. The Doubao re-theme rewrite can also DROP the
+  // learn-time track; this re-runs it. Idempotent + non-double-painting (excludes keys the template already
+  // paints), so it tops up coverage whether the rewrite kept, dropped, or partially mangled the track — and for
+  // a DETERMINISTIC capsule whose own code never references the bound user assets, it adds them. Clones first so
+  // the shared learned capsule isn't mutated.
+  if (input.doRender !== false) {
+    const clone: v5.RemotionTemplateCapsule = { ...capsule, codeBundle: { ...capsule.codeBundle, files: capsule.codeBundle.files.map((f) => ({ ...f })) }, slotSchema: capsule.slotSchema.map((s) => ({ ...s })) };
+    const track = ensureTimedMediaLayers(clone);
+    if (track.changed) {
+      capsule = clone;
+      warnings.push(`timed media track: ${track.layeredKeys.length} structure slot(s) paint their own user asset (${track.layeredKeys.join(", ") || "stale block removed"})`);
+    }
+    // Layout safety nets — ALWAYS on (idempotent, only touch the broken pattern, and the LLM keeps structure so it
+    // can't fix these itself). (1) Stop a scrolling feature-ticker running THROUGH the centered headline. (2) Stop
+    // staggered captions PILING UP at one position into garbled superimposed text (fade them out, don't clamp at 1).
+    void rewriteHadFallback;
+    const deov = deOverlapCapsuleMarquees(capsule);
+    if (deov.changed) {
+      capsule = deov.capsule;
+      warnings.push(`de-overlapped ${deov.changed} horizontal text marquee(s) (moved ticker to lower band so it no longer crosses the headline)`);
+    }
+    const capFix = patchCapsuleCaptions(capsule);
+    if (capFix.changed) {
+      capsule = capFix.capsule;
+      warnings.push(`fixed ${capFix.changed} pile-up caption(s) (fade-in→hold→fade-out so staggered captions don't superimpose)`);
+    }
+  }
+
+  // Cover EVERY asset key the (rewritten) template code actually READS with a slot, so AIGC fills it. Without
+  // this, template elements that read keys NOT in the slotSchema render EMPTY — e.g. a motion-graphics capsule
+  // whose <CardCascade> reads assets.card1..card6 / grid1..grid8 while the schema only lists sec_N_*_media leaves
+  // those cards blank. Adds image slots for read-but-unplanned keys (idempotent; no-op when already covered).
+  if (input.doRender !== false) {
+    const renderedCode = capsule.codeBundle.files.map((f) => f.content).join("\n");
+    const covered = ensureSlotsCoverCode(capsule.slotSchema, renderedCode, "");
+    const added = covered.length - capsule.slotSchema.length;
+    if (added > 0) {
+      capsule = { ...capsule, slotSchema: covered };
+      warnings.push(`covered ${added} code-read asset key(s) with slots so AIGC fills them (avoids empty cards/elements)`);
+    }
+  }
+
   const aigcOn = options.aigcGapFill.mode === "auto_on";
+  setJobProgress(input.jobId, { step: 2, total: 4, detail: aigcOn ? "补全 AIGC 缺口素材：按槽位生成图片 / 视频 / 文案 / 音频…" : "绑定素材并实例化模板…" });
   // Palette: theme-driven base, optionally nudged to a premium/clean mood by the knobs (multi-version).
   const palette = paletteMoodOverride(knobs, capsule.quality?.sourceIsLight)
     ?? choosePalette(brief, (capsule.fixtures.neutralFixture as { palette?: string[] }).palette ?? ["#0A0A0A", "#FFFFFF", "#F7C948", "#1A1A1A"], capsule.quality);
@@ -424,6 +545,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     }
   }
   const provider = aigcOn && options.aigcGapFill.imageFill === "aigc" ? getAigcMaterialProvider((input.env?.AIGC_IMAGE_PROVIDER as never) ?? "google_gemini_image") : undefined;
+  const targetAssetById = new Map(input.targetAssets.map((asset) => [asset.id, asset]));
   // Real moving-footage provider (Seedance text-to-video) for mediaKind="video" slots — the "missing 素材"
   // the code marked <OffthreadVideo>. Generated footage is fresh/original (samplePixelsUsed=false), so it
   // auto-differs from the source (no copyright concern). Capped: t2v is slow/expensive; overflow -> still.
@@ -464,6 +586,22 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     boundProps.audio = { ...(pb.audio ?? {}) };
     for (const [k, v] of Object.entries(patch.copyOverrides ?? {})) boundProps.copy[k] = v;
     for (const b of prior.slotBindings) slotBindings.push({ ...b });
+    // textDensity knob on REVISE (revise reuses prior bindings): drop secondary subtitles so a "字幕减少"
+    // instruction actually removes captions from both the timeline and the render.
+    if (knobs.textDensity !== "dense") {
+      const kindById = new Map(capsule.slotSchema.map((s) => [s.id, s.kind]));
+      let subIdx = 0;
+      for (const b of slotBindings) {
+        const kind = kindById.get(b.slotId);
+        if (!kind || !/subtitle|data_value/.test(kind) || b.status !== "text_generated") continue;
+        const drop = knobs.textDensity === "minimal" ? true : subIdx++ % 2 !== 0;
+        if (drop) {
+          b.status = "missing"; b.text = ""; b.warnings = [...(b.warnings ?? []), `字幕密度=${knobs.textDensity}：删减次要字幕`];
+          const pk = capsule.slotSchema.find((s) => s.id === b.slotId)?.propPath?.split(".")[1] ?? b.slotId;
+          delete boundProps.copy[pk];
+        }
+      }
+    }
   } else {
   // ---- Phase A (sequential, cheap): text/audio + user-asset slots; PRE-ASSIGN the AIGC method for the rest.
   // Pre-assignment is synchronous so the video/image budgets are consumed deterministically (no counter race);
@@ -477,29 +615,58 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   let videoBudget = videoProvider ? maxVideos : 0;
   let imageBudget = provider ? maxGenerated : 0;
   let imageIdxSeq = 0;
+  let secondarySubCount = 0; // running index of non-primary subtitles, for the textDensity knob.
   // Assets the user explicitly pinned to a slot — reserve them so the kind/section heuristic for OTHER slots
   // can't greedily consume them before the loop reaches their assigned slot.
   const reservedAssetIds = new Set(Object.values(input.slotAssignments ?? {}));
+  // NEVER bind the capsule's OWN learn source video (a .mov sample) to a product slot: it is the learn input,
+  // not product material, and a video bound into an <Img> card renders BLANK. Excluding it makes that slot
+  // AIGC-fill a real themed image like every other card. (Also covers any same-asset passed as a target.)
+  const sampleSourceId = capsule.sourceSampleId;
   for (let i = 0; i < capsule.slotSchema.length; i++) {
     const slot = capsule.slotSchema[i];
     const propKey = slot.propPath?.split(".")[1] ?? slot.id;
 
     // Explicit per-slot assignment — the user uploaded an asset for THIS slot in the gap radar. Hard-bind it
-    // ahead of the text/audio/image defaults, for ANY slot kind (so every row's upload is honoured).
+    // only when the uploaded file's type matches what the slot can actually render.
     const assignedId = input.slotAssignments?.[slot.id];
-    const assignedFile = assignedId && !usedTargetAssetIds.has(assignedId) ? input.targetAssets.find((x) => x.id === assignedId) : undefined;
+    const assignedFile = assignedId && assignedId !== sampleSourceId && !usedTargetAssetIds.has(assignedId) ? input.targetAssets.find((x) => x.id === assignedId) : undefined;
     if (assignedFile?.path) {
-      const url = `${input.serveBase}/generated/${assignedFile.id}`;
-      boundProps.assets[propKey] = { src: url };
-      slotBindings.push({ slotId: slot.id, status: "user_asset", assetId: assignedId, uri: url, warnings: ["user-assigned to this slot"] });
-      usedTargetAssetIds.add(assignedId as string);
-      continue;
+      if (!isAssetCompatibleWithTemplateSlot(slot, assignedFile)) {
+        warnings.push(`slot ${slot.id}: ignored assigned ${assignedFile.filename} (${assignedFile.type}); expected ${expectedAssetLabelForSlot(slot)}`);
+      } else if (IMAGE_SLOTS.has(slot.kind)) {
+        // Uploaded user assets live under storage/uploads and are served by the asset route, NOT /generated/
+        // (which is for THIS run's generated output). Using /generated/<id> 404s -> the headless renderer can't
+        // load the image -> ERR_BLOCKED_BY_ORB and the render dies. Use the canonical asset-media route.
+        const url = `${input.serveBase}/api/v5/assets/${assignedFile.id}/media`;
+        const mediaKind = boundAssetMediaKind(assignedFile);
+        boundProps.assets[propKey] = mediaKind ? { src: url, mediaKind } : { src: url };
+        slotBindings.push({ slotId: slot.id, status: "user_asset", assetId: assignedId, uri: url, warnings: ["user-assigned to this slot"] });
+        usedTargetAssetIds.add(assignedId as string);
+        continue;
+      } else if (AUDIO_SLOTS.has(slot.kind)) {
+        const url = `${input.serveBase}/api/v5/assets/${assignedFile.id}/media`;
+        boundProps.audio[propKey] = { src: url };
+        slotBindings.push({ slotId: slot.id, status: "user_asset", assetId: assignedId, uri: url, warnings: ["user-assigned audio to this slot"] });
+        usedTargetAssetIds.add(assignedId as string);
+        continue;
+      }
     }
 
-    if (TEXT_SLOTS.has(slot.kind)) {
-      const text = options.aigcGapFill.textFill === "off" ? "" : copyForSlot(slot, brief, i);
+    if (isTextSlot(slot)) {
+      // textDensity knob -> REAL subtitle reduction (affects render AND timeline): keep primary headline/CTA
+      // (and any REQUIRED text slot) always; drop secondary captions for "minimal", keep every other for
+      // "medium", keep all for "dense".
+      const isPrimary = slot.required || slot.kind === "headline" || slot.kind === "cta_text";
+      let keep = true;
+      if (!isPrimary) {
+        const idx = secondarySubCount++;
+        keep = knobs.textDensity === "dense" ? true : knobs.textDensity === "medium" ? idx % 2 === 0 : false;
+      }
+      const dropped = !keep;
+      const text = options.aigcGapFill.textFill === "off" || dropped ? "" : copyForSlot(slot, brief, i);
       boundProps.copy[propKey] = text;
-      slotBindings.push({ slotId: slot.id, status: text ? "text_generated" : "missing", text, warnings: text ? [] : ["text fill off"] });
+      slotBindings.push({ slotId: slot.id, status: text ? "text_generated" : "missing", text, warnings: text ? [] : dropped ? [`字幕密度=${knobs.textDensity}：删减次要字幕`] : ["text fill off"] });
       continue;
     }
     if (AUDIO_SLOTS.has(slot.kind)) {
@@ -507,14 +674,27 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       continue;
     }
     if (IMAGE_SLOTS.has(slot.kind)) {
-      // 1) user asset — match profile kind to the slot, and never bind the same asset to two slots.
+      // 1) user asset — match BOTH asset file type and profile kind to the slot, and never bind the same asset
+      // to two slots. Important: image slots must NOT greedily consume videos just because videos are also
+      // renderable media; a video bound into an image-only <Img> path breaks the render / produces blank cards.
       const userAsset = targetProfiles.find(
-        (p) => !usedTargetAssetIds.has(p.assetId) && !reservedAssetIds.has(p.assetId) && !material.rejectedAssetIds.has(p.assetId) && (slot.kind === "logo" ? p.kind === "logo" : p.kind === "image" || p.kind === "video")
+        (p) => {
+          const asset = targetAssetById.get(p.assetId);
+          return Boolean(
+            asset &&
+            p.assetId !== sampleSourceId &&
+            !usedTargetAssetIds.has(p.assetId) &&
+            !reservedAssetIds.has(p.assetId) &&
+            !material.rejectedAssetIds.has(p.assetId) &&
+            isProfileCompatibleWithTemplateSlot(slot, p, asset)
+          );
+        }
       );
       const userAssetFile = userAsset ? input.targetAssets.find((x) => x.id === userAsset.assetId) : undefined;
       if (userAsset && userAssetFile?.path) {
-        const url = `${input.serveBase}/generated/${userAssetFile.id}`;
-        boundProps.assets[propKey] = { src: url };
+        const url = `${input.serveBase}/api/v5/assets/${userAssetFile.id}/media`;
+        const mediaKind = boundAssetMediaKind(userAssetFile);
+        boundProps.assets[propKey] = mediaKind ? { src: url, mediaKind } : { src: url };
         slotBindings.push({ slotId: slot.id, status: "user_asset", assetId: userAsset.assetId, uri: url, warnings: [] });
         usedTargetAssetIds.add(userAsset.assetId);
         continue;
@@ -648,8 +828,7 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     }
     const beatTimes = (capsule.timingSignature.sections.flatMap((s) => s.internalBeats)).slice(0, 8);
     const rhythmRecipe = capsule.audioRecipes[0];
-    const res = await renderTemplateCapsule({
-      capsule,
+    const baseRenderArgs = {
       boundProps,
       outPath: finalMp4Path,
       aspectRatio: brief.aspectRatio ?? "9:16",
@@ -660,16 +839,46 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
       strongBeatsSec: rhythmRecipe?.cuePoints?.filter((c) => c.type === "hit" || c.type === "impact").map((c) => c.t),
       energyCurve: rhythmRecipe?.energyCurve,
       hitTimes: beatTimes
-    });
-    usedTemplateCode = res.usedTemplateCode && res.ok;
+    };
+    setJobProgress(input.jobId, { step: 3, total: 4, detail: "渲染 final.mp4：Chrome 渲帧 + FFmpeg 合成（39s 视频通常 1–3 分钟）…" });
+    let res = await renderTemplateCapsule({ capsule, ...baseRenderArgs });
+    // Render-failure auto-recovery (escalating, and ONLY on failure so working creative code is never touched):
+    //   1) Doubao minimally fixes the failing code (preserves the Gemini reconstruction — the system's core);
+    //   2) deterministic interpolate-range repair (the most common Gemini render crash);
+    //   3) a deterministic SAFE template bound with the SAME props + timed media track — so a generation always
+    //      yields a real video instead of a silent "render failed".
+    if (!res.ok && input.rewriteModel) {
+      for (let attempt = 0; attempt < 2 && !res.ok; attempt++) {
+        const fixed = await repairCapsuleCodeWithLlm(capsule, res.error ?? "", input.rewriteModel).catch(() => null);
+        if (!fixed) break;
+        warnings.push(`render failed (${(res.error ?? "").slice(0, 60)}) -> Doubao code-repair attempt ${attempt + 1}`);
+        capsule = fixed;
+        res = await renderTemplateCapsule({ capsule, ...baseRenderArgs });
+      }
+    }
+    if (!res.ok) {
+      const rep = repairCapsuleCode(capsule);
+      if (rep.repairs) {
+        warnings.push(`render still failing -> deterministic interpolate-range repair (${rep.repairs} fixed)`);
+        capsule = rep.capsule;
+        res = await renderTemplateCapsule({ capsule, ...baseRenderArgs });
+      }
+    }
+    if (!res.ok) {
+      warnings.push(`render still failing (${(res.error ?? "").slice(0, 80)}) -> deterministic SAFE fallback template`);
+      const fb = buildFallbackCapsule(capsule);
+      const fbRes = await renderTemplateCapsule({ capsule: fb, ...baseRenderArgs });
+      if (fbRes.ok) { capsule = fb; res = fbRes; usedFallbackRenderer = true; }
+    }
     renderHasAudio = res.hasAudio;
     renderAudioSource = res.audioSource;
     renderDur = res.durationSec;
+    usedTemplateCode = res.usedTemplateCode && res.ok && !usedFallbackRenderer;
     if (res.ok && res.finalMp4) {
       finalVideoUrl = `${input.publicPathPrefix.replace(/materials\/$/, "")}final.mp4`;
     } else {
       usedFallbackRenderer = true;
-      warnings.push(`capsule render failed: ${res.error}; (honest fallback would render fixed-root recipe)`);
+      warnings.push(`capsule render failed after auto-recovery: ${res.error}`);
     }
     warnings.push(...res.warnings);
   }
@@ -734,6 +943,22 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     } catch (err) { warnings.push(`trailing-trim skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
   }
 
+  // ---- Automated render quality gate: scan the FINAL mp4 for the defect classes we keep hitting (blank/black
+  // segments, too-dark render, missing/degraded audio) so they are auto-DETECTED, not eyeballed per video. The
+  // gap-free media track (hero fallback + last-shot hold) PREVENTS blanks proactively; this is the safety net +
+  // the honest quality-report.json evidence. ----
+  let qualityReport: RenderQualityReport | undefined;
+  if (finalMp4Exists) {
+    try {
+      qualityReport = await runRenderQualityGate(finalMp4Path, renderDur, {
+        hasAudio: renderHasAudio,
+        audioIntended: options.aigcGapFill.audioFill,
+        audioSource: renderAudioSource
+      });
+      for (const issue of qualityReport.issues) warnings.push(`render quality: ${issue.detail}`);
+    } catch (err) { warnings.push(`render quality gate skipped: ${err instanceof Error ? err.message.slice(0, 80) : String(err)}`); }
+  }
+
   // ---- Real no-copy safety scan on the produced mp4 (replaces the hardcoded T10) ----
   let noCopy: NoCopyResult = {
     noCopyPassed: true,
@@ -773,6 +998,31 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     readiness = "technical_demo";
     readinessWarnings.push(`no-copy scan flagged similarity to the sample (${noCopy.details ?? ""}).`);
   }
+  // Honesty gate: a slot can be BOUND to a real user asset yet the program never renders it (a text/
+  // motion-graphics reconstruction that ignores `assets`). Claiming "real material adaptation" while the final
+  // video shows NONE of the user's media is exactly the failure an external review flagged. We gate on the honest
+  // minimum — at least ONE bound user asset must actually be painted — rather than demanding every bound asset
+  // render (a single-backdrop template legitimately shows one hero image; failing that would over-tighten).
+  const finalProgramCode = capsule.codeBundle.files.map((f) => f.content).join("\n");
+  const programRendersMedia = /<Img\b|<OffthreadVideo\b|<Video\b|<img\b/.test(finalProgramCode);
+  const userAssetVisuals = slotBindings.filter((b) => {
+    if (b.status !== "user_asset") return false;
+    const slot = capsule.slotSchema.find((s) => s.id === b.slotId);
+    return Boolean(slot && IMAGE_SLOTS.has(slot.kind));
+  });
+  const isRendered = (b: typeof slotBindings[number]) => {
+    const slot = capsule.slotSchema.find((s) => s.id === b.slotId);
+    const propKey = slot?.propPath?.split(".")[1] ?? b.slotId;
+    return programRendersMedia && new RegExp(`assets\\s*[.\\[]\\s*["']?${propKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(finalProgramCode);
+  };
+  const renderedUserAssetCount = userAssetVisuals.filter(isRendered).length;
+  const noUserAssetRendered = userAssetVisuals.length > 0 && renderedUserAssetCount === 0;
+  if (input.doRender !== false && noUserAssetRendered) {
+    readiness = "technical_demo";
+    readinessWarnings.push(
+      `${userAssetVisuals.length} user asset(s) bound but the final program renders NONE of them (<Img>/<OffthreadVideo>) — "real material adaptation" not demonstrable in the video.`,
+    );
+  }
 
   const instance: v5.TemplateInstance = {
     id: `tinst_${input.generationId}`,
@@ -801,6 +1051,16 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   // procedural-only render honestly stays below review_demo.
   const visualSubstanceOk = requiredVisual.length === 0 || realVisualCount > 0;
   gates.push(gate("V5-G41", "Visual substance", input.doRender === false ? "warn" : visualSubstanceOk ? "pass" : "warn", `${realVisualCount}/${requiredVisual.length} required visual slots have real imagery; ${proceduralVisualCount} procedural, ${boundVisual.length} bound`));
+  // Honesty: BOUND user assets must actually be painted by the program (not just declared), graded by COVERAGE so
+  // a single-hero-of-N render no longer scores the same as a full timed composition. 0% -> fail; 1-79% -> warn
+  // (partial); >=80% of bound user-asset slots painted -> pass. No bound user assets -> pass (nothing to render).
+  const userAssetCoverage = userAssetVisuals.length ? renderedUserAssetCount / userAssetVisuals.length : 1;
+  const g42Status: v5.GateStatus =
+    input.doRender === false ? "warn" : userAssetVisuals.length === 0 ? "pass" : userAssetCoverage === 0 ? "fail" : userAssetCoverage >= 0.8 ? "pass" : "warn";
+  gates.push(gate("V5-G42", "User asset rendered", g42Status, `${renderedUserAssetCount}/${userAssetVisuals.length} bound user asset(s) painted by <Img>/<OffthreadVideo> (${Math.round(userAssetCoverage * 100)}%)`));
+  // Automated render-quality gate: pass = no blank/black segments, not-too-dark, audio OK; warn lists the issues.
+  const qIssues = qualityReport?.issues ?? [];
+  gates.push(gate("V5-G44", "Render quality", input.doRender === false || !finalMp4Exists ? "warn" : qIssues.length === 0 ? "pass" : "warn", qualityReport ? (qIssues.length ? qIssues.map((i) => i.type).join(", ") : `clean (luma ${qualityReport.mean_luma}, no blank/audio issues)`) : "not scanned"));
   gates.push(gate("V5-G27", "Audio validity", renderHasAudio || input.doRender === false ? "pass" : "warn", renderHasAudio ? `${renderAudioSource ?? "audio"} bed present` : "no audio track"));
   gates.push(gate("V5-G29", "No sample pixels", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.visualMinHamming !== undefined ? `minHamming=${noCopy.visualMinHamming}` : noCopy.details));
   gates.push(gate("V5-G30", "No sample audio", input.doRender === false ? "warn" : noCopy.noCopyPassed ? "pass" : "fail", noCopy.audioMaxSimilarity !== undefined ? `audioSim=${noCopy.audioMaxSimilarity}` : undefined));
@@ -811,20 +1071,26 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   gates.push(gate("V5-G20", "Gen2 output", input.doRender === false ? "warn" : usedTemplateCode ? "pass" : "fail", "bound capsule final program"));
   gates.push(gate("V5-G21", "Final schema", "pass", "final-video-program built"));
 
-  // Render layers reflect what the capsule actually rendered (one per bound slot) — not an empty list.
+  // Render layers reflect what the capsule actually rendered (one per bound slot) — not an empty list. Each layer
+  // is TIMED to its structure section (slotId starts with the section id), matching the timed media track + the
+  // timeline-v2 windows, instead of every layer claiming the whole 0..renderDur span. Non-section layers (audio
+  // bed) keep full duration.
   const slotById = new Map(capsule.slotSchema.map((s) => [s.id, s]));
+  const sortedSections = [...(capsule.timingSignature.sections ?? [])].sort((a, b) => a.startSec - b.startSec);
+  const sectionForSlot = (slotId: string) => sortedSections.find((sec) => slotId.startsWith(sec.id));
   const layers: v5.RenderLayer[] = slotBindings
     .filter((b) => b.status !== "missing")
     .map((b) => {
       const kind = slotById.get(b.slotId)?.kind;
       const type: v5.RenderLayerType =
         kind && TEXT_SLOTS.has(kind) ? "text" : kind && AUDIO_SLOTS.has(kind) ? "audio" : b.status === "user_asset" || b.status === "aigc_generated" ? "media" : "generated_visual";
+      const sec = sectionForSlot(b.slotId);
       return {
         id: `layer_${b.slotId}`,
         type,
-        sectionId: b.slotId,
-        startSec: 0,
-        endSec: renderDur,
+        sectionId: sec?.id ?? b.slotId,
+        startSec: sec ? Math.min(sec.startSec, renderDur) : 0,
+        endSec: sec ? Math.min(sec.endSec, renderDur) : renderDur,
         assetId: b.assetId,
         text: b.text,
         fallbackReason: b.status === "procedural_generated" ? "procedural designed-visual (no real asset)" : undefined
@@ -918,7 +1184,11 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
     slotBindings,
     aspectRatio: brief.aspectRatio ?? "9:16",
     audioBed: renderHasAudio ? { beatLocked: false } : null,
-    knowledgeAtomIds: [capsule.sourceSampleId]
+    knowledgeAtomIds: [capsule.sourceSampleId],
+    knobs: { ctaAdvanceSec: knobs.ctaAdvanceSec, hookRatio: knobs.hookRatio, rhythm: knobs.rhythm, frontloadBeforeSec: knobs.frontloadBeforeSec },
+    // Anchor timeline duration to the REAL rendered video length (renderDur is the final, post-trim duration);
+    // in plan mode it is the capsule's composition duration. Keeps timeline.duration_sec == the video.
+    renderDurationSec: renderDur
   });
   const mappingV2 = buildMappingV2({ capsule, slotBindings, referenceVideoName, copyRisk });
   const similarityReport = buildSimilarityReport({ copyRisk, noCopyPassed: noCopy?.noCopyPassed ?? null, mappingV2 });
@@ -935,5 +1205,5 @@ export async function runSameTemplateGeneration(input: SameTemplateInput): Promi
   }
   const dialoguePlan = buildDialoguePlan({ capsule, materialAnalysis: material.records, transcripts });
 
-  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2, similarityReport, packagingPlan, beatAlignment, dialoguePlan };
+  return { instance, finalProgram, gates, generatedAssets, finalVideoUrl, coverUrl, warnings, noCopy, gapReport, finalMp4Exists, renderHasAudio, renderDurationSec: renderDur, materialAnalysis: material.records, timelineV2, mappingV2, similarityReport, packagingPlan, beatAlignment, dialoguePlan, qualityReport };
 }

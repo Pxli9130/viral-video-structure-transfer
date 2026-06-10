@@ -210,8 +210,12 @@ RULES (output auto-rejected otherwise):
   Map them to these EXACT keys in order of appearance: ${JSON.stringify(copyKeys)}.
   For kinetic / 3D-ribbon / scrolling text use: const ribbonText = Object.values(copy).filter(Boolean).join("  ·  ") || theme;
   Fallback defaults for a missing prop MUST be GENERIC ("Headline", "Subtitle"), NEVER the draft's words.
-- Replace every image with an assets.* prop (assets.<key>?.src). Available image keys: ${JSON.stringify(assetKeys)}.
-  No literal http(s) URL anywhere; if an asset is missing, draw a gradient/shape/3D placeholder.
+- The template MUST visibly DISPLAY the user's photos/clips. For EVERY image key in ${JSON.stringify(assetKeys)}
+  render a real <Img src={assets.<key>?.src} style={{ width:"100%", height:"100%", objectFit:"cover" }} /> (import
+  { Img } from "remotion") that fills the MAIN visual area of its section — the user uploads photos that must
+  appear on screen, so add a prominent image region even if the source clip showed mostly text/shapes there.
+  No literal http(s) URL anywhere. Fall back to a gradient/shape placeholder ONLY when assets.<key> is absent at runtime
+  (e.g. {assets.<key>?.src ? <Img .../> : <GradientPlaceholder/>}).
 - Bake brand colours as a PALETTE const default but prefer the runtime palette/theme props for colour.
 - Keep imports (react, remotion, @remotion/three, three, @react-three/fiber). FORBIDDEN: require( /
   process. / fs. / eval( / fetch( / XMLHttpRequest / dynamic import(.

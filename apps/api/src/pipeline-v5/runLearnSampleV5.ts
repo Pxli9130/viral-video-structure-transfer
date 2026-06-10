@@ -16,6 +16,7 @@ import { runGen1CapsuleCodegen } from "./runGen1CapsuleCodegen.js";
 import { runGen1CapsuleGemini } from "./runGen1CapsuleGemini.js";
 import { runGen1ChunkedCapsule } from "./runGen1ChunkedCapsule.js";
 import { renderCapsuleStill } from "./renderTemplateCapsule.js";
+import { ensureTimedMediaLayers, codeRendersMedia } from "./injectMediaBaseLayer.js";
 import { overallMeanLuma } from "./postRenderChecks.js";
 import { deriveSceneRecipes } from "./deriveSceneRecipes.js";
 import { runSceneRecipeVlm } from "./runSceneRecipeVlm.js";
@@ -228,6 +229,32 @@ export async function runLearnSampleV5(
       templateValidation = validateTemplateCapsule(templateCapsule);
     }
     warnings.push(cg.usedAi ? "AI capsule codegen promoted." : "AI capsule codegen rejected; deterministic retained.");
+  }
+
+  // Structure-transfer media pass: if the promoted code renders NO media (a text/motion-graphics-only
+  // reconstruction) yet declares image/video slots, the user's bound photo/video would stay invisible. Inject a
+  // deterministic full-frame media base layer (keyed to the primary media slot) so the bound user asset is
+  // actually painted — the reference STRUCTURE (text/rhythm/packaging) renders on top of the user's CONTENT.
+  // Real media = an <Img>/<Video> tag OR an `assets.<key>` reference. NOTE: do NOT count bare `backgroundImage`
+  // — a `linear-gradient(...)` CSS background is code-drawn, not a user photo.
+  if (templateCapsule.quality.codeOrigin === "ai") {
+    // Bake in a TIMED media track: each structure section paints its OWN bound asset in its OWN window (not one
+    // hero image stretched over the whole video). Idempotent + non-double-painting, so it tops up coverage even
+    // when the code already references one asset; the reference STRUCTURE (text/rhythm/packaging) renders on top.
+    const injected = ensureTimedMediaLayers(templateCapsule);
+    if (injected.changed) {
+      warnings.push(`injected timed media track (${injected.layeredKeys.length} section layer(s)): each structure slot now paints its own user asset`);
+      templateValidation = validateTemplateCapsule(templateCapsule);
+    } else if (!codeRendersMedia(templateCapsule.codeBundle.files.map((f) => f.content).join("\n"))) {
+      // Could not inject (no locatable root) AND the code paints no media at all — drop the phantom slots so the
+      // capsule does not advertise media it cannot display. Keeps binding / gap-report / arbitration honest.
+      const before = templateCapsule.slotSchema.length;
+      templateCapsule.slotSchema = templateCapsule.slotSchema.filter((s) => !/image|video|logo|ui_mockup/.test(s.kind));
+      if (templateCapsule.slotSchema.length !== before) {
+        warnings.push(`dropped ${before - templateCapsule.slotSchema.length} phantom media slot(s): code renders no image/video and injection was not possible`);
+        templateValidation = validateTemplateCapsule(templateCapsule);
+      }
+    }
   }
 
   // Stage 4d — OPTIONAL real render gate at learn time: prove the (promoted) capsule actually renders

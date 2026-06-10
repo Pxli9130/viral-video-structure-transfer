@@ -89,6 +89,23 @@ function recommendedSlots(profile: v5.TargetAssetProfile): string[] {
   return out.length ? out : ["process"];
 }
 
+/** WHY each recommended slot — explains the slot choice from the (VLM/heuristic) shot/scene/subject signals so a
+ *  reviewer can see the material-understanding reasoning, not just a bare slot label. */
+function recommendedSlotReasons(profile: v5.TargetAssetProfile, slots: string[]): Array<{ slot: string; reason: string }> {
+  const shot = `${profile.shotType ?? ""}`.toLowerCase();
+  const subjects = (profile.detectedSubjects ?? []).slice(0, 3).join("、");
+  const scene = profile.sceneType ?? profile.shotType ?? "场景";
+  const subj = subjects ? `主体「${subjects}」` : "主体未明确识别";
+  const reasonFor: Record<string, string> = {
+    hook: `${subj}、画面冲击力适合开场抓注意（场景：${scene}${profile.isHighlight ? "，含高光瞬间" : ""}）`,
+    process: `${subj}、属过程/使用类镜头，适合中段叙述/演示（场景：${scene}）`,
+    detail: `${/close|特写|detail|product/.test(shot) ? "特写/细节镜头" : subj}，适合证据/卖点放大段`,
+    proof: `${subj}、可作社会证明/效果展示（场景：${scene}）`,
+    cta: `${subj}、画面收束感适合结尾行动号召`,
+  };
+  return slots.map((s) => ({ slot: s, reason: reasonFor[s] ?? `${subj}，适合 ${s} 段` }));
+}
+
 export interface MaterialAnalysisResult {
   records: Array<Record<string, unknown>>;
   rejectedAssetIds: Set<string>;
@@ -165,7 +182,11 @@ export function buildMaterialAnalysis(
       quality_score: quality,
       detected_scene: p.sceneType ?? p.shotType ?? "scene",
       detected_subjects: p.detectedSubjects ?? [],
+      shot_type: p.shotType ?? null,
+      best_section: p.bestSection ?? null,
+      is_highlight: Boolean(p.isHighlight),
       recommended_slots: recommendedSlots(p),
+      recommended_slot_reasons: recommendedSlotReasons(p, recommendedSlots(p)),
       reject_reason: reject,
       crop_suggestions: cropSuggestions,
       vlm_analyzed: Boolean(p.vlmAnalyzed)
@@ -195,6 +216,58 @@ function transformFor(status: string): string {
   return "generated_card";
 }
 
+/**
+ * Apply an NL-edit / knob TIMING change to a section list at the SOURCE so the change actually reaches the render
+ * (the injected media track + renderRecipe both read these sections) — not just the timeline JSON. hookRatio
+ * scales the hook; ctaAdvanceSec brings the CTA forward; frontloadBeforeSec pulls the benefit section before a
+ * deadline. Bounded (never reorders); re-anchored so the last section still ends at the original total (the
+ * composition duration is fixed). Returns NEW section objects.
+ */
+export function retimeSections<T extends { role: string; startSec: number; endSec: number }>(
+  sections: T[],
+  knobs: { hookRatio?: number; ctaAdvanceSec?: number; frontloadBeforeSec?: number }
+): T[] {
+  const k = knobs ?? {};
+  const adj = sections.map((s) => ({ ...s }));
+  if (!adj.length) return adj;
+  const total = adj[adj.length - 1].endSec;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  if (k.hookRatio != null && k.hookRatio !== 1) {
+    const hook = adj.find((s) => s.role === "hook") ?? adj[0];
+    const delta = (hook.endSec - hook.startSec) * (k.hookRatio - 1);
+    hook.endSec += delta;
+    let after = false;
+    for (const s of adj) { if (s === hook) { after = true; continue; } if (after) { s.startSec += delta; s.endSec += delta; } }
+  }
+  if (k.ctaAdvanceSec && k.ctaAdvanceSec > 0 && adj.length >= 2) {
+    const ci = adj.findIndex((s) => s.role === "cta");
+    if (ci > 0) {
+      const cta = adj[ci], prev = adj[ci - 1];
+      const adv = Math.min(k.ctaAdvanceSec, (prev.endSec - prev.startSec) * 0.6);
+      cta.startSec = r2(Math.max(prev.startSec + 0.2, cta.startSec - adv));
+      prev.endSec = cta.startSec;
+    }
+  }
+  if (k.frontloadBeforeSec && k.frontloadBeforeSec > 0 && adj.length >= 2) {
+    const deadline = k.frontloadBeforeSec;
+    const bi = adj.findIndex((s) => s.role === "benefit");
+    const idx = bi > 0 ? bi : adj.findIndex((s, i) => i > 0 && s.role !== "hook");
+    if (idx > 0 && adj[idx].startSec >= deadline) {
+      const seg = adj[idx], prev = adj[idx - 1];
+      const target = r2(Math.max(prev.startSec + 0.2, deadline - 0.2));
+      if (seg.startSec - target > 0.05) { seg.startSec = target; prev.endSec = target; }
+    }
+  }
+  // Re-anchor so the section span still ends at the original total (composition duration is fixed) — scale only
+  // if hookRatio changed the end; cta/frontload keep the end. Avoids a media/timeline total drift.
+  const newTotal = adj[adj.length - 1].endSec;
+  if (total > 0 && newTotal > 0 && Math.abs(newTotal - total) > 0.02) {
+    const f = total / newTotal;
+    for (const s of adj) { s.startSec = r2(s.startSec * f); s.endSec = r2(s.endSec * f); }
+  }
+  return adj;
+}
+
 export function buildTimelineV2(input: {
   projectId: string;
   capsule: v5.RemotionTemplateCapsule;
@@ -202,18 +275,35 @@ export function buildTimelineV2(input: {
   aspectRatio: string;
   audioBed?: { beatLocked?: boolean } | null;
   knowledgeAtomIds?: string[];
+  /** Creative knobs that DETERMINISTICALLY re-time the plan (so multi-version + NL-edit timelines truly differ). */
+  knobs?: { ctaAdvanceSec?: number; hookRatio?: number; rhythm?: string; frontloadBeforeSec?: number };
+  /** Actual rendered video duration (sec). The render uses the capsule's RAW section timing, but the knob
+   *  re-timing below changes the plan's total — pass this so the timeline is rescaled to MATCH the real video
+   *  duration (faithful/可追溯), instead of claiming a total the video doesn't have. */
+  renderDurationSec?: number;
 }): Record<string, unknown> {
   const ts = input.capsule.timingSignature;
   const sections = ts.sections ?? [];
-  const duration = ts.durationSec ?? (sections.length ? sections[sections.length - 1].endSec : 0);
   const bySlot = new Map(input.slotBindings.map((b) => [b.slotId, b]));
+
+  // SINGLE timing source: the timeline uses the capsule's section timing AS-IS — NO separate re-timing here. Any
+  // NL-edit / knob timing change is applied at the SOURCE (retimeSections on capsule.timingSignature.sections in
+  // runSameTemplateGeneration) so the injected media track + renderRecipe.layers + this timeline all agree and
+  // match what actually plays. Each section is clamped to the real rendered duration so timeline.duration_sec ==
+  // the video (no two-timelines-disagree). This fixes the prior timeline-vs-renderRecipe mismatch.
+  const renderDur = input.renderDurationSec && input.renderDurationSec > 0
+    ? input.renderDurationSec
+    : (sections.length ? sections[sections.length - 1].endSec : (ts.durationSec ?? 0));
+  const clamp = (v: number) => Math.round(Math.min(Math.max(0, v), Math.max(0.01, renderDur)) * 100) / 100;
+  const adj = sections.map((s) => ({ id: s.id, role: s.role, startSec: clamp(s.startSec), endSec: clamp(s.endSec) }));
+  const duration = Math.round(Math.max(0, renderDur) * 100) / 100;
 
   const video: Array<Record<string, unknown>> = [];
   const text: Array<Record<string, unknown>> = [];
   const userAssets = new Set<string>();
   const generatedAssets = new Set<string>();
 
-  for (const sec of sections) {
+  for (const sec of adj) {
     const mediaSlot = input.capsule.slotSchema.find((s) => s.id.startsWith(sec.id) && /image|logo|ui_mockup/.test(s.kind));
     const textSlot = input.capsule.slotSchema.find((s) => s.id.startsWith(sec.id) && /headline|subtitle|cta_text|data_value/.test(s.kind));
     if (mediaSlot) {
@@ -232,16 +322,37 @@ export function buildTimelineV2(input: {
     }
     if (textSlot) {
       const b = bySlot.get(textSlot.id);
-      text.push({
-        text_id: textSlot.id,
-        start_sec: sec.startSec,
-        end_sec: sec.endSec,
-        content: b?.text ?? "",
-        safe_zone: safeZoneFor(sec.role),
-        style_ref: `${sec.role}_caption`
-      });
+      const content = b?.text ?? "";
+      // Skip dropped subtitles (emptied by the textDensity knob) so the timeline reflects the real caption count.
+      if (content) {
+        text.push({
+          text_id: textSlot.id,
+          start_sec: sec.startSec,
+          end_sec: sec.endSec,
+          content,
+          safe_zone: safeZoneFor(sec.role),
+          style_ref: `${sec.role}_caption`
+        });
+      }
     }
   }
+
+  // Include text slots the per-section pass didn't catch — global captions like `text_scene1_main` (kind "text"
+  // / a `copy.*` propPath, NOT named `<sectionId>_text`). Assign each to a section by order so the timeline
+  // lists the captions the video actually shows (faithful; drives the subtitle/density + multi-version evidence).
+  const usedTextIds = new Set(text.map((t) => String(t.text_id)));
+  const looseTextSlots = input.capsule.slotSchema.filter((s) =>
+    !usedTextIds.has(s.id) &&
+    (/headline|subtitle|cta_text|data_value|text/.test(s.kind) || Boolean(s.propPath && s.propPath.startsWith("copy."))) &&
+    Boolean(bySlot.get(s.id)?.text)
+  );
+  looseTextSlots.forEach((s, i) => {
+    const sec = adj[Math.min(i, adj.length - 1)] ?? adj[0];
+    if (!sec) return;
+    const content = bySlot.get(s.id)?.text ?? "";
+    if (!content) return;
+    text.push({ text_id: s.id, start_sec: sec.startSec, end_sec: sec.endSec, content, safe_zone: safeZoneFor(sec.role), style_ref: `${sec.role}_caption` });
+  });
 
   const audio: Array<Record<string, unknown>> = [];
   if (input.audioBed) audio.push({ audio_id: "bed", start_sec: 0, end_sec: duration, source: "bgm", beat_locked: Boolean(input.audioBed.beatLocked) });
@@ -308,20 +419,39 @@ export function buildEditTrace(command: string, before: TimelineLike, after: Tim
   const num = (v: unknown) => (typeof v === "number" ? v : Number(v) || 0);
   // Intent-level changes from the patch that drove the revise.
   if (patch) {
-    if (patch.rhythm) changes.push({ change_id: "patch_rhythm", operation: "style_change", target_segment_id: "pacing", before: null, after: { rhythm: patch.rhythm }, reason: "整体节奏调整" });
-    if (patch.textDensity) changes.push({ change_id: "patch_textDensity", operation: "style_change", target_segment_id: "subtitles", before: null, after: { textDensity: patch.textDensity }, reason: "字幕密度调整" });
-    if (patch.motionIntensity) changes.push({ change_id: "patch_motion", operation: "style_change", target_segment_id: "motion", before: null, after: { motionIntensity: patch.motionIntensity }, reason: "运动强度调整" });
-    if (patch.ctaAdvanceSec != null) changes.push({ change_id: "patch_cta", operation: "move", target_segment_id: "cta", before: null, after: { ctaAdvanceSec: patch.ctaAdvanceSec }, reason: "CTA 提前/前置" });
-    if (patch.hookRatio != null) changes.push({ change_id: "patch_hook", operation: "shorten", target_segment_id: "hook", before: null, after: { hookRatio: patch.hookRatio }, reason: "开头钩子长度调整" });
-    if (patch.paletteMood || patch.palette) changes.push({ change_id: "patch_palette", operation: "style_change", target_segment_id: "palette", before: null, after: { paletteMood: patch.paletteMood, palette: patch.palette }, reason: "配色/包装调整" });
-    if (patch.theme) changes.push({ change_id: "patch_theme", operation: "replace", target_segment_id: "theme", before: null, after: { theme: patch.theme }, reason: "主题替换" });
-    for (const [k, vv] of Object.entries((patch.copyOverrides as Record<string, unknown>) ?? {})) changes.push({ change_id: `copy_${k}`, operation: "replace", target_segment_id: k, before: null, after: { content: vv }, reason: "指定文案覆盖" });
+    if (patch.rhythm) changes.push({ change_id: "patch_rhythm", operation: "style_change", target_segment_id: "pacing", before: {}, after: { rhythm: patch.rhythm }, reason: "整体节奏调整" });
+    if (patch.textDensity) changes.push({ change_id: "patch_textDensity", operation: "style_change", target_segment_id: "subtitles", before: {}, after: { textDensity: patch.textDensity }, reason: "字幕密度调整" });
+    if (patch.motionIntensity) changes.push({ change_id: "patch_motion", operation: "style_change", target_segment_id: "motion", before: {}, after: { motionIntensity: patch.motionIntensity }, reason: "运动强度调整" });
+    // Timing knobs (cta/frontload/hook) — HONEST: only claim a "move"/"shorten" if the section ACTUALLY changed
+    // between before/after; otherwise label it a no-op with the reason (a template whose benefit is already early
+    // genuinely needs no frontload). This fixes the prior over-claim where the trace said "move" with no real change.
+    const segBy = (tl: TimelineLike, role: string) => (tl?.tracks?.video ?? []).find((v) => String(v.structure_slot ?? "").includes(role) || String(v.segment_id ?? "").includes(role));
+    const startOf = (tl: TimelineLike, role: string) => { const s = segBy(tl, role); return s ? num(s.start_sec) : null; };
+    const spanOf = (tl: TimelineLike, role: string) => { const s = segBy(tl, role); return s ? num(s.end_sec) - num(s.start_sec) : null; };
+    if (patch.ctaAdvanceSec != null) {
+      const bs = startOf(before, "cta"), as = startOf(after, "cta");
+      const moved = bs != null && as != null && bs - as > 0.05;
+      changes.push({ change_id: "patch_cta", operation: moved ? "move" : "style_change", target_segment_id: "cta", before: bs != null ? { start_sec: bs } : {}, after: { start_sec: as, ctaAdvanceSec: patch.ctaAdvanceSec }, reason: moved ? `CTA 实际前移：${bs}s → ${as}s` : `请求 CTA 提前 ${patch.ctaAdvanceSec}s，但当前结构下 CTA 段未移动（no-op）` });
+    }
+    if (patch.frontloadBeforeSec != null) {
+      const bs = startOf(before, "benefit"), as = startOf(after, "benefit");
+      const moved = bs != null && as != null && bs - as > 0.05;
+      changes.push({ change_id: "patch_frontload", operation: moved ? "move" : "style_change", target_segment_id: "benefit", before: bs != null ? { start_sec: bs } : {}, after: { start_sec: as, frontloadBeforeSec: patch.frontloadBeforeSec }, reason: moved ? `功能/卖点信息前移：benefit 段 ${bs}s → ${as}s（目标第 ${patch.frontloadBeforeSec}s 前）` : `功能/卖点信息已在第 ${patch.frontloadBeforeSec}s 前（benefit 段 start ${as ?? bs ?? "?"}s），无需前移（no-op）` });
+    }
+    if (patch.hookRatio != null) {
+      const bspan = spanOf(before, "hook"), aspan = spanOf(after, "hook");
+      const shorter = bspan != null && aspan != null && bspan - aspan > 0.05;
+      changes.push({ change_id: "patch_hook", operation: shorter ? "shorten" : "style_change", target_segment_id: "hook", before: bspan != null ? { span_sec: Math.round(bspan * 100) / 100 } : {}, after: { span_sec: aspan != null ? Math.round(aspan * 100) / 100 : null, hookRatio: patch.hookRatio }, reason: shorter ? `开场钩子缩短：${Math.round((bspan as number) * 100) / 100}s → ${Math.round((aspan as number) * 100) / 100}s` : `请求调整钩子长度(×${patch.hookRatio})，时间轴上钩子段时长未变化（no-op）` });
+    }
+    if (patch.paletteMood || patch.palette) changes.push({ change_id: "patch_palette", operation: "style_change", target_segment_id: "palette", before: {}, after: { paletteMood: patch.paletteMood, palette: patch.palette }, reason: "配色/包装调整" });
+    if (patch.theme) changes.push({ change_id: "patch_theme", operation: "replace", target_segment_id: "theme", before: {}, after: { theme: patch.theme }, reason: "主题替换" });
+    for (const [k, vv] of Object.entries((patch.copyOverrides as Record<string, unknown>) ?? {})) changes.push({ change_id: `copy_${k}`, operation: "replace", target_segment_id: k, before: {}, after: { content: vv }, reason: "指定文案覆盖" });
   }
   const bv = new Map((before?.tracks?.video ?? []).map((s) => [String(s.segment_id), s]));
   for (const a of after?.tracks?.video ?? []) {
     const id = String(a.segment_id);
     const b = bv.get(id);
-    if (!b) { changes.push({ change_id: `add_${id}`, operation: "replace", target_segment_id: id, before: null, after: a, reason: "新增镜头段" }); continue; }
+    if (!b) { changes.push({ change_id: `add_${id}`, operation: "replace", target_segment_id: id, before: {}, after: a, reason: "新增镜头段" }); continue; }
     if (b.source_asset_id !== a.source_asset_id) changes.push({ change_id: `rep_${id}`, operation: "replace", target_segment_id: id, before: { source_asset_id: b.source_asset_id }, after: { source_asset_id: a.source_asset_id }, reason: "该段镜头素材替换" });
     if (num(b.start_sec) !== num(a.start_sec) || num(b.end_sec) !== num(a.end_sec)) {
       const shorter = num(a.end_sec) - num(a.start_sec) < num(b.end_sec) - num(b.start_sec);
@@ -487,15 +617,48 @@ export function buildDialoguePlan(input: { capsule: v5.RemotionTemplateCapsule; 
 
 const ROLES = ["hook", "benefit", "proof", "cta"];
 
-function scoreCapsule(c: v5.RemotionTemplateCapsule, brief: { theme?: string; sellingPoints?: string[] }): { score: number; roleCoverage: string[]; slotCount: number; motifs: number } {
+// Bilingual intent matching so a CN theme can prefer the semantically-right reference (TC-01).
+function briefCategories(brief: { theme?: string; sellingPoints?: string[] }): Set<string> {
+  const t = `${brief.theme ?? ""} ${(brief.sellingPoints ?? []).join(" ")}`;
+  const c = new Set<string>();
+  if (/活动|书展|展会|复盘|集锦|现场|打卡|快闪|赛事|演出|节日|展览/.test(t)) c.add("event");
+  if (/旅行|风景|慢节奏|氛围|空镜|治愈|散步|大片|风光/.test(t)) { c.add("travel"); c.add("ambient"); }
+  if (/教程|步骤|做法|怎么|教学|手作|工作坊|养护|护理|食谱/.test(t)) { c.add("tutorial"); c.add("recipe"); }
+  if (/对话|问答|采访|口播|解说|讲解/.test(t)) c.add("dialogue");
+  if (/理财|金融|数据|图表|解释/.test(t)) c.add("explainer");
+  return c;
+}
+function refCategories(name: string): Set<string> {
+  const n = (name ?? "").toLowerCase();
+  const c = new Set<string>();
+  if (/event|recap/.test(n)) c.add("event");
+  if (/travel|cinematic|slow|pan/.test(n)) { c.add("travel"); c.add("ambient"); }
+  if (/recipe|tutorial|step/.test(n)) { c.add("tutorial"); c.add("recipe"); }
+  if (/ambient|lofi/.test(n)) c.add("ambient");
+  if (/dialogue|qna|q&a|split/.test(n)) c.add("dialogue");
+  if (/finance|explainer|chart/.test(n)) c.add("explainer");
+  return c;
+}
+
+function scoreCapsule(c: v5.RemotionTemplateCapsule, brief: { theme?: string; sellingPoints?: string[] }, sourceName: string): { score: number; roleCoverage: string[]; slotCount: number; mediaSlots: number; motifs: number; semHit: number } {
   const roles = new Set((c.timingSignature.sections ?? []).map((s) => String(s.role)));
   const roleCoverage = ROLES.filter((r) => roles.has(r));
   const slotCount = c.slotSchema?.length ?? 0;
+  const mediaSlots = (c.slotSchema ?? []).filter((s) => /image|video|logo|mockup/.test(s.kind)).length;
   const motifs = c.motionSignature?.motifs?.length ?? 0;
   const briefText = `${brief.theme ?? ""} ${(brief.sellingPoints ?? []).join(" ")}`.toLowerCase();
   const tagHit = (c.tags ?? []).filter((t) => briefText.includes(String(t).toLowerCase())).length;
-  const score = roleCoverage.length * 3 + Math.min(slotCount, 12) * 0.5 + motifs * 0.5 + tagHit * 2 + (c.quality?.renderPreviewPassed ? 2 : 0);
-  return { score: Math.round(score * 10) / 10, roleCoverage, slotCount, motifs };
+  const bc = briefCategories(brief);
+  const semHit = [...refCategories(sourceName)].filter((x) => bc.has(x)).length;
+  const score =
+    roleCoverage.length * 3 +
+    Math.min(slotCount, 12) * 0.5 +
+    mediaSlots * 1.2 + // reward media-rich; a caption-only (0-media) capsule sinks (Fix4)
+    motifs * 0.5 +
+    tagHit * 2 +
+    semHit * 4 + // semantic theme <-> reference category match (Fix2 tie-break)
+    (c.quality?.renderPreviewPassed ? 2 : 0);
+  return { score: Math.round(score * 10) / 10, roleCoverage, slotCount, mediaSlots, motifs, semHit };
 }
 
 function avgSectionSec(c: v5.RemotionTemplateCapsule): number {
@@ -504,29 +667,68 @@ function avgSectionSec(c: v5.RemotionTemplateCapsule): number {
 }
 
 export interface ArbitrationResult {
-  selectedCapsuleId: string;
+  selectedCapsule: v5.RemotionTemplateCapsule;
   report: Record<string, unknown>;
 }
 
-export function arbitrateStructure(capsules: v5.RemotionTemplateCapsule[], brief: { theme?: string; sellingPoints?: string[]; variant?: string }): ArbitrationResult {
-  const scored = capsules.map((c) => ({ capsule: c, ...scoreCapsule(c, brief) })).sort((a, b) => b.score - a.score);
+export function arbitrateStructure(
+  capsules: v5.RemotionTemplateCapsule[],
+  brief: { theme?: string; sellingPoints?: string[]; variant?: string },
+  sourceNames: Record<string, string> = {}
+): ArbitrationResult {
+  const nameOf = (c: v5.RemotionTemplateCapsule) => sourceNames[c.id] ?? c.sourceSampleId;
+  // Task-category fit (Fix: TC-V2-02): when the brief is a concrete CONTENT task (tutorial/recipe, event/recap,
+  // dialogue, explainer) — not just a mood — a reference whose structure is OFF-TOPIC (pure ambient/travel,
+  // matching none of those task categories) gets a soft penalty so it doesn't beat an on-topic reference on raw
+  // structure richness. SOFT on purpose: it's a score nudge, not a hard filter, so a strong candidate still wins
+  // and a genuinely broken on-topic reference can still lose to a solid off-topic one. Mood briefs are untouched.
+  const TASK_CATS = new Set(["event", "tutorial", "recipe", "dialogue", "explainer"]);
+  const briefTaskCats = [...briefCategories(brief)].filter((x) => TASK_CATS.has(x));
+  const offTopicOf = (c: v5.RemotionTemplateCapsule) =>
+    briefTaskCats.length > 0 && ![...refCategories(nameOf(c))].some((rc) => briefTaskCats.includes(rc));
+  const OFF_TOPIC_PENALTY = 6;
+  const scored = capsules
+    .map((c) => {
+      const base = scoreCapsule(c, brief, nameOf(c));
+      const offTopic = offTopicOf(c);
+      return { capsule: c, ...base, offTopic, score: Math.round((base.score - (offTopic ? OFF_TOPIC_PENALTY : 0)) * 10) / 10 };
+    })
+    .sort((a, b) => b.score - a.score);
   const winner = scored[0];
-  // borrow pacing from a runner-up when the brief wants a slower/premium feel and a runner-up is meaningfully slower.
-  const wantSlow = brief.variant === "high_quality";
+  const gatedByTask = briefTaskCats.length > 0 && !winner.offTopic && scored.some((s) => s.offTopic);
+  const losers = scored.slice(1);
+  // Real borrow: graft a slower/ambient runner-up's AUDIO recipe onto the winning structure (not just a note).
+  // Borrowing the OTHER reference's atmosphere is about the references on hand, so it fires whenever a clearly
+  // slower/ambient runner-up exists — independent of the chosen variant.
   let borrowed: Record<string, unknown> | null = null;
-  if (wantSlow && scored.length > 1) {
-    const slower = scored.slice(1).find((s) => avgSectionSec(s.capsule) > avgSectionSec(winner.capsule) * 1.15);
-    if (slower) borrowed = { from: slower.capsule.id, what: "pacing/slow empty-shot timing", reason: "目标偏高质感/慢节奏，借用该样例更慢的段落时长作为开头/结尾留白参考" };
+  let selectedCapsule: v5.RemotionTemplateCapsule = winner.capsule;
+  if (losers.length > 0) {
+    const amb = losers.find((s) => refCategories(nameOf(s.capsule)).has("ambient") || avgSectionSec(s.capsule) > avgSectionSec(winner.capsule) * 1.15);
+    if (amb && (amb.capsule.audioRecipes ?? []).length) {
+      selectedCapsule = { ...winner.capsule, audioRecipes: amb.capsule.audioRecipes };
+      borrowed = { from: amb.capsule.id, from_source: nameOf(amb.capsule), what: "audio mood/bpm + 慢节奏氛围", grafted: "audioRecipes", reason: "在选中结构上真实替换为该样例的 audioRecipes（更慢/氛围化的音轨配方），不只是说明意图" };
+    }
   }
   return {
-    selectedCapsuleId: winner.capsule.id,
+    selectedCapsule,
     report: {
-      candidates: scored.map((s) => ({ capsuleId: s.capsule.id, name: s.capsule.name, sourceSampleId: s.capsule.sourceSampleId, score: s.score, role_coverage: s.roleCoverage, slot_count: s.slotCount, motifs: s.motifs })),
+      candidates: scored.map((s) => ({ capsuleId: s.capsule.id, source: nameOf(s.capsule), score: s.score, role_coverage: s.roleCoverage, slot_count: s.slotCount, media_slots: s.mediaSlots, motifs: s.motifs, semantic_match: s.semHit })),
       selected: winner.capsule.id,
-      selection_reason: `选中结构最完整、与新主题最契合的样例（role 覆盖 ${winner.roleCoverage.join("/")}，槽位 ${winner.slotCount}，综合分 ${winner.score}）`,
-      rejected: scored.slice(1).map((s) => ({ capsuleId: s.capsule.id, reason: `综合分 ${s.score} 低于选中项；结构/契合度较弱` })),
+      selected_source: nameOf(winner.capsule),
+      task_categories: briefTaskCats,
+      gated_by_task_category: gatedByTask,
+      selection_reason: gatedByTask
+        ? `新主题属任务型(${briefTaskCats.join("/")})，优先结构匹配该任务的样例：semantic_match=${winner.semHit}、role ${winner.roleCoverage.join("/")}、媒体槽 ${winner.mediaSlots}、综合分 ${winner.score}（题材不符的氛围类样例已扣分，未选）`
+        : `选中与新主题语义最契合(semantic_match=${winner.semHit})且结构完整(role ${winner.roleCoverage.join("/")}, 媒体槽 ${winner.mediaSlots})的样例，综合分 ${winner.score}`,
+      rejected: losers.map((s) => ({
+        capsuleId: s.capsule.id,
+        source: nameOf(s.capsule),
+        reason: s.offTopic
+          ? `题材不匹配任务类别 ${briefTaskCats.join("/")}（off-topic 扣 ${OFF_TOPIC_PENALTY}，综合分降至 ${s.score}），未选`
+          : `综合分 ${s.score}(语义匹配 ${s.semHit}, 媒体槽 ${s.mediaSlots})低于选中项`,
+      })),
       borrowed: borrowed ? [borrowed] : [],
-      note: "多参考结构仲裁：以单一最佳结构为基底，必要时借用次优样例的节奏/留白；不机械拼接每个样例"
+      note: "多参考结构仲裁：以语义最契合的单一结构为基底，必要时真实嫁接次优样例的音轨/氛围；不机械平均拼接"
     }
   };
 }

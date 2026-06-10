@@ -72,6 +72,65 @@ export async function detectUniformTailSec(
   return tailLen >= minTailSec ? +tailStart.toFixed(2) : null;
 }
 
+export interface RenderQualityIssue { type: string; severity: "warn" | "fail"; detail: string; range_sec?: [number, number] }
+export interface RenderQualityReport {
+  ok: boolean;
+  mean_luma: number | null;
+  dark_fraction: number;
+  blank_segments_sec: Array<[number, number]>;
+  audio_ok: boolean;
+  issues: RenderQualityIssue[];
+  sampled: number;
+}
+
+/**
+ * Post-render AUTOMATED quality gate — samples the final mp4 and flags the kinds of defects we keep hitting, so
+ * they are DETECTED automatically (not eyeballed per video): blank/near-black segments (a section that dropped to
+ * the bare template background), an overall too-dark render, and missing/degraded audio. Used to drive an
+ * auto-fix + an honest quality-report.json. `audioSource`="procedural" while `audioIntended`="aigc" is a
+ * degradation (real music fell back to a synthetic bed).
+ */
+export async function runRenderQualityGate(
+  mp4: string,
+  durationSec: number,
+  opts: { hasAudio?: boolean; audioIntended?: "aigc" | "procedural" | "off"; audioSource?: "generated" | "procedural"; step?: number } = {}
+): Promise<RenderQualityReport> {
+  const step = opts.step ?? 0.5;
+  const samples: Array<{ t: number; mean: number; std: number }> = [];
+  for (let t = 0.1; t < Math.max(1, durationSec); t += step) {
+    const st = await grayStats(mp4, t);
+    samples.push({ t: +t.toFixed(2), mean: st?.mean ?? 0, std: st?.std ?? 0 });
+  }
+  const issues: RenderQualityIssue[] = [];
+  // A sustained near-black run = a section showing the bare/dark template background instead of media (the user's
+  // photos read ~46-63 luma, so they are NOT flagged). Mean-based (not std) so a dark backdrop with grid/particle
+  // motion-graphics still counts — that's exactly the "no picture, just dark template" defect.
+  const isDark = (s: { mean: number }) => s.mean < 25;
+  const blankSegments: Array<[number, number]> = [];
+  let runStart: number | null = null;
+  for (let i = 0; i < samples.length; i++) {
+    if (isDark(samples[i])) { if (runStart === null) runStart = samples[i].t; }
+    else if (runStart !== null) { blankSegments.push([runStart, samples[i].t]); runStart = null; }
+  }
+  if (runStart !== null) blankSegments.push([runStart, +Math.max(1, durationSec).toFixed(2)]);
+  for (const [a, b] of blankSegments) if (b - a >= 1.0) issues.push({ type: "blank_video_segment", severity: "warn", detail: `空白/暗屏片段 ${a.toFixed(1)}-${b.toFixed(1)}s（该段未上用户画面，露出模板背景）`, range_sec: [a, b] });
+  const meanLuma = samples.length ? samples.reduce((s, x) => s + x.mean, 0) / samples.length : null;
+  const darkFraction = samples.length ? samples.filter((s) => s.mean < 28).length / samples.length : 0;
+  if (meanLuma !== null && meanLuma < 16) issues.push({ type: "video_too_dark", severity: "warn", detail: `整片偏暗（平均亮度 ${meanLuma.toFixed(0)}/255）` });
+  const audioOk = opts.audioIntended === "off" ? true : Boolean(opts.hasAudio);
+  if (opts.audioIntended && opts.audioIntended !== "off" && !opts.hasAudio) issues.push({ type: "no_audio", severity: "warn", detail: "成片无音轨" });
+  if (opts.audioIntended === "aigc" && opts.audioSource === "procedural") issues.push({ type: "audio_degraded", severity: "warn", detail: "目标为 AI 生成音乐，但回退到了程序化音频（Lyria 不可用）" });
+  return {
+    ok: !issues.some((i) => i.severity === "fail"),
+    mean_luma: meanLuma !== null ? Math.round(meanLuma * 10) / 10 : null,
+    dark_fraction: Math.round(darkFraction * 100) / 100,
+    blank_segments_sec: blankSegments,
+    audio_ok: audioOk,
+    issues,
+    sampled: samples.length,
+  };
+}
+
 /** Re-encode mp4 to [0, toSec). Returns true on success. */
 export async function trimTo(mp4: string, toSec: number, outPath: string): Promise<boolean> {
   const code = await runFfmpeg(["-y", "-i", mp4, "-t", toSec.toFixed(3), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", outPath]);

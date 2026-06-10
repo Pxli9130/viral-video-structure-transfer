@@ -7,7 +7,7 @@
 //   POST /api/v5/generations              { brief, targetAssetIds, selectedElementIds?, options }
 //   GET  /api/v5/generations/:id          -> stored generation result (+ scorecard)
 
-import { promises as fs, statSync } from "node:fs";
+import { existsSync, promises as fs, statSync } from "node:fs";
 import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import type { Asset } from "@vvst/shared";
@@ -37,6 +37,7 @@ import {
   toEvidenceTimelineV5,
   type NoCopyResult
 } from "./pipeline-v5/index.js";
+import { setJobProgress, getJobProgress, finishJobProgress } from "./pipeline-v5/jobProgress.js";
 
 interface StoreLike {
   read<T>(collection: string): Promise<T[]>;
@@ -50,6 +51,57 @@ export interface V5RouterDeps {
 
 const ok = (res: Response, body: unknown) => res.json(body);
 const fail = (res: Response, code: number, message: string) => res.status(code).json({ error: message });
+
+type ShowcaseArtifactKind = "video" | "image" | "markdown" | "json";
+type ShowcaseArtifactDef = { id: string; label: string; kind: ShowcaseArtifactKind; relPath: string };
+type ShowcaseCaseDef = { id: string; title: string; description: string; tags: string[]; primary?: string; thumbnail?: string; artifacts: ShowcaseArtifactDef[] };
+
+const repoRoot =
+  path.basename(process.cwd()) === "api" && path.basename(path.dirname(process.cwd())) === "apps"
+    ? path.resolve(process.cwd(), "../..")
+    : process.cwd();
+
+const showcaseDefs: ShowcaseCaseDef[] = [
+  {
+    id: "sc_marketing_serum",
+    title: "烟酰胺美白精华 · 学自 marketing.mov",
+    description: "从 marketing.mov 学习营销海报 / 动态包装结构，迁移到全新「烟酰胺美白精华」美妆主题；AIGC 产品视觉 + Lyria 配乐。",
+    tags: ["same_template", "marketing", "aigc", "product_theme"],
+    primary: "sc_marketing_final", thumbnail: "sc_marketing_cover",
+    artifacts: [
+      { id: "sc_marketing_final", label: "final.mp4", kind: "video", relPath: "storage/showcase-runs/run2-marketing/final.mp4" },
+      { id: "sc_marketing_cover", label: "cover.png", kind: "image", relPath: "storage/showcase-runs/run2-marketing/cover.png" },
+      { id: "sc_marketing_timeline", label: "timeline-v2.json", kind: "json", relPath: "storage/showcase-runs/run2-marketing/timeline-v2.json" },
+      { id: "sc_marketing_summary", label: "summary.json", kind: "json", relPath: "storage/showcase-runs/run2-marketing/summary.json" }
+    ]
+  },
+  {
+    id: "sc_motion1_app",
+    title: "AI 智能记账 App · 学自 motion_graph_1.mov",
+    description: "从 motion_graph_1.mov 学习数据/信息动态图形结构，迁移到全新「AI 智能记账 App」主题；AIGC 场景视觉 + Lyria 配乐。",
+    tags: ["same_template", "motion_graphics", "aigc", "product_theme"],
+    primary: "sc_motion1_final", thumbnail: "sc_motion1_cover",
+    artifacts: [
+      { id: "sc_motion1_final", label: "final.mp4", kind: "video", relPath: "storage/showcase-runs/run3-motiongraph1/final.mp4" },
+      { id: "sc_motion1_cover", label: "cover.png", kind: "image", relPath: "storage/showcase-runs/run3-motiongraph1/cover.png" },
+      { id: "sc_motion1_timeline", label: "timeline-v2.json", kind: "json", relPath: "storage/showcase-runs/run3-motiongraph1/timeline-v2.json" },
+      { id: "sc_motion1_summary", label: "summary.json", kind: "json", relPath: "storage/showcase-runs/run3-motiongraph1/summary.json" }
+    ]
+  },
+  {
+    id: "sc_motion2_drink",
+    title: "头戴超级降噪耳机 · 学自 2.mov",
+    description: "从 2.mov 学习动态产品卡结构 / 节奏，迁移到全新「头戴超级降噪耳机」主题；每张产品卡都铺到独立 AIGC 视觉 + Lyria 配乐。",
+    tags: ["same_template", "motion_graphics", "aigc", "product_theme"],
+    primary: "sc_motion2_final", thumbnail: "sc_motion2_cover",
+    artifacts: [
+      { id: "sc_motion2_final", label: "final.mp4", kind: "video", relPath: "storage/showcase-runs/run4-motiongraph2/final.mp4" },
+      { id: "sc_motion2_cover", label: "cover.png", kind: "image", relPath: "storage/showcase-runs/run4-motiongraph2/cover.png" },
+      { id: "sc_motion2_timeline", label: "timeline-v2.json", kind: "json", relPath: "storage/showcase-runs/run4-motiongraph2/timeline-v2.json" },
+      { id: "sc_motion2_summary", label: "summary.json", kind: "json", relPath: "storage/showcase-runs/run4-motiongraph2/summary.json" }
+    ]
+  }
+];
 
 export function createV5Router(deps: V5RouterDeps): Router {
   const router = Router();
@@ -76,12 +128,52 @@ export function createV5Router(deps: V5RouterDeps): Router {
     if (typeof ref !== "string") return undefined;
     return ref.startsWith("/generated/") ? ref : undefined;
   };
+  const showcaseArtifactById = new Map(showcaseDefs.flatMap((c) => c.artifacts.map((a) => [a.id, a] as const)));
+  const resolveShowcaseArtifact = (artifactId: string) => {
+    const artifact = showcaseArtifactById.get(artifactId);
+    if (!artifact) return undefined;
+    const absPath = path.resolve(repoRoot, artifact.relPath);
+    const relative = path.relative(repoRoot, absPath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+    return existsSync(absPath) ? { artifact, absPath } : undefined;
+  };
+  const artifactUrl = (artifactId: string) => `/api/v5/showcase-artifacts/${encodeURIComponent(artifactId)}`;
+
+  // ---- Curated local showcase artifacts for the judge-facing gallery ----
+  router.get("/showcase", (_req, res) => {
+    const cases = showcaseDefs
+      .map((showcase) => {
+        const artifacts = showcase.artifacts
+          .filter((artifact) => Boolean(resolveShowcaseArtifact(artifact.id)))
+          .map((artifact) => ({ id: artifact.id, label: artifact.label, kind: artifact.kind, url: artifactUrl(artifact.id) }));
+        if (!artifacts.length) return undefined;
+        const primary = showcase.primary ? artifacts.find((artifact) => artifact.id === showcase.primary) : artifacts[0];
+        const thumbnail = showcase.thumbnail ? artifacts.find((artifact) => artifact.id === showcase.thumbnail) : artifacts.find((artifact) => artifact.kind === "image");
+        return {
+          id: showcase.id,
+          title: showcase.title,
+          description: showcase.description,
+          tags: showcase.tags,
+          primary,
+          thumbnail,
+          artifacts
+        };
+      })
+      .filter(Boolean);
+    return ok(res, { cases });
+  });
+
+  router.get("/showcase-artifacts/:artifactId", (req, res) => {
+    const resolved = resolveShowcaseArtifact(req.params.artifactId);
+    if (!resolved) return fail(res, 404, "showcase artifact not found");
+    return res.sendFile(resolved.absPath);
+  });
 
   // ---- Assets (for the UI to pick sample/target assets) ----
   router.get("/assets", async (_req, res) => {
     const assets = await getAssets();
     return ok(res, {
-      assets: assets.map((a) => ({ id: a.id, role: a.role, type: a.type, filename: a.filename, hasPath: Boolean(a.path), tags: a.tags ?? [] }))
+      assets: assets.map((a) => ({ id: a.id, role: a.role, type: a.type, filename: a.filename, hasPath: Boolean(a.path), tags: a.tags ?? [], createdAt: a.createdAt }))
     });
   });
 
@@ -95,6 +187,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
   router.post("/learn-samples", async (req: Request, res: Response) => {
     const sampleAssetIds: string[] = Array.isArray(req.body?.sampleAssetIds) ? req.body.sampleAssetIds : [];
     if (!sampleAssetIds.length) return fail(res, 400, "sampleAssetIds[] required");
+    const jobId: string | undefined = typeof req.body?.jobId === "string" ? req.body.jobId : undefined;
+    setJobProgress(jobId, { step: 1, total: 4, detail: "开始学习样本…" });
     const wantAi = req.body?.options?.runGen1Ai === true;
     const modelFn = wantAi ? createTextModelFn() : undefined;
     // V5.1: real AI codegen of the capsule TSX (triple-gated, apply!=promote) is now the DEFAULT
@@ -122,6 +216,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
         continue;
       }
       const outDir = learnDir(assetId);
+      setJobProgress(jobId, { step: 1, total: 4, detail: "提取视频证据：镜头 / 关键帧 / OCR·ASR / BPM / 运动曲线…" });
       const v4Timeline = await analyzeEvidenceTimeline(asset, { generatedDir: deps.generatedDir });
       if (!v4Timeline) {
         learned.push({ sampleId: assetId, error: "evidence unavailable (conda env / sample path)" });
@@ -136,10 +231,12 @@ export function createV5Router(deps: V5RouterDeps): Router {
       let aiProgram: v5.NeutralReconstructionProgram | null = null;
       let usedAi = false;
       if (modelFn) {
+        setJobProgress(jobId, { step: 2, total: 4, detail: "Gen1 AI：分析结构、重建中性时间线…" });
         const g1 = await runGen1Ai(evidence, modelFn);
         aiProgram = g1.usedAi ? g1.program : null;
         usedAi = g1.usedAi;
       }
+      setJobProgress(jobId, { step: 3, total: 4, detail: "生成可复用 Remotion 模板胶囊代码 + 首帧渲染验证（三重门）…" });
       const artifacts = await runLearnSampleV5(evidence, kb, { outDir, aiProgram, capsuleCodegenModel, capsuleCodegenVision, sceneVlm, validateRender, projectId: asset.projectId, storageRoot: path.dirname(deps.generatedDir), sampleVideoPath: asset.path });
       learned.push({
         sampleId: assetId,
@@ -162,24 +259,27 @@ export function createV5Router(deps: V5RouterDeps): Router {
         warnings: artifacts.warnings
       });
     }
+    finishJobProgress(jobId, "学习完成：模板胶囊 + 槽位协议 + KB 已写入");
     return ok(res, { learned, kbSize: kb.list().length });
   });
 
+  // These are PROBED eagerly by the dashboard for every selected sample (many of which were never learned), so a
+  // 404 here just spams the browser console. Return 200 with null/absent instead — the frontend already treats a
+  // falsy result as "no artifact yet" (same as its .catch), and the console stays clean.
   router.get("/samples/:assetId/evidence", async (req, res) => {
     const data = await readJsonIf(path.join(learnDir(req.params.assetId), "evidence-timeline-v5.json"));
-    return data ? ok(res, data) : fail(res, 404, "no evidence; run /learn-samples first");
+    return ok(res, data ?? null);
   });
 
   router.get("/samples/:assetId/reconstruction", async (req, res) => {
     const data = await readJsonIf(path.join(learnDir(req.params.assetId), "neutral-reconstruction-program.json"));
-    return data ? ok(res, data) : fail(res, 404, "no reconstruction; run /learn-samples first");
+    return ok(res, data ?? null);
   });
 
   router.get("/samples/:assetId/elements", async (req, res) => {
     const candidates = await readJsonIf(path.join(learnDir(req.params.assetId), "candidate-elements.json"));
     const decisions = await readJsonIf(path.join(learnDir(req.params.assetId), "kb-decisions.json"));
-    if (!candidates) return fail(res, 404, "no elements; run /learn-samples first");
-    return ok(res, { candidates, decisions });
+    return ok(res, candidates ? { candidates, decisions } : null);
   });
 
   // ---- Knowledge Base ----
@@ -320,6 +420,12 @@ export function createV5Router(deps: V5RouterDeps): Router {
     };
   };
 
+  // Live progress of an in-flight learn/generate (the UI polls this so its status bar reflects the real
+  // server-side stage instead of freezing on the first step). Returns null payload when unknown/not started.
+  router.get("/jobs/:jobId/progress", (req, res) => {
+    return ok(res, getJobProgress(req.params.jobId));
+  });
+
   router.get("/jobs/:jobId/transfer-trace", async (req, res) => {
     const trace = await buildTransferTrace(req.params.jobId);
     return trace ? ok(res, trace) : fail(res, 404, "generation trace not found");
@@ -410,6 +516,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       packagingPlan: st.packagingPlan,
       beatAlignment: st.beatAlignment,
       dialoguePlan: st.dialoguePlan,
+      qualityReport: st.qualityReport,
       ...(editTrace ? { editTrace } : {}),
       warnings: st.warnings,
       ...extra
@@ -426,6 +533,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
       fs.writeFile(path.join(outDirST, "packaging-plan.json"), JSON.stringify(st.packagingPlan, null, 2)),
       fs.writeFile(path.join(outDirST, "beat-alignment.json"), JSON.stringify(st.beatAlignment, null, 2)),
       fs.writeFile(path.join(outDirST, "dialogue-plan.json"), JSON.stringify(st.dialoguePlan, null, 2)),
+      ...(st.qualityReport ? [fs.writeFile(path.join(outDirST, "quality-report.json"), JSON.stringify(st.qualityReport, null, 2))] : []),
       ...(editTrace ? [fs.writeFile(path.join(outDirST, "edit-trace.json"), JSON.stringify(editTrace, null, 2))] : []),
       fs.writeFile(path.join(outDirST, "generation-result.json"), JSON.stringify(result, null, 2))
     ]);
@@ -445,6 +553,9 @@ export function createV5Router(deps: V5RouterDeps): Router {
     const brief: v5.CreativeBriefV5 = body.brief ?? {};
     const projectId: string = body.projectId ?? "proj_v5";
     const generationId: string = body.generationId ?? `gen_${Date.now().toString(36)}`;
+    // Progress key the UI polls (GET /jobs/:jobId/progress). Falls back to the generationId so it always works.
+    const jobId: string = typeof body.jobId === "string" && body.jobId ? body.jobId : generationId;
+    setJobProgress(jobId, { step: 1, total: 4, detail: "准备生成…" });
     const targetAssetIds: string[] = Array.isArray(body.targetAssetIds) ? body.targetAssetIds : [];
     // Explicit per-slot asset binding from the gap radar (slotId -> assetId).
     const slotAssignments: Record<string, string> | undefined =
@@ -480,9 +591,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
       if (referenceCapsuleIds.length > 1) {
         const refCapsules = referenceCapsuleIds.map((id) => kb.getTemplateCapsule(id)).filter((c): c is v5.RemotionTemplateCapsule => Boolean(c));
         if (refCapsules.length > 1) {
-          const arb = arbitrateStructure(refCapsules, { theme: brief.theme, sellingPoints: brief.sellingPoints, variant: brief.variant });
+          // map each capsule to its source video filename so arbitration can match theme<->reference semantics.
+          const sourceNames = Object.fromEntries(refCapsules.map((c) => [c.id, allAssets.find((a) => a.id === c.sourceSampleId)?.filename ?? c.sourceSampleId]));
+          const arb = arbitrateStructure(refCapsules, { theme: brief.theme, sellingPoints: brief.sellingPoints, variant: brief.variant }, sourceNames);
           structureArbitration = arb.report;
-          capsule = refCapsules.find((c) => c.id === arb.selectedCapsuleId) ?? refCapsules[0];
+          capsule = arb.selectedCapsule;
         } else {
           capsule = refCapsules[0];
         }
@@ -514,8 +627,10 @@ export function createV5Router(deps: V5RouterDeps): Router {
         rewriteModel,
         rewriteFallbackModel,
         assetVisionFn: userAssetVisionFn,
-        slotAssignments
+        slotAssignments,
+        jobId
       });
+      finishJobProgress(jobId, "生成完成");
       return finishSameTemplate(res, generationId, capsule, st, stOptions, outDirST, structureArbitration ? { structureArbitration } : {});
     }
 
@@ -739,9 +854,11 @@ export function createV5Router(deps: V5RouterDeps): Router {
           `Allowed JSON keys: theme?: string, palette?: string[], copyOverrides?: object, ` +
           `rhythm?: "aggressive"|"balanced"|"slow", textDensity?: "dense"|"medium"|"minimal", ` +
           `motionIntensity?: "high"|"medium"|"low", hookRatio?: number(0.5-1.2), ctaAdvanceSec?: number(0-2), ` +
+          `frontloadBeforeSec?: number(0-8), ` +
           `paletteMood?: "bold"|"premium"|"clean"|"energetic". ` +
           `Map intent: "更抓人/开头更冲/hook"->{rhythm:"aggressive",hookRatio:0.6}; "减少字幕/精简"->{textDensity:"minimal"}; ` +
-          `"更高级/更质感/premium"->{paletteMood:"premium",motionIntensity:"low",rhythm:"slow"}; "节奏更快/更燃"->{rhythm:"aggressive",motionIntensity:"high"}; "CTA提前/把购买信息提前"->{ctaAdvanceSec:1}. ` +
+          `"更高级/更质感/premium"->{paletteMood:"premium",motionIntensity:"low",rhythm:"slow"}; "节奏更快/更燃"->{rhythm:"aggressive",motionIntensity:"high"}; "CTA提前/把购买信息提前"->{ctaAdvanceSec:1}; ` +
+          `"把功能/卖点/关键信息提前到第N秒前/前置卖点"->{frontloadBeforeSec:N}(默认N=3). ` +
           `Existing theme: ${JSON.stringify(instance.creativeBrief.theme ?? instance.creativeBrief.prompt ?? "")}. ` +
           `Existing copy keys: ${JSON.stringify(Object.keys(copy))}. ` +
           `Instruction: ${instructionText}. ` +
@@ -761,7 +878,8 @@ export function createV5Router(deps: V5RouterDeps): Router {
             ...(oneOf(pp.motionIntensity, ["high", "medium", "low"] as const) ? { motionIntensity: pp.motionIntensity } : {}),
             ...(oneOf(pp.paletteMood, ["bold", "premium", "clean", "energetic"] as const) ? { paletteMood: pp.paletteMood } : {}),
             ...(typeof pp.hookRatio === "number" ? { hookRatio: Math.max(0.5, Math.min(1.2, pp.hookRatio)) } : {}),
-            ...(typeof pp.ctaAdvanceSec === "number" ? { ctaAdvanceSec: Math.max(0, Math.min(2, pp.ctaAdvanceSec)) } : {})
+            ...(typeof pp.ctaAdvanceSec === "number" ? { ctaAdvanceSec: Math.max(0, Math.min(2, pp.ctaAdvanceSec)) } : {}),
+            ...(typeof pp.frontloadBeforeSec === "number" ? { frontloadBeforeSec: Math.max(0, Math.min(8, pp.frontloadBeforeSec)) } : {})
           };
           if (Object.keys(patch).length) return { patch, patchNotes: Array.isArray(parsed.patchNotes) ? parsed.patchNotes.map(String).slice(0, 8) : ["structured TemplatePatchSet generated"], modelUsed: true, warnings };
         }
