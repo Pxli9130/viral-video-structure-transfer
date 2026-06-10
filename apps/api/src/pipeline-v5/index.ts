@@ -23,8 +23,10 @@ export { runGapReportV5 } from "./runGapReportV5.js";
 export { runGen2ComposeFallback } from "./runGen2ComposeFallback.js";
 export { runCreateV5 } from "./runCreateV5.js";
 export type { CreateInput, CreateArtifacts } from "./runCreateV5.js";
-export { renderFinalVideoV5, buildV5RenderInputProps, muxProceduralAudio } from "./renderV5.js";
+export { renderFinalVideoV5, buildV5RenderInputProps, muxProceduralAudio, muxAudioBed } from "./renderV5.js";
 export type { RenderV5Options, RenderV5Result, AssetMap } from "./renderV5.js";
+export { generateLyriaMusicBed, lyriaMusicAvailable } from "./musicBed.js";
+export type { LyriaMusicBed, LyriaMusicBedInput } from "./musicBed.js";
 export { runScorecardV5 } from "./runScorecardV5.js";
 export type { ScorecardInput, NoCopyResult, RenderInfo } from "./runScorecardV5.js";
 // V5.1 Same Template Reconstruction Mode
