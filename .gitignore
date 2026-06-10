@@ -59,3 +59,6 @@ verify_submission.zip
 test_runs/
 test_assets/
 demo_upload_assets/
+SUBMISSION_CHECKLIST.md
+docs/项目说明.md
+.claude/settings.json

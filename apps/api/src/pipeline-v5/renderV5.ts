@@ -189,6 +189,32 @@ export function muxProceduralAudio(videoPath: string, outPath: string, durationS
   });
 }
 
+/** Mux a REAL audio bed (e.g. an AIGC-generated Lyria music file) under a silent render: loop the bed to
+ *  cover the full duration, gentle fade in/out, trim to length. Shared by the FinalVideoProgram render and
+ *  the capsule render so AI-generated music can OVERRIDE the procedural bed (callers fall back to procedural
+ *  on failure). */
+export function muxAudioBed(videoPath: string, audioPath: string, outPath: string, durationSec: number): Promise<{ ok: boolean; error?: string }> {
+  const dur = Math.max(1, durationSec).toFixed(2);
+  const fadeOutStart = Math.max(0, Number(dur) - 0.35).toFixed(2);
+  const ffmpeg = resolveFfmpeg();
+  const args = [
+    "-y",
+    "-i", videoPath,
+    "-stream_loop", "-1", "-i", audioPath,
+    "-filter_complex", `[1:a]aresample=44100,volume=0.72,afade=t=in:st=0:d=0.2,afade=t=out:st=${fadeOutStart}:d=0.35[a]`,
+    "-map", "0:v:0", "-map", "[a]",
+    "-t", dur,
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart",
+    outPath
+  ];
+  return new Promise((resolve) => {
+    const p = spawn(ffmpeg, args, { stdio: "ignore" });
+    p.on("error", (e) => resolve({ ok: false, error: String(e.message).slice(-400) }));
+    p.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg audio mux exit ${code}` }));
+  });
+}
+
 export interface RenderV5Options {
   finalProgram: v5.FinalVideoProgram;
   assetMap?: AssetMap;
@@ -203,6 +229,9 @@ export interface RenderV5Options {
   bundleLocation?: string;
   /** Add a procedural audio bed when the recipe wants audio but has no real audio asset. */
   proceduralAudio?: boolean;
+  /** Path to a REAL audio bed (e.g. AIGC Lyria music) to mux instead of the procedural bed. Falls back to
+   *  the procedural bed when the file is missing or its mux fails. */
+  musicBedPath?: string;
 }
 
 export interface RenderV5Result {
@@ -231,7 +260,8 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
   let bundleLocation = opts.bundleLocation;
   let inputProps: { recipe: v5.RenderRecipeV5; assetMap: AssetMap };
   try {
-    const remotionMp4 = opts.proceduralAudio ? `${opts.outPath}.silent.mp4` : opts.outPath;
+    const musicExists = Boolean(opts.musicBedPath) && existsSync(opts.musicBedPath as string);
+    const remotionMp4 = (opts.proceduralAudio || musicExists) ? `${opts.outPath}.silent.mp4` : opts.outPath;
     inputProps = buildV5RenderInputProps(opts.finalProgram, opts.assetMap);
     // Bound by the SHARED render semaphore + tab cap (same budget as renderTemplateCapsule) so this path
     // can't blow memory under concurrent generate requests.
@@ -247,7 +277,20 @@ export async function renderFinalVideoV5(opts: RenderV5Options): Promise<RenderV
 
     let finalMp4 = remotionMp4;
     let audioMuxed = false;
-    const wantsAudio = opts.proceduralAudio && recipe.audioLayers.length > 0 && recipe.audioLayers.every((a) => !a.uri);
+    // Prefer a REAL audio bed (e.g. AIGC Lyria music) when one was generated; fall back to the procedural
+    // bed when it is absent or its mux fails.
+    if (musicExists) {
+      const mux = await muxAudioBed(remotionMp4, opts.musicBedPath as string, opts.outPath, durationSec);
+      if (mux.ok) {
+        finalMp4 = opts.outPath;
+        audioMuxed = true;
+      } else {
+        warnings.push(`music bed mux failed: ${mux.error}; falling back to procedural bed`);
+      }
+    } else if (opts.musicBedPath) {
+      warnings.push(`music bed missing on disk: ${path.basename(opts.musicBedPath)}; using procedural bed`);
+    }
+    const wantsAudio = !audioMuxed && opts.proceduralAudio && recipe.audioLayers.length > 0 && recipe.audioLayers.every((a) => !a.uri);
     if (wantsAudio) {
       // Derive beat-synced hit/riser cues from the recipe's audio layers.
       const hitTimes = recipe.audioLayers.flatMap((a) => (a.kind === "sfx" && a.id !== "sfx_riser" ? a.cueAlignSec ?? [] : []));

@@ -14,7 +14,31 @@ The UI must prove the system can:
 
 ## 2. Recommended tabs
 
-Minimum tabs:
+Current V5 Dashboard uses a single-page workflow with collapsible sections and a fixed top status bar:
+
+```text
+0 Upload
+1 Learn
+Template Library
+Knowledge Base
+2 Generate
+3 Result
+Review Evidence Center
+```
+
+The Review Evidence Center contains judge-facing tabs:
+
+```text
+Showcase
+Learn Analysis
+Structure Protocol
+Gap Decisions
+Transfer Map
+Packaging
+Export
+```
+
+Historical minimum tabs:
 
 ```text
 Analyze
@@ -44,6 +68,24 @@ Render Preview
 Before/After Compare
 Scorecard
 ```
+
+## 2.1 Current dashboard requirements
+
+The current V5 UI should demonstrate:
+
+- fixed top status bar with API status, sample/template/KB counts, active stage and latest check time
+- left-side live progress bar during upload / learn / generate / natural-language revise
+- manual `Upload` button for sample videos and target assets
+- single sample selection in Learn
+- collapsible Learn, Template Library, Knowledge Base, Generate and target-asset panels
+- structure learning report with key frames, left-to-right scrollable timeline, structure conclusion and evidence cards
+- Review Evidence Center with pre-generation Transfer Map / Packaging drafts and post-generation trace evidence
+- target asset ordering controls (`上移` / `下移` / `移除`) so first selected asset can appear first
+- slot gap board with type-compatible matching and optional per-slot upload/binding
+- default `same_template` generation and advanced `mix_elements` generation
+- `让 AI 现场编写动画代码` toggle for advanced mixed-element generation
+- structured patch revise and natural-language revise
+- Export buttons for loaded JSON evidence
 
 ## 3. Upload page
 
@@ -264,9 +306,9 @@ P0 Gap Fill: done
 P0 Visualization: done
 P0 Final Demo: done
 P1 Packaging: done
-P1 Variants: partial
+P1 Variants: done
 P1 Real Asset Fit: done
-P1 Human Edit: partial
+P1 Human Edit: done
 Audio Structure: done
 No Sample Copy: passed
 ```
@@ -283,3 +325,33 @@ A judge should be able to see:
 - how missing assets/audio were filled
 - how final video was generated
 - why final output is not a copy of sample content
+
+## 18. Playwright recording checklist
+
+The repository includes `scripts/record-v5-demo.mjs` for high-resolution UI recording. A complete
+recording should cover:
+
+- Upload: choose sample/target files and click each `Upload` button
+- Learn: select one sample, optionally run Learn, read the structure report
+- Evidence Center: click all tabs and show the content after each click
+- Template Library: click `用此模板生成`
+- Knowledge Base: switch structure/scene/source views and search
+- Generate: show same-template controls, target order controls, AIGC fill options, LLM smart rewrite, variant buttons
+- Generate advanced: switch to `混合多视频元素`, toggle `让 AI 现场编写动画代码`, select KB elements
+- Result: play final video, show consistency checks, timeline, scorecard and revise controls
+- Export: show or download available JSON evidence
+
+Useful environment variables:
+
+```text
+DEMO_URL=http://127.0.0.1:5174/#v5
+DEMO_WIDTH=1920
+DEMO_HEIGHT=1080
+EXERCISE_BUTTONS=1
+RUN_LEARN=1
+RUN_GENERATE=1
+RUN_REVISE=0
+DOWNLOAD_EXPORTS=0
+DEMO_SAMPLE_FILE=test_videos/motion_graph_1.mov
+DEMO_TARGET_FILES=docs/fixtures/motion_graph_target_assets/card_01.png,docs/fixtures/motion_graph_target_assets/card_02.png
+```

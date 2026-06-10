@@ -4,12 +4,11 @@
 // project UNDER the repo (so node_modules resolves), bundles, and renders. This is what makes
 // "use the same template code, new content" real — the stored template component renders the new props.
 
-import { spawn } from "node:child_process";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v5 } from "@vvst/shared";
-import { muxProceduralAudio, resolveBin } from "./renderV5.js";
+import { muxProceduralAudio, muxAudioBed } from "./renderV5.js";
 import { renderSemaphore, RENDER_TABS_PER_JOB, RENDER_TIMEOUT_MS, nextSeq } from "./concurrency.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -153,28 +152,6 @@ export interface CapsuleRenderOptions {
   energyCurve?: Array<{ t: number; value: number }>;
   hitTimes?: number[];
   riserTime?: number;
-}
-
-function muxAudioBed(videoPath: string, audioPath: string, outPath: string, durationSec: number): Promise<{ ok: boolean; error?: string }> {
-  const dur = Math.max(1, durationSec).toFixed(2);
-  const fadeOutStart = Math.max(0, Number(dur) - 0.35).toFixed(2);
-  const ffmpeg = resolveBin("ffmpeg");
-  const args = [
-    "-y",
-    "-i", videoPath,
-    "-stream_loop", "-1", "-i", audioPath,
-    "-filter_complex", `[1:a]aresample=44100,volume=0.72,afade=t=in:st=0:d=0.2,afade=t=out:st=${fadeOutStart}:d=0.35[a]`,
-    "-map", "0:v:0", "-map", "[a]",
-    "-t", dur,
-    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-    "-movflags", "+faststart",
-    outPath
-  ];
-  return new Promise((resolve) => {
-    const p = spawn(ffmpeg, args, { stdio: "ignore" });
-    p.on("error", (e) => resolve({ ok: false, error: String(e.message).slice(-400) }));
-    p.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg audio mux exit ${code}` }));
-  });
 }
 
 /** Render the capsule's stored Remotion component with the bound props. */

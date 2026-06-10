@@ -24,6 +24,8 @@ import {
   createGeminiVisionFn,
   createTextModelFn,
   finalProgramToGen2RemotionCapsule,
+  generateLyriaMusicBed,
+  lyriaMusicAvailable,
   renderFinalVideoV5,
   renderTemplateCapsule,
   runCreateV5,
@@ -687,6 +689,33 @@ export function createV5Router(deps: V5RouterDeps): Router {
     let finalVideoUrl: string | undefined;
     const shouldRender = doRender && (options.autoRender ?? true) !== false;
 
+    // AIGC music: when AIGC fill is on, generate an original Lyria music bed so the mix_elements output
+    // uses AI-generated audio instead of only the procedural synthesized bed. Falls back to the procedural
+    // bed when Lyria is unavailable/fails (the render path degrades gracefully). Opt out: options.audioFill="off".
+    let musicBedPath: string | undefined;
+    // Audio preference for the mix path: explicit options.audioFill wins, else aigcGapFill.audioFill, else
+    // default to AIGC music. "procedural"/"off" keep only the synthesized bed.
+    const audioFillPref = (options as { audioFill?: string }).audioFill
+      ?? (options as { aigcGapFill?: { audioFill?: string } }).aigcGapFill?.audioFill
+      ?? "aigc";
+    if (shouldRender && audioFillPref === "aigc" && lyriaMusicAvailable(process.env)) {
+      setJobProgress(jobId, { detail: "生成配乐 (Lyria)…" });
+      try {
+        const bed = await generateLyriaMusicBed({
+          theme: brief.theme ?? brief.prompt,
+          durationSec: create.finalProgram.renderRecipe.composition.durationSec,
+          audioPlan: create.composition.audioPlan,
+          env: process.env,
+          outDir,
+          generationId
+        });
+        musicBedPath = bed.path;
+        create.warnings.push(`Google Lyria music generated: ${bed.segmentCount} clip${bed.segmentCount === 1 ? "" : "s"} using ${bed.modelId ?? "lyria-3-clip-preview"}.`);
+      } catch (err) {
+        create.warnings.push(`Google Lyria music unavailable: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}; using procedural audio fallback.`);
+      }
+    }
+
     if (shouldRender) {
       const outPath = path.join(outDir, "final.mp4");
       // Generated images are served at /generated/... by this server; the headless renderer (same
@@ -718,6 +747,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
           },
           outPath,
           aspectRatio: brief.aspectRatio ?? "9:16",
+          audioPath: musicBedPath,
           proceduralAudio: true,
           bpm: beatGrid?.bpm ?? null,
           beatGridSec: beatGrid?.beats,
@@ -732,6 +762,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
             finalProgram: create.finalProgram,
             outPath,
             proceduralAudio: true,
+            musicBedPath,
             bpm: beatGrid?.bpm ?? null,
             beatGridSec: beatGrid?.beats,
             strongBeatsSec: beatGrid?.strongBeats,
@@ -744,6 +775,7 @@ export function createV5Router(deps: V5RouterDeps): Router {
           finalProgram: create.finalProgram,
           outPath,
           proceduralAudio: true,
+          musicBedPath,
           bpm: beatGrid?.bpm ?? null,
           beatGridSec: beatGrid?.beats,
           strongBeatsSec: beatGrid?.strongBeats,

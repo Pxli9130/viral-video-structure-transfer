@@ -387,6 +387,36 @@ export async function runCapsuleContextRewrite(input: {
     componentName: original.componentName
   });
 
+  // Robust fallback for when the FULL LLM rewrite can't produce compiling/rendering TSX (it asks the model to
+  // regenerate whole modules, which is fragile). Rather than ship the SOURCE-language on-screen text, apply the
+  // DETERMINISTIC theme-sweep (quoted-literal string-content swaps — compile-safe) to the ORIGINAL, already-
+  // compiling code so the visible copy ("Video Generator", "online sneaker marketplace"…) still becomes the new
+  // theme. Gated on compile + render before shipping; falls back to raw original only if even that fails.
+  const sweptOriginalFallback = async (reason: string): Promise<ContextRewriteResult> => {
+    const sweptMap = new Map<string, string>();
+    await Promise.all(targets.map(async (t) => {
+      const out = await themeSweepText(t.content, input.theme, input.sellingPoints, models).catch(() => null);
+      if (out && out !== t.content) sweptMap.set(t.path, out);
+    }));
+    if (sweptMap.size) {
+      const sweptBundle: v5.RemotionTemplateCapsule["codeBundle"] = {
+        files: original.files.map((f) => (sweptMap.has(f.path) ? { ...f, content: sweptMap.get(f.path) as string } : f)),
+        entryFile: original.entryFile,
+        componentName: original.componentName
+      };
+      const compiles = validateTemplateCapsule({ ...input.capsule, codeBundle: sweptBundle }).gates.find((g) => g.id === "T2")?.status === "pass";
+      if (compiles) {
+        const probe = await input.renderProbe(sweptBundle, fixture).catch(() => ({ ok: false as const }));
+        if (probe.ok) {
+          warnings.push(`${reason}; applied deterministic theme-sweep to the original code (${sweptMap.size} file(s)) so on-screen text reflects the new theme.`);
+          return { codeBundle: sweptBundle, usedAi: true, warnings, hadFallback: true };
+        }
+      }
+    }
+    warnings.push(`${reason}; using the original (un-rethemed) capsule code.`);
+    return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
+  };
+
   // Phase 1 — rewrite every target chunk independently (each retried on its own). Failed chunks fall back to original.
   const perFile = await mapLimit(targets, concurrency, (f) => rewriteOneFile(f, maxAttempts));
   const rewritten = new Map<string, string>();
@@ -418,37 +448,7 @@ export async function runCapsuleContextRewrite(input: {
     fellBack.push(...stillFailed);
   }
   for (const fb of fellBack) warnings.push(`chunk ${fb.path}: ${fb.error ?? "unparseable"} -> kept original chunk code`);
-  if (!rewritten.size) {
-    warnings.push("context rewrite failed (no chunk produced usable output); using the original (un-rethemed) capsule code.");
-    return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
-  }
-
-  // Phase 1.7 — GLOBAL theme-sweep over EVERY target (rewritten OR kept-original). A chunk whose full rewrite
-  // parsed but left English source copy/brands/metrics ("Create a high-end online sneaker marketplace",
-  // "Layout.dev", "$100k/mo") never reaches the fellBack-only retext above; this final pass catches those by
-  // collecting all on-screen text (quoted + JSX text nodes) and swapping just the off-theme ones. Best-effort.
-  {
-    // In LLM-primary mode (sweepScope "fallback") the deterministic sweep is a FALLBACK: it only cleans chunks the
-    // LLM could NOT rewrite cleanly (phase1Clean excluded). A clean LLM rewrite is trusted as-is. Default "all"
-    // keeps the legacy behaviour (sweep every chunk).
-    const sweepTargets = input.sweepScope === "fallback" ? targets.filter((t) => !phase1Clean.has(t.path)) : targets;
-    const preSweep = new Map(rewritten);                                  // snapshot to revert to if the sweep breaks compile
-    let sweptCount = 0;
-    const swept = await mapLimit(sweepTargets, concurrency, async (t) => {
-      const cur = rewritten.get(t.path) ?? t.content;
-      const out = await themeSweepText(cur, input.theme, input.sellingPoints, models).catch(() => null);
-      return { path: t.path, content: out };
-    });
-    for (const s of swept) if (s.content) { rewritten.set(s.path, s.content); sweptCount++; }
-    if (sweptCount) {
-      // A sweep that breaks compile must NOT fall through to the Phase-2 repair round (which re-rewrites from the
-      // ORIGINAL chunk and would throw away the GOOD rewrite, reverting on-screen text to the source language).
-      // So validate here: keep the swept code only if it still compiles, else revert to the pre-sweep rewrite.
-      const sweptOk = validateTemplateCapsule({ ...input.capsule, codeBundle: assemble(rewritten) }).gates.find((g) => g.id === "T2")?.status === "pass";
-      if (sweptOk) warnings.push(`theme-sweep: removed leftover off-theme on-screen text in ${sweptCount} chunk(s).`);
-      else { for (const [k, v] of preSweep) rewritten.set(k, v); for (const k of [...rewritten.keys()]) if (!preSweep.has(k)) rewritten.delete(k); warnings.push(`theme-sweep reverted (would not compile; kept the rethemed-but-unswept code).`); }
-    }
-  }
+  if (!rewritten.size) return await sweptOriginalFallback("context rewrite failed (no chunk produced usable output)");
 
   // Phase 2 — assemble (rewritten chunks swapped in, failed ones kept original) and hard-gate on compile.
   let candidate = assemble(rewritten);
@@ -464,8 +464,34 @@ export async function runCapsuleContextRewrite(input: {
     candidate = assemble(rewritten);
     gate = validateTemplateCapsule({ ...input.capsule, codeBundle: candidate });
     if (gate.gates.find((g) => g.id === "T2")?.status !== "pass") {
-      warnings.push("context rewrite produced non-compiling code after repair; using the original (un-rethemed) capsule code.");
-      return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
+      return await sweptOriginalFallback("context rewrite produced non-compiling code after repair");
+    }
+  }
+
+  // Phase 2.5 — GLOBAL theme-sweep over EVERY target, AFTER the bundle COMPILES. A chunk whose full rewrite
+  // parsed but left English source copy/brands/metrics ("online sneaker marketplace", "$100k/mo") never reaches
+  // the fellBack-only retext; this catches those by swapping just the off-theme on-screen strings. Running it
+  // POST-compile (not before Phase 2) is the fix for the leftover-headline bug: previously a single chunk that
+  // only needed the Phase-2 compile-repair made the swept bundle fail to compile, reverting the WHOLE sweep and
+  // leaving the source-language headline. Now the sweep runs on already-compiling code and stands on its own.
+  {
+    // In LLM-primary mode (sweepScope "fallback") the deterministic sweep only cleans chunks the LLM could NOT
+    // rewrite cleanly (phase1Clean excluded). Default "all" sweeps every chunk.
+    const sweepTargets = input.sweepScope === "fallback" ? targets.filter((t) => !phase1Clean.has(t.path)) : targets;
+    const preSweep = new Map(rewritten);                                  // snapshot to revert to if the sweep breaks compile
+    let sweptCount = 0;
+    const swept = await mapLimit(sweepTargets, concurrency, async (t) => {
+      const cur = rewritten.get(t.path) ?? t.content;
+      const out = await themeSweepText(cur, input.theme, input.sellingPoints, models).catch(() => null);
+      return { path: t.path, content: out };
+    });
+    for (const s of swept) if (s.content) { rewritten.set(s.path, s.content); sweptCount++; }
+    if (sweptCount) {
+      // Keep the swept code only if it still compiles, else revert to the pre-sweep (already-compiling) rewrite.
+      const sweptOk = validateTemplateCapsule({ ...input.capsule, codeBundle: assemble(rewritten) }).gates.find((g) => g.id === "T2")?.status === "pass";
+      if (sweptOk) warnings.push(`theme-sweep: removed leftover off-theme on-screen text in ${sweptCount} chunk(s).`);
+      else { for (const [k, v] of preSweep) rewritten.set(k, v); for (const k of [...rewritten.keys()]) if (!preSweep.has(k)) rewritten.delete(k); warnings.push(`theme-sweep reverted (would not compile; kept the rethemed code).`); }
+      candidate = assemble(rewritten);
     }
   }
 
@@ -490,8 +516,7 @@ export async function runCapsuleContextRewrite(input: {
     const reGate = validateTemplateCapsule({ ...input.capsule, codeBundle: candidate });
     probe = reGate.gates.find((g) => g.id === "T2")?.status === "pass" ? await probeOnce(candidate) : { ok: false, error: "repair did not compile" };
     if (!probe.ok) {
-      warnings.push(`context rewrite render failed after repair (${probe.error ?? "unknown"}); using the original (un-rethemed) capsule code.`);
-      return { codeBundle: original, usedAi: false, warnings, hadFallback: true };
+      return await sweptOriginalFallback(`context rewrite render failed after repair (${probe.error ?? "unknown"})`);
     }
   }
 

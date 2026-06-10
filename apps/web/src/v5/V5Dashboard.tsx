@@ -1396,12 +1396,26 @@ export function V5Dashboard() {
   const selectedReports = videoAssets.map((asset) => sampleReports[asset.id]).filter((report): report is SampleReport => Boolean(report) && sampleIds.includes(report.assetId));
   const traceEvidence = trace?.sample.evidence as EvidenceV5 | undefined;
   const latestEvidence = selectedReports.find((r) => r.evidence)?.evidence ?? traceEvidence;
+  const latestReconstruction = selectedReports.find((r) => r.reconstruction)?.reconstruction;
+  const reviewTemplateDetail = templateDetail ?? activeTemplate;
+  const learningTimelineItemsForReview = useMemo(
+    () => buildLearningTimeline(latestEvidence, latestReconstruction, reviewTemplateDetail),
+    [latestEvidence, latestReconstruction, reviewTemplateDetail]
+  );
+  const reviewPreviewUrl = publicRef(latestEvidence?.contactSheetRef ?? latestEvidence?.keyFrames?.[0]?.frameRef);
+  const reviewCodeInfo = useMemo(() => codeBundleInfo(templateDetail?.codeBundle), [templateDetail?.codeBundle]);
+  const learnedBpm = latestEvidence?.audioEvidence?.bpm ?? templateDetail?.audioRecipes?.[0]?.bpm;
+  const learnedSubtitleCount = latestEvidence?.textEvidence?.length ?? 0;
+  const learnedSubtitleDensity = latestEvidence?.video?.durationSec
+    ? learnedSubtitleCount / Math.max(1, latestEvidence.video.durationSec) > 0.55 ? "偏密" : learnedSubtitleCount > 0 ? "适中" : "低"
+    : learnedSubtitleCount > 8 ? "偏密" : learnedSubtitleCount > 0 ? "适中" : "待确认";
   const timelineSections = useMemo(() => {
     const phases = trace?.template.knowledgeManifest?.structureHypothesis?.phases ?? [];
     if (phases.length) return phases.map((p) => ({ id: p.id, role: p.role, startSec: p.startSec, endSec: p.endSec, detail: p.intent ?? p.visualMethod }));
     const sections = result?.composition?.sections ?? [];
-    return sections.map((s) => ({ id: s.id, role: s.role, startSec: s.startSec, endSec: s.endSec, detail: s.plannedText }));
-  }, [result?.composition?.sections, trace?.template.knowledgeManifest?.structureHypothesis?.phases]);
+    if (sections.length) return sections.map((s) => ({ id: s.id, role: s.role, startSec: s.startSec, endSec: s.endSec, detail: s.plannedText }));
+    return learningTimelineItemsForReview.map((item) => ({ id: item.id, role: item.roleZh, startSec: item.startSec, endSec: item.endSec, detail: item.summary }));
+  }, [learningTimelineItemsForReview, result?.composition?.sections, trace?.template.knowledgeManifest?.structureHypothesis?.phases]);
   const timelineDuration = useMemo(() => Math.max(1, latestEvidence?.video?.durationSec ?? 0, ...timelineSections.map((s) => s.endSec)), [latestEvidence?.video?.durationSec, timelineSections]);
   const slotRadarRows = useMemo(() => {
     const mappings = new Map((trace?.transfer.slotMapping ?? []).map((m) => [m.slotId, m]));
@@ -1426,20 +1440,78 @@ export function V5Dashboard() {
       };
     });
   }, [activeTemplate?.slotSchema, audioFill, imageFill, result?.gapReport?.gaps, selectedTargetAssets, textFill, trace?.transfer.gapReport?.gaps, trace?.transfer.slotMapping]);
+  const draftTransferMap = useMemo(() => {
+    if (trace || result || (!activeTemplate && !latestEvidence && !slotRadarRows.length)) return null;
+    return {
+      status: "pre_generation_plan",
+      note: "生成前迁移计划；生成后会由 transfer-trace-v5.json 替换为真实映射证据。",
+      template: activeTemplate ? { id: activeTemplate.id, name: activeTemplate.name, durationSec: activeTemplate.timingSignature?.durationSec } : null,
+      sampleStructure: learningTimelineItemsForReview.map((item) => ({
+        id: item.id,
+        role: item.roleZh,
+        startSec: item.startSec,
+        endSec: item.endSec,
+        summary: item.summary,
+        reusableAtoms: item.reusableAtoms
+      })),
+      slotPlan: slotRadarRows.map((row) => ({
+        slotId: row.slot.id,
+        originalRole: row.slot.originalRole,
+        kind: row.slot.kind,
+        required: row.slot.required,
+        status: row.status,
+        asset: row.asset,
+        fill: row.fill,
+        reason: row.reason
+      })),
+      targetAssetOrder: selectedTargetAssets.map((asset, index) => ({ order: index + 1, id: asset.id, filename: asset.filename, type: asset.type }))
+    };
+  }, [activeTemplate, latestEvidence, learningTimelineItemsForReview, result, selectedTargetAssets, slotRadarRows, trace]);
+  const draftPackagingPlan = useMemo(() => {
+    if (trace || result || (!activeTemplate && !latestEvidence && !templateDetail)) return null;
+    return {
+      status: "pre_generation_packaging_plan",
+      note: "生成前包装计划；生成后会由 packaging-plan.json / transfer trace 回填真实封面、字幕和节拍证据。",
+      previewRef: latestEvidence?.contactSheetRef ?? latestEvidence?.keyFrames?.[0]?.frameRef,
+      subtitles: {
+        evidenceCount: learnedSubtitleCount,
+        density: learnedSubtitleDensity,
+        safeZone: "避开画面边缘 10%，优先底部/中部主视觉外侧",
+        recommendedFontPx: "48-64"
+      },
+      rhythm: {
+        bpm: learnedBpm,
+        beatCount: latestEvidence?.audioEvidence?.beatGridSec?.length ?? templateDetail?.audioRecipes?.[0]?.cuePoints?.length ?? 0,
+        peakMomentsSec: latestEvidence?.motionEvidence?.peakMomentsSec ?? []
+      },
+      motionPackaging: {
+        motifs: activeTemplate?.motionSignature?.motifs ?? [],
+        transitions: activeTemplate?.motionSignature?.transitionTypes ?? [],
+        codeFeatures: reviewCodeInfo.features
+      },
+      safety: {
+        samplePixelsReusable: false,
+        sampleTextReusable: false,
+        sampleAudioReusable: false
+      }
+    };
+  }, [activeTemplate, latestEvidence, learnedBpm, learnedSubtitleCount, learnedSubtitleDensity, result, reviewCodeInfo.features, templateDetail, trace]);
   const exportArtifacts = useMemo(
     () => [
       { filename: "transfer-trace-v5.json", value: trace },
+      { filename: "planned-transfer-map-v5.json", value: draftTransferMap },
       { filename: "generation-result-v5.json", value: result },
       { filename: "gap-report-v5.json", value: result?.gapReport ?? trace?.transfer.gapReport },
       { filename: "timeline-v2.json", value: result?.timelineV2 ?? trace?.transfer.timeline },
       { filename: "mapping-v2.json", value: result?.mappingV2 ?? trace?.transfer.mapping },
       { filename: "material-analysis.json", value: result?.materialAnalysis ?? trace?.transfer.materialAnalysis },
       { filename: "packaging-plan.json", value: result?.packagingPlan ?? trace?.transfer.packagingPlan },
+      { filename: "packaging-plan-draft-v5.json", value: draftPackagingPlan },
       { filename: "scorecard-v5.json", value: result?.scorecard ?? trace?.result.scorecard },
       { filename: "template-capsule-v5.json", value: templateDetail },
       { filename: "sample-evidence-v5.json", value: latestEvidence }
     ].filter((item) => item.value !== undefined && item.value !== null),
-    [latestEvidence, result, templateDetail, trace]
+    [draftPackagingPlan, draftTransferMap, latestEvidence, result, templateDetail, trace]
   );
   const qualityGroups = useMemo(() => gateGroups(result?.scorecard), [result?.scorecard]);
   const resultConsistencyChecks = useMemo(() => buildResultConsistencyChecks(result, trace, timelineSections), [result, timelineSections, trace]);
@@ -1642,7 +1714,7 @@ export function V5Dashboard() {
                 ? { mode: "auto_on", imageFill, audioFill, textFill }
                 : { mode: "off", imageFill: "off", audioFill: "off", textFill: "off" }
             }
-          : { generationMode: "mix_elements", autoRender, runGen1Ai: useAi, runGen2Ai: useAi };
+          : { generationMode: "mix_elements", autoRender, runGen1Ai: useAi, runGen2Ai: useAi, audioFill: aigcOn ? audioFill : "off" };
       if (genMode === "mix_elements" && gen2RemotionCodegen) options.runGen2RemotionCodegen = true;
       setStage("generate", 1, 4, autoRender ? "生成 recipe / 补全素材 / 渲染 final.mp4" : "生成 recipe / 补全素材");
       const res = await api<GenResult>("/api/v5/generations", {
@@ -2249,6 +2321,72 @@ export function V5Dashboard() {
                     </div>
                   )}
                 </>
+              ) : activeTemplate || latestEvidence || slotRadarRows.length ? (
+                <>
+                  <div style={{ ...panel, borderColor: "rgba(0, 215, 255, 0.28)" }}>
+                    <div style={evHead}>生成前迁移计划</div>
+                    <div style={{ color: "#cfe0f5", fontSize: 13, lineHeight: 1.45, ...wrapText }}>
+                      当前已加载样例证据和模板胶囊，先展示可执行的迁移交接页；点击生成后会自动替换为真实 transfer trace、slot mapping 和输出时间线。
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 9 }}>
+                      <span style={tag}>模板 {activeTemplate ? tplLabel(activeTemplate) : "待选择"}</span>
+                      <span style={tag}>结构段 {learningTimelineItemsForReview.length || timelineSections.length}</span>
+                      <span style={tag}>槽位 {slotRadarRows.length}</span>
+                      <span style={tag}>目标素材 {selectedTargetAssets.length}</span>
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+                    <div style={panel}>
+                      <div style={evHead}>1. 样例结构</div>
+                      {learningTimelineItemsForReview.length ? learningTimelineItemsForReview.slice(0, 8).map((item, index) => (
+                        <div key={`${item.id}-${index}`} style={{ borderLeft: "3px solid #2b6cff", paddingLeft: 8, marginBottom: 8, fontSize: 12 }}>
+                          <b>{item.roleZh}</b> · {fixed(item.startSec)}-{fixed(item.endSec)}s
+                          <div style={{ color: muted, ...wrapText }}>{short(item.summary, 110)}</div>
+                          <div style={{ marginTop: 4 }}><span style={tag}>{item.beatCount} 节拍</span><span style={tag}>{item.shotCount || 1} 镜头</span></div>
+                        </div>
+                      )) : (
+                        <div style={{ color: muted }}>还没有段落时间线。先读取结构学习报告或重新 Learn。</div>
+                      )}
+                    </div>
+                    <div style={panel}>
+                      <div style={evHead}>2. 新内容映射计划</div>
+                      {slotRadarRows.length ? slotRadarRows.slice(0, 10).map((row, index) => (
+                        <div key={`${row.slot.id}-${index}`} style={{ marginBottom: 8, fontSize: 12 }}>
+                          <b>{row.slot.originalRole || row.slot.id}</b> → {row.status}
+                          <div style={{ color: muted, ...wrapText }}>{row.asset === "none" ? slotFallbackText(row.slot) : row.asset}</div>
+                        </div>
+                      )) : (
+                        <div style={{ color: muted }}>选择模板后会显示槽位映射计划。</div>
+                      )}
+                    </div>
+                    <div style={panel}>
+                      <div style={evHead}>3. 输出时间线草案</div>
+                      {timelineSections.length ? timelineSections.slice(0, 8).map((segment, index) => (
+                        <div key={`${segment.id}-${index}`} style={{ marginBottom: 8, fontSize: 12 }}>
+                          <b>{fixed(segment.startSec)}-{fixed(segment.endSec)}s</b> · {segment.role}
+                          <div style={{ color: muted, ...wrapText }}>{short(segment.detail, 100) || "按模板结构复用运动和包装，替换素材/文案。"}</div>
+                        </div>
+                      )) : (
+                        <div style={{ color: muted }}>生成后会落成 final timeline；当前等待学习时间线。</div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={panel}>
+                    <div style={evHead}>目标素材进入顺序</div>
+                    {selectedTargetAssets.length ? (
+                      <div style={{ display: "grid", gap: 7 }}>
+                        {selectedTargetAssets.slice(0, 8).map((asset, index) => (
+                          <div key={`${asset.id}-${index}`} style={miniPanel}>
+                            <b>{index + 1}. {asset.filename}</b>
+                            <div style={{ color: muted }}>{targetAssetTypeZh(asset.type)} · 优先匹配第 {index + 1} 个兼容视觉槽位</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color: muted }}>还没有选择目标素材；生成时会按槽位策略使用 AIGC / 程序化补全。</div>
+                    )}
+                  </div>
+                </>
               ) : <div style={{ ...panel, color: muted, fontSize: 12 }}>生成视频后会显示完整 transfer trace。当前可先查看 Showcase 中的历史 trace。</div>}
             </div>
           )}
@@ -2277,6 +2415,47 @@ export function V5Dashboard() {
                     <div>转场对齐 {trace?.transfer.beatAlignment?.aligned_count ?? result?.beatAlignment?.aligned_count ?? 0}/{trace?.transfer.beatAlignment?.transition_count ?? result?.beatAlignment?.transition_count ?? 0}</div>
                     <div>口播 {String(trace?.transfer.dialoguePlan?.has_real_voiceover ?? result?.dialoguePlan?.has_real_voiceover ?? false)}</div>
                     <div>不安全切点 {(trace?.transfer.dialoguePlan?.unsafe_cuts ?? result?.dialoguePlan?.unsafe_cuts ?? []).length}</div>
+                  </div>
+                </div>
+              ) : activeTemplate || latestEvidence || templateDetail ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+                  <div style={panel}>
+                    <div style={evHead}>Cover / Preview 计划</div>
+                    {reviewPreviewUrl ? (
+                      <img src={reviewPreviewUrl} alt="sample preview" style={{ width: "100%", aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 8, background: "#000" }} />
+                    ) : (
+                      <div style={{ color: muted }}>暂无样例预览图；生成后会展示 final cover。</div>
+                    )}
+                    <div style={{ marginTop: 8, color: "#9fb3d1", fontSize: 12, ...wrapText }}>生成前使用样例 proof / contact sheet 做包装依据；生成后替换为新视频封面。</div>
+                  </div>
+                  <div style={panel}>
+                    <div style={evHead}>字幕 / 标题包装计划</div>
+                    <div>OCR/字幕证据 {learnedSubtitleCount} 条</div>
+                    <div>密度 {learnedSubtitleDensity}</div>
+                    <div>推荐安全区 底部/中部主视觉外侧，避开边缘 10%</div>
+                    <div>推荐字号 48-64 px（9:16 输出按画幅缩放）</div>
+                    <div style={{ color: muted, marginTop: 6, ...wrapText }}>
+                      {latestReconstruction?.typedSpec?.packaging?.typographySystem ?? (reviewCodeInfo.textLayerCount ? `检测到 ${reviewCodeInfo.textLayerCount} 个文字/字幕代码线索` : "生成后会从 packagingPlan 回填标题条和字幕安全区。")}
+                    </div>
+                  </div>
+                  <div style={panel}>
+                    <div style={evHead}>节拍 / 对话安全计划</div>
+                    <div>BPM {fixed(learnedBpm, 0)}</div>
+                    <div>节拍点 {latestEvidence?.audioEvidence?.beatGridSec?.length ?? templateDetail?.audioRecipes?.[0]?.cuePoints?.length ?? 0}</div>
+                    <div>运动峰值 {(latestEvidence?.motionEvidence?.peakMomentsSec ?? []).slice(0, 5).map((time) => `${fixed(time)}s`).join(" / ") || "待确认"}</div>
+                    <div>口播 {latestEvidence?.speechEvidence?.hasSpeech ? "有，需要避开语义切断" : "未检测到真实口播"}</div>
+                    <div>不安全切点 生成后由 dialoguePlan 回填</div>
+                  </div>
+                  <div style={panel}>
+                    <div style={evHead}>可调包装参数</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {(activeTemplate?.motionSignature?.motifs ?? []).slice(0, 5).map((motif) => <span key={motif} style={tag}>{motif}</span>)}
+                      {(activeTemplate?.motionSignature?.transitionTypes ?? []).slice(0, 5).map((transition) => <span key={transition} style={tag}>{transition}</span>)}
+                      {reviewCodeInfo.features.slice(0, 6).map((feature) => <span key={feature} style={tag}>{feature}</span>)}
+                    </div>
+                    <div style={{ marginTop: 8, color: muted, fontSize: 12, ...wrapText }}>
+                      品牌色、字幕密度、商品图数量、CTA 时间和节奏可在 Generate / 改片阶段调整；生成后会展示真实 cover、字幕、节拍和对话安全证据。
+                    </div>
                   </div>
                 </div>
               ) : <div style={{ ...panel, color: muted, fontSize: 12 }}>生成后会展示封面、字幕安全区、标题条、节拍和对话切点证据。</div>}

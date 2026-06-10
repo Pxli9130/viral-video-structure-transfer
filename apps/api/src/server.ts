@@ -963,6 +963,19 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 app.use("/generated", express.static(generatedDir));
 
+app.get("/", (_req, res) => {
+  ok(res, {
+    service: "vvst-api",
+    status: "running",
+    ui: "Open the Vite web URL printed by npm run dev, usually http://localhost:5174/#v5",
+    routes: {
+      health: "/healthz",
+      ready: "/readyz",
+      v5: "/api/v5"
+    }
+  });
+});
+
 // spec_v5 (Program-KB Dual Codegen) routes — parallel to the V4 API surface.
 app.use("/api/v5", createV5Router({ store, storageRoot, generatedDir }));
 
