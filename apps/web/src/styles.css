@@ -7,6 +7,12 @@
   text-rendering: optimizeLegibility;
 }
 
+html {
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -14,6 +20,15 @@
 body {
   margin: 0;
   min-width: 320px;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+#root {
+  min-height: 100vh;
+  overflow-x: hidden;
+  overflow-y: visible;
 }
 
 button,
@@ -895,7 +910,8 @@ th {
   --v5-my: 20vh;
   position: relative;
   isolation: isolate;
-  overflow: hidden;
+  overflow-x: clip;
+  overflow-y: clip;
   background:
     radial-gradient(520px circle at var(--v5-mx) var(--v5-my), rgba(0, 242, 234, 0.18), rgba(0, 242, 234, 0.04) 38%, transparent 68%),
     radial-gradient(700px circle at 78% 12%, rgba(255, 45, 85, 0.12), transparent 58%),
@@ -943,6 +959,7 @@ th {
 }
 
 .v5-shell section {
+  scroll-margin-top: 190px;
   transition:
     border-color 180ms ease,
     box-shadow 180ms ease,
@@ -954,6 +971,10 @@ th {
   box-shadow:
     0 22px 58px rgba(0, 0, 0, 0.34),
     0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.v5-shell .v5-status-bar:hover {
+  transform: translateX(-50%) translateZ(0) !important;
 }
 
 .v5-shell button {
