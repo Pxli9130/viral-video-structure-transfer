@@ -718,8 +718,10 @@ async function record() {
 
   await scrollToText(page, "2 · Generate", "Generate");
   await openIfCollapsed(page, "2 · Generate", "Generate");
-  await maybeFill(page.getByLabel("新主题"), "护眼桌面灯 / AI 创作平台 demo", "填写新主题", 1600);
-  await maybeFill(page.getByLabel("卖点（逗号分隔）"), "低眩光, 专注学习, 高级桌面氛围, 一键生成短视频", "填写卖点", 1600);
+  // Use motion_graph_1 (tpl_asset_1fs9uam) as the same_template base, per the demo plan.
+  await maybeSelect(page.locator("#v5-generate").locator("label").filter({ hasText: "模板胶囊" }).locator("select"), process.env.DEMO_TEMPLATE_ID ?? "tpl_asset_1fs9uam", "选择 motion_graph_1 模板", 2200);
+  await maybeFill(page.getByLabel("新主题"), process.env.DEMO_THEME ?? "AI 健身追踪 App", "填写新主题", 1600);
+  await maybeFill(page.getByLabel("卖点（逗号分隔）"), "自动记录运动, 心率与睡眠分析, AI 训练计划, 数据可视化", "填写卖点", 1600);
   await selectTargetAssets(page);
   await slowPagePass(page, "目标素材选择区", 3, 380);
   await scrollToText(page, "素材缺口雷达", "素材缺口雷达");
@@ -727,7 +729,7 @@ async function record() {
   await slowPagePass(page, "素材缺口雷达", 2, 420);
   await scrollToText(page, "用 AI 自动补全", "AI 补全选项");
   await maybeClick(page.getByText("高级补全选项", { exact: false }), "展开高级补全选项", 1600);
-  await maybeFill(page.getByPlaceholder("例如：开头三秒更抓人", { exact: false }), "开头三秒更抓人，字幕更少，CTA 提前，清理残留英文和运动鞋文案。", "填写自然语言自定义需求", 1800).catch(() => undefined);
+  await maybeFill(page.getByPlaceholder("例如：开头三秒更抓人", { exact: false }), "开头三秒更抓人，字幕更少，CTA 提前，清理残留英文文案。", "填写自然语言自定义需求", 1800).catch(() => undefined);
   await maybeClick(page.getByRole("button", { name: /预设模板/ }), "切换到预设模板生成方式", 1800);
   await maybeClick(page.getByRole("button", { name: /高点击/ }), "选择高点击预设", 1600);
   await exerciseGenerateButtons(page);

@@ -1,5 +1,15 @@
 # 03 — Pipeline Specification
 
+V5.1 keeps the Program-KB pipeline, but the production default is same-template migration:
+
+```text
+sample -> evidence -> neutral reconstruction + RemotionTemplateCapsule
+       -> ordered target assets / slotAssignments
+       -> TemplateInstance -> Remotion render -> trace + scorecard + final.mp4
+```
+
+The Program-KB/Gen2 stages below are used for advanced `mix_elements` generation and for extracting reusable knowledge from learned samples.
+
 ## Stage 1 — Ingest
 
 ### Input
@@ -111,6 +121,7 @@ Gen1PromptVersion
 
 ```ts
 NeutralReconstructionProgram
+RemotionTemplateCapsule
 ```
 
 ### Requirements
@@ -119,8 +130,11 @@ Gen1 must output:
 
 - typed spec JSON
 - Remotion reconstruction project
+- renderable Remotion template capsule
 - placeholder slots
+- slot schema with role/type/required/fallback policy
 - timing map
+- scene recipes and audio recipes
 - learned asset recipes
 - learned audio recipes
 - evidence refs for all key claims
@@ -136,20 +150,57 @@ Gen1 must not output reusable sample content:
 - no sample original subtitle text reuse except sanitized evidence
 - no sample audio reuse
 
-## Stage 5 — Validate Neutral Reconstruction
+## Stage 4B — Template Capsule Reconstruction
+
+### Purpose
+
+Create the Level-1 reusable template that the UI can immediately use for same-template migration.
+
+### Input
+
+```ts
+NeutralReconstructionProgram
+EvidenceTimelineV5
+OriginalVideoRef
+ContactSheetRef
+```
+
+### Output
+
+```ts
+RemotionTemplateCapsule
+TemplateSlot[]
+SceneRecipe[]
+AudioRecipe[]
+TemplateValidation
+```
+
+### Requirements
+
+- Preserve sample timing, section order, motion grammar, transition grammar, packaging style, and beat cues.
+- Replace sample-specific content with typed slots such as `hook_bg`, `hero_product`, `product_grid`, `proof_ui`, `cta_end`, and `music_bed`.
+- Keep user-facing slot labels in Chinese in the dashboard.
+- Include fallback prompts or procedural fallbacks for every required slot.
+- Record evidence links from each capsule decision back to shots, OCR/ASR, motion, or Remotion code.
+
+## Stage 5 — Validate Reconstruction and Template Capsule
 
 ### Checks
 
 - JSON schema valid
 - Remotion project compiles or fallback exists
+- template capsule has valid composition entry and component files
 - all segments have evidence refs
 - placeholders cover sample-specific content
 - no sample audio referenced in renderable project
 - no sample raw asset referenced as reusable target material
+- every required template slot has a fallback or explicit user-provided requirement
+- frame-0 or short dry-run render succeeds when validation is enabled
 
 ### Output
 
 - valid NeutralReconstructionProgram
+- valid RemotionTemplateCapsule
 - reconstruction preview if possible
 - validation warnings
 
@@ -249,6 +300,8 @@ TargetAssetProfile[]
 - text extraction
 - motion/action summary for video assets
 - audio availability
+- media type separation so videos are not auto-bound into image-only slots
+- user-selected order so earlier assets can appear earlier in the generated video
 
 ## Stage 9 — User Selection / Recommendation
 
@@ -264,6 +317,8 @@ TargetAssetProfile[]
 
 ```ts
 SelectionSet
+TemplateSelection
+SlotAssignment[]
 ```
 
 ### Modes
@@ -271,6 +326,7 @@ SelectionSet
 - manual: user picks elements
 - assisted: system recommends elements
 - hybrid: system recommends and user edits
+- same-template: user selects one template capsule and optionally assigns target assets to slots
 
 ## Stage 10 — Composition Planner
 
@@ -316,6 +372,7 @@ TargetAssetProfile[]
 
 ```ts
 GapReportV5
+SlotGapReport
 ```
 
 ### Status values
@@ -335,6 +392,8 @@ GapReportV5
 - generated voiceover
 - procedural audio
 - structure replan
+- same-template context rewrite
+- ordered asset reuse only when media type and role are compatible
 
 ## Stage 12 — Optional Material Generator
 
@@ -412,6 +471,37 @@ FinalVideoProgram
 - Use allowed imports only.
 - Support code repair.
 
+## Stage 14B — Same-template Generation
+
+### Input
+
+```ts
+RemotionTemplateCapsule
+TemplateSlot[]
+TargetAssetProfile[]
+SlotAssignment[]
+CreativeBrief
+GenerationOptionsV5
+GapReportV5
+```
+
+### Output
+
+```ts
+TemplateInstance
+RenderRecipeV5
+TransferTrace
+```
+
+### Requirements
+
+- Bind target assets by explicit slot assignment first, then by user order, then by compatible fallback.
+- Preserve learned timing, section order, transition grammar, and motion density unless natural-language revise requests a change.
+- Rewrite all sample text into new Chinese or user-provided copy.
+- Use generated images/video cards only for missing slots or user-approved augmentation.
+- Record Transfer Map, Packaging, and Export evidence for the review center.
+- Support `autoRender=false` for planning without immediate render.
+
 ## Stage 15 — Compile, Lint, Validate
 
 ### Checks
@@ -425,6 +515,9 @@ FinalVideoProgram
 - asset provenance
 - audio policy
 - duration and aspect ratio
+- timeline/render recipe consistency
+- required-slot visual coverage
+- target asset on-screen evidence
 
 ## Stage 16 — Render
 
@@ -435,6 +528,10 @@ FinalVideoProgram
 - `preview_frames/`
 - `render-contact-sheet.png`
 - `render-log.json`
+- `timeline-v2.json`
+- `mapping-v2.json`
+- `packaging-plan.json`
+- `scorecard-v5.json`
 
 ### Renderer
 
@@ -460,3 +557,5 @@ ScorecardV5
 - final render matches recipe
 - UI artifacts exist
 - rubric coverage recorded
+- transfer trace exists
+- packaging evidence exists

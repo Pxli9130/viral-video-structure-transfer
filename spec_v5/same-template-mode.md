@@ -88,7 +88,8 @@ type GenerationMode = "same_template" | "modify_template" | "mix_elements";
 
 ```
 load RemotionTemplateCapsule (options.templateCapsuleId or latest)
-  → CONTEXT-REWRITE (AI capsules): a TEXT-TO-TEXT call (Doubao-Seed-2.0-lite via `createTextModelFn`)
+  → CONTEXT-REWRITE (AI capsules): a TEXT-TO-TEXT call via `createTextModelFn`
+       (Ark/Doubao when configured, otherwise Gemini fallback)
        re-themes on-screen text + accent colours to the new theme,
        STRUCTURE-PRESERVING (per chunk file for stitched capsules). Honours source background lightness
        (sourceIsLight) so a light/white source never re-themes to a dark background.
@@ -157,7 +158,7 @@ POST /api/v5/generations/:id/revise  → modify_template: patch-first re-theme/r
    same_template generation. body { patch: { theme?, palette?, copyOverrides? } } → a new
    modify_template generation (reuses the prior visuals; re-renders the same template code).
 POST /api/v5/generations/:id/revise-natural-language  → one-line instruction ("开头更抓人") →
-   Doubao structured-output → TemplatePatchSet → revise (NL never edits code directly).
+   text-model structured output → TemplatePatchSet → revise (NL never edits code directly).
 GET  /api/v5/generations/:id[/scorecard]   → stored result / scorecard
 GET  /api/v5/generations/:id/transfer-trace  → ONE-STOP 迁移可视化 trace: source structure
    (sceneRecipes/phases/keyFrames) + knowledge-manifest + targetBrief + targetAssetProfiles +
@@ -201,7 +202,7 @@ apps/api/src/pipeline-v5/concurrency.ts                     — mapLimit + Semap
 apps/api/src/pipeline-v5/runSameTemplateGeneration.ts       — same_template + modify_template orchestrator (context-rewrite, AIGC fill chain, post-render passes)
 packages/shared/src/engine/aigcMaterialProviders.ts        — seedance_2_0 (primary video) + happyhorse_r2v (DashScope backup) + google_gemini_image
 apps/api/src/adapters/googleAudio.ts                        — Google Lyria music bed (lyria-3-clip-preview; segmented + crossfade)
-apps/api/src/pipeline-v5/gen1ModelFactory.ts                — model factories: createTextModelFn (text→Doubao), createGeminiVisionCodegenFn (vision→Gemini)
+apps/api/src/pipeline-v5/gen1ModelFactory.ts                — model factories: createTextModelFn (text→Ark/Doubao or Gemini), createGeminiVisionCodegenFn (vision→Gemini)
 apps/api/src/pipeline-v5/knowledgeManifest.ts               — per-sample knowledge-manifest seed (structureHypothesis / assetSlots)
 apps/api/src/pipeline-v5/runExtractElements.ts              — Level-2 atomic elements (16 kinds) extracted + curated into the KB
 apps/api/src/pipeline-v5/runGen2RemotionCodegen.ts          — Gen2 (mix_elements) compose → Remotion capsule codegen
@@ -209,8 +210,8 @@ apps/api/src/services/knowledgeBaseV5.ts                    — two-level KB: Le
 ```
 
 > Text-to-text routing: every text-to-text LLM task (context-rewrite, video-description, NL→patch,
-> text-codegen fallback, Gen1/Gen2 text) goes through **Doubao-Seed-2.0-lite** via `createTextModelFn`
-> (Volcengine Ark, `ARK_API_KEY`/`ARK_MODEL`). Only the multimodal Gen1 vision codegen stays on Gemini.
+> text-codegen fallback, Gen1/Gen2 text) goes through `createTextModelFn`: Ark/Doubao is preferred when
+> configured, and Gemini is used as fallback. Only the multimodal Gen1 vision codegen stays on Gemini.
 
 **Web entry.** The spec_v5.1 dashboard (`apps/web/src/v5/V5Dashboard.tsx`) is now the **default** web
 entry; the V4 app stays reachable at `#v4`. The dashboard has a template library with a "用此模板生成"

@@ -10,7 +10,7 @@
 >
 > 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；**评分表逐项对照见 [`spec_v5/rubric-alignment.md`](spec_v5/rubric-alignment.md)**；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
 >
-> **模型分工**：**所有「文生文」任务走 Doubao-Seed-2.0-lite**（火山 Ark，`createTextModelFn` 读 `.env` 的 `ARK_API_KEY`/`ARK_MODEL`(EP)）——换主题 context-rewrite、镜头描述、自然语言改片、文本代码兜底、Gen1/Gen2 文本。**「看视频/帧」的多模态重建留 Gemini**（Doubao 纯文本做不了）；图/音乐等外部 provider 均有确定性兜底。
+> **模型分工**：`createTextModelFn` 统一承接「文生文」任务（换主题 context-rewrite、镜头描述、自然语言改片、文本代码兜底、Gen1/Gen2 文本）：有有效 Ark/Doubao 配置时优先 Doubao-Seed，缺省或不可用时回退 Gemini（当前 `.env.example` 默认 `AI_PROVIDER=gemini` / `AI_GEMINI_MODEL=gemini-3.5-flash`）。**「看视频/帧」的多模态重建留 Gemini**；图/视频/音乐等外部 provider 均有确定性或程序化兜底。
 >
 > **Gen1 视觉胶囊（主路径）**：一次 Gemini 调用**看完整段视频** + 确定性证据 → 一份忠实、props 驱动的 `RemotionTemplateCapsule`（react + remotion + `@remotion/three` 真 3D）。**混合按时长选模型**（短→`gemini-3-flash-preview`，长/切块→`gemini-3.1-pro-preview`，阈值 `GEMINI_GEN1_PRO_MIN_SEC=34`）。**返回的代码即圣经**：`mergeCapsule` 逐字节保留代码、只补缺失元数据,并合并 `timingSignature`（durationSec/fps 回退确定性，杜绝「31s 只渲 16s」）。只用「**编译 + 真渲染**」两道门(其余只记录不拦)。长视频(>34s)按 scene-cut 切 ≤30s 块并发重建后拼成一个多文件胶囊。Gemini 还返回 `assetPlan`（每个「代码画不出的 missing 素材」一条,带 key/mediaKind/AIGC prompt）。**运动/覆盖保真自修**：代码若违背它自己的 sceneRecipe（该滚动的字幕静止、该 3D 单轴的 ribbon 双轴翻滚、覆盖不足)触发一次 repair；**AI 优先**：能编译+渲染的 AI 胶囊永不因保真瑕疵被丢回确定性。
 >
@@ -18,9 +18,9 @@
 >
 > 音频默认 **Google Lyria 音乐床**（`lyria-3-clip-preview`，>30s 分段 + crossfade，失败重试后退程序化）。
 >
-> **更多能力（已实现，贴合评分表，见 rubric-alignment.md）**：素材**上传 + 画像分析**（`POST/GET /api/v5/assets/:id/media` + `runTargetAssetAnalysis`）· **迁移过程可视化**一站式 trace（`GET /api/v5/generations/:id/transfer-trace`：源结构→knowledge-manifest→slot 映射→缺口/补全→scorecard→成片）· **多版本生成**（看板对同模板 fan-out 高点击/高转化/高节奏/高质感）· **自然语言改片**（`POST /api/v5/generations/:id/revise-natural-language`：一句话→Doubao→`TemplatePatchSet`→重渲）· **两级知识库**（Level-1 模板胶囊 + Level-2 16 类原子元素；`GET /api/v5/kb/elements?kind&tag&q`、`POST /api/v5/kb/search`、`GET /api/v5/templates`）· **knowledge-manifest 种子**（每样例结构假设/原子模块/槽位）。
+> **更多能力（已实现，贴合评分表，见 rubric-alignment.md）**：素材**上传 + 画像分析**（上传走 `POST /api/projects/:projectId/assets`，V5 读取走 `GET /api/v5/assets` / `GET /api/v5/assets/:id/media` + `runTargetAssetAnalysis`）· **迁移过程可视化**一站式 trace（`GET /api/v5/generations/:id/transfer-trace`：源结构→knowledge-manifest→slot 映射→缺口/补全→scorecard→成片）· **评审证据中心**（Showcase / Learn Analysis / Structure Protocol / Gap Decisions / Transfer Map / Packaging / Export）· **多版本生成**（看板对同模板 fan-out 高点击/高转化/高节奏/高质感）· **自然语言改片**（`POST /api/v5/generations/:id/revise-natural-language`：一句话→`TemplatePatchSet`→重渲）· **两级知识库**（Level-1 模板胶囊 + Level-2 16 类原子元素；`GET /api/v5/kb/elements?kind&tag&q`、`POST /api/v5/kb/search`、`GET /api/v5/templates`）· **knowledge-manifest 种子**（每样例结构假设/原子模块/槽位）。
 >
-> 核心 API：`POST /learn-samples` · `GET /templates[/:id]` · `POST /generations`（默认 same_template）· `POST /generations/plan`（只规划不渲染）· `POST /generations/:id/revise` · `POST /generations/:id/revise-natural-language` · `GET /generations/:id[/scorecard|/transfer-trace]` · `GET /samples/:id/{evidence,reconstruction,elements}` · `GET/POST /kb/*`（均挂 `/api/v5`）。Web 默认入口已切到 spec_v5.1 看板（V4 仍可在 `#v4` 访问）。
+> 核心 API（均挂 `/api/v5`）：`GET /showcase` · `GET /assets` · `POST /learn-samples` · `GET /templates[/:id]` · `POST /generations`（默认 same_template）· `POST /generations/plan`（只规划不渲染）· `GET /jobs/:jobId/progress` · `POST /generations/:id/revise` · `POST /generations/:id/revise-natural-language` · `GET /generations/:id[/scorecard|/transfer-trace]` · `GET /samples/:id/{evidence,reconstruction,elements}` · `GET/POST /kb/*`。Web 默认入口是 `/#v5`（V4 仍可在 `#v4` 访问）。
 >
 > **四视频并行 demo**（需 conda env `viral` + 真实 key；输出 `storage/demo-runs-*/`）：
 > ```bash
@@ -93,11 +93,11 @@ CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3
 - [演示脚本](./spec_v2/demo-playbook.md)
 - [Schema](./spec_v2/schemas/)
 
-**最终提交规范以 [`spec_v3/`](./spec_v3/) 为准**（Spec v1.3 — Source-first RenderRecipe Engine）；`spec_v2/` 仍是更广的产品规范，`specs_v1/` 和 `spec_v1_1/` 仅作历史追踪。
+**当前主提交规范以 [`spec_v5/`](./spec_v5/) 为准**（Spec v5.1 — Same Template Reconstruction Mode）。`spec_v3/`、`spec_v2/`、`specs_v1/` 和 `spec_v1_1/` 保留为历史设计与回归资料。
 
 - [Spec v1.3 需求](./spec_v3/requirements.md)、[系统设计](./spec_v3/design.md)、[RenderRecipe schema](./spec_v3/schemas/render-recipe.schema.json)、[实现状态](./spec_v3/implementation-status.md)、[演示脚本](./spec_v3/demo-playbook.md)
 
-## Spec v1.3 — Source-first RenderRecipe（最终提交演示）
+## Spec v1.3 — Source-first RenderRecipe（历史演示）
 
 针对「渲染 overfit」investigation（[REPORT](./docs/artifacts/render_overfit_findings/REPORT.md)）暴露的「样例无关的固定模具」问题（同类 beat_cut 输入坍缩成同一 6-primitive 序列，跨样例布局 NCC 0.868–1.000），v1.3 把渲染改成 **source-first + RenderRecipe 单一契约**：
 
@@ -109,7 +109,7 @@ CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3
    与 Remotion ViralRecipe composition（消费同一 recipe，产出 final.remotion.mp4）
 ```
 
-最终演示产品是 **AeroSpin 便携涡轮小风扇**产品广告。仓库无真实风扇素材，故目标素材由**真实 Gemini 2.5 Flash Image（Nano Banana）生成**并标注 provenance `aigc_generated_material`（非用户上传、非真实产品照）。
+历史演示产品是 **AeroSpin 便携涡轮小风扇**产品广告。仓库无真实风扇素材，故该 fixture 当时由 Gemini 2.5 Flash Image（Nano Banana）生成并标注 provenance `aigc_generated_material`（非用户上传、非真实产品照）；当前 V5.1 默认图片模型和 provider 配置见下方 Provider 配置摘要。
 
 ```bash
 # 工具链前缀（系统 node 是过期 v12；ffmpeg/python 在 viral conda env）
@@ -177,19 +177,21 @@ npm run dev
 
 打开：
 
-- Web: <http://localhost:5173>
+- Web V5: <http://localhost:5173/#v5>（如果 5173 被占用，Vite 会打印 5174 等新端口；按终端输出打开 `/#v5`）
+- Web V4: <http://localhost:5173/#v4>
+- API root: <http://localhost:3000/>
 - API health: <http://localhost:3000/healthz>
 
-基础 UI 流程：
+当前 V5 UI 流程：
 
-1. 创建或打开项目。
-2. 上传样例视频，分析结构。
-3. 查看 StructureTemplate 和 KnowledgeAtom。
-4. 上传源视频并输入需求。
-5. 在“重构规划器”里生成重构计划、slot mapping、gap report、fill plan。
-6. 可选：点击 **AIGC 补缺口并生成**，把缺失视觉槽位转成生成 brief，经质量检查后作为 `aigc_generated_material` 进入同一套匹配/渲染链路。
-7. 选择 HTML preview / FFmpeg MP4 / Remotion / HyperFrames 等 renderer。用 FFmpeg MP4 渲染后，“时间线预览”卡片会显示每个片段在对应时间戳的**真实渲染帧**（从渲染分段抽帧，存到 `storage/generated/previews/<renderId>/clip_<n>.png`，随 `RenderOutput.clipPreviewFrames` 返回），而不是绿色渐变占位图。
-8. 导出 request、timeline、report、scorecard。
+1. 在 `0 · Upload` 里选择样本视频和目标图片/视频素材；选择文件后需要分别点击 `Upload`。
+2. 在 `1 · Learn` 里选择一个样本视频并点击 `Learn 1 个样本`；学习结果会写入 Remotion 模板胶囊、槽位协议、KB 元素和结构学习报告。
+3. 展开 `评审证据中心`，依次查看 Showcase、Learn Analysis、Structure Protocol、Gap Decisions、Transfer Map、Packaging、Export；生成前也会展示迁移草案和包装计划，生成后自动替换为真实 trace。
+4. 在 `模板库` 中选择可复用 Remotion 模板，或在 Knowledge Base 中浏览/搜索 hook、rhythm、typography、transition、asset/audio recipe 等原子元素。
+5. 在 `2 · Generate` 中默认使用 `same_template`；目标素材可折叠、多选并通过“上移/下移/移除”控制进入媒体槽的顺序，也可在槽位缺口表里对单个槽位上传/绑定素材。
+6. 选择 AIGC 补全策略、生成模式、LLM 智能改写、变体预设；高级模式 `mix_elements` 可跨多个样例元素合成，并可开启“让 AI 现场编写动画代码”。
+7. 生成后查看 final.mp4、slot binding、gap report、timeline、mapping、packaging、scorecard 和 no-copy 证据；可继续 structured patch 或自然语言改片。
+8. 在 Export 下载当前页面已加载的 `template-capsule-v5.json`、`sample-evidence-v5.json`、`transfer-trace-v5.json`、`scorecard-v5.json`、生成前迁移/包装草案等评审证据。
 
 ## 常用命令
 
@@ -217,7 +219,7 @@ video
 → 60 帧 frameMetrics（blackBgRatio / redYellowRatio / motionDiffMean / cutLikeCount）+ movingObjectCandidates
 → OCR / ASR 文本按时间戳绑定到镜头
 → VisualEvidenceTimeline v2（6 视觉族：object_motion/kinetic_typography/background/storyboard/live_action_montage/bgm）
-→ Gemini VLM（被证据 grounding，不再自由发挥）→ Doubao/Ark 合并
+→ Gemini VLM（被证据 grounding，不再自由发挥）→ 文本模型合并（Ark/Doubao 或 Gemini）
 → beat_cut StructureTemplate（8 个 moving-material 槽位：主视觉/背景/文字卡/分镜规则/动作混剪/冲击闪/BGM/CTA）
 → 分层时间线（layers + slotId/motion/assetPolicy，按真实 152 BPM 卡点）+ 诚实缺口（moving_material_missing / bgm_missing）
 → style-locked 动态渲染器（黑底动态光带、卡点白闪、BGM EQ 条、硬切混剪、红色冲击星芒、红黄大字、CTA ticker）+ 音频
@@ -233,7 +235,7 @@ video
 实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
 
 ```bash
-# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini(.env VLM_MODEL=gemini-2.5-pro 覆盖 adapter 默认 gemini-2.5-flash), AI_PROVIDER=gemini(gemini-2.5-flash, Ark Doubao 为 backup), ASR_PROVIDER=faster_whisper/disabled, OCR_PROVIDER=easyocr）
+# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini，VLM_MODEL 默认 gemini-3.5-flash；AI_PROVIDER=gemini 默认 gemini-3.5-flash，Ark/Doubao 可作为文本 LLM 路径；ASR_PROVIDER=faster_whisper/disabled，OCR_PROVIDER=easyocr）
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"   # 系统 node 是过期 v12
 npm run build && node apps/api/dist/server.js
 
@@ -356,17 +358,17 @@ API manifest 使用 `assetId`，不使用任意本地路径：
 
 ## 可选 AIGC 素材补全
 
-AIGC Material Fill 是可选路径，默认关闭。它用于“用户没有足够素材”时，把缺口变成结构化生成 brief，再生成候选素材、做质量检查、注册为 `aigc_generated_material`，最后进入同一个 slot matcher / fill plan / renderer。
+AIGC Material Fill 是可选增强路径。V5 UI 默认会在缺素材时开启缺口补全，但真实外部 provider 仍受 `.env`、API 选项和安全开关控制；没有 key 或未允许外呼时会走程序化/确定性兜底。它用于“用户没有足够素材”时，把缺口变成结构化生成 brief，再生成候选素材、做质量检查、注册为 `aigc_generated_material`，最后进入同一个 slot matcher / fill plan / renderer。
 
 浏览器入口：
 
-- Web 工作台的“步骤 5 / 重构规划器”提供 **AIGC 补缺口并生成**按钮。
+- V5 Web 工作台的 `2 · Generate` 提供 **AIGC 补缺口并生成**能力。
 - 面板里有“启用 AIGC gap fill”开关。
-- “允许外部 provider”是独立开关；**不勾选时 live API 不调用任何外部图片 provider**（缺口保留为程序化卡片，不生成图片）。
-- API 请求会设置 `controls.allowAigcMaterialGeneration=true`；外部 provider 还需要 `controls.allowExternalAigcProvider=true`。
+- 外部 provider 受独立安全开关控制；未允许外呼或缺少 key 时 live API 不调用外部图片 provider，而是回退到程序化卡片/本地确定性素材。
+- API 请求会设置 AIGC gap-fill 选项；外部 provider 还需要 `.env` 中的 provider/key 和显式 allow 开关。
 - 结果面板会展示 brief、candidate、quality/VLM 状态、external calls、sample frames sent 等字段。
 
-允许外部 provider 后，live API 按顺序尝试：`google_gemini_image`（首选，Gemini 2.5 Flash Image / “Nano Banana”）→ `volcengine_seedream`（可选 backup，需 `AIGC_IMAGE_BACKUP_PROVIDER`）→ `deterministic_local_image_fill`（本地确定性兜底）。live 图片链路不会中断：所有外部 provider 失败时退回本地程序化 PNG 并记录 `providerFallbackReason` 警告（server.ts:1687-1721）。`deterministic_local_image_fill`（旧名 `mock_provider`，现仅作弃用别名）也用于 CI/脚本的确定性产物：
+允许外部 provider 后，live API 按顺序尝试：`google_gemini_image`（首选，默认 `GEMINI_IMAGE_MODEL=gemini-3.1-flash-image`）→ `volcengine_seedream`（可选 backup，需 `AIGC_IMAGE_BACKUP_PROVIDER`）→ `deterministic_local_image_fill`（本地确定性兜底）。live 图片链路不会中断：所有外部 provider 失败时退回本地程序化 PNG 并记录 `providerFallbackReason` 警告。`deterministic_local_image_fill`（旧名 `mock_provider`，现仅作弃用别名）也用于 CI/脚本的确定性产物：
 
 ```bash
 # 确定性本地 provider deterministic_local_image_fill（旧名 mock_provider，现仅作弃用别名；仅脚本/CI，不外呼）
@@ -386,9 +388,9 @@ Provider 配置示例，`.env` 不要提交：
 ```bash
 AIGC_MATERIAL_FILL_ENABLED=false
 
-# 首选：Google Gemini Nano Banana（AI Studio 可达）
+# 首选：Google Gemini Image / Nano Banana（AI Studio 可达）
 AIGC_IMAGE_PROVIDER=google_gemini_image
-GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
 GEMINI_API_KEY=<your_gemini_key>
 
 # backup：Volcengine Seedream
@@ -486,14 +488,11 @@ AIGC 安全策略：
 - faster-whisper / easyocr：按需安装到 conda env `viral`（faster-whisper 是本地 ASR；音频节奏/BPM 主要由 FFmpeg/librosa 证据链路提供）。
 - Remotion Chromium：第一次真实 Remotion render 会下载浏览器缓存。
 
-## 当前限制
+## 运行边界与注意事项
 
-- 外部 AIGC 图片和 Seedance 短视频素材都已接入；默认仍需显式开关和真实 key，且不会上传样例媒体给生成 provider。
-- Gemini 只作为质量 gate，不是唯一事实来源。
-- evidence-first beat_cut pipeline 已接入实时 API 并升级到 **v2 moving-material 版**（`editing.mov` 端到端经真实 Gemini/ASR/OCR/PySceneDetect/librosa + 光流 motionEnergy 产出 8 槽位 beat_cut、分层时间线、动态渲染，通过 `--gates v2` 27/27）；motion_graph 仍走 ribbon-centric analyzer，两条线尚未统一成单一证据分析器。
-- v2 本轮聚焦 感知→模板→渲染→gate 闭环；KB 的 moving/背景/BGM/分镜 证据面板、SAM2 物体追踪、AIGC 视频（Seedance）补 moving 素材属于下一轮（当前缺 moving 素材用高运动程序化代理 + 上报 `moving_material_missing`）。
-- **已删除所有 mock 适配器**（MockAIAdapter / MockVideoToolAdapter / MockRenderer / `mock_preview` / 文本 mock 样例分析）。真实 provider 失败时直接报错，绝不伪造结果。`AI_PROVIDER` 现支持 `gemini`（默认，文本 LLM 与 Gemini VLM 是**分离的不同 request**）/ `ark_doubao` / `openai_compatible`；因示例 `ARK_API_KEY` 401，已切到 `AI_PROVIDER=gemini`，`aiEnrichmentStatus=ok`。（`buildMockVideoAnalysis` 仅作为单元测试/seed/case 脚本的确定性 fixture，不在运行链路中。）
-- beat-cut renderer / 真实帧目前在 FFmpeg MP4 路径最完整；Remotion 组件尚未镜像全部 beat-cut primitives（ImpactFlashStamp 等）。
-- 浏览器已有 AIGC gap-fill 按钮和基础结果面板；更完整的拖拽上传、人工审核/选择生成候选、批量素材管理仍是产品化工作。
-- 时间线预览的真实帧目前只在 FFmpeg MP4 渲染路径生成；HTML preview / Remotion / HyperFrames 仍回退到占位卡（Remotion 后续可从最终 MP4 按 `clip.startSec` 抽帧统一支持）。
-- FFmpeg renderer 的程序化卡片（`media_cards`/`ui_showcase`/`kinetic_typography`/`geometric_mg`/`brand_cta` 等）已改为干净中文族名 + 真实文案，渲染帧不再出现任何 `PROXY`/`PLACEHOLDER`/占位 debug 文字（已逐族渲染验证）。
+- 外部 AIGC 图片、Seedance 短视频、happyhorse 参考转视频、Google Lyria/TTS 都已接入；真实云效果需要 `.env` 中显式开关和可用 key。
+- 默认安全策略不会把样例视频/音频作为生成 provider 的参考素材；用户目标素材的像素级 VLM 分析也需要 `ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1`。
+- 文本模型和多模态模型是分离请求：`createTextModelFn` 有 Ark/Doubao key 时优先 Doubao，否则走 Gemini；样例视频/帧理解和 Gen1 视觉胶囊生成走 Gemini。
+- 真实 provider 失败时不会伪造云结果；生成链路会记录 warning，并回退到程序化视觉/音频或确定性 fixture。
+- Remotion 真渲染依赖本地 Chromium、FFmpeg 和 `@remotion/three` / `@react-three/fiber` 版本匹配；长视频和 AIGC 视频生成耗时较长，建议用 UI 进度条或 `/api/v5/jobs/:jobId/progress` 观察状态。
+- `scripts/record-v5-demo.mjs` 可用 Playwright 录制高分辨率 UI 演示，支持只演示按钮、真实 Learn/Generate/Revise、下载导出 JSON 等开关。

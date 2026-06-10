@@ -1,4 +1,4 @@
-# Spec V5 — Program-KB Dual Codegen Creative Engine
+# Spec V5.1 — Same Template + Program-KB Creative Engine
 
 > **Canonical contracts live in code.** The authoritative V5 data contracts are
 > `packages/shared/src/contracts-v5/` (exported from `@vvst/shared` as `v5`). Where any doc below
@@ -12,17 +12,24 @@
 > advanced `mix_elements` mode.
 
 V5 is a complete target architecture for the viral video structure transfer engine.
-It replaces the V4 “evidence -> template/atoms -> recipe” mindset with a stronger two-stage system:
+The current implementation is V5.1: the default product path is **same-template reconstruction**,
+while the original Program-KB element mixing path remains available as the advanced `mix_elements`
+mode.
 
 ```text
-Many sample videos
-  -> deterministic evidence
-  -> Gen1 neutral reconstruction program
-  -> reusable knowledge elements
-  -> Knowledge Base
-  -> user selected elements + target assets + brief
-  -> composition planner
-  -> Gen2 final Remotion program
+Default V5.1 path:
+sample video
+  -> deterministic evidence + optional Gemini VLM/Gen1
+  -> RemotionTemplateCapsule + slot schema + scene/audio recipes
+  -> target brief + ordered target assets + optional per-slot assignments
+  -> same_template binding + gap fill + context rewrite
+  -> Remotion render + transfer trace + scorecard + final.mp4
+
+Advanced path:
+many sample videos
+  -> reusable KnowledgeElements
+  -> user-selected elements + target assets + brief
+  -> composition planner + optional Gen2 Remotion codegen
   -> render final.mp4
 ```
 
@@ -67,10 +74,17 @@ Learn music patterns, not raw sample audio.
 | Term | Meaning |
 |---|---|
 | EvidenceTimelineV5 | Deterministic timeline from FFmpeg/OpenCV/librosa/ASR/OCR. |
-| Gen1 | AI synthesizer that converts a sample video + evidence into a neutral reconstruction program. |
-| NeutralReconstructionProgram | Typed spec + Remotion preview code + placeholders + recipes + evidence refs. |
-| KnowledgeElement | Reusable, content-neutral creative unit extracted from a sample. |
+| Gen1 | AI/deterministic learning stage that converts sample video + evidence into a neutral reconstruction and a reusable Remotion template capsule. |
+| NeutralReconstructionProgram | Typed sample analysis with scenes, placeholders, packaging, rhythm and evidence refs. |
+| RemotionTemplateCapsule | Level-1 reusable template: props-driven Remotion code, slot schema, timing, motion, scene/audio recipes and no-copy safety flags. This is the default generation object. |
+| TemplateSlot | Replaceable content slot such as product image/video, background, logo, headline, subtitle, CTA, music, voiceover or data value. |
+| TemplateInstance | A generated same-template instance: new brief, bound props, slot bindings, gap report and readiness impact. |
+| GenerationOptionsV5 | Options for `same_template`, `modify_template` and `mix_elements`, including AIGC image/audio/text fill and fallback policy. |
+| TransferTrace | One explainable view of sample structure, template, target assets, slot mapping, gap/fill actions, timeline/mapping/packaging, scorecard and result URLs. |
+| JobProgress | Live progress payload used by the fixed UI status/progress bars (`GET /api/v5/jobs/:jobId/progress`). |
+| KnowledgeElement | Level-2 reusable, content-neutral creative unit extracted from a sample. Used by the advanced `mix_elements` path. |
 | KB Curator | Hard-rule + ML dedupe/store/merge/variant/reject pipeline. |
-| CompositionProgram | JSON plan that combines selected KB elements into a new video structure. |
-| Gen2 | AI code generator that creates final Remotion code from selected elements and composition plan. |
-| FinalVideoProgram | Final Remotion project + RenderRecipe + explanation + validation result. |
+| CompositionProgram | JSON plan that combines selected KB elements into a new video structure for `mix_elements`. |
+| Gen2 | Optional AI code generator that creates final Remotion code from selected elements and composition plan. |
+| FinalVideoProgram | Final Remotion project/render recipe + explanation + validation result. |
+| Review Evidence Center | V5 dashboard section with Showcase / Learn Analysis / Structure Protocol / Gap Decisions / Transfer Map / Packaging / Export. |
