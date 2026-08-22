@@ -1,48 +1,50 @@
-# 爆款结构迁移引擎
+# Viral Video Structure Transfer Engine
 
-**Viral Video Structure Transfer Engine / 爆款结构迁移引擎：从样例拆解、素材补全到视频重组的 AI 创作平台**
+**Viral Video Structure Transfer Engine: An AI Creation Platform for Deconstructing Examples, Filling Material Gaps, and Reassembling Videos**
 
-## Spec v5.1 — Same Template Reconstruction Mode（最新默认行为）
+## Spec v5.1 — Same Template Reconstruction Mode (Latest Default Behavior)
 
-> 上传你喜欢的视频 → 系统把它变成一套**可复用、props 驱动的 Remotion 模板**（`RemotionTemplateCapsule`）→ 输入新主题 → **自动补全缺失的画面/文案/音频，并用同一套动效模板渲染新内容**。
+> Upload a video you like → the system turns it into a **reusable, props-driven Remotion template** (`RemotionTemplateCapsule`) → enter a new topic → **automatically fill in missing visuals, copy, and audio, then render the new content using the same motion-design template**.
 >
-> 安全边界：可复用「模板代码 / 时间线 / 布局 / 动画曲线 / 排版行为 / 转场编排 / 音频 cue 位置 / props & slot schema」；**不可复用**样例的「原图像素 / 视频帧 / 音频 / 字幕文本 / logo / 人物 / 商品素材」。
+> Safety boundary: the following may be reused: “template code / timeline / layout / animation curves / typography behavior / transition sequencing / audio cue positions / props & slot schema.” The following from the example **may not be reused**: “original image pixels / video frames / audio / subtitle text / logos / people / product materials.”
 >
-> 默认 `generationMode=same_template`、`aigcGapFill=auto_on`；原「多视频元素混合」保留为 `mix_elements` 高级模式。规格见 [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md)；**评分表逐项对照见 [`spec_v5/rubric-alignment.md`](spec_v5/rubric-alignment.md)**；契约见 `packages/shared/src/contracts-v5/templateCapsule.ts`。
+> The defaults are `generationMode=same_template` and `aigcGapFill=auto_on`; the original “multi-video element mixing” workflow remains available as the advanced `mix_elements` mode. See [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md) for the specification; **see [`spec_v5/rubric-alignment.md`](spec_v5/rubric-alignment.md) for an item-by-item rubric mapping**; and see `packages/shared/src/contracts-v5/templateCapsule.ts` for the contract.
 >
-> **模型分工**：`createTextModelFn` 统一承接「文生文」任务（换主题 context-rewrite、镜头描述、自然语言改片、文本代码兜底、Gen1/Gen2 文本）：有有效 Ark/Doubao 配置时优先 Doubao-Seed，缺省或不可用时回退 Gemini（当前 `.env.example` 默认 `AI_PROVIDER=gemini` / `AI_GEMINI_MODEL=gemini-3.5-flash`）。**「看视频/帧」的多模态重建留 Gemini**；图/视频/音乐等外部 provider 均有确定性或程序化兜底。
+> **Model responsibilities**: `createTextModelFn` handles all text-generation tasks in one place (context rewriting for a new topic, shot descriptions, natural-language video revisions, text-based code fallback, and Gen1/Gen2 text). When a valid Ark/Doubao configuration is available, Doubao-Seed is preferred; otherwise, the system falls back to Gemini (the current `.env.example` defaults are `AI_PROVIDER=gemini` / `AI_GEMINI_MODEL=gemini-3.5-flash`). **Multimodal reconstruction that “watches video/frames” remains on Gemini**; external providers for images, video, music, and related media all have deterministic or programmatic fallbacks.
 >
-> **Gen1 视觉胶囊（主路径）**：一次 Gemini 调用**看完整段视频** + 确定性证据 → 一份忠实、props 驱动的 `RemotionTemplateCapsule`（react + remotion + `@remotion/three` 真 3D）。**混合按时长选模型**（短→`gemini-3-flash-preview`，长/切块→`gemini-3.1-pro-preview`，阈值 `GEMINI_GEN1_PRO_MIN_SEC=34`）。**返回的代码即圣经**：`mergeCapsule` 逐字节保留代码、只补缺失元数据,并合并 `timingSignature`（durationSec/fps 回退确定性，杜绝「31s 只渲 16s」）。只用「**编译 + 真渲染**」两道门(其余只记录不拦)。长视频(>34s)按 scene-cut 切 ≤30s 块并发重建后拼成一个多文件胶囊。Gemini 还返回 `assetPlan`（每个「代码画不出的 missing 素材」一条,带 key/mediaKind/AIGC prompt）。**运动/覆盖保真自修**：代码若违背它自己的 sceneRecipe（该滚动的字幕静止、该 3D 单轴的 ribbon 双轴翻滚、覆盖不足)触发一次 repair；**AI 优先**：能编译+渲染的 AI 胶囊永不因保真瑕疵被丢回确定性。
+> **Gen1 Visual Capsule (primary path)**: one Gemini call **watches the entire video clip** together with deterministic evidence and produces a faithful, props-driven `RemotionTemplateCapsule` (React + Remotion + true 3D using `@remotion/three`). **Model selection is based on duration** (short → `gemini-3-flash-preview`; long/chunked → `gemini-3.1-pro-preview`; threshold: `GEMINI_GEN1_PRO_MIN_SEC=34`). **The returned code is canonical**: `mergeCapsule` preserves the code byte-for-byte, fills in only missing metadata, and merges `timingSignature` (with deterministic fallbacks for durationSec/fps, preventing cases such as “a 31-second video renders only 16 seconds”). Only two gates are enforced: **compilation + real rendering**; all other checks are recorded but do not block. Long videos (>34 seconds) are split at scene cuts into ≤30-second chunks, reconstructed concurrently, and then combined into one multi-file capsule. Gemini also returns an `assetPlan`, with one entry for each missing asset that “cannot be drawn in code,” including its key, mediaKind, and AIGC prompt. **Motion/coverage fidelity self-repair**: if the code violates its own sceneRecipe (for example, scrolling subtitles remain static, a single-axis 3D ribbon tumbles on two axes, or coverage is insufficient), one repair attempt is triggered. **AI-first policy**: an AI capsule that compiles and renders is never discarded in favor of a deterministic version merely because of fidelity imperfections.
 >
-> **生成：换主题 + AIGC 补「动态素材」**。context-rewrite 用一次 Pro 调用换文案/配色(保结构、保源明暗)。footage 槽(`mediaKind=video`)填**真实视频**：**Seedance 2.0**(火山 Ark 文生视频)为主 → **happyhorse r2v**(阿里 DashScope 参考生视频,用 Gemini 静图作 `reference_image`,Seedance 欠费/403 时自动顶上)为备份 → AIGC 静图兜底；图片槽用 Gemini 图。渲染后:**色彩守卫**(源浅底却渲成暗→重写重渲一次) + **裁掉结尾纯色冗余镜头**。并发与稳定:全局渲染信号量(`RENDER_CONCURRENCY=2`×`RENDER_TABS_PER_JOB=2`)+ `RENDER_TIMEOUT_MS=120000` + 渲染/探针崩溃重试 + 全局 AIGC 信号量(`AIGC_GLOBAL_CONCURRENCY=8` 防 429)。**改写**:`POST /api/v5/generations/:id/revise`。
+> **Generation: change the topic + use AIGC to fill “dynamic materials.”** A single Pro call performs context rewriting for copy and colors while preserving structure and the source’s light/dark character. Footage slots (`mediaKind=video`) receive **real video**: **Seedance 2.0** (Volcengine Ark text-to-video) is primary → **happyhorse r2v** (Alibaba DashScope reference-to-video, using a Gemini still image as `reference_image`; automatically takes over when Seedance has insufficient funds or returns 403) is backup → an AIGC still image is the final fallback. Image slots use Gemini Image. After rendering: a **color guard** detects when a light source background has incorrectly become dark and performs one rewrite/re-render; **solid-color redundant shots at the end are trimmed**. Concurrency and stability: global render semaphore (`RENDER_CONCURRENCY=2` × `RENDER_TABS_PER_JOB=2`) + `RENDER_TIMEOUT_MS=120000` + retry after renderer/probe crashes + global AIGC semaphore (`AIGC_GLOBAL_CONCURRENCY=8` to prevent 429 errors). **Revision endpoint**: `POST /api/v5/generations/:id/revise`.
 >
-> 音频默认 **Google Lyria 音乐床**（`lyria-3-clip-preview`，>30s 分段 + crossfade，失败重试后退程序化）。
+> Audio defaults to a **Google Lyria music bed** (`lyria-3-clip-preview`; content longer than 30 seconds is segmented and crossfaded; after failed retries, the system falls back to programmatic audio).
 >
-> **更多能力（已实现，贴合评分表，见 rubric-alignment.md）**：素材**上传 + 画像分析**（上传走 `POST /api/projects/:projectId/assets`，V5 读取走 `GET /api/v5/assets` / `GET /api/v5/assets/:id/media` + `runTargetAssetAnalysis`）· **迁移过程可视化**一站式 trace（`GET /api/v5/generations/:id/transfer-trace`：源结构→knowledge-manifest→slot 映射→缺口/补全→scorecard→成片）· **评审证据中心**（Showcase / Learn Analysis / Structure Protocol / Gap Decisions / Transfer Map / Packaging / Export）· **多版本生成**（看板对同模板 fan-out 高点击/高转化/高节奏/高质感）· **自然语言改片**（`POST /api/v5/generations/:id/revise-natural-language`：一句话→`TemplatePatchSet`→重渲）· **两级知识库**（Level-1 模板胶囊 + Level-2 16 类原子元素；`GET /api/v5/kb/elements?kind&tag&q`、`POST /api/v5/kb/search`、`GET /api/v5/templates`）· **knowledge-manifest 种子**（每样例结构假设/原子模块/槽位）。
+> **Additional capabilities (implemented and aligned with the rubric; see rubric-alignment.md)**: material **upload + profile analysis** (upload via `POST /api/projects/:projectId/assets`; V5 reads via `GET /api/v5/assets` / `GET /api/v5/assets/:id/media` + `runTargetAssetAnalysis`) · end-to-end **transfer-process visualization** in one trace (`GET /api/v5/generations/:id/transfer-trace`: source structure → knowledge manifest → slot mapping → gaps/fills → scorecard → finished video) · **review evidence center** (Showcase / Learn Analysis / Structure Protocol / Gap Decisions / Transfer Map / Packaging / Export) · **multi-version generation** (dashboard fan-out from one template into high-click, high-conversion, high-tempo, and premium-feel variants) · **natural-language video revision** (`POST /api/v5/generations/:id/revise-natural-language`: one sentence → `TemplatePatchSet` → re-render) · **two-level knowledge base** (Level 1 template capsules + Level 2 elements across 16 atomic categories; `GET /api/v5/kb/elements?kind&tag&q`, `POST /api/v5/kb/search`, `GET /api/v5/templates`) · **knowledge-manifest seeds** (structural hypotheses, atomic modules, and slots for each example).
 >
-> 核心 API（均挂 `/api/v5`）：`GET /showcase` · `GET /assets` · `POST /learn-samples` · `GET /templates[/:id]` · `POST /generations`（默认 same_template）· `POST /generations/plan`（只规划不渲染）· `GET /jobs/:jobId/progress` · `POST /generations/:id/revise` · `POST /generations/:id/revise-natural-language` · `GET /generations/:id[/scorecard|/transfer-trace]` · `GET /samples/:id/{evidence,reconstruction,elements}` · `GET/POST /kb/*`。Web 默认入口是 `/#v5`（V4 仍可在 `#v4` 访问）。
+> Core APIs (all under `/api/v5`): `GET /showcase` · `GET /assets` · `POST /learn-samples` · `GET /templates[/:id]` · `POST /generations` (defaults to same_template) · `POST /generations/plan` (planning only; no rendering) · `GET /jobs/:jobId/progress` · `POST /generations/:id/revise` · `POST /generations/:id/revise-natural-language` · `GET /generations/:id[/scorecard|/transfer-trace]` · `GET /samples/:id/{evidence,reconstruction,elements}` · `GET/POST /kb/*`. The default web entry point is `/#v5` (V4 remains accessible at `#v4`).
 >
-> **四视频并行 demo**（需 conda env `viral` + 真实 key；输出 `storage/demo-runs-*/`）：
+> **Four-video parallel demo** (requires the `viral` conda environment and real keys; output is written to `storage/demo-runs-*/`):
+>
 > ```bash
 > export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
-> npm run build && node apps/api/dist/server.js   # 或 npm run dev
-> VIDEO_CONCURRENCY=4 OUT_DIR=demo-runs python scripts/run-v5-four-aigc.py   # 四条样例：各自 learn(切块)+generate(换随机主题+AIGC 视频/静图)
+> npm run build && node apps/api/dist/server.js   # or npm run dev
+> VIDEO_CONCURRENCY=4 OUT_DIR=demo-runs python scripts/run-v5-four-aigc.py   # four examples: each runs learn (chunked) + generate (random new topic + AIGC video/still images)
 > ```
-> 视频 provider env：`AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`（主）；`AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1`（备份）。**依赖必须装好** `@remotion/three@4.0.341` + `@react-three/fiber@^9.6.1` + `three@0.176.0`（**fiber 必须匹配 React 版本**：本仓库 web 用 React 19，fiber 须为 9.x；用 fiber 8 会触发 `ReactCurrentBatchConfig` 渲染崩 → 3D 胶囊退回确定性）。
+>
+> Video provider environment variables: `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY` (primary); `AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1` (backup). **The following dependencies must be installed**: `@remotion/three@4.0.341` + `@react-three/fiber@^9.6.1` + `three@0.176.0` (**fiber must match the React version**: this repository’s web app uses React 19, so fiber must be 9.x; fiber 8 causes a `ReactCurrentBatchConfig` render crash, which makes 3D capsules fall back to deterministic rendering).
 
 ## Spec v4.2 Submission Entry
 
-当前提交目标是：**学结构，不抄内容**。样例视频只进入 analysis/template/TechniqueAtom/GapReport 作为结构证据；最终画面只允许使用目标素材、用户授权素材、本地程序化素材，或带 provenance 的生成素材。
+The goal of the current submission is: **learn the structure without copying the content**. Example videos are used only as structural evidence in analysis/template/TechniqueAtom/GapReport; final visuals may use only target materials, user-authorized materials, local programmatic materials, or generated materials with provenance.
 
-评审入口：
+Review entry points:
 
-- 中文 showcase：`docs/artifacts/showcase-report.md`、`docs/artifacts/showcase-report.html`
-- Submission pack：`docs/artifacts/submission_pack/index.md`、`docs/artifacts/submission_pack/index.html`
-- 四个 canonical FFmpeg 输出：`docs/artifacts/learned_samples_max/{marketing,editing,motion_graph_1,motion_graph_2}/final.mp4`
-- Visual QA：每个 case 的 `visual-qa-report.md/json`
-- Remotion host 验证：`docs/remotion-host-verification.md`
+- Chinese showcase: `docs/artifacts/showcase-report.md`, `docs/artifacts/showcase-report.html`
+- Submission pack: `docs/artifacts/submission_pack/index.md`, `docs/artifacts/submission_pack/index.html`
+- Four canonical FFmpeg outputs: `docs/artifacts/learned_samples_max/{marketing,editing,motion_graph_1,motion_graph_2}/final.mp4`
+- Visual QA: each case’s `visual-qa-report.md/json`
+- Remotion host verification: `docs/remotion-host-verification.md`
 
-本地验证命令：
+Local verification commands:
 
 ```bash
 CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" npm test
@@ -52,102 +54,102 @@ CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3
 CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-submission-artifacts.mjs
 ```
 
-默认 submission path 不调用 Seedance / Seedream / ElevenLabs / Gemini / OpenAI / Qwen / Deepgram / Runway / Veo / Kling，不上传样例媒体，不下载大模型权重。可选 provider 只在显式 opt-in 和配置密钥后使用。
+The default submission path does not call Seedance / Seedream / ElevenLabs / Gemini / OpenAI / Qwen / Deepgram / Runway / Veo / Kling, upload example media, or download large model weights. Optional providers are used only after explicit opt-in and key configuration.
 
-这个项目不是“输入一句话直接生成一条视频”的通用视频生成器。它的核心目标是：
+This project is not a general-purpose video generator that “takes one sentence and directly generates a video.” Its core objective is:
 
 ```text
-样例/参考视频
-→ 确定性证据提取
-→ 开放世界槽位归纳
-→ 目标素材匹配
-→ 素材缺口检测
-→ 填充计划 / 可替换槽位
-→ 渲染能力选择
-→ 代理或目标素材 MP4
-→ 预览帧 / contact sheet
-→ 评估器 / corpus 回归 / 产品演示
+Example/reference video
+→ deterministic evidence extraction
+→ open-world slot induction
+→ target-material matching
+→ material-gap detection
+→ fill plan / replaceable slots
+→ rendering-capability selection
+→ proxy or target-material MP4
+→ preview frames / contact sheet
+→ evaluators / corpus regression / product demo
 ```
 
-默认安全边界：
+Default safety boundaries:
 
-- 样例视频只提供结构证据，不默认复制样例帧、音频、文字或品牌。
-- 目标素材、用户上传素材、授权可复用素材、程序化渲染和明确标记的 AIGC 生成素材才可进入输出。
-- mock/no-path 素材不能满足视觉槽位。
-- 素材缺失时必须产出 gap report、fill plan、replacement slots 或代理渲染。
-- AIGC 素材补全是可选能力，不默认调用外部 provider。
+- Example videos provide structural evidence only; by default, example frames, audio, text, and branding are not copied.
+- Only target materials, user-uploaded materials, authorized reusable materials, programmatic rendering, and clearly labeled AIGC-generated materials may appear in the output.
+- Mock/no-path materials cannot satisfy visual slots.
+- When materials are missing, the system must produce a gap report, fill plan, replacement slots, or a proxy render.
+- AIGC material completion is optional and does not call external providers by default.
 
-当前实现状态、评审结论和 artifact 证据见：
+For the current implementation status, review conclusions, and artifact evidence, see:
 
-- [当前项目指南](./CURRENT_PROJECT_GUIDE.md)
+- [Current Project Guide](./CURRENT_PROJECT_GUIDE.md)
 - [SDE hardening review](./docs/artifacts/review/sde_hardening_review.md)
 - [SDE harness completion review](./docs/artifacts/review/sde_harness_completion_review.md)
 
-## 文档入口
+## Documentation Entry Points
 
-- [需求说明](./spec_v2/requirements.md)
-- [系统设计](./spec_v2/design.md)
-- [API 说明](./spec_v2/api.md)
-- [任务拆分](./spec_v2/tasks.md)
-- [测试计划](./spec_v2/test-plan.md)
-- [演示脚本](./spec_v2/demo-playbook.md)
+- [Requirements](./spec_v2/requirements.md)
+- [System Design](./spec_v2/design.md)
+- [API Documentation](./spec_v2/api.md)
+- [Task Breakdown](./spec_v2/tasks.md)
+- [Test Plan](./spec_v2/test-plan.md)
+- [Demo Playbook](./spec_v2/demo-playbook.md)
 - [Schema](./spec_v2/schemas/)
 
-**当前主提交规范以 [`spec_v5/`](./spec_v5/) 为准**（Spec v5.1 — Same Template Reconstruction Mode）。`spec_v3/`、`spec_v2/`、`specs_v1/` 和 `spec_v1_1/` 保留为历史设计与回归资料。
+**The current primary submission specification is [`spec_v5/`](./spec_v5/)** (Spec v5.1 — Same Template Reconstruction Mode). `spec_v3/`, `spec_v2/`, `specs_v1/`, and `spec_v1_1/` are retained as historical design and regression materials.
 
-- [Spec v1.3 需求](./spec_v3/requirements.md)、[系统设计](./spec_v3/design.md)、[RenderRecipe schema](./spec_v3/schemas/render-recipe.schema.json)、[实现状态](./spec_v3/implementation-status.md)、[演示脚本](./spec_v3/demo-playbook.md)
+- [Spec v1.3 Requirements](./spec_v3/requirements.md), [System Design](./spec_v3/design.md), [RenderRecipe schema](./spec_v3/schemas/render-recipe.schema.json), [Implementation Status](./spec_v3/implementation-status.md), [Demo Playbook](./spec_v3/demo-playbook.md)
 
-## Spec v1.3 — Source-first RenderRecipe（历史演示）
+## Spec v1.3 — Source-first RenderRecipe (Historical Demo)
 
-针对「渲染 overfit」investigation（[REPORT](./docs/artifacts/render_overfit_findings/REPORT.md)）暴露的「样例无关的固定模具」问题（同类 beat_cut 输入坍缩成同一 6-primitive 序列，跨样例布局 NCC 0.868–1.000），v1.3 把渲染改成 **source-first + RenderRecipe 单一契约**：
+In response to the “example-independent fixed mold” problem exposed by the rendering-overfit investigation ([REPORT](./docs/artifacts/render_overfit_findings/REPORT.md))—where beat_cut inputs of the same type collapsed into the same sequence of six primitives and cross-example layout NCC reached 0.868–1.000—v1.3 changed rendering to **source-first + one unified RenderRecipe contract**:
 
 ```text
-样例视频 = 仅结构证据（不复制帧/音频/水印）
-目标素材 / 源视频 = 进画面的输出素材
-→ buildRenderRecipe（timeline.renderPlan.renderRecipe，唯一渲染契约，每个 clip 带可审计 primitiveReason）
-→ FFmpeg（合成真实素材像素 + 卡点字幕 + 程序化 BGM，产出 final.mp4）
-   与 Remotion ViralRecipe composition（消费同一 recipe，产出 final.remotion.mp4）
+Example video = structural evidence only (do not copy frames/audio/watermarks)
+Target materials / source video = output materials that appear on screen
+→ buildRenderRecipe (timeline.renderPlan.renderRecipe, the sole rendering contract; every clip includes an auditable primitiveReason)
+→ FFmpeg (composites actual material pixels + beat-synced subtitles + programmatic BGM to produce final.mp4)
+   and the Remotion ViralRecipe composition (consumes the same recipe and produces final.remotion.mp4)
 ```
 
-历史演示产品是 **AeroSpin 便携涡轮小风扇**产品广告。仓库无真实风扇素材，故该 fixture 当时由 Gemini 2.5 Flash Image（Nano Banana）生成并标注 provenance `aigc_generated_material`（非用户上传、非真实产品照）；当前 V5.1 默认图片模型和 provider 配置见下方 Provider 配置摘要。
+The historical demo product is an **AeroSpin portable turbo fan** advertisement. The repository contains no real fan materials, so this fixture was generated at the time using Gemini 2.5 Flash Image (Nano Banana) and labeled with the provenance `aigc_generated_material` (not user-uploaded and not a real product photo). See the Provider Configuration Summary below for the current V5.1 default image model and provider configuration.
 
 ```bash
-# 工具链前缀（系统 node 是过期 v12；ffmpeg/python 在 viral conda env）
+# Toolchain prefix (the system Node is the outdated v12; ffmpeg/python are in the viral conda environment)
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
 
-# 1) 生成真实 AIGC 风扇目标 fixture（需 GEMINI_API_KEY + 外部 provider opt-in）
+# 1) Generate the real AIGC fan target fixture (requires GEMINI_API_KEY + external-provider opt-in)
 node scripts/generate-aerospin-fan-fixture.mjs
 
-# 2) 最终提交演示：Demo A（editing.mov beat_cut + 风扇）+ Demo B（motion_graph + 同一风扇素材）+ 反 overfit 多样性
+# 2) Final submission demo: Demo A (editing.mov beat_cut + fan) + Demo B (motion_graph + the same fan materials) + anti-overfit diversity
 npm run demo:final
 ```
 
-产物：`docs/artifacts/final_submission/`（`demo_a_editing_fan/`、`demo_b_motion_graph_fan/`、`diversity_eval/`、`FINAL_REPORT.md`）。每个 demo 含 `final.mp4`（FFmpeg）、`final.remotion.mp4`（Remotion）、`render-recipe.json`、`quality-gates.json`、`sample-copy-safety.json`、`source-material-usage.json`、contact sheet、`HUMAN_REVIEW_REPORT.md`。**跨样例反 overfit 结果：layout NCC ≈ 0.01**（同样素材、不同样例产出结构迥异的视频，固定模具被打破）。
+Outputs: `docs/artifacts/final_submission/` (`demo_a_editing_fan/`, `demo_b_motion_graph_fan/`, `diversity_eval/`, `FINAL_REPORT.md`). Each demo includes `final.mp4` (FFmpeg), `final.remotion.mp4` (Remotion), `render-recipe.json`, `quality-gates.json`, `sample-copy-safety.json`, `source-material-usage.json`, a contact sheet, and `HUMAN_REVIEW_REPORT.md`. **Cross-example anti-overfit result: layout NCC ≈ 0.01** (the same materials combined with different examples produce structurally distinct videos, breaking the fixed mold).
 
-## 目录结构
+## Directory Structure
 
 ```text
 apps/
-  api/       Node.js + TypeScript + Express，API、adapter、renderer 接入
-  web/       React + Vite + TypeScript，工作台 UI
+  api/       Node.js + TypeScript + Express; API, adapter, and renderer integrations
+  web/       React + Vite + TypeScript; workbench UI
 packages/
-  shared/    类型、schema、planner、slot induction、AIGC material fill
+  shared/    Types, schemas, planner, slot induction, and AIGC material filling
   renderer/  HTML preview / renderer contract
 scripts/
-  analyze-visual-evidence.py               motion_graph_case 确定性视觉证据分析
-  run-motion-graph-case.mjs                proxy / target assets / partial / malformed / AIGC 模式
-  generate-motion-graph-target-assets.mjs  确定性目标素材 fixture
-  check-artifact-hygiene.mjs               public artifact 泄漏扫描
+  analyze-visual-evidence.py               Deterministic visual-evidence analysis for motion_graph_case
+  run-motion-graph-case.mjs                Proxy / target-assets / partial / malformed / AIGC modes
+  generate-motion-graph-target-assets.mjs  Deterministic target-material fixture
+  check-artifact-hygiene.mjs               Public-artifact leakage scan
 docs/
-  fixtures/motion_graph_target_assets/     motion graph 目标素材 fixture + manifests
-  artifacts/                               可评审输出、报告、MP4、contact sheets
+  fixtures/motion_graph_target_assets/     Motion-graph target-material fixtures + manifests
+  artifacts/                               Reviewable outputs, reports, MP4s, and contact sheets
 storage/
   uploads/, generated/, db/, demo/
 ```
 
-## 本地环境
+## Local Environment
 
-推荐使用已有 conda 环境 `viral`。FFmpeg、ffprobe、Python 辅助脚本、可选 OCR/ASR 都从这里走。
+The existing `viral` conda environment is recommended. FFmpeg, ffprobe, Python helper scripts, and optional OCR/ASR all run from this environment.
 
 ```bash
 conda activate viral
@@ -155,45 +157,45 @@ npm install
 npm run build
 ```
 
-可选 Python 能力：
+Optional Python capabilities:
 
 ```bash
 pip install faster-whisper   # ASR_PROVIDER=faster_whisper
 pip install easyocr          # OCR_PROVIDER=easyocr
 ```
 
-如果 conda 路径不同：
+If your conda path is different:
 
 ```bash
 CONDA_BASE=/path/to/anaconda3
 VIRAL_CONDA_ENV=viral
 ```
 
-## 启动应用
+## Start the Application
 
 ```bash
 npm run dev
 ```
 
-打开：
+Open:
 
-- Web V5: <http://localhost:5173/#v5>（如果 5173 被占用，Vite 会打印 5174 等新端口；按终端输出打开 `/#v5`）
+- Web V5: <http://localhost:5173/#v5> (if port 5173 is occupied, Vite prints a new port such as 5174; open `/#v5` using the terminal’s reported address)
 - Web V4: <http://localhost:5173/#v4>
 - API root: <http://localhost:3000/>
 - API health: <http://localhost:3000/healthz>
 
-当前 V5 UI 流程：
+Current V5 UI workflow:
 
-1. 在 `0 · Upload` 里选择样本视频和目标图片/视频素材；选择文件后需要分别点击 `Upload`。
-2. 在 `1 · Learn` 里选择一个样本视频并点击 `Learn 1 个样本`；学习结果会写入 Remotion 模板胶囊、槽位协议、KB 元素和结构学习报告。
-3. 展开 `评审证据中心`，依次查看 Showcase、Learn Analysis、Structure Protocol、Gap Decisions、Transfer Map、Packaging、Export；生成前也会展示迁移草案和包装计划，生成后自动替换为真实 trace。
-4. 在 `模板库` 中选择可复用 Remotion 模板，或在 Knowledge Base 中浏览/搜索 hook、rhythm、typography、transition、asset/audio recipe 等原子元素。
-5. 在 `2 · Generate` 中默认使用 `same_template`；目标素材可折叠、多选并通过“上移/下移/移除”控制进入媒体槽的顺序，也可在槽位缺口表里对单个槽位上传/绑定素材。
-6. 选择 AIGC 补全策略、生成模式、LLM 智能改写、变体预设；高级模式 `mix_elements` 可跨多个样例元素合成，并可开启“让 AI 现场编写动画代码”。
-7. 生成后查看 final.mp4、slot binding、gap report、timeline、mapping、packaging、scorecard 和 no-copy 证据；可继续 structured patch 或自然语言改片。
-8. 在 Export 下载当前页面已加载的 `template-capsule-v5.json`、`sample-evidence-v5.json`、`transfer-trace-v5.json`、`scorecard-v5.json`、生成前迁移/包装草案等评审证据。
+1. Under `0 · Upload`, select the example video and target image/video materials. After choosing each file, you must click `Upload` separately.
+2. Under `1 · Learn`, select an example video and click `Learn 1 Sample`. The learning result is written to a Remotion template capsule, slot protocol, KB elements, and a structure-learning report.
+3. Expand the `Review Evidence Center` and review Showcase, Learn Analysis, Structure Protocol, Gap Decisions, Transfer Map, Packaging, and Export in sequence. Before generation, it also displays a draft transfer and packaging plan; after generation, these are automatically replaced by the actual trace.
+4. Select a reusable Remotion template from the `Template Library`, or browse/search atomic elements such as hooks, rhythm, typography, transitions, and asset/audio recipes in the Knowledge Base.
+5. Under `2 · Generate`, `same_template` is used by default. Target materials are collapsible and multi-selectable; use “Move Up / Move Down / Remove” to control the order in which they enter media slots. You can also upload or bind materials to individual slots in the slot-gap table.
+6. Select an AIGC completion strategy, generation mode, intelligent LLM rewriting, and variant preset. The advanced `mix_elements` mode can combine elements from multiple examples and can enable “have AI write animation code on the fly.”
+7. After generation, inspect `final.mp4`, slot bindings, the gap report, timeline, mapping, packaging, scorecard, and no-copy evidence. You can then continue with a structured patch or natural-language revision.
+8. Under Export, download the currently loaded `template-capsule-v5.json`, `sample-evidence-v5.json`, `transfer-trace-v5.json`, `scorecard-v5.json`, pre-generation transfer/packaging drafts, and other review evidence.
 
-## 常用命令
+## Common Commands
 
 ```bash
 npm run build
@@ -205,83 +207,83 @@ node scripts/check-product-demo-page.mjs
 node scripts/check-artifact-hygiene.mjs
 ```
 
-如果 `npm test` 在受限 sandbox 中报 `listen EPERM: operation not permitted 0.0.0.0`，这是 API e2e 测试需要本地 socket 绑定导致的环境限制；在允许本地绑定的环境中重跑即可。
+If `npm test` reports `listen EPERM: operation not permitted 0.0.0.0` inside a restricted sandbox, the environment is preventing the API end-to-end tests from binding a local socket. Re-run the tests in an environment that permits local socket binding.
 
-## Evidence-first 结构迁移（beat_cut / editing.mov）
+## Evidence-first Structure Transfer (`beat_cut` / `editing.mov`)
 
-针对 `editing.mov` 这类**快剪 / 剪辑教学**样例，pipeline 改成「先用确定性工具抽证据，再让模型做语义解释，最后让 renderer 执行学到的视觉语法」：
+For **fast-cut / editing-tutorial** examples such as `editing.mov`, the pipeline has been changed to “first extract evidence with deterministic tools, then let the model provide a semantic interpretation, and finally have the renderer execute the learned visual grammar”:
 
 ```text
 video
-→ ffprobe 元数据
-→ PySceneDetect 场景切点 + 每镜头关键帧/视觉族标签 + 每镜头 motionEnergy（Farneback 光流）
-→ librosa 鼓点网格（BPM / beats / onsets）
-→ 60 帧 frameMetrics（blackBgRatio / redYellowRatio / motionDiffMean / cutLikeCount）+ movingObjectCandidates
-→ OCR / ASR 文本按时间戳绑定到镜头
-→ VisualEvidenceTimeline v2（6 视觉族：object_motion/kinetic_typography/background/storyboard/live_action_montage/bgm）
-→ Gemini VLM（被证据 grounding，不再自由发挥）→ 文本模型合并（Ark/Doubao 或 Gemini）
-→ beat_cut StructureTemplate（8 个 moving-material 槽位：主视觉/背景/文字卡/分镜规则/动作混剪/冲击闪/BGM/CTA）
-→ 分层时间线（layers + slotId/motion/assetPolicy，按真实 152 BPM 卡点）+ 诚实缺口（moving_material_missing / bgm_missing）
-→ style-locked 动态渲染器（黑底动态光带、卡点白闪、BGM EQ 条、硬切混剪、红色冲击星芒、红黄大字、CTA ticker）+ 音频
-→ 渲染质量 gate v2（无 placeholder、有音频、证据覆盖 ≥0.8、motionDiffMean ≥0.04、cutLikeCount ≥5、分层片段 ≥5、moving 缺口已上报）
+→ ffprobe metadata
+→ PySceneDetect scene cuts + per-shot keyframes/visual-family labels + per-shot motionEnergy (Farneback optical flow)
+→ librosa beat grid (BPM / beats / onsets)
+→ frameMetrics for 60 frames (blackBgRatio / redYellowRatio / motionDiffMean / cutLikeCount) + movingObjectCandidates
+→ OCR / ASR text bound to shots by timestamp
+→ VisualEvidenceTimeline v2 (six visual families: object_motion/kinetic_typography/background/storyboard/live_action_montage/bgm)
+→ Gemini VLM (grounded by evidence rather than free-form interpretation) → text-model merge (Ark/Doubao or Gemini)
+→ beat_cut StructureTemplate (eight moving-material slots: hero visual / background / title card / storyboard rules / action montage / impact flash / BGM / CTA)
+→ layered timeline (layers + slotId/motion/assetPolicy, beat-synced to the actual 152 BPM) + honest gaps (moving_material_missing / bgm_missing)
+→ style-locked dynamic renderer (animated light ribbons on black, beat-synced white flashes, BGM EQ bars, hard-cut montage, red impact starbursts, large red/yellow typography, CTA ticker) + audio
+→ rendering quality gate v2 (no placeholders, includes audio, evidence coverage ≥0.8, motionDiffMean ≥0.04, cutLikeCount ≥5, layered clips ≥5, moving gaps reported)
 ```
 
-`beat_cut` 的判定来自**确定性证据**（快切 + 鼓点 + 黑底 + 动作混剪），不依赖 VLM 关键词，因此 LLM 失败也能稳定产出。AI 增强失败（如 Ark 401）会**显式标记** `aiEnrichmentStatus=failed/aiEnrichmentError`，绝不冒充干净模板。**moving 素材/背景/分镜/BGM 是一等结构槽位 + 渲染契约 + gate**：没有目标动作素材时，动作混剪用高运动的程序化代理（绝不复制样例帧）并上报 `moving_material_missing`，所以输出不会退化成静态卡片。
+The `beat_cut` classification comes from **deterministic evidence** (fast cuts + beats + black background + action montage), not VLM keywords, so output remains stable even when the LLM fails. AI-enrichment failures (such as Ark 401) are **explicitly marked** with `aiEnrichmentStatus=failed/aiEnrichmentError` and are never presented as a clean template. **Moving materials/background/storyboard/BGM are first-class structural slots + rendering contracts + gates**: if no target action materials are available, the action montage uses high-motion programmatic proxies (never copying example frames) and reports `moving_material_missing`, preventing the output from degrading into static cards.
 
-**v3（human-fidelity）**：分析器再抽取 **hero-object 描述符**（head/mask 类型 + 调色板 + 运动）和 **TypographyEvidenceV2**（OCR bbox → 版式角色/颜色/字号/动效），渲染器据此画**程序化霓虹头部/面罩剪影**（不再是方块，绝不复制样例人脸）、**分角色变化的字幕版式/颜色/逐字显现/抖动**，并用**分层程序化 BGM**（drone+kick+bass+hat+noise，频谱质心远高于纯 click）替代单 click。gate 升级到 **v3 per-clip** 指标（hero≥0.025、文字片段≥0.01、混剪≥0.04，静态早段无法靠全局均值蒙混）+ hero 描述符/代理、typography 证据、audio richness、storyboard 非空、bgm 去重、fillPlan 一致性等。`npm run full-loop:editing` 把整条产品链路落成 22 个可人工评审的 stage 目录。
+**v3 (human fidelity)**: the analyzer additionally extracts **hero-object descriptors** (head/mask type + palette + motion) and **TypographyEvidenceV2** (OCR bounding boxes → layout role/color/font size/animation). Based on this evidence, the renderer draws **programmatic neon head/mask silhouettes** (not blocks and never copied example faces), uses **role-varying subtitle layouts/colors/type-on effects/jitter**, and replaces a single click track with **layered programmatic BGM** (drone + kick + bass + hi-hat + noise, with a spectral centroid far higher than a click alone). The gate is upgraded to **v3 per-clip** metrics (hero ≥0.025, text clips ≥0.01, montage ≥0.04, so a static early segment cannot pass by hiding behind a global average), plus hero descriptors/proxies, typography evidence, audio richness, a non-empty storyboard, BGM deduplication, fillPlan consistency, and more. `npm run full-loop:editing` materializes the entire product pipeline as 22 stage directories that can be manually reviewed.
 
-**v3 VisualElementGraph（localize-then-label）**：架构是 **先用 CV/光流/OCR 把元素定位出来（bbox + 轨迹），VLM 只对已框出的候选做语义命名**（不再让 VLM 在 1FPS 视频里猜坐标）。分析器产出 `visualElementGraph`：hero_object（光流 bbox 轨迹 + center 轨迹 + 面积曲线）、kinetic_typography 与 **watermark**（按角落启发式分离，抖音水印只标注不复刻）、impact_fx、background、cta，加 shot 节点（dominantElements/cutType/motionClass/beatSync）与 `audioStructure`（bass/music/hats 层占比）。渲染器**真实消费**图谱：hero 剪影按 `positionClass` 定位、BGM 按学到的层占比混音。重型 tracker（Grounded-SAM2/SAM2/RAFT/CoTracker/Demucs/Essentia）是 **env-gated stub**（默认关、CI 不受影响）。v3 gate **检验真实使用**而非仅存在：`element_graph_renderer_consumed`（hero 元素已挂到 layer 且渲染开场片段确实有运动）、`typography_layout_used`、`audio_structure_used`。`--gates v3` real-API 全闭环 **47/47**。
+**v3 VisualElementGraph (localize, then label)**: the architecture **first uses CV/optical flow/OCR to localize elements (bounding boxes + trajectories), while the VLM only assigns semantic names to the localized candidates** (instead of asking a VLM to guess coordinates from a 1 FPS video). The analyzer outputs a `visualElementGraph`: hero_object (optical-flow bounding-box trajectory + center trajectory + area curve), kinetic_typography and **watermark** (separated with a corner heuristic; TikTok/Douyin watermarks are labeled but never reproduced), impact_fx, background, CTA, plus shot nodes (dominantElements/cutType/motionClass/beatSync) and `audioStructure` (proportions of bass/music/hi-hat layers). The renderer **actually consumes** the graph: hero silhouettes are positioned according to `positionClass`, and the BGM is mixed using the learned layer proportions. Heavy trackers (Grounded-SAM2/SAM2/RAFT/CoTracker/Demucs/Essentia) are **environment-gated stubs** (off by default and do not affect CI). The v3 gate **verifies actual use, not mere presence**: `element_graph_renderer_consumed` (the hero element is attached to a layer and the rendered opening clip actually contains motion), `typography_layout_used`, and `audio_structure_used`. The real-API full-loop run with `--gates v3` passes **47/47**.
 
-实跑（需要 conda env `viral` + 真实 provider，分析会跑 Gemini/ASR/OCR/PySceneDetect/librosa，约几分钟）：
+Real run (requires the `viral` conda environment and real providers; analysis runs Gemini/ASR/OCR/PySceneDetect/librosa and takes several minutes):
 
 ```bash
-# 1) 起 API（真实 provider 由 .env 控制：VLM_PROVIDER=gemini，VLM_MODEL 默认 gemini-3.5-flash；AI_PROVIDER=gemini 默认 gemini-3.5-flash，Ark/Doubao 可作为文本 LLM 路径；ASR_PROVIDER=faster_whisper/disabled，OCR_PROVIDER=easyocr）
-export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"   # 系统 node 是过期 v12
+# 1) Start the API (real providers are controlled by .env: VLM_PROVIDER=gemini, VLM_MODEL defaults to gemini-3.5-flash; AI_PROVIDER=gemini defaults to gemini-3.5-flash, while Ark/Doubao can be used as the text-LLM path; ASR_PROVIDER=faster_whisper/disabled, OCR_PROVIDER=easyocr)
+export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"   # system Node is the outdated v12
 npm run build && node apps/api/dist/server.js
 
-# 2) editing.mov → beat_cut → style-locked 15s 重构 → 渲染 → 导出
+# 2) editing.mov → beat_cut → style-locked 15-second reconstruction → render → export
 npm run e2e:editing-beatcut
 
-# 3) 渲染质量 gate v3（beat_cut moving-material + human-fidelity 严格模式，40 项）
+# 3) Rendering-quality gate v3 (strict beat_cut moving-material + human-fidelity mode, 40 checks)
 npm run eval:render-quality -- --render storage/generated/<renderId>.mp4 \
   --template /tmp/editing_e2e/template.json --generation /tmp/editing_e2e/generation.json \
   --sample test_videos/editing.mov --expect-video-type beat_cut --gates v3 --strict
 
-# 4) 产品级全闭环 artifact runner（22 个 stage 目录 + 对比图 + per-clip motion + audio + v3 gate）
+# 4) Product-grade full-loop artifact runner (22 stage directories + comparison images + per-clip motion + audio + v3 gate)
 npm run full-loop:editing -- --sample ./test_videos/manual/editing.mov \
-  --prompt "主题：爆款结构迁移引擎；..." --out docs/artifacts/full_loop_editing_mov
+  --prompt "Topic: Viral Video Structure Transfer Engine;..." --out docs/artifacts/full_loop_editing_mov
 
-# 4) 单独跑证据分析器 / 模型 provider 评测
+# 4) Run the evidence analyzer / model-provider evaluation separately
 npm run analyze:evidence -- --video test_videos/editing.mov --out /tmp/ev.json --frames-dir /tmp/ev_frames
 npm run eval:model-understanding -- --sample test_videos/editing.mov
 ```
 
-输出（`storage/generated/` 渲染产物 + `docs/artifacts/model_eval/`）：beat_cut MP4（黑底大字 + 卡点 + 音频）、按 clip 抽帧的真实预览、`docs/artifacts/model_eval/editing_mov_model_eval.{json,md}`（heuristic / Gemini / Ark 对比，失败可见）。
+Outputs (`storage/generated/` rendering artifacts + `docs/artifacts/model_eval/`): a beat_cut MP4 (large type on black + beat synchronization + audio), real previews sampled per clip, and `docs/artifacts/model_eval/editing_mov_model_eval.{json,md}` (heuristic / Gemini / Ark comparison with visible failures).
 
-验收：`packages/shared/src/__tests__/editingMovMovingMaterialGolden.test.ts`（v2 确定性 golden：8 槽位/分层时间线/诚实缺口/152 BPM；并证明 gate 有牙——理想渲染过线、修复前的静态渲染不过 motion 线）+ `editingMovBeatCutGolden.test.ts` + `scripts/evaluate-render-quality.mjs --gates v2`（27/27 gate）。v2 测试 oracle 在 `test_fixtures/expected_editing_mov_case_v2/`。
+Acceptance: `packages/shared/src/__tests__/editingMovMovingMaterialGolden.test.ts` (v2 deterministic golden: eight slots/layered timeline/honest gaps/152 BPM; also proves the gate has teeth—the ideal render passes, while the pre-fix static render fails the motion threshold) + `editingMovBeatCutGolden.test.ts` + `scripts/evaluate-render-quality.mjs --gates v2` (27/27 gates). The v2 test oracle is in `test_fixtures/expected_editing_mov_case_v2/`.
 
-## Motion Graph 结构迁移演示
+## Motion Graph Structure Transfer Demo
 
-这是当前最强的 SDE/MLE harness 路径，专门证明系统不是只展示静态 JSON 或通用 B2B 模板。
+This is currently the strongest SDE/MLE harness path and specifically demonstrates that the system does more than display static JSON or generic B2B templates.
 
 ```bash
-# 无目标素材：输出 family-specific 程序化卡片（干净中文族名 + 真实文案，无 PROXY/PLACEHOLDER/占位 debug 文字）
+# No target materials: output family-specific programmatic cards (clean Chinese family names + actual copy, with no PROXY/PLACEHOLDER/debug text)
 node scripts/run-motion-graph-case.mjs
 
-# 完整目标素材 fixture：卡片图、logo、copy 替换代理槽位
+# Complete target-material fixture: card images, logo, and copy replace proxy slots
 node scripts/run-motion-graph-case.mjs --with-target-assets
 
-# 部分素材压力：只有 2 张卡片 + copy，无 logo
+# Partial-material stress test: only two cards + copy, with no logo
 node scripts/run-motion-graph-case.mjs --with-partial-target-assets
 
-# malformed 素材压力：外部路径、零字节、错误角色等必须被阻断
+# Malformed-material stress test: external paths, zero-byte files, incorrect roles, and similar cases must be blocked
 node scripts/run-motion-graph-case.mjs --with-malformed-target-assets
 
-# 本地 manifest 输入：脚本模式支持 path manifest
+# Local manifest input: script mode supports a path manifest
 node scripts/run-motion-graph-case.mjs --target-assets-manifest docs/fixtures/motion_graph_target_assets/manifest.json
 ```
 
-主要输出：
+Primary outputs:
 
 ```text
 docs/artifacts/motion_graph_case/visual-evidence.json
@@ -302,7 +304,7 @@ docs/artifacts/motion_graph_case/partial_assets_contact_sheet.png
 docs/artifacts/motion_graph_case/evaluation.motion_graph.json
 ```
 
-目标素材 fixture：
+Target-material fixture:
 
 ```text
 docs/fixtures/motion_graph_target_assets/
@@ -317,29 +319,29 @@ docs/fixtures/motion_graph_target_assets/
   manifest.malformed.json
 ```
 
-当前主流程 slot mapping：
+Current primary-flow slot mapping:
 
-| 诱导槽位 | 满足方式 |
+| Induced slot | How it is satisfied |
 |---|---|
-| `media_cards` | 目标 image_set，至少 4 张卡片 |
-| `kinetic_typography` | 目标品牌名 / copy |
-| `ui_showcase` | 目标 feature copy list |
-| `geometric_mg` | 程序化 neon geometry，不需要外部素材 |
-| `brand_cta` | 目标 logo + CTA；缺 logo 时走 placeholder/proxy |
+| `media_cards` | Target image_set with at least four cards |
+| `kinetic_typography` | Target brand name / copy |
+| `ui_showcase` | Target feature-copy list |
+| `geometric_mg` | Programmatic neon geometry; no external materials required |
+| `brand_cta` | Target logo + CTA; uses a placeholder/proxy if the logo is missing |
 
-Corpus fixture：`test_videos/corpus/009_motion_graph_card_stack/fixture.json`。
+Corpus fixture: `test_videos/corpus/009_motion_graph_card_stack/fixture.json`.
 
 ## Managed Material Intake API
 
-浏览器/API 模式不要求用户把本地路径暴露给 public artifacts。流程是：
+In browser/API mode, users do not need to expose local paths in public artifacts. The workflow is:
 
 ```text
 POST /api/projects/:projectId/assets
 → POST /api/projects/:projectId/target-material-manifests
-→ 返回 normalized targetAssets / assetEvidence / blockedAssets
+→ returns normalized targetAssets / assetEvidence / blockedAssets
 ```
 
-API manifest 使用 `assetId`，不使用任意本地路径：
+The API manifest uses `assetId`, not arbitrary local paths:
 
 ```json
 {
@@ -354,68 +356,68 @@ API manifest 使用 `assetId`，不使用任意本地路径：
 }
 ```
 
-响应中的素材引用使用安全 ID，例如 `asset://managed/<assetId>`；真实服务器路径只在 renderer 内部解析，不进入 public JSON/HTML。
+Material references in the response use safe IDs such as `asset://managed/<assetId>`; actual server paths are resolved only inside the renderer and do not enter public JSON/HTML.
 
-## 可选 AIGC 素材补全
+## Optional AIGC Material Completion
 
-AIGC Material Fill 是可选增强路径。V5 UI 默认会在缺素材时开启缺口补全，但真实外部 provider 仍受 `.env`、API 选项和安全开关控制；没有 key 或未允许外呼时会走程序化/确定性兜底。它用于“用户没有足够素材”时，把缺口变成结构化生成 brief，再生成候选素材、做质量检查、注册为 `aigc_generated_material`，最后进入同一个 slot matcher / fill plan / renderer。
+AIGC Material Fill is an optional enhancement path. The V5 UI enables gap filling by default when materials are missing, but actual external providers are still controlled by `.env`, API options, and safety switches. Without a key or permission for external calls, the system uses programmatic/deterministic fallbacks. When a user does not have enough materials, this feature turns the gaps into structured generation briefs, generates candidate materials, performs quality checks, registers them as `aigc_generated_material`, and finally sends them through the same slot matcher / fill plan / renderer.
 
-浏览器入口：
+Browser entry point:
 
-- V5 Web 工作台的 `2 · Generate` 提供 **AIGC 补缺口并生成**能力。
-- 面板里有“启用 AIGC gap fill”开关。
-- 外部 provider 受独立安全开关控制；未允许外呼或缺少 key 时 live API 不调用外部图片 provider，而是回退到程序化卡片/本地确定性素材。
-- API 请求会设置 AIGC gap-fill 选项；外部 provider 还需要 `.env` 中的 provider/key 和显式 allow 开关。
-- 结果面板会展示 brief、candidate、quality/VLM 状态、external calls、sample frames sent 等字段。
+- The V5 web workbench’s `2 · Generate` section provides the **Fill Gaps with AIGC and Generate** capability.
+- The panel includes an “Enable AIGC gap fill” toggle.
+- External providers are controlled by a separate safety toggle. When external calls are not permitted or keys are missing, the live API does not call external image providers and instead falls back to programmatic cards/local deterministic materials.
+- The API request sets AIGC gap-fill options; external providers additionally require provider/key configuration in `.env` and an explicit allow flag.
+- The result panel displays fields such as the brief, candidate, quality/VLM status, external calls, and sample frames sent.
 
-允许外部 provider 后，live API 按顺序尝试：`google_gemini_image`（首选，默认 `GEMINI_IMAGE_MODEL=gemini-3.1-flash-image`）→ `volcengine_seedream`（可选 backup，需 `AIGC_IMAGE_BACKUP_PROVIDER`）→ `deterministic_local_image_fill`（本地确定性兜底）。live 图片链路不会中断：所有外部 provider 失败时退回本地程序化 PNG 并记录 `providerFallbackReason` 警告。`deterministic_local_image_fill`（旧名 `mock_provider`，现仅作弃用别名）也用于 CI/脚本的确定性产物：
+After external providers are allowed, the live API tries them in this order: `google_gemini_image` (preferred; default `GEMINI_IMAGE_MODEL=gemini-3.1-flash-image`) → `volcengine_seedream` (optional backup; requires `AIGC_IMAGE_BACKUP_PROVIDER`) → `deterministic_local_image_fill` (local deterministic fallback). The live image pipeline does not stop: if all external providers fail, it falls back to a local programmatic PNG and records a `providerFallbackReason` warning. `deterministic_local_image_fill` (formerly `mock_provider`, which now remains only as a deprecated alias) is also used for deterministic CI/script outputs:
 
 ```bash
-# 确定性本地 provider deterministic_local_image_fill（旧名 mock_provider，现仅作弃用别名；仅脚本/CI，不外呼）
+# Deterministic local provider deterministic_local_image_fill (formerly mock_provider, now only a deprecated alias; scripts/CI only, no external calls)
 node scripts/run-motion-graph-case.mjs --with-aigc-materials
 
-# .env 指定 provider，显式允许外部调用
+# Select the provider in .env and explicitly permit external calls
 node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
 
-# 端到端实跑：editing/motion 样例 → 真实 Gemini AIGC 图片 + 字幕 → 渲染 → 落到 docs/artifacts/full_pipeline_aigc_*/
-node scripts/run-full-pipeline-aigc-demo.mjs --sample test_videos/motion_graph_1.mov --theme "AI 短视频结构迁移引擎"
+# End-to-end real run: editing/motion example → real Gemini AIGC images + subtitles → render → write to docs/artifacts/full_pipeline_aigc_*/
+node scripts/run-full-pipeline-aigc-demo.mjs --sample test_videos/motion_graph_1.mov --theme "AI short-video structure transfer engine"
 ```
 
-> 真实生成（Gemini chunk + AIGC + 渲染）可能超过客户端 HTTP 超时。长任务用异步：`POST /api/generations?async=true` 立即返回 `202 {jobId}`，再轮询 `GET /api/jobs/:jobId` 拿 `outputRefs.generationId`，最后 `GET /api/generations/:id`。上面的脚本已内置该轮询。
+> Real generation (Gemini chunks + AIGC + rendering) may exceed the client’s HTTP timeout. Use asynchronous mode for long-running jobs: `POST /api/generations?async=true` immediately returns `202 {jobId}`; then poll `GET /api/jobs/:jobId` for `outputRefs.generationId`; finally call `GET /api/generations/:id`. The script above already includes this polling logic.
 
-Provider 配置示例，`.env` 不要提交：
+Provider configuration example; do not commit `.env`:
 
 ```bash
 AIGC_MATERIAL_FILL_ENABLED=false
 
-# 首选：Google Gemini Image / Nano Banana（AI Studio 可达）
+# Preferred: Google Gemini Image / Nano Banana (accessible through AI Studio)
 AIGC_IMAGE_PROVIDER=google_gemini_image
 GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
 GEMINI_API_KEY=<your_gemini_key>
 
-# backup：Volcengine Seedream
+# Backup: Volcengine Seedream
 AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream
 SEEDREAM_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 SEEDREAM_ARK_API_KEY=<your_seedream_key>
-SEEDREAM_ARK_MODEL=<your_seedream_model_id>   # 必填，无内置默认；未设置 SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL 时 Seedream 配置直接抛错
+SEEDREAM_ARK_MODEL=<your_seedream_model_id>   # required; no built-in default. If SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL is unset, Seedream configuration throws immediately
 SEEDREAM_IMAGE_ENDPOINT=/images/generations
 SEEDREAM_RESPONSE_FORMAT=url
 SEEDREAM_IMAGE_SIZE=2K
 SEEDREAM_STREAM=false
 SEEDREAM_WATERMARK=false
 
-# video material（主）：Volcengine Seedance 2.0 Fast（Ark task API，纯文生视频）
+# Video material (primary): Volcengine Seedance 2.0 Fast (Ark task API, pure text-to-video)
 AIGC_VIDEO_PROVIDER=seedance_2_0
 AIGC_VIDEO_MODEL=doubao-seedance-2-0-fast-260128
-# 可复用同一个 Ark bearer key；若已设置 SEEDREAM_ARK_API_KEY，可不单独设置这一项
+# The same Ark bearer key can be reused; if SEEDREAM_ARK_API_KEY is already set, this does not need to be configured separately
 SEEDANCE_ARK_API_KEY=<your_seedance_or_seedream_ark_key>
 SEEDANCE_TASK_ENDPOINT=/contents/generations/tasks
 SEEDANCE_GENERATE_AUDIO=true
 SEEDANCE_WATERMARK=false
 
-# video material（备份）：Alibaba DashScope happyhorse-1.0-r2v（reference-to-video）
-# Seedance 失败（AccountOverdue/403/审核 400）时自动顶上；用 Gemini 静图作 base64 reference_image。
-# 地域必须一致：US key → dashscope-us 域名。
+# Video material (backup): Alibaba DashScope happyhorse-1.0-r2v (reference-to-video)
+# Automatically takes over if Seedance fails (AccountOverdue/403/moderation 400); uses a Gemini still image as a base64 reference_image.
+# Region must match: US key → dashscope-us domain.
 AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v
 DASHSCOPE_API_KEY=<your_dashscope_key>
 DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1
@@ -423,7 +425,7 @@ HAPPYHORSE_MODEL=happyhorse-1.0-r2v
 HAPPYHORSE_RESOLUTION=720P
 ```
 
-Gemini VLM 既驱动视频理解，也作为生成素材质量 gate（默认 `gemini-3.5-flash`；`gemini-2.5-pro`/`gemini-2.5-flash` 为可选备选，经 `VLM_MODEL` 切换）：
+Gemini VLM drives both video understanding and the generated-material quality gate (default: `gemini-3.5-flash`; `gemini-2.5-pro`/`gemini-2.5-flash` are optional alternatives selected through `VLM_MODEL`):
 
 ```bash
 VLM_PROVIDER=gemini
@@ -432,7 +434,7 @@ GEMINI_VLM_FALLBACK_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=<your_gemini_key>
 ```
 
-AIGC 输出：
+AIGC outputs:
 
 ```text
 docs/artifacts/motion_graph_case/aigc-material-briefs.json
@@ -447,52 +449,52 @@ docs/artifacts/motion_graph_case/render_aigc_materials.mp4
 docs/artifacts/motion_graph_case/aigc_materials_contact_sheet.png
 ```
 
-AIGC 安全策略：
+AIGC safety policy:
 
-- 默认不生成、不外呼。
-- 外部 provider 必须显式勾选 UI 开关，或在脚本模式下传 `--allow-external-aigc`。
-- 允许后 live 链路按 `google_gemini_image → volcengine_seedream → deterministic_local_image_fill` 顺序调用，所有外部 provider 失败时退回本地确定性程序化 PNG（不中断渲染，记录 `providerFallbackReason`）。
-- Seedance 视频素材生成走真实 Ark task API；失败时记录错误警告但不中断渲染——不产出云端视频，base 生成的程序化 Remotion/FFmpeg 动态代理仍作为本地素材保留（server.ts:1855-1860）。
-- 样例帧不会发给外部 provider（`sampleFramesSentExternally=false`）。
-- 样例视频/音频不会作为 Seedance `reference_video`/`reference_audio` 上传；当前只发送目标素材文本 prompt。
-- Seedream 图片请求默认 `watermark=false`。
-- 不伪造真实品牌 logo；`brand_cta` 缺 logo 时生成程序化卡片/copy 或要求用户上传。
-- 生成素材必须带 provenance，标记为 `aigc_generated_material`，不能冒充用户上传素材。
+- Generation and external calls are disabled by default.
+- External providers must be explicitly enabled with the UI toggle or, in script mode, by passing `--allow-external-aigc`.
+- Once allowed, the live pipeline calls `google_gemini_image → volcengine_seedream → deterministic_local_image_fill` in order. If all external providers fail, it falls back to a local deterministic programmatic PNG without interrupting rendering and records `providerFallbackReason`.
+- Seedance video-material generation uses the real Ark task API. On failure, an error warning is recorded without interrupting rendering—no cloud video is produced, while the programmatic Remotion/FFmpeg dynamic proxy produced by the base generation remains available as a local material (`server.ts:1855-1860`).
+- Example frames are not sent to external providers (`sampleFramesSentExternally=false`).
+- Example video/audio is not uploaded as Seedance `reference_video`/`reference_audio`; currently, only the target-material text prompt is sent.
+- Seedream image requests default to `watermark=false`.
+- Real brand logos are not fabricated; if `brand_cta` lacks a logo, the system generates a programmatic card/copy or asks the user to upload one.
+- Generated materials must include provenance, be labeled `aigc_generated_material`, and must not be presented as user-uploaded materials.
 
-## Provider 配置摘要
+## Provider Configuration Summary
 
-| 能力 | 默认 | 真实实现 | 开关 |
+| Capability | Default | Actual implementation | Switch |
 |---|---|---|---|
-| 视频分析 | FFmpeg（mock 已删除） | FFmpeg / ffprobe / keyframes（失败直接报错） | `VIDEO_TOOL=ffmpeg` |
-| 证据分析器 | 自动（有 conda 时） | PySceneDetect 切点 + librosa 鼓点 + 关键帧/视觉族（`scripts/analyze-evidence-timeline.py`） | 随分析自动运行，失败非致命 |
-| LLM（文本增强/改写/评分） | `gemini`（默认 `gemini-3.5-flash`；alt 2.5-pro/2.5-flash） | Gemini（首选） / Ark Doubao（backup） / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`；`AI_GEMINI_MODEL` 选模型 |
-| VLM | disabled | Gemini（默认 `VLM_MODEL=gemini-3.5-flash`；alt `gemini-2.5-pro`/`gemini-2.5-flash`） | `VLM_PROVIDER=gemini` |
-| 创意特效 codegen | disabled | Gemini 生成 Remotion 特效组件（默认 `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`；zod schema + 静态校验 + named-import 存在性检查），失败回 local_fallback | `CREATIVE_EFFECT_GEMINI=1` + `ALLOW_CLOUD_PROVIDERS=1` |
-| ASR | `faster_whisper`（本地） | faster-whisper（本地，可选）→ `no_asr_with_warning`。音频节奏/BPM 由 FFmpeg/librosa 证据链路负责，ASR 不再依赖 ElevenLabs。 | `ASR_PROVIDER=faster_whisper\|off` |
+| Video analysis | FFmpeg (mock removed) | FFmpeg / ffprobe / keyframes (fails immediately on error) | `VIDEO_TOOL=ffmpeg` |
+| Evidence analyzer | Automatic (when conda is available) | PySceneDetect cuts + librosa beats + keyframes/visual families (`scripts/analyze-evidence-timeline.py`) | Runs automatically with analysis; failures are non-fatal |
+| LLM (text enhancement/rewriting/scoring) | `gemini` (default `gemini-3.5-flash`; alternatives: 2.5-pro/2.5-flash) | Gemini (preferred) / Ark Doubao (backup) / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`; choose a model with `AI_GEMINI_MODEL` |
+| VLM | disabled | Gemini (default `VLM_MODEL=gemini-3.5-flash`; alternatives: `gemini-2.5-pro`/`gemini-2.5-flash`) | `VLM_PROVIDER=gemini` |
+| Creative-effects code generation | disabled | Gemini generates Remotion effects components (default `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`; Zod schema + static validation + named-import existence checks); falls back to local_fallback on failure | `CREATIVE_EFFECT_GEMINI=1` + `ALLOW_CLOUD_PROVIDERS=1` |
+| ASR | `faster_whisper` (local) | faster-whisper (local, optional) → `no_asr_with_warning`. Audio rhythm/BPM is handled by the FFmpeg/librosa evidence pipeline; ASR no longer depends on ElevenLabs. | `ASR_PROVIDER=faster_whisper\|off` |
 | OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
-| AIGC image material | disabled | Google Gemini Image 默认 `gemini-3.1-flash-image`（Nano Banana 2；alt Nano Banana Pro `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`，首选）→ Volcengine Seedream（可选 backup，模型由 `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 指定，无默认）→ `deterministic_local_image_fill`（本地确定性兜底，不中断） | `GEMINI_IMAGE_MODEL` 选模型；`AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
-| AIGC video material | disabled | 主 Volcengine Seedance 2.0 Fast（Ark，纯 t2v）→ 备份 Alibaba DashScope happyhorse-1.0-r2v（参考生视频，Gemini 静图作 base64 reference_image，Seedance 欠费/403 时自动顶上）→ AIGC 静图兜底 | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`；`AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`（US 域名） |
-| 音频生成 | Google 优先（opt-in，永不致命） | Voiceover：Gemini TTS（默认 `gemini-3.1-flash-tts-preview`）→ 字幕/无旁白；Music：Lyria（默认 `lyria-3-clip-preview`）→ FFmpeg 程序化 BGM；SFX：FFmpeg 程序化 hit/riser/whoosh。最终经 FFmpeg 分层混音到 BGM 床上（bed / voiceover + adelay / procedural SFX，amix + highpass + alimiter）。 | `GEMINI_API_KEY` + `GOOGLE_AUDIO_ENABLE_CLOUD`/`ALLOW_CLOUD_PROVIDERS` + `GOOGLE_AUDIO_ENABLE_MUSIC\|TTS` |
-| Renderer | FFmpeg（mock 已删除） | FFmpeg / Remotion / HyperFrames stub（程序化卡片，无 debug 文字） | request `rendererTarget` |
+| AIGC image material | disabled | Google Gemini Image, default `gemini-3.1-flash-image` (Nano Banana 2; alternatives: Nano Banana Pro `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`; preferred) → Volcengine Seedream (optional backup; model specified by `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL`, with no default) → `deterministic_local_image_fill` (local deterministic fallback that does not interrupt the pipeline) | Select a model with `GEMINI_IMAGE_MODEL`; use `AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
+| AIGC video material | disabled | Primary: Volcengine Seedance 2.0 Fast (Ark, pure t2v) → backup: Alibaba DashScope happyhorse-1.0-r2v (reference-to-video, using a Gemini still as base64 `reference_image`; automatically takes over when Seedance has insufficient funds or returns 403) → AIGC still-image fallback | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`; `AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL` (US domain) |
+| Audio generation | Google preferred (opt-in, never fatal) | Voiceover: Gemini TTS (default `gemini-3.1-flash-tts-preview`) → subtitles/no narration; Music: Lyria (default `lyria-3-clip-preview`) → FFmpeg programmatic BGM; SFX: FFmpeg programmatic hit/riser/whoosh. Finally, FFmpeg performs layered mixing over the BGM bed (bed / voiceover + adelay / programmatic SFX, amix + highpass + alimiter). | `GEMINI_API_KEY` + `GOOGLE_AUDIO_ENABLE_CLOUD`/`ALLOW_CLOUD_PROVIDERS` + `GOOGLE_AUDIO_ENABLE_MUSIC\|TTS` |
+| Renderer | FFmpeg (mock removed) | FFmpeg / Remotion / HyperFrames stub (programmatic cards with no debug text) | Request `rendererTarget` |
 | Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
 
-> Google 音频栈（Gemini TTS voiceover + Lyria music）已接入 `apps/api/src/adapters/googleAudio.ts`，server 渲染前先注入 Google 音频；失败后直接走本地 FFmpeg/librosa/procedural 音频。ElevenLabs 不再是必要 provider，也不再作为 ASR、Music、TTS、SFX 的默认/备选路径。Forced Alignment / Audio Isolation / Dubbing / Lip Sync 不属于当前 rubric 必需能力，路由为 skip/local report。
+> The Google audio stack (Gemini TTS voiceover + Lyria music) is integrated through `apps/api/src/adapters/googleAudio.ts`. Before rendering, the server injects Google audio; on failure, it immediately falls back to local FFmpeg/librosa/programmatic audio. ElevenLabs is no longer a required provider and is no longer a default/backup path for ASR, Music, TTS, or SFX. Forced Alignment / Audio Isolation / Dubbing / Lip Sync are not required by the current rubric; their routes return skip/local reports.
 
-## 仍需人工配置的内容
+## Items That Still Require Manual Configuration
 
-- Ark Doubao / OpenAI-compatible LLM key：用于结构抽取、自然语言修改、LLM scorecard。
-- Gemini key：用于真实 VLM 视频理解和 AIGC 素材质量 gate。
-- Seedream key + model id：用于可选外部图片素材生成；`SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` 无内置默认，未设置时配置直接抛错。
-- Seedance/Ark key：用于可选外部视频素材生成；可复用 `SEEDREAM_ARK_API_KEY`。
-- Google audio：Gemini TTS / Lyria 复用 `GEMINI_API_KEY`，需要 `GOOGLE_AUDIO_ENABLE_CLOUD=1` 或 `ALLOW_CLOUD_PROVIDERS=1`，当前账号仍需要可用 billing/credits。
-- faster-whisper / easyocr：按需安装到 conda env `viral`（faster-whisper 是本地 ASR；音频节奏/BPM 主要由 FFmpeg/librosa 证据链路提供）。
-- Remotion Chromium：第一次真实 Remotion render 会下载浏览器缓存。
+- Ark Doubao / OpenAI-compatible LLM key: used for structure extraction, natural-language revisions, and LLM scorecards.
+- Gemini key: used for real VLM video understanding and the AIGC material quality gate.
+- Seedream key + model ID: used for optional external image-material generation. `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` has no built-in default; configuration throws immediately if neither is set.
+- Seedance/Ark key: used for optional external video-material generation; `SEEDREAM_ARK_API_KEY` can be reused.
+- Google audio: Gemini TTS / Lyria reuse `GEMINI_API_KEY` and require `GOOGLE_AUDIO_ENABLE_CLOUD=1` or `ALLOW_CLOUD_PROVIDERS=1`; the current account must also have usable billing/credits.
+- faster-whisper / easyocr: install as needed in the `viral` conda environment (faster-whisper is local ASR; audio rhythm/BPM is mainly supplied by the FFmpeg/librosa evidence pipeline).
+- Remotion Chromium: the browser cache is downloaded during the first real Remotion render.
 
-## 运行边界与注意事项
+## Operational Boundaries and Notes
 
-- 外部 AIGC 图片、Seedance 短视频、happyhorse 参考转视频、Google Lyria/TTS 都已接入；真实云效果需要 `.env` 中显式开关和可用 key。
-- 默认安全策略不会把样例视频/音频作为生成 provider 的参考素材；用户目标素材的像素级 VLM 分析也需要 `ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1`。
-- 文本模型和多模态模型是分离请求：`createTextModelFn` 有 Ark/Doubao key 时优先 Doubao，否则走 Gemini；样例视频/帧理解和 Gen1 视觉胶囊生成走 Gemini。
-- 真实 provider 失败时不会伪造云结果；生成链路会记录 warning，并回退到程序化视觉/音频或确定性 fixture。
-- Remotion 真渲染依赖本地 Chromium、FFmpeg 和 `@remotion/three` / `@react-three/fiber` 版本匹配；长视频和 AIGC 视频生成耗时较长，建议用 UI 进度条或 `/api/v5/jobs/:jobId/progress` 观察状态。
-- `scripts/record-v5-demo.mjs` 可用 Playwright 录制高分辨率 UI 演示，支持只演示按钮、真实 Learn/Generate/Revise、下载导出 JSON 等开关。
+- External AIGC images, Seedance short videos, happyhorse reference-to-video, and Google Lyria/TTS are all integrated; real cloud output requires explicit `.env` switches and valid keys.
+- The default safety policy does not use example video/audio as reference material for generation providers. Pixel-level VLM analysis of user target materials additionally requires `ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1`.
+- Text-model and multimodal-model calls are separated: `createTextModelFn` prefers Doubao when an Ark/Doubao key is available and otherwise uses Gemini; example video/frame understanding and Gen1 visual-capsule generation use Gemini.
+- If a real provider fails, the system does not fabricate a cloud result; the generation pipeline records a warning and falls back to programmatic visuals/audio or a deterministic fixture.
+- Real Remotion rendering depends on local Chromium, FFmpeg, and compatible versions of `@remotion/three` / `@react-three/fiber`. Long videos and AIGC video generation take considerable time; use the UI progress bar or `/api/v5/jobs/:jobId/progress` to monitor status.
+- `scripts/record-v5-demo.mjs` can record a high-resolution UI demo with Playwright and supports toggles for button-only demonstrations, real Learn/Generate/Revise operations, downloading exported JSON, and more.
