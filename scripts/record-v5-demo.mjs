@@ -264,7 +264,7 @@ async function exerciseUploadButtons(page) {
     await clickAndShow(upload.getByRole("button", { name: "Upload" }).nth(1), "Upload：上传目标素材", 3000, VIEW_PAUSE_MS * 1.4);
     await waitForUiIdle(page, "上传目标素材");
   } else {
-    skip("Upload：未提供 DEMO_TARGET_FILES，目标素材上传按钮可由 scripts/tmp-mix-ui-generate.mjs 覆盖");
+    skip("Upload：未提供 DEMO_TARGET_FILES；如需录制目标素材上传，请通过 DEMO_TARGET_FILES 传入本地素材路径。");
   }
 }
 
@@ -322,23 +322,33 @@ async function openIfCollapsed(page, text, label = text) {
   }
 }
 
-async function playFirstVisibleVideo(page, label, ms = 2500) {
+async function playFirstVisibleVideo(page, label, ms = 3200) {
   try {
-    const played = await page.evaluate(async (durationMs) => {
-      const videos = Array.from(document.querySelectorAll("video"));
-      const video = videos.find((v) => {
-        const r = v.getBoundingClientRect();
-        return r.width > 80 && r.height > 80 && r.bottom > 0 && r.top < window.innerHeight;
-      });
-      if (!video) return false;
-      video.muted = true;
-      video.currentTime = 0;
-      await video.play().catch(() => undefined);
-      await new Promise((resolve) => setTimeout(resolve, durationMs));
-      video.pause();
-      return true;
+    // Pick the LARGEST video on the page, scroll it to centre, force-load it (so headless Chromium actually
+    // has frames to render), then play muted and confirm currentTime advanced. Returns whether it really played.
+    const res = await page.evaluate(async (durationMs) => {
+      const vids = Array.from(document.querySelectorAll("video"));
+      const scored = vids
+        .map((v) => { const r = v.getBoundingClientRect(); const vis = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0)); return { v, area: r.width * r.height, vis, w: r.width, h: r.height }; })
+        .filter((x) => x.w > 80 && x.h > 80)
+        .sort((a, b) => (b.vis - a.vis) || (b.area - a.area));
+      const pick = scored[0];
+      if (!pick) return { ok: false, reason: "no <video> on page" };
+      const v = pick.v;
+      v.scrollIntoView({ block: "center", inline: "center" });
+      v.muted = true; v.setAttribute("playsinline", "");
+      await new Promise((r) => setTimeout(r, 250));
+      if (v.readyState < 2) { try { v.load(); } catch {} await new Promise((res) => { const to = setTimeout(res, 5000); v.addEventListener("loadeddata", () => { clearTimeout(to); res(); }, { once: true }); }); }
+      try { v.currentTime = 0; } catch {}
+      const t0 = v.currentTime;
+      await v.play().catch(() => {});
+      await new Promise((r) => setTimeout(r, durationMs));
+      const ct = v.currentTime; v.pause();
+      return { ok: true, advanced: ct > t0 + 0.25, ct, rs: v.readyState };
     }, ms);
-    played ? mark(`播放可见视频：${label}`) : skip(`播放可见视频：${label}，未找到视频`);
+    if (res.ok && res.advanced) mark(`播放可见视频：${label}（推进到 ${res.ct.toFixed(1)}s）`);
+    else if (res.ok) skip(`播放可见视频：${label}（命中但未推进，readyState=${res.rs}）`);
+    else skip(`播放可见视频：${label}，${res.reason}`);
   } catch (error) {
     skip(`播放视频 ${label}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
   }
@@ -380,7 +390,7 @@ async function selectFirstLearnSample(page) {
   await wait(400);
   if (RUN_LEARN) {
     await clickAndShow(learn.getByRole("button", { name: /Learn 1 个样本/ }), "Learn：学习 1 个样本", 3000, VIEW_PAUSE_MS * 1.6);
-    await waitForUiIdle(page, "Learn 样本");
+    await waitForUiIdle(page, "Learn 样本", 600000);
   } else {
     skip("未点击“Learn 1 个样本”：设置 RUN_LEARN=1 可录制真实结构学习");
   }
