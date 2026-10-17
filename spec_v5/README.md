@@ -16,6 +16,10 @@ The current implementation is V5.1: the default product path is **same-template 
 while the original Program-KB element mixing path remains available as the advanced `mix_elements`
 mode.
 
+For the current implementation and setup, start with the [repository README](../README.md),
+[English project overview](../docs/project-overview.md), and [development guide](../docs/development.md).
+The documents below include design targets as well as implemented behavior.
+
 ```text
 Default V5.1 path:
 sample video
@@ -54,7 +58,7 @@ Learn music patterns, not raw sample audio.
 - `api.md` — HTTP API endpoints.
 - `renderer-spec.md` — Remotion / FFmpeg render contracts.
 - `ui-demo-spec.md` — demo UI and what to display for rubric.
-- `rubric-alignment.md` — **每项评分 → 已实现功能/端点/代码位置的逐项对照**（答辩 + 说明文档用）。
+- `rubric-alignment.md` — item-by-item mapping from competition criteria to implemented features, endpoints, and code locations.
 - `acceptance-gates.md` — V5 quality/safety gates.
 - `provider-policy.md` — model/provider policy and fallbacks.
 - `model-stack.md` — recommended local/cloud model stack.

@@ -28,6 +28,23 @@ spec_v2/implementation-status.md
 # Ignore local/generated docs, but keep the required submission summary.
 docs/*
 !docs/项目说明.md
+!docs/project-overview.md
+!docs/development.md
+!docs/diagrams/
+docs/diagrams/*
+!docs/diagrams/submission-architecture.mmd
+!docs/diagrams/submission-architecture.svg
+!docs/media/
+docs/media/*
+!docs/media/README.md
+!docs/media/dashboard-walkthrough.jpg
+!docs/media/project-walkthrough.jpg
+!docs/media/generated-example-1.jpg
+!docs/media/generated-example-2.jpg
+!docs/media/generated-example-1.mp4
+!docs/media/generated-example-2.mp4
+!docs/media/dashboard-capture-644.pdf
+!docs/media/dashboard-capture-643.pdf
 storage/
 test_videos/manual/
 marketing_demo/
@@ -63,3 +80,4 @@ scripts/tmp-*.mjs
 SUBMISSION_CHECKLIST.md
 docs/项目说明.md
 .claude/settings.json
+AI全栈挑战赛-爆款结构迁移引擎-项目说明-李沛轩/

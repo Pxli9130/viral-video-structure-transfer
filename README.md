@@ -1,500 +1,546 @@
 # Viral Video Structure Transfer Engine
 
-**Viral Video Structure Transfer Engine: An AI Creation Platform for Deconstructing Examples, Filling Material Gaps, and Reassembling Videos**
+**An AI creation platform for reference analysis, material completion, and video recomposition.**
 
-## Spec v5.1 — Same Template Reconstruction Mode (Latest Default Behavior)
+Upload a reference video and a new topic or new materials. The engine learns the reference's pacing, shots, layout, subtitles, transitions, and audio structure, then transfers that creative structure to new content and renders a playable video.
 
-> Upload a video you like → the system turns it into a **reusable, props-driven Remotion template** (`RemotionTemplateCapsule`) → enter a new topic → **automatically fill in missing visuals, copy, and audio, then render the new content using the same motion-design template**.
->
-> Safety boundary: the following may be reused: “template code / timeline / layout / animation curves / typography behavior / transition sequencing / audio cue positions / props & slot schema.” The following from the example **may not be reused**: “original image pixels / video frames / audio / subtitle text / logos / people / product materials.”
->
-> The defaults are `generationMode=same_template` and `aigcGapFill=auto_on`; the original “multi-video element mixing” workflow remains available as the advanced `mix_elements` mode. See [`spec_v5/same-template-mode.md`](spec_v5/same-template-mode.md) for the specification; **see [`spec_v5/rubric-alignment.md`](spec_v5/rubric-alignment.md) for an item-by-item rubric mapping**; and see `packages/shared/src/contracts-v5/templateCapsule.ts` for the contract.
->
-> **Model responsibilities**: `createTextModelFn` handles all text-generation tasks in one place (context rewriting for a new topic, shot descriptions, natural-language video revisions, text-based code fallback, and Gen1/Gen2 text). When a valid Ark/Doubao configuration is available, Doubao-Seed is preferred; otherwise, the system falls back to Gemini (the current `.env.example` defaults are `AI_PROVIDER=gemini` / `AI_GEMINI_MODEL=gemini-3.5-flash`). **Multimodal reconstruction that “watches video/frames” remains on Gemini**; external providers for images, video, music, and related media all have deterministic or programmatic fallbacks.
->
-> **Gen1 Visual Capsule (primary path)**: one Gemini call **watches the entire video clip** together with deterministic evidence and produces a faithful, props-driven `RemotionTemplateCapsule` (React + Remotion + true 3D using `@remotion/three`). **Model selection is based on duration** (short → `gemini-3-flash-preview`; long/chunked → `gemini-3.1-pro-preview`; threshold: `GEMINI_GEN1_PRO_MIN_SEC=34`). **The returned code is canonical**: `mergeCapsule` preserves the code byte-for-byte, fills in only missing metadata, and merges `timingSignature` (with deterministic fallbacks for durationSec/fps, preventing cases such as “a 31-second video renders only 16 seconds”). Only two gates are enforced: **compilation + real rendering**; all other checks are recorded but do not block. Long videos (>34 seconds) are split at scene cuts into ≤30-second chunks, reconstructed concurrently, and then combined into one multi-file capsule. Gemini also returns an `assetPlan`, with one entry for each missing asset that “cannot be drawn in code,” including its key, mediaKind, and AIGC prompt. **Motion/coverage fidelity self-repair**: if the code violates its own sceneRecipe (for example, scrolling subtitles remain static, a single-axis 3D ribbon tumbles on two axes, or coverage is insufficient), one repair attempt is triggered. **AI-first policy**: an AI capsule that compiles and renders is never discarded in favor of a deterministic version merely because of fidelity imperfections.
->
-> **Generation: change the topic + use AIGC to fill “dynamic materials.”** A single Pro call performs context rewriting for copy and colors while preserving structure and the source’s light/dark character. Footage slots (`mediaKind=video`) receive **real video**: **Seedance 2.0** (Volcengine Ark text-to-video) is primary → **happyhorse r2v** (Alibaba DashScope reference-to-video, using a Gemini still image as `reference_image`; automatically takes over when Seedance has insufficient funds or returns 403) is backup → an AIGC still image is the final fallback. Image slots use Gemini Image. After rendering: a **color guard** detects when a light source background has incorrectly become dark and performs one rewrite/re-render; **solid-color redundant shots at the end are trimmed**. Concurrency and stability: global render semaphore (`RENDER_CONCURRENCY=2` × `RENDER_TABS_PER_JOB=2`) + `RENDER_TIMEOUT_MS=120000` + retry after renderer/probe crashes + global AIGC semaphore (`AIGC_GLOBAL_CONCURRENCY=8` to prevent 429 errors). **Revision endpoint**: `POST /api/v5/generations/:id/revise`.
->
-> Audio defaults to a **Google Lyria music bed** (`lyria-3-clip-preview`; content longer than 30 seconds is segmented and crossfaded; after failed retries, the system falls back to programmatic audio).
->
-> **Additional capabilities (implemented and aligned with the rubric; see rubric-alignment.md)**: material **upload + profile analysis** (upload via `POST /api/projects/:projectId/assets`; V5 reads via `GET /api/v5/assets` / `GET /api/v5/assets/:id/media` + `runTargetAssetAnalysis`) · end-to-end **transfer-process visualization** in one trace (`GET /api/v5/generations/:id/transfer-trace`: source structure → knowledge manifest → slot mapping → gaps/fills → scorecard → finished video) · **review evidence center** (Showcase / Learn Analysis / Structure Protocol / Gap Decisions / Transfer Map / Packaging / Export) · **multi-version generation** (dashboard fan-out from one template into high-click, high-conversion, high-tempo, and premium-feel variants) · **natural-language video revision** (`POST /api/v5/generations/:id/revise-natural-language`: one sentence → `TemplatePatchSet` → re-render) · **two-level knowledge base** (Level 1 template capsules + Level 2 elements across 16 atomic categories; `GET /api/v5/kb/elements?kind&tag&q`, `POST /api/v5/kb/search`, `GET /api/v5/templates`) · **knowledge-manifest seeds** (structural hypotheses, atomic modules, and slots for each example).
->
-> Core APIs (all under `/api/v5`): `GET /showcase` · `GET /assets` · `POST /learn-samples` · `GET /templates[/:id]` · `POST /generations` (defaults to same_template) · `POST /generations/plan` (planning only; no rendering) · `GET /jobs/:jobId/progress` · `POST /generations/:id/revise` · `POST /generations/:id/revise-natural-language` · `GET /generations/:id[/scorecard|/transfer-trace]` · `GET /samples/:id/{evidence,reconstruction,elements}` · `GET/POST /kb/*`. The default web entry point is `/#v5` (V4 remains accessible at `#v4`).
->
-> **Four-video parallel demo** (requires the `viral` conda environment and real keys; output is written to `storage/demo-runs-*/`):
->
-> ```bash
-> export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
-> npm run build && node apps/api/dist/server.js   # or npm run dev
-> VIDEO_CONCURRENCY=4 OUT_DIR=demo-runs python scripts/run-v5-four-aigc.py   # four examples: each runs learn (chunked) + generate (random new topic + AIGC video/still images)
-> ```
->
-> Video provider environment variables: `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY` (primary); `AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1` (backup). **The following dependencies must be installed**: `@remotion/three@4.0.341` + `@react-three/fiber@^9.6.1` + `three@0.176.0` (**fiber must match the React version**: this repository’s web app uses React 19, so fiber must be 9.x; fiber 8 causes a `ReactCurrentBatchConfig` render crash, which makes 3D capsules fall back to deterministic rendering).
+Built by **Peixuan Li** for the **AI Full-Stack Challenge**. The current product workflow is **V5.1: same-template reconstruction**.
 
-## Spec v4.2 Submission Entry
+This README includes the competition project description in English, its architecture diagram, supporting media, and additional implementation/setup guidance. Historical claims are clarified where the current code differs.
 
-The goal of the current submission is: **learn the structure without copying the content**. Example videos are used only as structural evidence in analysis/template/TechniqueAtom/GapReport; final visuals may use only target materials, user-authorized materials, local programmatic materials, or generated materials with provenance.
+## Demo videos
 
-Review entry points:
+### Product walkthroughs
 
-- Chinese showcase: `docs/artifacts/showcase-report.md`, `docs/artifacts/showcase-report.html`
-- Submission pack: `docs/artifacts/submission_pack/index.md`, `docs/artifacts/submission_pack/index.html`
-- Four canonical FFmpeg outputs: `docs/artifacts/learned_samples_max/{marketing,editing,motion_graph_1,motion_graph_2}/final.mp4`
-- Visual QA: each case’s `visual-qa-report.md/json`
-- Remotion host verification: `docs/remotion-host-verification.md`
+| V5 dashboard walkthrough | Project walkthrough |
+| --- | --- |
+| [<img src="docs/media/dashboard-walkthrough.jpg" alt="V5 dashboard with template knowledge and generation controls" width="440">](https://youtu.be/VW6gEjYOQBI) | [<img src="docs/media/project-walkthrough.jpg" alt="Project walkthrough showing reference learning and the template library" width="440">](https://youtu.be/8X0cOFVYbG0) |
+| Upload, learn, inspect templates, and generate new content. **8:16 · 2.5× recording.** | Competition project demonstration. **7:56.** |
+| **[Watch on YouTube](https://youtu.be/VW6gEjYOQBI)** | **[Watch on YouTube](https://youtu.be/8X0cOFVYbG0)** |
 
-Local verification commands:
+### Generated videos
 
-```bash
-CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" npm test
-CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/evaluate-model-routes.mjs --offline --json --strict-policy
-CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/visual-qa-report.mjs --all-cases
-CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-showcase-report.mjs
-CONDA_BASE=/home/pxli/anaconda3 VIRAL_CONDA_ENV=viral PATH="/home/pxli/anaconda3/envs/viral/bin:$PATH" node scripts/export-submission-artifacts.mjs
+| Skincare product campaign | AI bookkeeping app |
+| --- | --- |
+| [<img src="docs/media/generated-example-1.jpg" alt="Generated skincare campaign with animated three-dimensional typography" width="240">](docs/media/generated-example-1.mp4) | [<img src="docs/media/generated-example-2.jpg" alt="Generated AI bookkeeping app campaign with lifestyle footage and animated captions" width="240">](docs/media/generated-example-2.mp4) |
+| [Watch MP4](docs/media/generated-example-1.mp4) · 18 seconds | [Watch MP4](docs/media/generated-example-2.mp4) · 31 seconds |
+
+These are compact 720p viewing copies of the competition outputs, with their full duration and audio. Their on-screen copy is in Chinese. The full walkthrough recordings are hosted on YouTube; their thumbnails are included in the repository.
+
+## Contents
+
+- [1. Project information](#1-project-information)
+- [2. Challenge objectives and project approach](#2-challenge-objectives-and-project-approach)
+- [3. Feature completion overview](#3-feature-completion-overview)
+- [4. AI architecture](#4-ai-architecture)
+- [5. Core data structures and structure protocol](#5-core-data-structures-and-structure-protocol)
+- [6. Tool protocols](#6-tool-protocols)
+- [7. Safety boundaries](#7-safety-boundaries)
+- [8. Running the project](#8-running-the-project)
+- [9. Models and fallbacks](#9-models-and-fallbacks)
+- [10. Outputs and verification](#10-outputs-and-verification)
+- [11. Repository map and documentation](#11-repository-map-and-documentation)
+
+## 1. Project information
+
+| Item | Details |
+| --- | --- |
+| Project name | Viral Video Structure Transfer Engine |
+| Author | Peixuan Li |
+| Competition / challenge | AI Full-Stack Challenge / Engineering Bootcamp: Viral Video Structure Transfer Engine — an AI creation platform from reference analysis and material completion to video recomposition. |
+| Summary | Input a viral short-video reference and a new topic/new materials. The system learns its pacing, shots, layout, subtitles, transitions, and audio structure, then transfers that creative structure to new content to produce a playable video. |
+| GitHub repository | [Pxli9130/viral-video-structure-transfer](https://github.com/Pxli9130/viral-video-structure-transfer) |
+| Screen recordings | [V5 Dashboard Demo, 2.5× speed](https://youtu.be/VW6gEjYOQBI) · [Competition Project Demo](https://youtu.be/8X0cOFVYbG0) |
+| Main output videos | [Skincare campaign](docs/media/generated-example-1.mp4), based on the submission's `final.mp4` · [AI bookkeeping app campaign](docs/media/generated-example-2.mp4), based on `final 1.mp4`. These were generated by learning references supplied with the challenge. |
+| Challenge reference | [Engineering Bootcamp challenge brief](https://bytedance.larkoffice.com/wiki/Rghtwq1VqiH4mkkOwyWc8v5lnhf#share-TH8Sdr8wBovQHmxOLrjcPoPAnec); access may require the competition workspace. |
+| UI screenshots | [Dashboard capture 644 — PDF](docs/media/dashboard-capture-644.pdf) · [Dashboard capture 643 — PDF](docs/media/dashboard-capture-643.pdf). These preserve the original submission captures, including Chinese UI labels. |
+
+Technology stack:
+
+- **Frontend:** React 19, Vite, and TypeScript; the main interface is the V5 Dashboard.
+- **Backend:** Node.js, Express, TypeScript, Multer, and JSON artifact storage. The main application store also supports SQLite.
+- **Video generation:** Remotion and FFmpeg, with local Remotion rendering. The submission describes a Remotion Lambda-compatible composition structure; the documented runtime here uses local rendering rather than requiring a Lambda deployment.
+- **Visual/audio analysis:** Python, OpenCV, PySceneDetect, librosa, OCR, ASR, ffprobe, and FFmpeg.
+- **AI adapters:** Gemini text/vision/code generation/image completion, Doubao text models, Seedance 2.0, happyhorse reference-to-video, Google Lyria, and procedural audio fallback.
+- **Shared protocols:** TypeScript contracts and runtime schemas under `packages/shared/src/contracts-v5/`. The submission uses the term “TypeScript/Zod contracts”; the shared V5 implementation currently uses TypeScript plus JSON Schema/AJV validation, with Zod available in code-generation validation paths.
+
+## 2. Challenge objectives and project approach
+
+The challenge addresses the difficulty of reusing a successful video's underlying creative structure. Manually deconstructing a short video requires understanding its opening hook, shot segmentation, subtitle density, beat points, transitions, product exposure, CTA, and musical mood, then mapping those choices to a new topic and new assets. This is labor-intensive and difficult to reproduce consistently.
+
+The project separates video creation into structure learning and transfer generation, supported by knowledge storage and content-reuse boundaries:
+
+1. **Learning:** Upload a reference video. Extract deterministic evidence, including shots, keyframes, visible text, speech, audio rhythm, motion intensity, and visual composition. Combine that evidence with the reference video for Gen1 reconstruction when configured, or use a deterministic fallback to create a neutral Remotion template capsule.
+2. **Knowledge:** Store reusable structure in two levels. Level 1 contains full `RemotionTemplateCapsule` templates. Level 2 contains atomic knowledge elements such as hooks, rhythm, typography, transitions, CTA patterns, asset recipes, and audio recipes, derived from the reconstruction, its Remotion code/manifest, and optional model-produced elements.
+3. **Generation:** Provide a new topic, selling points, and user materials. Select templates or structural elements, analyze target materials, create a gap report, fill missing images/video/copy/audio, and render with Remotion.
+4. **Safety:** Use references as structural evidence. The intended final-output boundary excludes the reference's raw pixels, audio, subtitles, branding, people, and product materials.
+
+The default V5.1 mode is `same_template`: reconstruct a reference as a parameterized template and bind new topics, materials, copy, and audio to its slots. The advanced `mix_elements` mode combines structural elements from multiple references; revisions use `modify_template` internally. Automatic gap filling defaults to `aigcGapFill.mode=auto_on`.
+
+For example, a motion-poster reference can become a launch video for a new product while retaining its title hierarchy, ribbon animation, reveal sequence, and closing CTA timing. Its visual content and copy are replaced by target content.
+
+### Applications
+
+- Animated marketing posters and e-commerce product-discovery videos.
+- Fast-cut edits, beat-synchronized videos, and event recaps.
+- Motion graphics, step-by-step tutorials, and information explainers.
+- Structural selection and style arbitration across multiple reference videos.
+- Automatic material-gap detection and AI completion when user materials are insufficient.
+
+### Core contributions
+
+- `EvidenceTimelineV5` makes video understanding structured and timestamped, beyond a natural-language summary.
+- `RemotionTemplateCapsule` represents transferable structure and distinguishes reusable creative decisions from content that must be replaced.
+- Material matching, gap detection, AI completion, and rendering form one traceable pipeline.
+- Results retain review evidence such as `transfer-trace`, `gap-report`, `material-analysis`, `timeline-v2`, `mapping-v2`, and `scorecard`.
+- Multiple variants, natural-language changes, transfer visualization, and no-copy checks support review and iteration.
+
+Output fidelity depends on the reference, target-material coverage, selected models, and render validation. A runnable fallback can have lower visual richness than the configured cloud path.
+
+## 3. Feature completion overview
+
+“Implemented” identifies an existing code/API/UI path. Cloud features require usable credentials and relevant options; optional analysis and local review bundles also depend on the environment.
+
+| Feature | Status | Main code / page / API | Description |
+| --- | --- | --- | --- |
+| Reference input and parsing | Implemented | `POST /api/projects/:projectId/assets`, `POST /api/v5/learn-samples`, `runEvidenceV5.ts`, `analyze-evidence-timeline.py` | Upload video, images, audio, and text. Video analysis supports shots, keyframes, OCR/ASR, audio, and motion evidence; text/speech coverage depends on the analysis path and adapters. |
+| Reference structure decomposition | Implemented | `EvidenceTimelineV5`, `NeutralReconstructionProgram`, `RemotionTemplateCapsule`, `runGen1CapsuleGemini.ts` | Decompose timing, shot roles, motion, subtitles, layout, audio, and replaceable slots. Optional Gemini visual codegen produces an AI template; deterministic reconstruction provides a local fallback. |
+| New content and material input | Implemented | V5 Dashboard, `POST /api/projects/:projectId/assets`, `GET /api/v5/assets/:id/media` | Enter topics/selling points, upload target materials, and bind specific materials to template slots. |
+| Structure transfer and generation | Implemented | `runSameTemplateGeneration.ts`, `renderTemplateCapsule.ts`, `POST /api/v5/generations` | Default `same_template` binds new content to the learned structure and renders an MP4 through Remotion. |
+| Material-gap detection | Implemented | `runGapReportV5.ts`, `gap-report.json` | Record per-slot decisions such as `asset_reuse`, `weak_match`, `missing`, `aigc_fill`, and `text_fill`. |
+| Material completion | Implemented | `aigcMaterialProviders.ts`, `googleAudio.ts`, `runSameTemplateGeneration.ts` | Gemini images, Seedance/happyhorse footage, Google TTS/Lyria, and procedural image/audio fallbacks. Cloud completion depends on external-service configuration. |
+| Transfer-process visualization | Implemented | `GET /api/v5/generations/:id/transfer-trace`, dashboard trace panels | Show source evidence, template, target brief, material analysis, slot mappings, gaps, fill actions, edit history, and scores. |
+| Review Evidence Center | Implemented | Dashboard: Showcase / Learn Analysis / Structure Protocol / Gap Decisions / Transfer Map / Packaging / Export | Show transfer/packaging plans and exportable drafts before generation; populate actual trace, timeline, mapping, scorecard, and packaging afterward. |
+| Verifiable results | Implemented | `scorecard.json`, `similarity-report.json`, `runNoCopyScan.ts`, local `test_runs/v2_20260609-031151/` | MP4s, scores, similarity/no-copy reports, timelines, and mapping files. The submission includes a V2 review bundle and proof sheet; these generated artifacts are local. |
+| Visual packaging | Implemented | `packaging-plan.json`, local `verify_submission/02_outputs/cover.png`, `storyboard.md` | Cover frames, title bars, version packaging, and storyboard artifacts in the relevant export/demo paths. |
+| Multiple variants | Implemented | Dashboard variants, `variantStrategy`, review case `TC-V2-07` | Includes `high_click`, `high_conversion`, and `high_quality` strategies. |
+| Real-material understanding | Implemented | `runTargetAssetAnalysis.ts`, `material-analysis.json` | Deterministic profiles with optional Gemini VLM enrichment; external analysis needs its switch and key. |
+| Manual adjustment | Implemented | `POST /api/v5/generations/:id/revise` | Structured patches change theme, copy, palette, and creative parameters. |
+| Natural-language editing | Implemented | `POST /api/v5/generations/:id/revise-natural-language`, review case `TC-V2-08` | Convert instructions into `TemplatePatchSet`, such as frontloading feature information or reducing subtitle density; record edit trace. |
+| Multi-reference structure selection | Implemented | `referenceCapsuleIds`, `structureArbitration`, review cases `TC-V2-01/02` | Multiple template candidates, arbitration records, and cross-reference transfer. |
+| Unified tool-registry approach | Implemented through adapters/modules | Backend adapters, pipeline modules, shared contracts | The submission's “ToolRegistry” refers to an engineering integration pattern: typed tools, runtime validation, static scanning, and render gates, rather than unrestricted model-driven execution. |
+
+## 4. AI architecture
+
+The architecture has a frontend workbench, API orchestration layer, AI/tool adapters, shared protocol layer, and artifact storage layer.
+
+### Architecture diagram
+
+The following is the English Mermaid reconstruction of the architecture diagram in the competition submission, preserving its upload/learning branch, generation branch, and feedback loop.
+
+```mermaid
+flowchart TD
+    user["User"] --> dashboard["V5 Dashboard"]
+    dashboard --> api["Express API /api/v5"]
+    dashboard --> brief["New topic / new assets / creative parameters"]
+
+    api --> upload["Asset upload and management"]
+    upload --> uploads[("storage/uploads")]
+    api --> learn["Learning pipeline: learn-samples"]
+    learn --> evidence["Deterministic evidence extraction<br/>shots / keyframes / OCR / ASR / audio / motion"]
+    evidence --> gen1["Gen1 template generation<br/>Gemini Vision or deterministic fallback"]
+    gen1 --> capsule["RemotionTemplateCapsule"]
+    capsule --> kb[("Template KB + Element KB")]
+
+    brief --> plan["Generation planning: generations/plan"]
+    plan --> analysis["Target-asset analysis"]
+    plan --> gaps["GapReportV5"]
+    gaps --> fill["AI-generated / procedural gap filling"]
+    fill --> instance["TemplateInstance"]
+    instance --> render["Remotion + FFmpeg rendering"]
+    render --> output["final.mp4 + cover +<br/>timeline + scorecard"]
+    output --> trace["Transfer Trace"]
+    trace --> dashboard
 ```
 
-The default submission path does not call Seedance / Seedream / ElevenLabs / Gemini / OpenAI / Qwen / Deepgram / Runway / Veo / Kling, upload example media, or download large model weights. Optional providers are used only after explicit opt-in and key configuration.
+[Editable Mermaid source](docs/diagrams/submission-architecture.mmd) · [Rendered SVG](docs/diagrams/submission-architecture.svg)
 
-This project is not a general-purpose video generator that “takes one sentence and directly generates a video.” Its core objective is:
+The diagram is a conceptual overview. Actual uploads use `/api/projects/:projectId/assets`; the V5 routes are mounted under `/api/v5`. The `/generations/plan` endpoint skips final rendering; `/generations` runs the rendering path. Target analysis and stored knowledge feed the generation orchestration even where the original diagram shows separate branches.
 
-```text
-Example/reference video
-→ deterministic evidence extraction
-→ open-world slot induction
-→ target-material matching
-→ material-gap detection
-→ fill plan / replaceable slots
-→ rendering-capability selection
-→ proxy or target-material MP4
-→ preview frames / contact sheet
-→ evaluators / corpus regression / product demo
-```
+### AI invocation
 
-Default safety boundaries:
+- **Text models:** `createTextModelFn` prefers a valid Ark/Doubao configuration, otherwise Gemini. It handles topic/context rewriting, copy generation, and natural-language instructions converted to patches.
+- **Vision models:** `createGeminiVisionCodegenFn` understands the reference clip and generates its capsule. `runTargetAssetAnalysis.ts` can optionally use a VLM for user materials.
+- **Image/video generation:** `aigcMaterialProviders.ts` wraps Gemini Image, Seedance 2.0, happyhorse reference-to-video, Seedream, and local deterministic filling.
+- **Audio:** `googleAudio.ts` supports Google TTS/Lyria; rendering also supports procedural audio fallback.
+- **Traditional analysis:** ffprobe/FFmpeg, OpenCV, PySceneDetect, librosa, OCR, and ASR provide deterministic evidence and optional text/speech analysis.
 
-- Example videos provide structural evidence only; by default, example frames, audio, text, and branding are not copied.
-- Only target materials, user-uploaded materials, authorized reusable materials, programmatic rendering, and clearly labeled AIGC-generated materials may appear in the output.
-- Mock/no-path materials cannot satisfy visual slots.
-- When materials are missing, the system must produce a gap report, fill plan, replacement slots, or a proxy render.
-- AIGC material completion is optional and does not call external providers by default.
+### State, storage, and rendering
 
-For the current implementation status, review conclusions, and artifact evidence, see:
+- Uploaded assets live in `storage/uploads/<projectId>/`.
+- Generated artifacts live in `storage/generated/`. V5 learning artifacts live in `storage/generated/v5/learn/<assetId>/`.
+- Each generation persists `template-instance.json`, `final-video-program.json`, `gap-report.json`, `scorecard.json`, `material-analysis.json`, `timeline-v2.json`, `mapping-v2.json`, and related reports. The submission also lists `transfer-trace.json`; the current API assembles the transfer trace on demand and the dashboard can export it as JSON.
+- `renderTemplateCapsule.ts` manages rendering, concurrency, timeouts, and a retry on render failure.
+- The API job system and legacy pipeline remain in `apps/api/src/server.ts`; the V5 submission workflow primarily uses `/api/v5`.
 
-- [Current Project Guide](./CURRENT_PROJECT_GUIDE.md)
-- [SDE hardening review](./docs/artifacts/review/sde_hardening_review.md)
-- [SDE harness completion review](./docs/artifacts/review/sde_harness_completion_review.md)
+### Pipeline details
 
-## Documentation Entry Points
+1. **Learn:** Local video evidence grounds optional multimodal Gen1 reconstruction. A deterministic capsule remains available when the AI path is unavailable or fails.
+2. **Store:** Save the capsule, replaceable slots, scene/audio recipes, knowledge manifest, and curated elements with source evidence.
+3. **Transfer:** Analyze target assets, bind compatible materials, rewrite content for the new topic, and resolve gaps.
+4. **Render and inspect:** Render the bound template with Remotion, process media/audio with FFmpeg, and expose quality/no-copy findings, the transfer trace, and readiness score.
 
-- [Requirements](./spec_v2/requirements.md)
-- [System Design](./spec_v2/design.md)
-- [API Documentation](./spec_v2/api.md)
-- [Task Breakdown](./spec_v2/tasks.md)
-- [Test Plan](./spec_v2/test-plan.md)
-- [Demo Playbook](./spec_v2/demo-playbook.md)
-- [Schema](./spec_v2/schemas/)
+Long references can be split at scene boundaries into chunks, reconstructed, and stitched into one multi-file capsule. The default chunk trigger is 34 seconds and the default chunk cap is 30 seconds. Model selection is separately configurable. The primary AI reconstruction path promotes code based on compilation and a real preview render, while recording other validation and fidelity findings.
 
-**The current primary submission specification is [`spec_v5/`](./spec_v5/)** (Spec v5.1 — Same Template Reconstruction Mode). `spec_v3/`, `spec_v2/`, `specs_v1/`, and `spec_v1_1/` are retained as historical design and regression materials.
+## 5. Core data structures and structure protocol
 
-- [Spec v1.3 Requirements](./spec_v3/requirements.md), [System Design](./spec_v3/design.md), [RenderRecipe schema](./spec_v3/schemas/render-recipe.schema.json), [Implementation Status](./spec_v3/implementation-status.md), [Demo Playbook](./spec_v3/demo-playbook.md)
+The authoritative contracts live in [packages/shared/src/contracts-v5/](packages/shared/src/contracts-v5/). [CONTRACTS-CANONICAL.md](spec_v5/CONTRACTS-CANONICAL.md) explains the canonical-contract boundary; current code definitions take precedence over stale specification examples. Filenames below use the current repository locations where submission terminology differs.
 
-## Spec v1.3 — Source-first RenderRecipe (Historical Demo)
+| Challenge concept | Actual project contract | Location | Purpose |
+| --- | --- | --- | --- |
+| `SampleVideoAnalysis` | `EvidenceTimelineV5`; legacy `VideoAnalysisResult` | `contracts-v5/evidence.ts`, `apps/api/src/adapters/evidenceTimeline.ts` | Deterministic reference evidence: shots, keyframes, text, speech, musical rhythm, motion, and material policy. |
+| `VideoStructure` | `NeutralReconstructionProgram`, `RemotionTemplateCapsule` | `contracts-v5/neutralProgram.ts`, `contracts-v5/templateCapsule.ts` | Abstract the reference into a neutral reconstruction program and reusable template capsule. |
+| `StructureSlot` | `TemplateSlot`, `PlaceholderSlotV5`; legacy placeholder slots | `contracts-v5/templateCapsule.ts`, `contracts-v5/common.ts`, `contracts-v5/composition.ts` | Replaceable image/video, headline, subtitle, CTA, voiceover, and music slots. |
+| `MaterialAsset` | `Asset`, `TargetAssetProfile` | `packages/shared/src/types.ts`, `contracts-v5/composition.ts`, `server.ts` | Uploaded target materials and their analysis profiles. |
+| `GapReport` | `GapReportV5` | `contracts-v5/composition.ts`, `runGapReportV5.ts` | Identify matched, weakly matched, missing, and AI-fillable requirements. |
+| `TimelineDraft` | `RenderRecipeV5`, `timeline-v2.json` | `contracts-v5/finalProgram.ts`, `runSameTemplateGeneration.ts` | Final timeline, segments, slot bindings, and render layers. |
+| `Storyboard` | `sceneRecipes`, knowledge manifest, exported `storyboard.json` | `templateCapsule.ts`; local `verify_submission/02_outputs/storyboard.json` | Readable shot segments, transitions, subtitle behavior, and visual actions. |
+| `PackagingPlan` | `packaging-plan.json` | `runSameTemplateGeneration.ts`, `v2Reports.ts` | Cover, title bars, variant packaging, and presentation metadata. |
+| `RenderJob` | `FinalVideoProgram`; legacy `RenderOutput` | `contracts-v5/finalProgram.ts`, `renderTemplateCapsule.ts`, `renderV5.ts` | Render execution, output files, scorecards, and quality gates. |
 
-In response to the “example-independent fixed mold” problem exposed by the rendering-overfit investigation ([REPORT](./docs/artifacts/render_overfit_findings/REPORT.md))—where beat_cut inputs of the same type collapsed into the same sequence of six primitives and cross-example layout NCC reached 0.868–1.000—v1.3 changed rendering to **source-first + one unified RenderRecipe contract**:
+Related contracts include `KnowledgeElement` for reusable creative units, `TemplateInstance` for newly bound props/assets, `TemplatePatchSet` for revisions, and `ScorecardV5` for evaluation.
 
-```text
-Example video = structural evidence only (do not copy frames/audio/watermarks)
-Target materials / source video = output materials that appear on screen
-→ buildRenderRecipe (timeline.renderPlan.renderRecipe, the sole rendering contract; every clip includes an auditable primitiveReason)
-→ FFmpeg (composites actual material pixels + beat-synced subtitles + programmatic BGM to produce final.mp4)
-   and the Remotion ViralRecipe composition (consumes the same recipe and produces final.remotion.mp4)
-```
+### Simplified structure-protocol example
 
-The historical demo product is an **AeroSpin portable turbo fan** advertisement. The repository contains no real fan materials, so this fixture was generated at the time using Gemini 2.5 Flash Image (Nano Banana) and labeled with the provenance `aigc_generated_material` (not user-uploaded and not a real product photo). See the Provider Configuration Summary below for the current V5.1 default image model and provider configuration.
-
-```bash
-# Toolchain prefix (the system Node is the outdated v12; ffmpeg/python are in the viral conda environment)
-export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
-
-# 1) Generate the real AIGC fan target fixture (requires GEMINI_API_KEY + external-provider opt-in)
-node scripts/generate-aerospin-fan-fixture.mjs
-
-# 2) Final submission demo: Demo A (editing.mov beat_cut + fan) + Demo B (motion_graph + the same fan materials) + anti-overfit diversity
-npm run demo:final
-```
-
-Outputs: `docs/artifacts/final_submission/` (`demo_a_editing_fan/`, `demo_b_motion_graph_fan/`, `diversity_eval/`, `FINAL_REPORT.md`). Each demo includes `final.mp4` (FFmpeg), `final.remotion.mp4` (Remotion), `render-recipe.json`, `quality-gates.json`, `sample-copy-safety.json`, `source-material-usage.json`, a contact sheet, and `HUMAN_REVIEW_REPORT.md`. **Cross-example anti-overfit result: layout NCC ≈ 0.01** (the same materials combined with different examples produce structurally distinct videos, breaking the fixed mold).
-
-## Directory Structure
-
-```text
-apps/
-  api/       Node.js + TypeScript + Express; API, adapter, and renderer integrations
-  web/       React + Vite + TypeScript; workbench UI
-packages/
-  shared/    Types, schemas, planner, slot induction, and AIGC material filling
-  renderer/  HTML preview / renderer contract
-scripts/
-  analyze-visual-evidence.py               Deterministic visual-evidence analysis for motion_graph_case
-  run-motion-graph-case.mjs                Proxy / target-assets / partial / malformed / AIGC modes
-  generate-motion-graph-target-assets.mjs  Deterministic target-material fixture
-  check-artifact-hygiene.mjs               Public-artifact leakage scan
-docs/
-  fixtures/motion_graph_target_assets/     Motion-graph target-material fixtures + manifests
-  artifacts/                               Reviewable outputs, reports, MP4s, and contact sheets
-storage/
-  uploads/, generated/, db/, demo/
-```
-
-## Local Environment
-
-The existing `viral` conda environment is recommended. FFmpeg, ffprobe, Python helper scripts, and optional OCR/ASR all run from this environment.
-
-```bash
-conda activate viral
-npm install
-npm run build
-```
-
-Optional Python capabilities:
-
-```bash
-pip install faster-whisper   # ASR_PROVIDER=faster_whisper
-pip install easyocr          # OCR_PROVIDER=easyocr
-```
-
-If your conda path is different:
-
-```bash
-CONDA_BASE=/path/to/anaconda3
-VIRAL_CONDA_ENV=viral
-```
-
-## Start the Application
-
-```bash
-npm run dev
-```
-
-Open:
-
-- Web V5: <http://localhost:5173/#v5> (if port 5173 is occupied, Vite prints a new port such as 5174; open `/#v5` using the terminal’s reported address)
-- Web V4: <http://localhost:5173/#v4>
-- API root: <http://localhost:3000/>
-- API health: <http://localhost:3000/healthz>
-
-Current V5 UI workflow:
-
-1. Under `0 · Upload`, select the example video and target image/video materials. After choosing each file, you must click `Upload` separately.
-2. Under `1 · Learn`, select an example video and click `Learn 1 Sample`. The learning result is written to a Remotion template capsule, slot protocol, KB elements, and a structure-learning report.
-3. Expand the `Review Evidence Center` and review Showcase, Learn Analysis, Structure Protocol, Gap Decisions, Transfer Map, Packaging, and Export in sequence. Before generation, it also displays a draft transfer and packaging plan; after generation, these are automatically replaced by the actual trace.
-4. Select a reusable Remotion template from the `Template Library`, or browse/search atomic elements such as hooks, rhythm, typography, transitions, and asset/audio recipes in the Knowledge Base.
-5. Under `2 · Generate`, `same_template` is used by default. Target materials are collapsible and multi-selectable; use “Move Up / Move Down / Remove” to control the order in which they enter media slots. You can also upload or bind materials to individual slots in the slot-gap table.
-6. Select an AIGC completion strategy, generation mode, intelligent LLM rewriting, and variant preset. The advanced `mix_elements` mode can combine elements from multiple examples and can enable “have AI write animation code on the fly.”
-7. After generation, inspect `final.mp4`, slot bindings, the gap report, timeline, mapping, packaging, scorecard, and no-copy evidence. You can then continue with a structured patch or natural-language revision.
-8. Under Export, download the currently loaded `template-capsule-v5.json`, `sample-evidence-v5.json`, `transfer-trace-v5.json`, `scorecard-v5.json`, pre-generation transfer/packaging drafts, and other review evidence.
-
-## Common Commands
-
-```bash
-npm run build
-npm test
-npm run validate:schemas
-npm run regression:corpus:strict
-VVST_REUSE_IGF_FIXTURE=1 npm run demo:product
-node scripts/check-product-demo-page.mjs
-node scripts/check-artifact-hygiene.mjs
-```
-
-If `npm test` reports `listen EPERM: operation not permitted 0.0.0.0` inside a restricted sandbox, the environment is preventing the API end-to-end tests from binding a local socket. Re-run the tests in an environment that permits local socket binding.
-
-## Evidence-first Structure Transfer (`beat_cut` / `editing.mov`)
-
-For **fast-cut / editing-tutorial** examples such as `editing.mov`, the pipeline has been changed to “first extract evidence with deterministic tools, then let the model provide a semantic interpretation, and finally have the renderer execute the learned visual grammar”:
-
-```text
-video
-→ ffprobe metadata
-→ PySceneDetect scene cuts + per-shot keyframes/visual-family labels + per-shot motionEnergy (Farneback optical flow)
-→ librosa beat grid (BPM / beats / onsets)
-→ frameMetrics for 60 frames (blackBgRatio / redYellowRatio / motionDiffMean / cutLikeCount) + movingObjectCandidates
-→ OCR / ASR text bound to shots by timestamp
-→ VisualEvidenceTimeline v2 (six visual families: object_motion/kinetic_typography/background/storyboard/live_action_montage/bgm)
-→ Gemini VLM (grounded by evidence rather than free-form interpretation) → text-model merge (Ark/Doubao or Gemini)
-→ beat_cut StructureTemplate (eight moving-material slots: hero visual / background / title card / storyboard rules / action montage / impact flash / BGM / CTA)
-→ layered timeline (layers + slotId/motion/assetPolicy, beat-synced to the actual 152 BPM) + honest gaps (moving_material_missing / bgm_missing)
-→ style-locked dynamic renderer (animated light ribbons on black, beat-synced white flashes, BGM EQ bars, hard-cut montage, red impact starbursts, large red/yellow typography, CTA ticker) + audio
-→ rendering quality gate v2 (no placeholders, includes audio, evidence coverage ≥0.8, motionDiffMean ≥0.04, cutLikeCount ≥5, layered clips ≥5, moving gaps reported)
-```
-
-The `beat_cut` classification comes from **deterministic evidence** (fast cuts + beats + black background + action montage), not VLM keywords, so output remains stable even when the LLM fails. AI-enrichment failures (such as Ark 401) are **explicitly marked** with `aiEnrichmentStatus=failed/aiEnrichmentError` and are never presented as a clean template. **Moving materials/background/storyboard/BGM are first-class structural slots + rendering contracts + gates**: if no target action materials are available, the action montage uses high-motion programmatic proxies (never copying example frames) and reports `moving_material_missing`, preventing the output from degrading into static cards.
-
-**v3 (human fidelity)**: the analyzer additionally extracts **hero-object descriptors** (head/mask type + palette + motion) and **TypographyEvidenceV2** (OCR bounding boxes → layout role/color/font size/animation). Based on this evidence, the renderer draws **programmatic neon head/mask silhouettes** (not blocks and never copied example faces), uses **role-varying subtitle layouts/colors/type-on effects/jitter**, and replaces a single click track with **layered programmatic BGM** (drone + kick + bass + hi-hat + noise, with a spectral centroid far higher than a click alone). The gate is upgraded to **v3 per-clip** metrics (hero ≥0.025, text clips ≥0.01, montage ≥0.04, so a static early segment cannot pass by hiding behind a global average), plus hero descriptors/proxies, typography evidence, audio richness, a non-empty storyboard, BGM deduplication, fillPlan consistency, and more. `npm run full-loop:editing` materializes the entire product pipeline as 22 stage directories that can be manually reviewed.
-
-**v3 VisualElementGraph (localize, then label)**: the architecture **first uses CV/optical flow/OCR to localize elements (bounding boxes + trajectories), while the VLM only assigns semantic names to the localized candidates** (instead of asking a VLM to guess coordinates from a 1 FPS video). The analyzer outputs a `visualElementGraph`: hero_object (optical-flow bounding-box trajectory + center trajectory + area curve), kinetic_typography and **watermark** (separated with a corner heuristic; TikTok/Douyin watermarks are labeled but never reproduced), impact_fx, background, CTA, plus shot nodes (dominantElements/cutType/motionClass/beatSync) and `audioStructure` (proportions of bass/music/hi-hat layers). The renderer **actually consumes** the graph: hero silhouettes are positioned according to `positionClass`, and the BGM is mixed using the learned layer proportions. Heavy trackers (Grounded-SAM2/SAM2/RAFT/CoTracker/Demucs/Essentia) are **environment-gated stubs** (off by default and do not affect CI). The v3 gate **verifies actual use, not mere presence**: `element_graph_renderer_consumed` (the hero element is attached to a layer and the rendered opening clip actually contains motion), `typography_layout_used`, and `audio_structure_used`. The real-API full-loop run with `--gates v3` passes **47/47**.
-
-Real run (requires the `viral` conda environment and real providers; analysis runs Gemini/ASR/OCR/PySceneDetect/librosa and takes several minutes):
-
-```bash
-# 1) Start the API (real providers are controlled by .env: VLM_PROVIDER=gemini, VLM_MODEL defaults to gemini-3.5-flash; AI_PROVIDER=gemini defaults to gemini-3.5-flash, while Ark/Doubao can be used as the text-LLM path; ASR_PROVIDER=faster_whisper/disabled, OCR_PROVIDER=easyocr)
-export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"   # system Node is the outdated v12
-npm run build && node apps/api/dist/server.js
-
-# 2) editing.mov → beat_cut → style-locked 15-second reconstruction → render → export
-npm run e2e:editing-beatcut
-
-# 3) Rendering-quality gate v3 (strict beat_cut moving-material + human-fidelity mode, 40 checks)
-npm run eval:render-quality -- --render storage/generated/<renderId>.mp4 \
-  --template /tmp/editing_e2e/template.json --generation /tmp/editing_e2e/generation.json \
-  --sample test_videos/editing.mov --expect-video-type beat_cut --gates v3 --strict
-
-# 4) Product-grade full-loop artifact runner (22 stage directories + comparison images + per-clip motion + audio + v3 gate)
-npm run full-loop:editing -- --sample ./test_videos/manual/editing.mov \
-  --prompt "Topic: Viral Video Structure Transfer Engine;..." --out docs/artifacts/full_loop_editing_mov
-
-# 4) Run the evidence analyzer / model-provider evaluation separately
-npm run analyze:evidence -- --video test_videos/editing.mov --out /tmp/ev.json --frames-dir /tmp/ev_frames
-npm run eval:model-understanding -- --sample test_videos/editing.mov
-```
-
-Outputs (`storage/generated/` rendering artifacts + `docs/artifacts/model_eval/`): a beat_cut MP4 (large type on black + beat synchronization + audio), real previews sampled per clip, and `docs/artifacts/model_eval/editing_mov_model_eval.{json,md}` (heuristic / Gemini / Ark comparison with visible failures).
-
-Acceptance: `packages/shared/src/__tests__/editingMovMovingMaterialGolden.test.ts` (v2 deterministic golden: eight slots/layered timeline/honest gaps/152 BPM; also proves the gate has teeth—the ideal render passes, while the pre-fix static render fails the motion threshold) + `editingMovBeatCutGolden.test.ts` + `scripts/evaluate-render-quality.mjs --gates v2` (27/27 gates). The v2 test oracle is in `test_fixtures/expected_editing_mov_case_v2/`.
-
-## Motion Graph Structure Transfer Demo
-
-This is currently the strongest SDE/MLE harness path and specifically demonstrates that the system does more than display static JSON or generic B2B templates.
-
-```bash
-# No target materials: output family-specific programmatic cards (clean Chinese family names + actual copy, with no PROXY/PLACEHOLDER/debug text)
-node scripts/run-motion-graph-case.mjs
-
-# Complete target-material fixture: card images, logo, and copy replace proxy slots
-node scripts/run-motion-graph-case.mjs --with-target-assets
-
-# Partial-material stress test: only two cards + copy, with no logo
-node scripts/run-motion-graph-case.mjs --with-partial-target-assets
-
-# Malformed-material stress test: external paths, zero-byte files, incorrect roles, and similar cases must be blocked
-node scripts/run-motion-graph-case.mjs --with-malformed-target-assets
-
-# Local manifest input: script mode supports a path manifest
-node scripts/run-motion-graph-case.mjs --target-assets-manifest docs/fixtures/motion_graph_target_assets/manifest.json
-```
-
-Primary outputs:
-
-```text
-docs/artifacts/motion_graph_case/visual-evidence.json
-docs/artifacts/motion_graph_case/induced-slots.json
-docs/artifacts/motion_graph_case/selected-template.json
-docs/artifacts/motion_graph_case/asset-evidence.json
-docs/artifacts/motion_graph_case/slot-asset-matches.json
-docs/artifacts/motion_graph_case/fill-plan.proxy.json
-docs/artifacts/motion_graph_case/fill-plan.with-assets.json
-docs/artifacts/motion_graph_case/replacement-slots.proxy.json
-docs/artifacts/motion_graph_case/replacement-slots.with-assets.json
-docs/artifacts/motion_graph_case/render_proxy.mp4
-docs/artifacts/motion_graph_case/render_with_assets.mp4
-docs/artifacts/motion_graph_case/render_partial_assets.mp4
-docs/artifacts/motion_graph_case/render_malformed_assets.mp4
-docs/artifacts/motion_graph_case/before_after_contact_sheet.png
-docs/artifacts/motion_graph_case/partial_assets_contact_sheet.png
-docs/artifacts/motion_graph_case/evaluation.motion_graph.json
-```
-
-Target-material fixture:
-
-```text
-docs/fixtures/motion_graph_target_assets/
-  logo.png
-  card_01.png
-  card_02.png
-  card_03.png
-  card_04.png
-  copy.json
-  manifest.json
-  manifest.partial.json
-  manifest.malformed.json
-```
-
-Current primary-flow slot mapping:
-
-| Induced slot | How it is satisfied |
-|---|---|
-| `media_cards` | Target image_set with at least four cards |
-| `kinetic_typography` | Target brand name / copy |
-| `ui_showcase` | Target feature-copy list |
-| `geometric_mg` | Programmatic neon geometry; no external materials required |
-| `brand_cta` | Target logo + CTA; uses a placeholder/proxy if the logo is missing |
-
-Corpus fixture: `test_videos/corpus/009_motion_graph_card_stack/fixture.json`.
-
-## Managed Material Intake API
-
-In browser/API mode, users do not need to expose local paths in public artifacts. The workflow is:
-
-```text
-POST /api/projects/:projectId/assets
-→ POST /api/projects/:projectId/target-material-manifests
-→ returns normalized targetAssets / assetEvidence / blockedAssets
-```
-
-The API manifest uses `assetId`, not arbitrary local paths:
+This is the submission's explanatory example translated into English. It illustrates the relationship between template structure, slots, gap decisions, and new content; it is a shortened conceptual object rather than a complete canonical API payload. In full contracts, timing, scene recipes, and instance fields have their defined typed representations.
 
 ```json
 {
-  "schemaVersion": "target-material-manifest-v1",
-  "brandName": "Viral Structure Engine",
-  "cta": "Upload. Analyze. Remix.",
-  "features": ["Analyze sample videos", "Induce reusable slots"],
-  "assets": [
-    { "assetId": "uploaded_card_01", "kind": "image", "role": "media_card" },
-    { "assetId": "uploaded_logo", "kind": "logo", "role": "brand_logo" }
-  ]
+  "templateCapsule": {
+    "id": "capsule_sample_marketing_001",
+    "sourceSampleId": "asset_reference_video",
+    "durationSec": 12,
+    "sceneRecipes": [
+      {
+        "id": "cold_open",
+        "role": "hook",
+        "startSec": 0,
+        "endSec": 2.2,
+        "visualIntent": "strong product reveal",
+        "motionIntent": "fast scale-in with title overlay"
+      }
+    ],
+    "slotSchema": [
+      {
+        "id": "hero_product",
+        "kind": "product_image",
+        "required": true,
+        "replacementPolicy": "user_asset",
+        "mediaKind": "image",
+        "timing": { "startSec": 0, "endSec": 12 }
+      },
+      {
+        "id": "main_headline",
+        "kind": "headline",
+        "required": true,
+        "replacementPolicy": "text_generate",
+        "timing": { "startSec": 0.2, "endSec": 2.4 }
+      }
+    ],
+    "safety": {
+      "samplePixelsReusable": false,
+      "sampleAudioReusable": false,
+      "sampleTextReusable": false
+    }
+  },
+  "gapReport": {
+    "slots": [
+      {
+        "slotId": "hero_product",
+        "status": "matched",
+        "action": "asset_reuse",
+        "assetId": "asset_user_packshot"
+      },
+      {
+        "slotId": "background_broll",
+        "status": "missing",
+        "action": "aigc_fill"
+      }
+    ]
+  },
+  "templateInstance": {
+    "generationMode": "same_template",
+    "targetTheme": "Eye-friendly desk lamp",
+    "propsBinding": {
+      "hero_product": "/api/v5/assets/asset_user_packshot/media",
+      "main_headline": "Stay focused with comfortable, glare-free light"
+    }
+  }
 }
 ```
 
-Material references in the response use safe IDs such as `asset://managed/<assetId>`; actual server paths are resolved only inside the renderer and do not enter public JSON/HTML.
+## 6. Tool protocols
 
-## Optional AIGC Material Completion
+Backend adapters, pipeline modules, and shared contracts form the project's tool-integration system. Inputs and outputs are constrained through TypeScript types, runtime schemas, Zod where used by code-generation components, runtime checks, path policies, static scanning, and real render gates.
 
-AIGC Material Fill is an optional enhancement path. The V5 UI enables gap filling by default when materials are missing, but actual external providers are still controlled by `.env`, API options, and safety switches. Without a key or permission for external calls, the system uses programmatic/deterministic fallbacks. When a user does not have enough materials, this feature turns the gaps into structured generation briefs, generates candidate materials, performs quality checks, registers them as `aigc_generated_material`, and finally sends them through the same slot matcher / fill plan / renderer.
+| Tool / capability | Main entry | Input | Output | Safety / validation |
+| --- | --- | --- | --- | --- |
+| Asset upload and retrieval | `server.ts`, `POST /api/projects/:projectId/assets`, `GET /api/v5/assets/:id/media` | Multipart file, project ID | `Asset` record, stable managed path, media URL | MIME/extension allowlists, 500 MiB limit, managed uploads under `storage/uploads`. |
+| Video evidence extraction | `analyzeEvidenceTimeline`, `scripts/analyze-evidence-timeline.py` | Local video path | Shots, keyframes, OCR/ASR where enabled, audio, motion | Python launches with an argument array; output is mapped to `EvidenceTimelineV5`. |
+| OCR / ASR | `scripts/python/ocr_easyocr.py`, `scripts/python/asr_faster_whisper.py` | Keyframes / audio | Visible-text and speech evidence | Evidence informs structure; reference subtitles/voices are outside the reusable-content boundary. |
+| Gen1 visual template generation | `runGen1CapsuleGemini.ts`, `gen1ModelFactory.ts` | Reference video, deterministic evidence, prompt | `RemotionTemplateCapsule`, slot schema, asset plan, knowledge elements | TypeScript parsing, prohibited-API/sample-path checks, compilation, and real preview rendering. Inspect all recorded validation findings. |
+| Context rewriting / copy / natural-language edits | `createTextModelFn`, `runCapsuleContextRewrite.ts`, `revise-natural-language` | Topic, selling points, slots, user instruction | New copy, palette, `TemplatePatchSet` | Available text model with deterministic fallback handling; backend interprets constrained patches. |
+| Target-material analysis | `runTargetAssetAnalysis.ts` | User images / video / audio | `TargetAssetProfile`, quality scores, highlights, tags | External VLM needs its enable switch; heuristic/local analysis is available. |
+| Gap detection | `runGapReportV5.ts` | Slots, target profiles | `GapReportV5` | Explicit matched/weak-match/missing/fill decisions. |
+| Timeline / composition planning | `runCompositionPlanner.ts`, `runCreateV5.ts`, `runSameTemplateGeneration.ts` | Templates, brief, materials, gaps | Composition, timeline, mapping, template instance | V5.1 defaults to the same-template capsule rendering path. |
+| AI material completion | `aigcMaterialProviders.ts` | Slot brief, target topic, privacy policy | Generated image/video asset | External-provider call context and provenance; same-template generation briefs exclude reference frames. |
+| Audio / TTS / music | `googleAudio.ts`, `renderV5.ts`, `renderTemplateCapsule.ts` | Voiceover / music brief | Generated or procedural audio | Optional cloud services; procedural fallback where supported. |
+| Rendering | `renderTemplateCapsule.ts`; legacy `renderV5.ts` | Remotion code, props, audio | MP4, poster/still, render metadata | Remotion bundle/render, FFmpeg muxing, timeout, concurrency cap, retry. |
+| No-copy scanning and scoring | `runNoCopyScan.ts`, `runScorecardV5.ts` | Final video, source evidence, artifacts | No-copy report, scorecard | Perceptual frame/audio comparison when invoked and available; structural provenance/warnings otherwise. The AI-capsule path currently skips perceptual scanning by policy. |
 
-Browser entry point:
+## 7. Safety boundaries
 
-- The V5 web workbench’s `2 · Generate` section provides the **Fill Gaps with AIGC and Generate** capability.
-- The panel includes an “Enable AIGC gap fill” toggle.
-- External providers are controlled by a separate safety toggle. When external calls are not permitted or keys are missing, the live API does not call external image providers and instead falls back to programmatic cards/local deterministic materials.
-- The API request sets AIGC gap-fill options; external providers additionally require provider/key configuration in `.env` and an explicit allow flag.
-- The result panel displays fields such as the brief, candidate, quality/VLM status, external calls, and sample frames sent.
+### 7.1 Keys and environment variables
 
-After external providers are allowed, the live API tries them in this order: `google_gemini_image` (preferred; default `GEMINI_IMAGE_MODEL=gemini-3.1-flash-image`) → `volcengine_seedream` (optional backup; requires `AIGC_IMAGE_BACKUP_PROVIDER`) → `deterministic_local_image_fill` (local deterministic fallback). The live image pipeline does not stop: if all external providers fail, it falls back to a local programmatic PNG and records a `providerFallbackReason` warning. `deterministic_local_image_fill` (formerly `mock_provider`, which now remains only as a deprecated alias) is also used for deterministic CI/script outputs:
+- External-model credentials are read from `.env` and the process environment. Keep real keys out of documentation and version control.
+- `.env.example` documents Gemini, Ark/Doubao, Seedance, Google audio, and other variables using blank credential values. Its switches are configured for a cloud-capable demo.
+- Error/report paths include redaction for sensitive fields such as Google API keys; inspect exported evidence before publishing it.
+- Cloud generation and VLM capabilities are optional. Without usable credentials, relevant paths use deterministic/procedural fallback or report missing capability.
+
+### 7.2 Files and materials
+
+- Multer stages uploads under `storage/uploads/tmp`, then stores them under `storage/uploads/<projectId>/`.
+- Uploads have size and MIME/extension checks.
+- `resolveTargetAssetPath` resolves managed storage locations and a small set of fixture paths rather than accepting arbitrary local files through public material-manifest inputs.
+- Managed target manifests reject unsupported external paths and URLs during material resolution.
+- Generated outputs live under `storage/generated/`, separately from source materials.
+
+### 7.3 Tool execution
+
+- Python, FFmpeg, and ffprobe are launched through process wrappers using argument arrays; model output is not directly concatenated into shell commands.
+- Backend wrappers execute rendering; models do not receive a general system-command interface.
+- Remotion rendering has concurrency and timeout controls.
+- Static scans check for prohibited runtime capabilities such as `require`, `process`, `child_process`, `fs`, `eval`, `fetch`, `XMLHttpRequest`, and dynamic imports.
+
+### 7.4 Prompt injection and model-output handling
+
+- Gen1 output passes through parsing, import/API checks where implemented, sample-path scans, and real still/render checks. Compilation and preview rendering determine promotion in the primary AI path; other findings remain part of the validation evidence.
+- `validateTemplateCapsule.ts` checks sample paths, remote URLs, long hardcoded strings, canvas/3D text literals, and unsafe runtime APIs.
+- Template and generation gates cover template existence, compilability, declared slots, source-reuse policy, final MP4 availability, motion, and related quality evidence.
+- Natural-language editing produces a `TemplatePatchSet` that the backend interprets, rather than arbitrary file-edit instructions.
+- Static scans and a successful render are separate checks; they do not provide a general isolation guarantee for arbitrary code. Inspect the recorded gate results and warnings.
+
+### 7.5 Copyright and no-copy boundary
+
+- **Transferable:** Remotion component structure, timeline, layout, animation curves, typography behavior, transition sequencing, audio cue positions, and slot schema.
+- **Replaced in new content:** Original reference images/pixels, video frames, audio, subtitles, logos, watermarks, branding, people, and product materials.
+- Final videos bind user-provided, generated, or procedural materials and new copy to the learned template.
+- `runNoCopyScan.ts` can compare perceptual frame hashes and audio similarity when invoked with the necessary tools and media.
+- The current same-template AI-capsule path skips perceptual scanning by policy and reports structural provenance. Other paths can fall back to structural no-copy when scanning is unavailable or fails. Inspect the details instead of treating that result as an executed perceptual comparison.
+
+### 7.6 Privacy and external calls
+
+- A configured local workflow can extract evidence, build fallback templates, and fill gaps procedurally.
+- When external visual reconstruction is enabled, the reference video/frames can be sent to Gemini for Gen1. User-material VLM enrichment has a separate explicit switch.
+- Provider provenance records external generation and its media policy. Same-template AIGC briefs exclude reference frames and user-material references; happyhorse uses a newly generated reference still.
+- Before publishing review artifacts, confirm `.env` is excluded and demonstrations do not expose sensitive materials.
+- External understanding and external generation are distinct paths. Disabling one flag does not necessarily disable every V5 text, vision, and generation factory; use the local setup below when that behavior is required.
+
+## 8. Running the project
+
+### 8.1 Environment preparation
+
+Use Node.js 22 and the configured Python/Conda environment. FFmpeg/ffprobe and Python video-analysis packages are required for learning; Chromium is required for real Remotion rendering. A first render may download a browser.
+
+If these locations match your installation, the submission's toolchain example is:
 
 ```bash
-# Deterministic local provider deterministic_local_image_fill (formerly mock_provider, now only a deprecated alias; scripts/CI only, no external calls)
-node scripts/run-motion-graph-case.mjs --with-aigc-materials
-
-# Select the provider in .env and explicitly permit external calls
-node scripts/run-motion-graph-case.mjs --with-aigc-materials --aigc-provider env --allow-external-aigc
-
-# End-to-end real run: editing/motion example → real Gemini AIGC images + subtitles → render → write to docs/artifacts/full_pipeline_aigc_*/
-node scripts/run-full-pipeline-aigc-demo.mjs --sample test_videos/motion_graph_1.mov --theme "AI short-video structure transfer engine"
+export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$HOME/anaconda3/envs/viral/bin:$PATH"
+export CONDA_BASE="$HOME/anaconda3"
+export VIRAL_CONDA_ENV="viral"
 ```
 
-> Real generation (Gemini chunks + AIGC + rendering) may exceed the client’s HTTP timeout. Use asynchronous mode for long-running jobs: `POST /api/generations?async=true` immediately returns `202 {jobId}`; then poll `GET /api/jobs/:jobId` for `outputRefs.generationId`; finally call `GET /api/generations/:id`. The script above already includes this polling logic.
+Adjust the paths for your machine. The API's evidence adapter currently checks for `<CONDA_BASE>/envs/<VIRAL_CONDA_ENV>/bin/python`; `python3` on PATH alone does not satisfy that precondition.
 
-Provider configuration example; do not commit `.env`:
+To create an environment if needed:
 
 ```bash
-AIGC_MATERIAL_FILL_ENABLED=false
+conda create -n viral -c conda-forge python=3.11 ffmpeg
+conda activate viral
+python -m pip install numpy opencv-python scenedetect librosa
 
-# Preferred: Google Gemini Image / Nano Banana (accessible through AI Studio)
-AIGC_IMAGE_PROVIDER=google_gemini_image
-GEMINI_IMAGE_MODEL=gemini-3.1-flash-image
-GEMINI_API_KEY=<your_gemini_key>
-
-# Backup: Volcengine Seedream
-AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream
-SEEDREAM_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-SEEDREAM_ARK_API_KEY=<your_seedream_key>
-SEEDREAM_ARK_MODEL=<your_seedream_model_id>   # required; no built-in default. If SEEDREAM_ARK_MODEL/AIGC_IMAGE_MODEL is unset, Seedream configuration throws immediately
-SEEDREAM_IMAGE_ENDPOINT=/images/generations
-SEEDREAM_RESPONSE_FORMAT=url
-SEEDREAM_IMAGE_SIZE=2K
-SEEDREAM_STREAM=false
-SEEDREAM_WATERMARK=false
-
-# Video material (primary): Volcengine Seedance 2.0 Fast (Ark task API, pure text-to-video)
-AIGC_VIDEO_PROVIDER=seedance_2_0
-AIGC_VIDEO_MODEL=doubao-seedance-2-0-fast-260128
-# The same Ark bearer key can be reused; if SEEDREAM_ARK_API_KEY is already set, this does not need to be configured separately
-SEEDANCE_ARK_API_KEY=<your_seedance_or_seedream_ark_key>
-SEEDANCE_TASK_ENDPOINT=/contents/generations/tasks
-SEEDANCE_GENERATE_AUDIO=true
-SEEDANCE_WATERMARK=false
-
-# Video material (backup): Alibaba DashScope happyhorse-1.0-r2v (reference-to-video)
-# Automatically takes over if Seedance fails (AccountOverdue/403/moderation 400); uses a Gemini still image as a base64 reference_image.
-# Region must match: US key → dashscope-us domain.
-AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v
-DASHSCOPE_API_KEY=<your_dashscope_key>
-DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1
-HAPPYHORSE_MODEL=happyhorse-1.0-r2v
-HAPPYHORSE_RESOLUTION=720P
+# Optional local OCR and ASR
+python -m pip install easyocr faster-whisper
 ```
 
-Gemini VLM drives both video understanding and the generated-material quality gate (default: `gemini-3.5-flash`; `gemini-2.5-pro`/`gemini-2.5-flash` are optional alternatives selected through `VLM_MODEL`):
+Install Node dependencies and configure providers:
 
 ```bash
-VLM_PROVIDER=gemini
-VLM_MODEL=gemini-3.5-flash          # alt: gemini-2.5-pro | gemini-2.5-flash
-GEMINI_VLM_FALLBACK_MODEL=gemini-2.5-flash
-GEMINI_API_KEY=<your_gemini_key>
+npm install
+cp .env.example .env
+# Fill Gemini, Ark/Doubao, Seedance, Google audio, or other credentials as needed.
+# Without cloud services, deterministic/procedural fallbacks have lower visual richness.
 ```
 
-AIGC outputs:
+Set `CONDA_BASE` in `.env` to your Conda installation (`conda info --base`) and `VIRAL_CONDA_ENV` to the environment name. Keep workspace dependency versions and the lockfile aligned, particularly Remotion, React, Three.js, and React Three Fiber.
+
+The local workflow needs Node, the Conda/Python analysis environment, FFmpeg, and a usable browser for rendering. For the full AI demo, Gemini is useful because reference understanding, Gen1 reconstruction, text rewriting, and image completion can share `GEMINI_API_KEY`.
+
+### API and model configuration by capability
+
+These model IDs reproduce the submission/repository configuration. They are configurable and depend on access available to your provider account.
+
+| No. | Capability | Required / suggested API and environment variables | Purpose |
+| --- | --- | --- | --- |
+| 1 | Reference VLM understanding / Gen1 structure learning | `GEMINI_API_KEY`, `VLM_PROVIDER=gemini`, `VLM_MODEL=gemini-3.5-flash`, `ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS=1`, `ALLOW_EXTERNAL_SAMPLE_MEDIA=1` | Reference interpretation, shot semantics, structural sections, subtitle packaging, and motion rhythm. Deterministic evidence/fallback templates remain available without the key. |
+| 2 | Text LLM / context rewriting / natural-language editing | `GEMINI_API_KEY`, `AI_PROVIDER=gemini`, `AI_GEMINI_MODEL=gemini-3.5-flash`; alternatively `AI_PROVIDER=ark_doubao`, `ARK_API_KEY`, `ARK_MODEL` | Topic rewriting, selling-point copy, edit planning, score explanations in supported paths, and context rewriting. V5's text factory has the Ark-first priority described below. |
+| 3 | Remotion capsules / AI-written animation | `GEMINI_API_KEY`, `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`, `GEMINI_GEN1_MODEL=gemini-3.1-pro-preview`, `GEMINI_GEN1_MODEL_LONG=gemini-3.1-pro-preview` | Reusable reference-derived templates and the advanced Generate option to write animation code. |
+| 4 | Target-material VLM enrichment | `GEMINI_API_KEY`, `ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1`, `AIGC_ALLOW_TARGET_ASSETS_TO_PROVIDER=true` | Subject/scene understanding, quality, suggested slots, and highlights. Check the actual route's VLM enable switch; local profiles are available. |
+| 5 | AI image completion | `GEMINI_API_KEY`, `AIGC_MATERIAL_FILL_ENABLED=true`, `AIGC_IMAGE_PROVIDER=google_gemini_image`, `GEMINI_IMAGE_MODEL=gemini-3.1-flash-image` | Product, background, atmosphere, and packaging images for missing slots. |
+| 6 | Seedream image backup | `SEEDREAM_ARK_API_KEY`, `SEEDREAM_ARK_BASE_URL`, `SEEDREAM_ARK_MODEL=doubao-seedream-5-0-260128` | Alternate image provider when configured by the caller; backup ordering varies by pipeline. |
+| 7 | AI video completion | `AIGC_VIDEO_PROVIDER=seedance_2_0`, `AIGC_VIDEO_FILL=1`, `SEEDANCE_MODEL=doubao-seedance-2-0-fast-260128`; one of `SEEDANCE_ARK_API_KEY`, `SEEDREAM_ARK_API_KEY`, or `ARK_API_KEY` | Missing moving footage, product motion, and b-roll. The same-template path selects Seedance directly for eligible video slots and also recognizes `SEEDANCE_API_KEY`. |
+| 8 | Backup footage / reference-to-video | `DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL=https://dashscope-us.aliyuncs.com/api/v1`, `AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v`, `HAPPYHORSE_MODEL=happyhorse-1.0-r2v` | Reference-still-to-video backup when Seedance is unavailable. Match the API region to the key. |
+| 9 | TTS / music generation | `GEMINI_API_KEY`, `GOOGLE_AUDIO_ENABLE_CLOUD=1`, `GOOGLE_AUDIO_ENABLE_TTS=1`, `GOOGLE_AUDIO_ENABLE_MUSIC=1`, `GOOGLE_TTS_MODEL`, `GOOGLE_MUSIC_MODEL` | Narration, music beds, mood, and audio completion in supported paths; procedural audio fallback. |
+| 10 | ASR / SFX / ElevenLabs audio | `ELEVENLABS_API_KEY`, `ASR_PROVIDER=elevenlabs_scribe`, `ELEVENLABS_ENABLE_SCRIBE=1`, `ELEVENLABS_ENABLE_TTS=1`, `ELEVENLABS_ENABLE_SFX=1` | Speech transcription, effects, TTS, and audio enhancement. Use local faster-whisper or skip cloud capabilities when unavailable. |
+| 11 | Ark/Doubao text models | `AI_PROVIDER=ark_doubao`, `ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`, `ARK_API_KEY`, `ARK_MODEL` | Additional text-model route. V5 `createTextModelFn` prefers a configured Ark/Doubao endpoint before Gemini. |
+
+For the complete cloud demonstration, the submission enables:
+
+```dotenv
+ALLOW_CLOUD_PROVIDERS=1
+ALLOW_EXTERNAL_SAMPLE_MEDIA=1
+ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS=1
+ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1
+ALLOW_EXTERNAL_ASR_SAMPLE_ANALYSIS=1
+AIGC_ALLOW_EXTERNAL_UPLOAD=true
+AIGC_ALLOW_SAMPLE_FRAMES_TO_PROVIDER=true
+AIGC_ALLOW_TARGET_ASSETS_TO_PROVIDER=true
+```
+
+For stricter privacy, the submission disables these external sample/material paths:
+
+```dotenv
+ALLOW_EXTERNAL_SAMPLE_MEDIA=0
+ALLOW_EXTERNAL_VLM_SAMPLE_ANALYSIS=0
+ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=0
+AIGC_ALLOW_SAMPLE_FRAMES_TO_PROVIDER=false
+AIGC_ALLOW_TARGET_ASSETS_TO_PROVIDER=false
+```
+
+**For an explicitly local workflow**, also leave cloud credentials empty, disable the remaining cloud/audio flags, disable model-based capsule codegen/context rewriting, and select procedural filling in requests. The [local configuration guide](docs/development.md#local-configuration) contains the full environment and request examples. The supplied `.env.example` enables cloud features and external sample analysis; a single environment flag does not disable all V5 calls.
+
+### 8.2 Start the development environment
+
+Start the web app and API together:
+
+```bash
+conda activate viral
+npm run dev
+```
+
+Or run them in separate terminals after building their shared dependencies:
+
+```bash
+npm run build --workspace @vvst/shared
+npm run build --workspace @vvst/renderer
+
+# Terminal 1
+npm run dev:api
+
+# Terminal 2
+npm run dev:web
+```
+
+Default addresses:
+
+- **V5 Dashboard:** [http://localhost:5173/#v5](http://localhost:5173/#v5). V5 is also the default hashless page. If port 5173 is occupied, Vite may use 5174 or another port; use its printed URL and append `/#v5`.
+- **API status:** [http://localhost:3000/](http://localhost:3000/).
+- **API health:** [http://localhost:3000/healthz](http://localhost:3000/healthz); readiness: `/readyz`.
+- **V5 API:** `http://localhost:3000/api/v5`.
+- **Legacy interface:** `http://localhost:5173/#v4`.
+
+If you change `APP_PORT`, also update the web proxy in `apps/web/vite.config.ts`, which currently targets port 3000.
+
+### 8.3 V5 dashboard workflow
+
+Some dashboard labels remain in Chinese. The following translates the complete submission walkthrough:
+
+1. Open the V5 Dashboard. Confirm the fixed status bar shows API readiness, asset/template counts, slot/gap status, and generation status.
+2. In **0 · Upload**, select a reference video and target images/videos. After selecting files, click the corresponding **Upload** button explicitly.
+3. In **1 · Learn**, select a reference and click **Learn 1 Sample**, triggering `/api/v5/learn-samples`. Follow structure-learning progress in the left panel.
+4. Open **Read Structure Learning Report** to inspect keyframes, the horizontal structure timeline, structure fingerprint, reusable/non-reusable boundaries, slot requirements, knowledge-base writes, and Remotion code insights.
+5. Open the **Review Evidence Center** and inspect **Showcase → Learn Analysis → Structure Protocol → Gap Decisions → Transfer Map → Packaging → Export**. Transfer Map and Packaging show drafts before generation and actual trace information afterward.
+6. Select a reusable Remotion template from the template library, or search/select structural atoms in the Knowledge Base.
+7. In **2 · Generate**, use the default `same_template` mode. Target materials are collapsible and multi-selectable; use **Move Up / Move Down / Remove** to set order. The first compatible material is prioritized for the first compatible visual slot.
+8. Check each slot's kind, matched asset, and gap strategy in the gap table. Upload and bind a specific asset to an individual slot when needed.
+9. Choose the AI completion strategy, variant preset, and LLM rewriting requirements. Advanced `mix_elements` can mix multiple references and enable **Have AI write animation code on the fly**.
+10. After generation, inspect `final.mp4`, slot bindings, gap report, timeline, mapping, packaging, scorecard, and no-copy evidence. Continue with structured patches or natural-language edits and re-render as needed.
+11. In **Export**, download currently loaded evidence such as `template-capsule-v5.json`, `sample-evidence-v5.json`, `transfer-trace-v5.json`, `scorecard-v5.json`, and pre-generation transfer/packaging drafts.
+
+Revisions reuse prior visuals for theme/copy/palette changes. Creative controls can trigger a template rewrite; regenerating images requires a fresh generation. Variant generation supports comparison across creative strategies.
+
+## 9. Models and fallbacks
+
+These are repository integrations, not guarantees of provider availability. Model IDs are configurable in [.env.example](.env.example).
+
+| Task | Configured path | Fallback behavior |
+| --- | --- | --- |
+| Reference video/frame reconstruction | Gemini multimodal Gen1; long references can be split into scene-aware chunks. | Text-only code generation or deterministic capsule when the relevant path is unavailable or fails. |
+| Topic rewriting, copy, edit planning | V5 `createTextModelFn` prefers a configured Ark/Doubao endpoint, then Gemini. | Deterministic content/patch handling; some rewrite paths also try Gemini after an Ark failure. |
+| Missing images | Gemini Image; Seedream is available through provider adapters. | Procedural visuals with warnings; fallback ordering varies by pipeline. |
+| Missing video footage | Seedance 2.0, then happyhorse reference-to-video using a newly generated still. | Generated still, then procedural fallback if needed. |
+| Music and other audio | Same-template generation uses Google Lyria; Google TTS and ElevenLabs adapters exist for other audio paths. | Local FFmpeg/procedural audio where supported. |
+| Evidence | Local FFmpeg/OpenCV/scene/audio analysis; OCR/ASR are optional adapters. | Reduced evidence and recorded warnings when optional analysis is unavailable. |
+
+V5's text-model factory is separate from the legacy `AI_PROVIDER` adapter. Configuring an Ark key and model can give it priority even when `AI_PROVIDER=gemini`. See [provider configuration](docs/development.md#provider-configuration) for exact settings and route differences.
+
+## 10. Outputs and verification
+
+With the default `STORAGE_DIR=./storage`, runtime artifacts live in:
 
 ```text
-docs/artifacts/motion_graph_case/aigc-material-briefs.json
-docs/artifacts/motion_graph_case/generated-assets/
-docs/artifacts/motion_graph_case/generated-asset-candidates.json
-docs/artifacts/motion_graph_case/generated-asset-quality.json
-docs/artifacts/motion_graph_case/asset-evidence.aigc.json
-docs/artifacts/motion_graph_case/slot-asset-matches.aigc.json
-docs/artifacts/motion_graph_case/fill-plan.aigc.json
-docs/artifacts/motion_graph_case/replacement-slots.aigc.json
-docs/artifacts/motion_graph_case/render_aigc_materials.mp4
-docs/artifacts/motion_graph_case/aigc_materials_contact_sheet.png
+storage/
+  uploads/<projectId>/                 Uploaded reference and target media
+  kb/knowledge-base.json              Template capsules, elements, curation decisions
+  generated/v5/learn/<assetId>/        Evidence, reconstruction, capsule, learn gates
+  generated/v5/generations/<genId>/    MP4 and generation evidence
 ```
 
-AIGC safety policy:
+A same-template generation writes `template-instance.json`, `final-video-program.json`, `gap-report.json`, `material-analysis.json`, `timeline-v2.json`, `mapping-v2.json`, `packaging-plan.json`, `similarity-report.json`, and `scorecard.json`. Rendered runs can also produce `final.mp4`, `cover.png`, quality reports, and no-copy scan results. Transfer traces are assembled at `GET /api/v5/generations/:id/transfer-trace` and exported from the UI.
 
-- Generation and external calls are disabled by default.
-- External providers must be explicitly enabled with the UI toggle or, in script mode, by passing `--allow-external-aigc`.
-- Once allowed, the live pipeline calls `google_gemini_image → volcengine_seedream → deterministic_local_image_fill` in order. If all external providers fail, it falls back to a local deterministic programmatic PNG without interrupting rendering and records `providerFallbackReason`.
-- Seedance video-material generation uses the real Ark task API. On failure, an error warning is recorded without interrupting rendering—no cloud video is produced, while the programmatic Remotion/FFmpeg dynamic proxy produced by the base generation remains available as a local material (`server.ts:1855-1860`).
-- Example frames are not sent to external providers (`sampleFramesSentExternally=false`).
-- Example video/audio is not uploaded as Seedance `reference_video`/`reference_audio`; currently, only the target-material text prompt is sent.
-- Seedream image requests default to `watermark=false`.
-- Real brand logos are not fabricated; if `brand_cta` lacks a logo, the system generates a programmatic card/copy or asks the user to upload one.
-- Generated materials must include provenance, be labeled `aigc_generated_material`, and must not be presented as user-uploaded materials.
+The submission's local review material includes `test_runs/v2_20260609-031151/`, its test report/proof sheet, and `verify_submission/02_outputs/` with final video, cover, and storyboard artifacts. These paths describe locally generated evidence and may not exist in a fresh checkout.
 
-## Provider Configuration Summary
+Read the scorecard's `readinessLevel`, gates, warnings, and fallback provenance alongside the video. The readiness levels are `artifact_valid`, `technical_demo`, `review_demo`, and `shippable_demo`; an MP4 alone does not establish faithful reconstruction, complete material coverage, or review readiness. Inspect the no-copy details to distinguish perceptual comparison from structural provenance.
 
-| Capability | Default | Actual implementation | Switch |
-|---|---|---|---|
-| Video analysis | FFmpeg (mock removed) | FFmpeg / ffprobe / keyframes (fails immediately on error) | `VIDEO_TOOL=ffmpeg` |
-| Evidence analyzer | Automatic (when conda is available) | PySceneDetect cuts + librosa beats + keyframes/visual families (`scripts/analyze-evidence-timeline.py`) | Runs automatically with analysis; failures are non-fatal |
-| LLM (text enhancement/rewriting/scoring) | `gemini` (default `gemini-3.5-flash`; alternatives: 2.5-pro/2.5-flash) | Gemini (preferred) / Ark Doubao (backup) / OpenAI-compatible | `AI_PROVIDER=gemini|ark_doubao|openai_compatible`; choose a model with `AI_GEMINI_MODEL` |
-| VLM | disabled | Gemini (default `VLM_MODEL=gemini-3.5-flash`; alternatives: `gemini-2.5-pro`/`gemini-2.5-flash`) | `VLM_PROVIDER=gemini` |
-| Creative-effects code generation | disabled | Gemini generates Remotion effects components (default `GEMINI_CODEGEN_MODEL=gemini-3.5-flash`; Zod schema + static validation + named-import existence checks); falls back to local_fallback on failure | `CREATIVE_EFFECT_GEMINI=1` + `ALLOW_CLOUD_PROVIDERS=1` |
-| ASR | `faster_whisper` (local) | faster-whisper (local, optional) → `no_asr_with_warning`. Audio rhythm/BPM is handled by the FFmpeg/librosa evidence pipeline; ASR no longer depends on ElevenLabs. | `ASR_PROVIDER=faster_whisper\|off` |
-| OCR | disabled | EasyOCR | `OCR_PROVIDER=easyocr` |
-| AIGC image material | disabled | Google Gemini Image, default `gemini-3.1-flash-image` (Nano Banana 2; alternatives: Nano Banana Pro `gemini-3-pro-image` / `imagen-4.0-generate-001` / `gemini-2.5-flash-image`; preferred) → Volcengine Seedream (optional backup; model specified by `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL`, with no default) → `deterministic_local_image_fill` (local deterministic fallback that does not interrupt the pipeline) | Select a model with `GEMINI_IMAGE_MODEL`; use `AIGC_IMAGE_PROVIDER=google_gemini_image` / `AIGC_IMAGE_BACKUP_PROVIDER=volcengine_seedream` + explicit flag |
-| AIGC video material | disabled | Primary: Volcengine Seedance 2.0 Fast (Ark, pure t2v) → backup: Alibaba DashScope happyhorse-1.0-r2v (reference-to-video, using a Gemini still as base64 `reference_image`; automatically takes over when Seedance has insufficient funds or returns 403) → AIGC still-image fallback | `AIGC_VIDEO_PROVIDER=seedance_2_0` + `SEEDANCE_ARK_API_KEY`; `AIGC_VIDEO_BACKUP_PROVIDER=happyhorse_r2v` + `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL` (US domain) |
-| Audio generation | Google preferred (opt-in, never fatal) | Voiceover: Gemini TTS (default `gemini-3.1-flash-tts-preview`) → subtitles/no narration; Music: Lyria (default `lyria-3-clip-preview`) → FFmpeg programmatic BGM; SFX: FFmpeg programmatic hit/riser/whoosh. Finally, FFmpeg performs layered mixing over the BGM bed (bed / voiceover + adelay / programmatic SFX, amix + highpass + alimiter). | `GEMINI_API_KEY` + `GOOGLE_AUDIO_ENABLE_CLOUD`/`ALLOW_CLOUD_PROVIDERS` + `GOOGLE_AUDIO_ENABLE_MUSIC\|TTS` |
-| Renderer | FFmpeg (mock removed) | FFmpeg / Remotion / HyperFrames stub (programmatic cards with no debug text) | Request `rendererTarget` |
-| Storage | JSON | SQLite | `STORAGE_BACKEND=json|sqlite` |
+Core checks:
 
-> The Google audio stack (Gemini TTS voiceover + Lyria music) is integrated through `apps/api/src/adapters/googleAudio.ts`. Before rendering, the server injects Google audio; on failure, it immediately falls back to local FFmpeg/librosa/programmatic audio. ElevenLabs is no longer a required provider and is no longer a default/backup path for ASR, Music, TTS, or SFX. Forced Alignment / Audio Isolation / Dubbing / Lip Sync are not required by the current rubric; their routes return skip/local reports.
+```bash
+npm run validate:schemas:v5
+npm run typecheck
+npm test
+```
 
-## Items That Still Require Manual Configuration
+The V5 schema validator currently has a separate registry assertion that expects 43 gates while the registry defines 44; the six example validations can pass while that assertion fails. See the [development guide](docs/development.md#troubleshooting).
 
-- Ark Doubao / OpenAI-compatible LLM key: used for structure extraction, natural-language revisions, and LLM scorecards.
-- Gemini key: used for real VLM video understanding and the AIGC material quality gate.
-- Seedream key + model ID: used for optional external image-material generation. `SEEDREAM_ARK_MODEL`/`AIGC_IMAGE_MODEL` has no built-in default; configuration throws immediately if neither is set.
-- Seedance/Ark key: used for optional external video-material generation; `SEEDREAM_ARK_API_KEY` can be reused.
-- Google audio: Gemini TTS / Lyria reuse `GEMINI_API_KEY` and require `GOOGLE_AUDIO_ENABLE_CLOUD=1` or `ALLOW_CLOUD_PROVIDERS=1`; the current account must also have usable billing/credits.
-- faster-whisper / easyocr: install as needed in the `viral` conda environment (faster-whisper is local ASR; audio rhythm/BPM is mainly supplied by the FFmpeg/librosa evidence pipeline).
-- Remotion Chromium: the browser cache is downloaded during the first real Remotion render.
+Media regressions and real-provider demos need additional tools, authorized reference videos, and sometimes cloud credentials. See [verification and demos](docs/development.md#verification-and-demos). Apart from the curated README media, source videos, generated media, and review bundles are generally excluded from Git. A fresh checkout may have an empty runtime Showcase until artifacts are generated locally.
 
-## Operational Boundaries and Notes
+`scripts/record-v5-demo.mjs` records a UI walkthrough using Playwright and FFmpeg. The [recording guide](docs/development.md#record-a-ui-demo) explains its URL, operation switches, exports, and local configuration.
 
-- External AIGC images, Seedance short videos, happyhorse reference-to-video, and Google Lyria/TTS are all integrated; real cloud output requires explicit `.env` switches and valid keys.
-- The default safety policy does not use example video/audio as reference material for generation providers. Pixel-level VLM analysis of user target materials additionally requires `ALLOW_EXTERNAL_VLM_USER_ASSET_ANALYSIS=1`.
-- Text-model and multimodal-model calls are separated: `createTextModelFn` prefers Doubao when an Ark/Doubao key is available and otherwise uses Gemini; example video/frame understanding and Gen1 visual-capsule generation use Gemini.
-- If a real provider fails, the system does not fabricate a cloud result; the generation pipeline records a warning and falls back to programmatic visuals/audio or a deterministic fixture.
-- Real Remotion rendering depends on local Chromium, FFmpeg, and compatible versions of `@remotion/three` / `@react-three/fiber`. Long videos and AIGC video generation take considerable time; use the UI progress bar or `/api/v5/jobs/:jobId/progress` to monitor status.
-- `scripts/record-v5-demo.mjs` can record a high-resolution UI demo with Playwright and supports toggles for button-only demonstrations, real Learn/Generate/Revise operations, downloading exported JSON, and more.
+## 11. Repository map and documentation
+
+```text
+apps/web/                    React 19 / Vite dashboard
+apps/api/src/v5Routes.ts      V5 HTTP API and orchestration wiring
+apps/api/src/pipeline-v5/     Learning, binding, filling, rendering, evaluation
+apps/api/src/services/       Knowledge-base and storage services
+apps/api/src/adapters/       Text, vision, audio, local-tool adapters
+apps/api/remotion/           Remotion compositions and render components
+packages/shared/            Canonical contracts, schemas, engine, provider adapters
+packages/renderer/          Browser-safe preview helpers
+scripts/                    Analysis, demos, recording, evaluation, exports
+spec_v5/                    V5/V5.1 specifications and examples
+docs/diagrams/              English submission architecture: Mermaid + SVG
+docs/media/                 Curated video previews, posters, screenshot PDFs
+```
+
+The application uses npm workspaces, Express 5, React/Vite, Remotion, FFmpeg, Python/OpenCV, JSON storage with optional SQLite for the main store, and Vitest. V5 knowledge-base and pipeline artifacts remain file-backed.
+
+- [Project overview](docs/project-overview.md): companion architecture and evaluation overview.
+- [Development guide](docs/development.md): full local/cloud setup, API examples, scripts, and troubleshooting.
+- [English architecture Mermaid source](docs/diagrams/submission-architecture.mmd) and [SVG](docs/diagrams/submission-architecture.svg).
+- [Demo media inventory](docs/media/README.md): source recordings, YouTube links, viewing-copy details, screenshot attachments.
+- [V5 specification index](spec_v5/README.md) and [same-template mode](spec_v5/same-template-mode.md).
+- [Canonical contracts](spec_v5/CONTRACTS-CANONICAL.md) and [TypeScript definitions](packages/shared/src/contracts-v5/).
+- [Competition rubric mapping](spec_v5/rubric-alignment.md).
+
+`specs_v1/`, `spec_v1_1/`, `spec_v2/`, `spec_v3/`, and `spec_v4/` preserve earlier designs and workflows. Specifications may include planned behavior; current code and canonical contracts take precedence when they differ.

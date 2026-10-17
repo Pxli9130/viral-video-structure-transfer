@@ -1,0 +1,22 @@
+flowchart TD
+    user["User"] --> dashboard["V5 Dashboard"]
+    dashboard --> api["Express API /api/v5"]
+    dashboard --> brief["New topic / new assets / creative parameters"]
+
+    api --> upload["Asset upload and management"]
+    upload --> uploads[("storage/uploads")]
+    api --> learn["Learning pipeline: learn-samples"]
+    learn --> evidence["Deterministic evidence extraction<br/>shots / keyframes / OCR / ASR / audio / motion"]
+    evidence --> gen1["Gen1 template generation<br/>Gemini Vision or deterministic fallback"]
+    gen1 --> capsule["RemotionTemplateCapsule"]
+    capsule --> kb[("Template KB + Element KB")]
+
+    brief --> plan["Generation planning: generations/plan"]
+    plan --> analysis["Target-asset analysis"]
+    plan --> gaps["GapReportV5"]
+    gaps --> fill["AI-generated / procedural gap filling"]
+    fill --> instance["TemplateInstance"]
+    instance --> render["Remotion + FFmpeg rendering"]
+    render --> output["final.mp4 + cover +<br/>timeline + scorecard"]
+    output --> trace["Transfer Trace"]
+    trace --> dashboard
