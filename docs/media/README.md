@@ -12,6 +12,7 @@ These files are curated previews from the author's competition submission. Origi
 | [project-walkthrough.jpg](project-walkthrough.jpg) | Frame from `Video Project 4.mp4` at 2 minutes. | Walkthrough poster |
 | [dashboard-capture-644.pdf](dashboard-capture-644.pdf) | Original submission UI screenshot, FireShot Capture 644. | 11.80 MiB |
 | [dashboard-capture-643.pdf](dashboard-capture-643.pdf) | Original submission UI screenshot, FireShot Capture 643. | 9.89 MiB |
+| [excellent-project-award.jpg](excellent-project-award.jpg) | Original Excellent Project certificate for Peixuan Li's individual submission to the 2026 ByteDance AI Full-Stack Challenge. | Certificate photograph |
 
 The MP4 viewing copies retain the full duration and audio, encoded as 720 × 1280 H.264 video with AAC audio and fast-start metadata. Their original on-screen copy is in Chinese. Source outputs are 1080 × 1920 and approximately 20.59 MiB and 17.40 MiB respectively.
 

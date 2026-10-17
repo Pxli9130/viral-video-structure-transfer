@@ -6,7 +6,35 @@ Upload a reference video and a new topic or new materials. The engine learns the
 
 Built by **Peixuan Li** for the **AI Full-Stack Challenge**. The current product workflow is **V5.1: same-template reconstruction**.
 
+> 🏅 **Excellent Project Award — 2026 ByteDance AI Full-Stack Project Challenge**
+>
+> Awarded to **Peixuan Li (李沛轩)** for this project as an **individual entrant**.
+
 This README includes the competition project description in English, its architecture diagram, supporting media, and additional implementation/setup guidance. Historical claims are clarified where the current code differs.
+
+## Competition recognition
+
+This project received the **Excellent Project Award** (优秀项目奖) in the **2026 ByteDance AI Full-Stack Project Challenge**. The organizers' results announcement names **Peixuan Li (李沛轩)** as the individual award recipient under the challenge topic **“Viral Video Structure Transfer Engine: An AI Creation Platform from Reference Analysis to Video Recomposition.”**
+
+The announcement states that project development, presentation/defense review, and final result confirmation were completed before the awards were announced. It describes the evaluation in terms of technical implementation, engineering delivery, and innovative exploration.
+
+Relevant award entry, translated from the announcement:
+
+> **Excellent Project Award**
+>
+> Participation: Individual · Team: None · Participant: Peixuan Li
+>
+> Award benefits: fast-track interview opportunity, official award certificate, and 7 days of TRAE PRO membership.
+
+Source: the organizers' award-results announcement signed **ByteDance Campus Recruitment**, supplied by the author as a Chinese screenshot.
+
+### Excellent Project Award certificate
+
+The certificate below recognizes this submission as an **Excellent Project** in the **2026 ByteDance AI Full-Stack Challenge**. It names **Peixuan Li (李沛轩)** as the project member, records individual participation, and identifies the Viral Video Structure Transfer Engine challenge topic.
+
+[<img src="docs/media/excellent-project-award.jpg" alt="2026 ByteDance AI Full-Stack Challenge Excellent Project certificate naming Peixuan Li and the Viral Video Structure Transfer Engine topic" width="520">](docs/media/excellent-project-award.jpg)
+
+[View the original award certificate](docs/media/excellent-project-award.jpg).
 
 ## Demo videos
 
@@ -29,6 +57,8 @@ These are compact 720p viewing copies of the competition outputs, with their ful
 
 ## Contents
 
+- [Competition recognition](#competition-recognition)
+- [Demo videos](#demo-videos)
 - [1. Project information](#1-project-information)
 - [2. Challenge objectives and project approach](#2-challenge-objectives-and-project-approach)
 - [3. Feature completion overview](#3-feature-completion-overview)
@@ -47,6 +77,7 @@ These are compact 720p viewing copies of the competition outputs, with their ful
 | --- | --- |
 | Project name | Viral Video Structure Transfer Engine |
 | Author | Peixuan Li |
+| Award | **Excellent Project Award**, 2026 ByteDance AI Full-Stack Project Challenge; individual entrant, listed as 李沛轩 in the organizers' announcement. |
 | Competition / challenge | AI Full-Stack Challenge / Engineering Bootcamp: Viral Video Structure Transfer Engine — an AI creation platform from reference analysis and material completion to video recomposition. |
 | Summary | Input a viral short-video reference and a new topic/new materials. The system learns its pacing, shots, layout, subtitles, transitions, and audio structure, then transfers that creative structure to new content to produce a playable video. |
 | GitHub repository | [Pxli9130/viral-video-structure-transfer](https://github.com/Pxli9130/viral-video-structure-transfer) |
